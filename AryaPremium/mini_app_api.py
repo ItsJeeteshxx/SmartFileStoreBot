@@ -91,7 +91,7 @@ async def _warmup_image_cache():
     """
     try:
         await asyncio.sleep(2)  # Minimal delay — just let startup complete
-        if not arya_db.db:
+        if arya_db.db is None:
             await arya_db.connect()
 
         raw    = await arya_db.get_all_stories()
@@ -527,7 +527,7 @@ async def banner_image_proxy(banner_id: str):
 @app.get("/api/stories")
 async def get_stories():
     try:
-        if not arya_db.db:
+        if arya_db.db is None:
             await arya_db.connect()
         raw = await arya_db.get_all_stories()
         stories = [r for r in (_format_story(s) for s in raw) if r]
@@ -558,7 +558,7 @@ async def track_event(payload: dict):
         return {"ok": False}
 
     try:
-        if not arya_db.db:
+        if arya_db.db is None:
             await arya_db.connect()
 
         from datetime import datetime, timezone
@@ -603,7 +603,7 @@ async def get_trending(limit: int = 10):
     Falls back to purchase_count on stories if events collection is empty.
     """
     try:
-        if not arya_db.db:
+        if arya_db.db is None:
             await arya_db.connect()
 
         from datetime import datetime, timezone, timedelta
@@ -680,7 +680,7 @@ async def process_story_image(payload: dict):
 
     async def _bg_process():
         try:
-            if not arya_db.db:
+            if arya_db.db is None:
                 await arya_db.connect()
             story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
             if not story:
