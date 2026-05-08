@@ -192,7 +192,26 @@ def _is_url(v): return bool(v and (str(v).startswith("http://") or str(v).starts
 
 def _make_order_id(uid): return f"OD-{uid}-{_rand(6)}"
 
+def _normalize_date(val) -> str | None:
+    """Convert any date value (datetime, timestamp, string) to ISO string."""
+    if val is None:
+        return None
+    from datetime import datetime
+    if isinstance(val, datetime):
+        return val.isoformat()
+    if isinstance(val, (int, float)):
+        # Unix timestamp
+        try:
+            return datetime.utcfromtimestamp(val).isoformat()
+        except Exception:
+            return None
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
 def _format_story(s: dict) -> dict | None:
+
     story_id = str(s["_id"]) if s.get("_id") else None
     if not story_id: return None
 
@@ -259,7 +278,22 @@ def _format_story(s: dict) -> dict | None:
         "fileCount":     file_count,
         "isCompleted":   is_completed,
         "bot_id":        s.get("bot_id"),
+        # ── Real engagement & date fields (critical for trending + new releases) ──
+        "purchase_count":  int(s.get("purchase_count") or s.get("purchases") or s.get("buy_count") or 0),
+        "view_count":      int(s.get("view_count") or s.get("views") or s.get("opens") or 0),
+        "search_count":    int(s.get("search_count") or s.get("searches") or 0),
+        "trending_score":  float(s.get("trending_score") or 0),
+        # created_at: try multiple field names, normalize to ISO string
+        "created_at":      _normalize_date(
+            s.get("created_at") or s.get("uploaded_at") or s.get("added_at") or
+            s.get("date") or s.get("upload_date") or s.get("created")
+        ),
+        "uploaded_at":     _normalize_date(
+            s.get("uploaded_at") or s.get("created_at") or s.get("added_at") or
+            s.get("date") or s.get("upload_date")
+        ),
     }
+
 
 
 async def _get_bot_token(bot_id) -> str | None:
@@ -446,7 +480,7 @@ async def banner_image_proxy(banner_id: str):
 @app.get("/api/stories")
 async def get_stories():
     try:
-        if arya_db.stories is None:
+        if not arya_db.db:
             await arya_db.connect()
         raw = await arya_db.get_all_stories()
         stories = [r for r in (_format_story(s) for s in raw) if r]
@@ -454,6 +488,137 @@ async def get_stories():
         return {"success": True, "data": stories}
     except Exception as e:
         import traceback
+        tb = traceback.format_exc()
+        logger.error(f"stories error: {e}\n{tb}")
+        raise HTTPException(500, f"{str(e)} | TRACEBACK: {tb}")
+
+
+# ── Engagement Tracking ───────────────────────────────────────────
+@app.post("/api/track")
+async def track_event(payload: dict):
+    """
+    Track user engagement events for live trending.
+    Events: open | search | view | purchase
+    Writes to story_events collection (lightweight, no heavy indexes).
+    Simultaneously updates per-story counters on premium_stories.
+    Does NOT break any existing delivery/payment logic.
+    """
+    story_id  = payload.get("story_id", "")
+    event     = payload.get("event", "view")   # open | search | view | purchase
+    tg_id     = payload.get("telegram_id", 0)
+
+    if not story_id or event not in ("open", "search", "view", "purchase"):
+        return {"ok": False}
+
+    try:
+        if not arya_db.db:
+            await arya_db.connect()
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        # Write lightweight event record
+        await arya_db.db.story_events.insert_one({
+            "story_id": story_id,
+            "event":    event,
+            "tg_id":    tg_id,
+            "ts":       now,
+        })
+
+        # Increment counter on the story itself for persistence
+        count_field = {
+            "open":     "view_count",
+            "search":   "search_count",
+            "view":     "view_count",
+            "purchase": "purchase_count",
+        }.get(event, "view_count")
+
+        try:
+            await arya_db.db.premium_stories.update_one(
+                {"_id": ObjectId(story_id)},
+                {"$inc": {count_field: 1}}
+            )
+        except Exception:
+            pass  # Don't fail track if story_id is invalid
+
+        return {"ok": True}
+    except Exception as e:
+        logger.debug(f"Track error: {e}")
+        return {"ok": False}
+
+
+# ── Real Trending ──────────────────────────────────────────────────
+@app.get("/api/trending")
+async def get_trending(limit: int = 10):
+    """
+    Computes REAL trending from story_events over the last 7 days.
+    Scoring: purchase=10pts, open=3pts, search=2pts, view=1pt
+    Falls back to purchase_count on stories if events collection is empty.
+    """
+    try:
+        if not arya_db.db:
+            await arya_db.connect()
+
+        from datetime import datetime, timezone, timedelta
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+
+        # Aggregate recent events by story_id with weighted score
+        pipeline = [
+            {"$match": {"ts": {"$gte": since}}},
+            {"$group": {
+                "_id": "$story_id",
+                "score": {"$sum": {
+                    "$switch": {
+                        "branches": [
+                            {"case": {"$eq": ["$event", "purchase"]}, "then": 10},
+                            {"case": {"$eq": ["$event", "open"]},     "then": 3},
+                            {"case": {"$eq": ["$event", "search"]},   "then": 2},
+                            {"case": {"$eq": ["$event", "view"]},     "then": 1},
+                        ],
+                        "default": 1
+                    }
+                }}
+            }},
+            {"$sort": {"score": -1}},
+            {"$limit": limit},
+        ]
+
+        cursor = arya_db.db.story_events.aggregate(pipeline)
+        results = await cursor.to_list(length=limit)
+
+        if not results:
+            # Fallback: sort stories by purchase_count from DB
+            raw = await arya_db.get_all_stories()
+            raw_sorted = sorted(
+                raw,
+                key=lambda s: int(s.get("purchase_count") or s.get("purchases") or 0),
+                reverse=True
+            )[:limit]
+            stories = [r for r in (_format_story(s) for s in raw_sorted) if r]
+            return {"success": True, "data": stories, "source": "fallback"}
+
+        # Fetch actual story documents for top trending IDs
+        top_ids = [r["_id"] for r in results]
+        score_map = {r["_id"]: r["score"] for r in results}
+
+        stories_out = []
+        for sid in top_ids:
+            try:
+                raw = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                if raw:
+                    formatted = _format_story(raw)
+                    if formatted:
+                        formatted["trending_score"] = score_map.get(sid, 0)
+                        stories_out.append(formatted)
+            except Exception:
+                continue
+
+        return {"success": True, "data": stories_out, "source": "live"}
+    except Exception as e:
+        logger.error(f"Trending error: {e}")
+        raise HTTPException(500, str(e))
+
+
         tb = traceback.format_exc()
         logger.error(f"stories error: {e}\n{tb}")
         raise HTTPException(500, f"{str(e)} | TRACEBACK: {tb}")
