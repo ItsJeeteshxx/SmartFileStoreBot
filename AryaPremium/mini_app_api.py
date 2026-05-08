@@ -315,40 +315,47 @@ async def get_stories():
 
 
 # ── Image Proxy ───────────────────────────────────────────────────
+import aiofiles
+from fastapi.responses import FileResponse
+
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "image_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 @app.get("/api/image/{story_id}")
-async def image_proxy(story_id: str):
+async def get_image(story_id: str):
     """
-    Proxy Telegram file_id images so browser can render them.
-    Flow: getFile → file_path → download → stream bytes.
+    Proxy image from Telegram to bypass CORS, with aggressive local disk caching
+    for instant load times.
     """
-    import httpx
-    from bson.objectid import ObjectId
+    cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+    if os.path.exists(cache_path):
+        return FileResponse(
+            path=cache_path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=31536000"}
+        )
 
-    # 1. Load story
     try:
+        from bson.objectid import ObjectId
         story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
-    except Exception:
-        raise HTTPException(404, "Invalid story id")
-    if not story:
-        raise HTTPException(404, "Story not found")
+        if not story:
+            raise HTTPException(404, "Story not found")
 
-    file_id = story.get("image")
-    if not file_id:
-        raise HTTPException(404, "No image for this story")
-    if _is_url(file_id):
-        # It's already a URL — redirect
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(file_id)
+        file_id = story.get("image") or story.get("image_id") or story.get("poster_id") or story.get("banner_id")
+        if not file_id:
+            raise HTTPException(404, "No image found for story")
 
-    # 2. Get bot token
-    token = await _get_bot_token(story.get("bot_id"))
-    if not token:
-        raise HTTPException(500, "No bot token configured")
+        # If it's already a URL, redirect
+        if _is_url(file_id):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(file_id)
 
-    # 3. Fetch via Telegram Bot API
-    try:
+        token = await _get_bot_token(story.get("bot_id"))
+        if not token:
+            raise HTTPException(500, "No bot token to fetch image")
+
+        import httpx
         async with httpx.AsyncClient(timeout=15) as client:
-            # Step A: getFile
             r = await client.get(
                 f"https://api.telegram.org/bot{token}/getFile",
                 params={"file_id": file_id},
@@ -356,23 +363,24 @@ async def image_proxy(story_id: str):
             data = r.json()
             if not data.get("ok"):
                 err = data.get("description", "getFile failed")
-                logger.error(f"Telegram getFile error: {err} | file_id={file_id}")
                 raise HTTPException(404, f"Telegram error: {err}")
 
             file_path = data["result"]["file_path"]
 
-            # Step B: download
             img = await client.get(
                 f"https://api.telegram.org/file/bot{token}/{file_path}"
             )
             if img.status_code != 200:
                 raise HTTPException(502, "Image download failed")
 
-            ct = img.headers.get("content-type", "image/jpeg")
+            # Save to disk cache asynchronously
+            async with aiofiles.open(cache_path, 'wb') as f:
+                await f.write(img.content)
+
             return Response(
                 content=img.content,
-                media_type=ct,
-                headers={"Cache-Control": "public, max-age=86400"},
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=31536000"},
             )
     except HTTPException:
         raise
