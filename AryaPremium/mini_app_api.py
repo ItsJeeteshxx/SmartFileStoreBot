@@ -421,12 +421,13 @@ async def checkout(payload: dict):
     }
 
 
-# ── Razorpay: Create Order ────────────────────────────────────────
-@app.post("/api/create-order")
-async def create_razorpay_order(payload: dict):
-    """Create a Razorpay order. Returns order_id, key, amount for frontend."""
+# ── Razorpay: Create Payment Link ────────────────────────────────────────
+@app.post("/api/create-payment-link")
+async def create_payment_link(payload: dict):
+    """Creates a Razorpay Payment Link linked to an order."""
     story_ids = payload.get("story_ids", [])
     tg_id     = payload.get("telegram_id") or 0
+    username  = payload.get("username", "")
 
     if not story_ids:
         raise HTTPException(400, "Cart is empty")
@@ -437,106 +438,120 @@ async def create_razorpay_order(payload: dict):
     if not stories:
         raise HTTPException(400, "No valid stories")
 
-    total_paise = int(sum(float(s.get("price") or 0) for s in stories) * 100)
+    total_price = sum(float(s.get("price") or 0) for s in stories)
+    total_paise = int(total_price * 100)
     receipt     = _make_order_id(tg_id)
+
+    import httpx
+    auth_header = "Basic " + base64.b64encode(f"{RZP_KEY}:{RZP_SECRET}".encode()).decode()
+    bot = os.environ.get("BOT_USERNAME", BOT_USERNAME)
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.razorpay.com/v1/payment_links",
+                json={
+                    "amount":   total_paise,
+                    "currency": "INR",
+                    "accept_partial": False,
+                    "description": "SliceURL Services",
+                    "customer": {
+                        "name": username or f"User {tg_id}",
+                        "email": f"user{tg_id}@sliceurl.com"
+                    },
+                    "notify": {"sms": False, "email": False},
+                    "reminder_enable": False,
+                    "reference_id": receipt,
+                    "callback_url": f"https://t.me/{bot}",
+                    "callback_method": "get"
+                },
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            )
+            if r.status_code != 200:
+                logger.error(f"Razorpay payment link failed: {r.text}")
+                raise HTTPException(502, "Razorpay payment link creation failed")
+            rzp = r.json()
+
+        # Store order
+        await arya_db.db.orders.insert_one({
+            "order_id":            receipt,
+            "payment_link_id":     rzp["id"],
+            "user_id":             tg_id,
+            "username":            username,
+            "story_ids":           story_ids,
+            "story_names":         [s.get("story_name_en", "") for s in stories],
+            "total":               total_price,
+            "status":              "pending",
+            "source":              "razorpay_link",
+            "created_at":          datetime.now(timezone.utc),
+        })
+        logger.info(f"Payment Link created: {rzp['id']} for user {tg_id}")
+
+        return {
+            "success":          True,
+            "payment_link_id":  rzp["id"],
+            "payment_link_url": rzp["short_url"]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create-payment-link error: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+# ── Razorpay: Check Payment Link Status ──────────────────────────────────────
+@app.post("/api/check-payment-link")
+async def check_payment_link(id: str, payload: dict):
+    """Verifies the status of a Razorpay Payment Link."""
+    tg_id = payload.get("telegram_id")
+    if not RZP_KEY or not RZP_SECRET:
+        raise HTTPException(500, "Razorpay not configured on server")
 
     import httpx
     auth_header = "Basic " + base64.b64encode(f"{RZP_KEY}:{RZP_SECRET}".encode()).decode()
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(
-                "https://api.razorpay.com/v1/orders",
-                json={
-                    "amount":   total_paise,
-                    "currency": "INR",
-                    "receipt":  receipt,
-                    "notes":    {"telegram_id": str(tg_id), "story_ids": ",".join(story_ids)},
-                },
-                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            r = await client.get(
+                f"https://api.razorpay.com/v1/payment_links/{id}",
+                headers={"Authorization": auth_header},
             )
             if r.status_code != 200:
-                logger.error(f"Razorpay create-order failed: {r.text}")
-                raise HTTPException(502, "Razorpay order creation failed")
-            rzp = r.json()
+                raise HTTPException(502, "Failed to fetch payment link status")
+            link_data = r.json()
 
-        return {
-            "success":          True,
-            "razorpay_order_id": rzp["id"],
-            "amount":           total_paise,
-            "currency":         "INR",
-            "key":              RZP_KEY,
-            "receipt":          receipt,
-            "story_names":      [s.get("story_name_en", "") for s in stories],
-        }
+        status = link_data.get("status")
+        if status == "paid":
+            order = await arya_db.db.orders.find_one({"payment_link_id": id})
+            if order and order.get("status") != "paid":
+                # Update order in DB
+                await arya_db.db.orders.update_one(
+                    {"_id": order["_id"]},
+                    {"$set": {"status": "paid", "updated_at": datetime.now(timezone.utc)}}
+                )
+                
+                # Mark purchases in user record
+                story_ids = order.get("story_ids", [])
+                if tg_id:
+                    for sid in story_ids:
+                        await arya_db.add_purchase(int(tg_id), sid)
+                
+                logger.info(f"Payment verified for link {id} | user={tg_id}")
+            
+            bot = os.environ.get("BOT_USERNAME", BOT_USERNAME)
+            order_id = order["order_id"] if order else ""
+            return {
+                "success": True,
+                "status": "paid",
+                "checkout_url": f"https://t.me/{bot}?start=success_{order_id}" if order_id else f"https://t.me/{bot}"
+            }
+
+        return {"success": True, "status": "pending"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"create-order error: {e}", exc_info=True)
+        logger.error(f"check-payment-link error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
-
-
-# ── Razorpay: Verify Payment ──────────────────────────────────────
-@app.post("/api/verify-payment")
-async def verify_payment(payload: dict):
-    """
-    Verify Razorpay HMAC signature.
-    On success: store order in DB (status=paid) + return bot deep-link for delivery.
-    """
-    rzp_order_id   = payload.get("razorpay_order_id", "")
-    rzp_payment_id = payload.get("razorpay_payment_id", "")
-    rzp_signature  = payload.get("razorpay_signature", "")
-    story_ids      = payload.get("story_ids", [])
-    tg_id          = payload.get("telegram_id") or 0
-    username       = payload.get("username", "")
-
-    if not all([rzp_order_id, rzp_payment_id, rzp_signature]):
-        raise HTTPException(400, "Missing payment fields")
-
-    # HMAC-SHA256 verification
-    expected = hmac.new(
-        RZP_SECRET.encode("utf-8"),
-        f"{rzp_order_id}|{rzp_payment_id}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    if not hmac.compare_digest(expected, rzp_signature):
-        logger.warning(f"Invalid Razorpay signature for {rzp_payment_id}")
-        raise HTTPException(400, "Payment verification failed — invalid signature")
-
-    # Store verified order
-    stories = await _get_stories_from_ids(story_ids)
-    total   = sum(float(s.get("price") or 0) for s in stories)
-    oid     = _make_order_id(tg_id)
-
-    await arya_db.db.orders.insert_one({
-        "order_id":            oid,
-        "user_id":             tg_id,
-        "username":            username,
-        "story_ids":           story_ids,
-        "story_names":         [s.get("story_name_en", "") for s in stories],
-        "total":               total,
-        "status":              "paid",
-        "source":              "razorpay",
-        "razorpay_order_id":   rzp_order_id,
-        "razorpay_payment_id": rzp_payment_id,
-        "created_at":          datetime.now(timezone.utc),
-    })
-
-    # Mark purchases in user record
-    if tg_id:
-        for sid in story_ids:
-            await arya_db.add_purchase(int(tg_id), sid)
-
-    logger.info(f"Payment verified: {oid} | {rzp_payment_id} | user={tg_id} | ₹{total}")
-
-    bot = os.environ.get("BOT_USERNAME", BOT_USERNAME)
-    return {
-        "success":      True,
-        "order_id":     oid,
-        "total":        total,
-        "checkout_url": f"https://t.me/{bot}?start=order_{oid}",
-    }
 
 
 # ── My Purchases — Bot + Mini App synced ──────────────────────────
