@@ -57,89 +57,127 @@ app = FastAPI(title="Arya Premium API")
 
 # ── In-memory negative cache ───────────────────────────────────────────────────
 # Stores story_ids whose Telegram fetch has permanently failed.
-# Prevents hammering Telegram API with known-bad file_ids.
-# Cleared on process restart (intentional — allows retry after bot token refresh).
 FAILED_IMAGES: set[str] = set()
 
+# ── Image cache — MUST be defined before warmup/proxy functions use it ─────────
 import asyncio
+import aiofiles
+from fastapi.responses import FileResponse
+
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# ── Pillow for compression (graceful degradation if not installed) ─────────────
+try:
+    from PIL import Image as PILImage
+    import io as _pil_io
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+    logger.warning("Pillow not installed — images stored uncompressed. Install: pip install Pillow")
 
 @app.on_event("startup")
 async def startup_event():
     await arya_db.connect()
     logger.info(f"✅ MongoDB connected | bot={BOT_USERNAME}")
-    # Launch image warmup in the background — non-blocking
     asyncio.create_task(_warmup_image_cache())
+
 
 async def _warmup_image_cache():
     """
-    Pre-warms the disk image cache for ALL stories on server startup.
-    Runs entirely in the background — does NOT block the API.
-    This ensures NEW users get fast image loads (no cold-start Telegram fetch).
+    PARALLEL startup warmup — processes all stories concurrently (5 at a time).
+    50 stories: ~3s instead of 15s sequential.
+    Non-blocking — server is immediately available while this runs.
     """
     try:
-        await asyncio.sleep(3)  # Let server fully start first
+        await asyncio.sleep(2)  # Minimal delay — just let startup complete
         if not arya_db.db:
             await arya_db.connect()
 
-        raw = await arya_db.get_all_stories()
-        total = len(raw)
-        cached = 0
-        fetched = 0
-        skipped = 0
-        logger.info(f"🔥 Image warmup starting — {total} stories to check")
+        raw    = await arya_db.get_all_stories()
+        total  = len(raw)
+        logger.info(f"🔥 Image warmup starting — {total} stories")
 
-        for s in raw:
+        sem = asyncio.Semaphore(5)  # 5 concurrent Telegram requests
+
+        async def _process_one(s):
             story_id = str(s.get("_id", ""))
             if not story_id:
-                continue
+                return "skip"
 
             cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
+                return "cached"  # Already have a valid cached file
 
-            # Already cached — skip
-            if os.path.exists(cache_path):
-                cached += 1
-                continue
-
-            # Known failed — skip
             if story_id in FAILED_IMAGES:
-                skipped += 1
-                continue
+                return "failed"
 
-            # Check if story has a direct URL (no proxy needed)
+            # Direct URL stories don't need Telegram fetch
             raw_poster = s.get("poster_url") or s.get("cover") or s.get("image_url")
             if _is_url(raw_poster):
-                skipped += 1
-                continue  # Direct URL stories don't need warmup
+                return "skip"
 
-            # Has Telegram file_id — pre-fetch it
-            file_id = s.get("image") or s.get("image_id") or s.get("poster_id") or s.get("banner_id")
+            file_id = (
+                s.get("image") or s.get("image_id") or
+                s.get("poster_id") or s.get("banner_id")
+            )
             if not file_id:
-                skipped += 1
-                continue
+                return "skip"
 
-            success = await _fetch_and_cache_image(story_id, file_id, cache_path, s.get("bot_id"))
-            if success:
-                fetched += 1
-            else:
-                FAILED_IMAGES.add(story_id)
-                skipped += 1
+            async with sem:
+                ok = await _fetch_and_cache_image(story_id, file_id, cache_path, s.get("bot_id"))
+                if ok:
+                    return "fetched"
+                else:
+                    FAILED_IMAGES.add(story_id)
+                    return "failed"
 
-            # Rate-limit: don't hammer Telegram API
-            await asyncio.sleep(0.3)
-
+        results  = await asyncio.gather(*[_process_one(s) for s in raw])
+        counts   = {k: results.count(k) for k in ("cached", "fetched", "skip", "failed")}
         logger.info(
-            f"✅ Image warmup complete — "
-            f"{cached} already cached | {fetched} newly fetched | {skipped} skipped/failed"
+            f"✅ Warmup done — {counts['cached']} cached | "
+            f"{counts['fetched']} fetched | {counts['skip']} skipped | "
+            f"{counts['failed']} failed"
         )
     except Exception as e:
-        logger.error(f"Image warmup error: {e}", exc_info=True)
+        logger.error(f"Warmup error: {e}", exc_info=True)
+
+
+def _compress_image_bytes(raw_bytes: bytes, max_width: int = 600, quality: int = 78) -> bytes:
+    """
+    Compress image using Pillow:
+    - Resize to max_width if larger (maintains aspect ratio)
+    - Convert to RGB (strip alpha, handle CMYK)
+    - JPEG quality=78 — good quality, ~5-10x smaller than raw
+    Returns original bytes if Pillow unavailable or error.
+    """
+    if not HAS_PILLOW:
+        return raw_bytes
+    try:
+        img = PILImage.open(_pil_io.BytesIO(raw_bytes))
+        # Convert to RGB (needed for JPEG — no alpha channel)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        # Resize if wider than max_width
+        w, h = img.size
+        if w > max_width:
+            new_h = int(h * max_width / w)
+            img = img.resize((max_width, new_h), PILImage.LANCZOS)
+        buf = _pil_io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
+        compressed = buf.getvalue()
+        # Only use compressed if it's actually smaller
+        if len(compressed) < len(raw_bytes):
+            return compressed
+        return raw_bytes
+    except Exception:
+        return raw_bytes
 
 
 async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, bot_id=None) -> bool:
     """
-    Fetches a Telegram image and saves it to disk cache.
-    Returns True on success, False on any failure.
-    Used by both warmup and the per-request proxy.
+    Fetch from Telegram, compress with Pillow, save to disk.
+    Returns True on success. Thread-safe (uses asyncio file writes).
     """
     import httpx
     try:
@@ -147,30 +185,39 @@ async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, b
         if not token:
             return False
 
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
                 f"https://api.telegram.org/bot{token}/getFile",
                 params={"file_id": file_id}
             )
             data = r.json()
             if not data.get("ok"):
-                logger.debug(f"getFile failed for {story_id}: {data.get('description')}")
+                logger.debug(f"getFile failed [{story_id}]: {data.get('description')}")
                 return False
 
             file_path = data["result"]["file_path"]
-            img = await client.get(
+            img_r = await client.get(
                 f"https://api.telegram.org/file/bot{token}/{file_path}"
             )
-            if img.status_code != 200:
+            if img_r.status_code != 200:
                 return False
 
+            # Compress before storing
+            raw_bytes = img_r.content
+            compressed = _compress_image_bytes(raw_bytes, max_width=600, quality=78)
+
             async with aiofiles.open(cache_path, "wb") as f:
-                await f.write(img.content)
+                await f.write(compressed)
+
+            saving = len(raw_bytes) - len(compressed)
+            if saving > 0:
+                logger.debug(f"Cached {story_id}: {len(raw_bytes)//1024}KB → {len(compressed)//1024}KB (saved {saving//1024}KB)")
             return True
 
     except Exception as e:
-        logger.debug(f"Image fetch error for {story_id}: {e}")
+        logger.debug(f"Fetch error [{story_id}]: {e}")
         return False
+
 
 
 app.add_middleware(
@@ -619,17 +666,45 @@ async def get_trending(limit: int = 10):
         raise HTTPException(500, str(e))
 
 
-        tb = traceback.format_exc()
-        logger.error(f"stories error: {e}\n{tb}")
-        raise HTTPException(500, f"{str(e)} | TRACEBACK: {tb}")
+# ── Auto-process story poster on add/update ───────────────────────
+@app.post("/api/process-story")
+async def process_story_image(payload: dict):
+    """
+    Called by the Telegram bot when a new story is added or its poster changes.
+    Pre-fetches and caches the image so the FIRST user request is instant.
+    Runs asynchronously — returns immediately and processes in background.
+    """
+    story_id = payload.get("story_id", "")
+    if not story_id:
+        return {"ok": False, "error": "story_id required"}
 
+    async def _bg_process():
+        try:
+            if not arya_db.db:
+                await arya_db.connect()
+            story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+            if not story:
+                return
+            cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+            # Remove old cache if poster changed
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+            FAILED_IMAGES.discard(story_id)  # Clear negative cache
 
-# ── Image Proxy ───────────────────────────────────────────────────
-import aiofiles
-from fastapi.responses import FileResponse
+            file_id = (
+                story.get("image") or story.get("image_id") or
+                story.get("poster_id") or story.get("banner_id")
+            )
+            if not file_id:
+                return
+            ok = await _fetch_and_cache_image(story_id, file_id, cache_path, story.get("bot_id"))
+            logger.info(f"Auto-process story {story_id}: {'✅' if ok else '❌'}")
+        except Exception as e:
+            logger.error(f"Auto-process error [{story_id}]: {e}")
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "image_cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
+    asyncio.create_task(_bg_process())
+    return {"ok": True, "queued": story_id}
+
 
 @app.get("/api/image/{story_id}")
 async def get_image(story_id: str):

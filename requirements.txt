@@ -14,3 +14,9 @@ aiohttp
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+Pillow
+aiofiles
+httpx
+fastapi
+uvicorn
+python-multipart
