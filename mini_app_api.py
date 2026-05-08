@@ -131,11 +131,13 @@ async def get_stories():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+from AryaPremium.config import Config
+
 import razorpay
 
-# Ensure you set these in your environment, e.g. using .env
-RZP_KEY_ID = os.environ.get("RZP_KEY_ID", "rzp_test_placeholder")
-RZP_KEY_SECRET = os.environ.get("RZP_KEY_SECRET", "placeholder")
+# Use the existing keys from AryaPremium config
+RZP_KEY_ID = Config.RAZORPAY_KEY
+RZP_KEY_SECRET = Config.RAZORPAY_SECRET
 rzp_client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
 
 # ─────────────────────────────────────────────────────────────────
@@ -175,6 +177,9 @@ async def create_payment_link(payload: dict):
     bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
     
     try:
+        if not RZP_KEY_ID or not RZP_KEY_SECRET:
+            raise ValueError("Razorpay API keys are missing in the .env file. Please check RAZORPAY_KEY and RAZORPAY_SECRET.")
+
         # Create Razorpay Payment Link
         link_data = rzp_client.payment_link.create({
             "amount": int(total_price * 100), # in paise
