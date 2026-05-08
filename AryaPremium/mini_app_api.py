@@ -28,16 +28,13 @@ RZP_KEY      = Config.RAZORPAY_KEY
 RZP_SECRET   = Config.RAZORPAY_SECRET
 BANNER_SIZE  = (1184, 556)  # enforced by mgmt bot
 
-# ── Lifespan ──────────────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+app = FastAPI(title="Arya Premium API")
+
+@app.on_event("startup")
+async def startup_event():
     await arya_db.connect()
     logger.info(f"✅ MongoDB connected | bot={BOT_USERNAME}")
-    yield
-    if arya_db.client:
-        arya_db.client.close()
 
-app = FastAPI(title="Arya Premium API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
