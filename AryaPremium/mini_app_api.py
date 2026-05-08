@@ -90,7 +90,7 @@ async def _warmup_image_cache():
     Non-blocking — server is immediately available while this runs.
     """
     try:
-        await asyncio.sleep(2)  # Minimal delay — just let startup complete
+        await asyncio.sleep(15)  # Let server fully serve first users before any background work
         if arya_db.db is None:
             await arya_db.connect()
 
@@ -112,13 +112,13 @@ async def _warmup_image_cache():
             if os.path.exists(cache_path) and os.path.getsize(cache_path) > 500:
                 return "cached"
 
-            # Old JPEG exists — convert it to WebP right now (no Telegram fetch needed)
+            # Old JPEG exists — convert to WebP (non-blocking async read + thread executor)
             if os.path.exists(jpg_path) and os.path.getsize(jpg_path) > 1000:
                 if HAS_PILLOW:
                     try:
-                        with open(jpg_path, "rb") as f:
-                            jpg_bytes = f.read()
-                        webp_bytes = _compress_to_webp(jpg_bytes)
+                        async with aiofiles.open(jpg_path, "rb") as f:
+                            jpg_bytes = await f.read()
+                        webp_bytes = await _compress_to_webp_async(jpg_bytes)
                         async with aiofiles.open(cache_path, "wb") as f:
                             await f.write(webp_bytes)
                         os.remove(jpg_path)  # Remove old JPEG
@@ -162,33 +162,41 @@ async def _warmup_image_cache():
         logger.error(f"Warmup error: {e}", exc_info=True)
 
 
-def _compress_to_webp(raw_bytes: bytes, max_width: int = 320, quality: int = 82) -> bytes:
+async def _compress_to_webp_async(raw_bytes: bytes, max_width: int = 320, quality: int = 82) -> bytes:
     """
-    Convert to WebP — 40-60% smaller than JPEG at same visual quality.
-    max_width=320: enough for 2x retina on 160px card display size.
-    quality=82: excellent quality, ~10-20KB per poster.
-    Falls back to original bytes if Pillow unavailable.
+    Async wrapper — runs Pillow in a thread executor so it NEVER blocks the event loop.
+    Pillow's PILImage.open/resize/save are synchronous CPU ops — running them directly
+    in async code would freeze ALL API responses during image processing.
+    asyncio.to_thread() moves them to a worker thread safely.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _compress_to_webp_sync, raw_bytes, max_width, quality)
+
+
+def _compress_to_webp_sync(raw_bytes: bytes, max_width: int = 320, quality: int = 82) -> bytes:
+    """
+    Synchronous Pillow conversion — ONLY called from thread executor, never directly from async.
+    WebP at 320px/quality=82: ~10-18KB per poster (vs 80-150KB raw JPEG).
     """
     if not HAS_PILLOW:
         return raw_bytes
     try:
         img = PILImage.open(_pil_io.BytesIO(raw_bytes))
-        # RGBA → RGB (WebP supports alpha but we don't need it)
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
-        # Resize: 320px max width — cards are 160px, 320 = perfect 2x retina
         w, h = img.size
         if w > max_width:
             new_h = int(h * max_width / w)
             img = img.resize((max_width, new_h), PILImage.LANCZOS)
         buf = _pil_io.BytesIO()
-        img.save(buf, format="WEBP", quality=quality, method=4)  # method=4: good speed/compression balance
-        webp_bytes = buf.getvalue()
-        logger.debug(f"WebP: {len(raw_bytes)//1024}KB raw → {len(webp_bytes)//1024}KB webp")
-        return webp_bytes
+        img.save(buf, format="WEBP", quality=quality, method=4)
+        return buf.getvalue()
     except Exception as e:
-        logger.debug(f"WebP convert error: {e}")
-        return raw_bytes  # Graceful fallback
+        logger.debug(f"WebP sync error: {e}")
+        return raw_bytes
+
+# Keep _compress_to_webp as alias for backward compat (sync version)
+_compress_to_webp = _compress_to_webp_sync
 
 
 async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, bot_id=None) -> bool:
@@ -219,11 +227,10 @@ async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, b
             if img_r.status_code != 200:
                 return False
 
-            # Convert to WebP before storing — 40-60% smaller than JPEG
+            # Convert to WebP in thread executor — never blocks event loop
             raw_bytes = img_r.content
-            webp_bytes = _compress_to_webp(raw_bytes, max_width=320, quality=82)
+            webp_bytes = await _compress_to_webp_async(raw_bytes, max_width=320, quality=82)
 
-            # Save as .webp
             async with aiofiles.open(cache_path, "wb") as f:
                 await f.write(webp_bytes)
 
