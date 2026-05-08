@@ -55,10 +55,123 @@ BANNER_SIZE  = (1184, 556)  # enforced by mgmt bot
 
 app = FastAPI(title="Arya Premium API")
 
+# ── In-memory negative cache ───────────────────────────────────────────────────
+# Stores story_ids whose Telegram fetch has permanently failed.
+# Prevents hammering Telegram API with known-bad file_ids.
+# Cleared on process restart (intentional — allows retry after bot token refresh).
+FAILED_IMAGES: set[str] = set()
+
+import asyncio
+
 @app.on_event("startup")
 async def startup_event():
     await arya_db.connect()
     logger.info(f"✅ MongoDB connected | bot={BOT_USERNAME}")
+    # Launch image warmup in the background — non-blocking
+    asyncio.create_task(_warmup_image_cache())
+
+async def _warmup_image_cache():
+    """
+    Pre-warms the disk image cache for ALL stories on server startup.
+    Runs entirely in the background — does NOT block the API.
+    This ensures NEW users get fast image loads (no cold-start Telegram fetch).
+    """
+    try:
+        await asyncio.sleep(3)  # Let server fully start first
+        if not arya_db.db:
+            await arya_db.connect()
+
+        raw = await arya_db.get_all_stories()
+        total = len(raw)
+        cached = 0
+        fetched = 0
+        skipped = 0
+        logger.info(f"🔥 Image warmup starting — {total} stories to check")
+
+        for s in raw:
+            story_id = str(s.get("_id", ""))
+            if not story_id:
+                continue
+
+            cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+
+            # Already cached — skip
+            if os.path.exists(cache_path):
+                cached += 1
+                continue
+
+            # Known failed — skip
+            if story_id in FAILED_IMAGES:
+                skipped += 1
+                continue
+
+            # Check if story has a direct URL (no proxy needed)
+            raw_poster = s.get("poster_url") or s.get("cover") or s.get("image_url")
+            if _is_url(raw_poster):
+                skipped += 1
+                continue  # Direct URL stories don't need warmup
+
+            # Has Telegram file_id — pre-fetch it
+            file_id = s.get("image") or s.get("image_id") or s.get("poster_id") or s.get("banner_id")
+            if not file_id:
+                skipped += 1
+                continue
+
+            success = await _fetch_and_cache_image(story_id, file_id, cache_path, s.get("bot_id"))
+            if success:
+                fetched += 1
+            else:
+                FAILED_IMAGES.add(story_id)
+                skipped += 1
+
+            # Rate-limit: don't hammer Telegram API
+            await asyncio.sleep(0.3)
+
+        logger.info(
+            f"✅ Image warmup complete — "
+            f"{cached} already cached | {fetched} newly fetched | {skipped} skipped/failed"
+        )
+    except Exception as e:
+        logger.error(f"Image warmup error: {e}", exc_info=True)
+
+
+async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, bot_id=None) -> bool:
+    """
+    Fetches a Telegram image and saves it to disk cache.
+    Returns True on success, False on any failure.
+    Used by both warmup and the per-request proxy.
+    """
+    import httpx
+    try:
+        token = await _get_bot_token(bot_id)
+        if not token:
+            return False
+
+        async with httpx.AsyncClient(timeout=12) as client:
+            r = await client.get(
+                f"https://api.telegram.org/bot{token}/getFile",
+                params={"file_id": file_id}
+            )
+            data = r.json()
+            if not data.get("ok"):
+                logger.debug(f"getFile failed for {story_id}: {data.get('description')}")
+                return False
+
+            file_path = data["result"]["file_path"]
+            img = await client.get(
+                f"https://api.telegram.org/file/bot{token}/{file_path}"
+            )
+            if img.status_code != 200:
+                return False
+
+            async with aiofiles.open(cache_path, "wb") as f:
+                await f.write(img.content)
+            return True
+
+    except Exception as e:
+        logger.debug(f"Image fetch error for {story_id}: {e}")
+        return False
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -356,12 +469,15 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 @app.get("/api/image/{story_id}")
 async def get_image(story_id: str):
     """
-    Proxy image from Telegram to bypass CORS, with aggressive local disk caching.
-    Returns a neutral SVG fallback instead of 404 so the UI never shows broken images.
+    Serve story poster with 3-tier strategy:
+    1. Disk cache  → instant (0ms, immutable headers)
+    2. Negative cache → instant SVG (known-bad, skip Telegram)
+    3. Telegram fetch → save to disk, return image
+    Never returns 404 or broken image.
     """
     cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
 
-    # ── Serve from disk cache (instant) ──────────────────────────────
+    # ── Tier 1: Disk cache (instant) ──────────────────────────────────
     if os.path.exists(cache_path):
         return FileResponse(
             path=cache_path,
@@ -372,60 +488,63 @@ async def get_image(story_id: str):
             }
         )
 
+    # ── Tier 2: Negative cache (skip known-bad Telegram file_ids) ─────
+    if story_id in FAILED_IMAGES:
+        logger.debug(f"Negative cache hit: {story_id}")
+        return _svg_placeholder(story_id)
+
+    # ── Tier 3: Telegram fetch ─────────────────────────────────────────
     try:
         if arya_db.stories is None:
             await arya_db.connect()
-        from bson.objectid import ObjectId
+
         story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
         if not story:
+            FAILED_IMAGES.add(story_id)
             return _svg_placeholder(story_id)
 
-        file_id = story.get("image") or story.get("image_id") or story.get("poster_id") or story.get("banner_id")
+        # Check for direct URL first (no Telegram call needed)
+        raw_url = story.get("poster_url") or story.get("cover") or story.get("image_url")
+        if _is_url(raw_url):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(raw_url, status_code=302,
+                                    headers={"Cache-Control": "public, max-age=86400"})
+
+        file_id = (
+            story.get("image") or story.get("image_id") or
+            story.get("poster_id") or story.get("banner_id")
+        )
         if not file_id:
+            FAILED_IMAGES.add(story_id)
             return _svg_placeholder(story_id)
 
-        # If it's already a URL, redirect with long cache
         if _is_url(file_id):
             from fastapi.responses import RedirectResponse
             return RedirectResponse(file_id, status_code=302,
                                     headers={"Cache-Control": "public, max-age=86400"})
 
-        token = await _get_bot_token(story.get("bot_id"))
-        if not token:
+        # Fetch from Telegram
+        success = await _fetch_and_cache_image(story_id, file_id, cache_path, story.get("bot_id"))
+        if not success:
+            FAILED_IMAGES.add(story_id)
+            logger.warning(f"⚠ Poster permanently failed for story_id={story_id} file_id={str(file_id)[:20]}...")
             return _svg_placeholder(story_id)
 
-        import httpx
-        async with httpx.AsyncClient(timeout=12) as client:
-            r = await client.get(
-                f"https://api.telegram.org/bot{token}/getFile",
-                params={"file_id": file_id},
-            )
-            data = r.json()
-            if not data.get("ok"):
-                return _svg_placeholder(story_id)
+        # Serve freshly cached
+        return FileResponse(
+            path=cache_path,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": f'"{story_id}"',
+            }
+        )
 
-            file_path = data["result"]["file_path"]
-            img = await client.get(
-                f"https://api.telegram.org/file/bot{token}/{file_path}"
-            )
-            if img.status_code != 200:
-                return _svg_placeholder(story_id)
-
-            # Save to disk cache
-            async with aiofiles.open(cache_path, 'wb') as f:
-                await f.write(img.content)
-
-            return Response(
-                content=img.content,
-                media_type="image/jpeg",
-                headers={
-                    "Cache-Control": "public, max-age=31536000, immutable",
-                    "ETag": f'"{story_id}"',
-                },
-            )
     except Exception as e:
-        logger.warning(f"Image proxy error for {story_id}: {e}")
+        logger.warning(f"Image proxy error [{story_id}]: {e}")
         return _svg_placeholder(story_id)
+
+
 
 def _svg_placeholder(story_id: str) -> Response:
     """Return a branded SVG placeholder instead of 404."""
@@ -442,8 +561,39 @@ def _svg_placeholder(story_id: str) -> Response:
     )
 
 
+@app.get("/api/image-status")
+async def image_status():
+    """
+    Diagnostic: returns image cache health stats.
+    Shows how many images are cached, failed, and lists failed poster IDs.
+    Useful for debugging poster loading issues for specific stories.
+    """
+    cached_files  = os.listdir(CACHE_DIR) if os.path.exists(CACHE_DIR) else []
+    cached_count  = len([f for f in cached_files if f.endswith(".jpg")])
+    return {
+        "cached_on_disk": cached_count,
+        "failed_count":   len(FAILED_IMAGES),
+        "failed_ids":     list(FAILED_IMAGES)[:50],  # first 50 only
+        "cache_dir":      CACHE_DIR,
+    }
 
-# ── Checkout (Bot UPI flow) ───────────────────────────────────────
+@app.post("/api/image-retry")
+async def image_retry(payload: dict):
+    """
+    Admin: clear a specific story_id from the negative cache so it will be retried.
+    POST body: { "story_id": "..." }
+    """
+    story_id = payload.get("story_id", "")
+    if story_id in FAILED_IMAGES:
+        FAILED_IMAGES.discard(story_id)
+        # Also delete disk cache file if corrupt
+        cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+        return {"ok": True, "message": f"Cleared retry block for {story_id}"}
+    return {"ok": True, "message": "story_id was not in failed list"}
+
+
 @app.post("/api/checkout")
 async def checkout(payload: dict):
     """Create pending order → return Telegram bot deep-link for UPI payment."""
