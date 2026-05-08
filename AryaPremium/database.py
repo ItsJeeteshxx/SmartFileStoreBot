@@ -53,10 +53,16 @@ class PremiumDatabase:
     # Story Management
     # ─────────────────────────────────────────────────────────────────
     async def get_all_stories(self):
+        if self.stories is None:
+            await self.connect()
+        if self.stories is None:
+            raise Exception("Database connection failed. Check MONGO_URI.")
         cursor = self.stories.find({})
         return await cursor.to_list(length=None)
 
     async def get_story(self, story_id: str):
+        if self.stories is None:
+            await self.connect()
         return await self.stories.find_one({"story_id": story_id})
 
     async def save_story(self, data: dict):

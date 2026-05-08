@@ -157,7 +157,13 @@ async def _get_stories_from_ids(story_ids: list) -> list:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "bot": BOT_USERNAME, "razorpay": bool(RZP_KEY)}
+    return {
+        "status": "ok", 
+        "bot": BOT_USERNAME, 
+        "razorpay": bool(RZP_KEY),
+        "db_uri": bool(Config.MONGO_URI),
+        "db_connected": bool(arya_db.stories is not None)
+    }
 
 
 # ── Banners ───────────────────────────────────────────────────────
@@ -302,13 +308,17 @@ async def banner_image_proxy(banner_id: str):
 @app.get("/api/stories")
 async def get_stories():
     try:
+        if arya_db.stories is None:
+            await arya_db.connect()
         raw = await arya_db.get_all_stories()
         stories = [r for r in (_format_story(s) for s in raw) if r]
         logger.info(f"Serving {len(stories)} stories")
         return {"success": True, "data": stories}
     except Exception as e:
-        logger.error(f"stories error: {e}", exc_info=True)
-        raise HTTPException(500, str(e))
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"stories error: {e}\n{tb}")
+        raise HTTPException(500, f"{str(e)} | TRACEBACK: {tb}")
 
 
 # ── Image Proxy ───────────────────────────────────────────────────
@@ -333,6 +343,8 @@ async def get_image(story_id: str):
         )
 
     try:
+        if arya_db.stories is None:
+            await arya_db.connect()
         from bson.objectid import ObjectId
         story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
         if not story:
