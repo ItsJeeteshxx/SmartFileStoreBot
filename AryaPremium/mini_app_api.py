@@ -3,17 +3,42 @@ Arya Premium Mini App API — Production Grade
 Run: BOT_USERNAME=UseAryaBot python3 mini_app_api.py
 """
 import os, random, string, hmac, hashlib, logging, base64
-from datetime import datetime, timezone
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+
+# ── CRITICAL: Load .env into os.environ BEFORE importing Config ───
+# This must use __file__ (absolute script path), NOT the current working dir.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
+
+def _inject_env(filepath):
+    """Read a .env file and inject values into os.environ (only if key not already set)."""
+    try:
+        with open(filepath, "r") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip("'").strip('"')
+                    os.environ.setdefault(_k, _v)
+    except Exception:
+        pass
+
+# Load parent .env first (has DATABASE), then local .env (may override)
+_inject_env(os.path.join(_PARENT_DIR, ".env"))
+_inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+    load_dotenv(os.path.join(_PARENT_DIR, ".env"), override=False)
+    load_dotenv(os.path.join(_SCRIPT_DIR, ".env"), override=False)
 except ImportError:
     pass
+# ─────────────────────────────────────────────────────────────────
+
+from datetime import datetime, timezone
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from config import Config
 from database import db as arya_db
