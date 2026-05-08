@@ -1,12 +1,18 @@
+import os
 from os import environ
+
+# Use absolute paths relative to THIS file's location — not the CWD
+_THIS_DIR    = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR  = os.path.dirname(_THIS_DIR)
+
 try:
     from dotenv import load_dotenv
-    load_dotenv()
-    load_dotenv("../.env")
+    load_dotenv(os.path.join(_THIS_DIR, ".env"))
+    load_dotenv(os.path.join(_PARENT_DIR, ".env"))
 except ImportError:
     pass
 
-# Manual .env parser fallback
+# Manual .env parser fallback (in case python-dotenv is not installed or fails)
 def _parse_env(path):
     env_vars = {}
     try:
@@ -20,13 +26,16 @@ def _parse_env(path):
         pass
     return env_vars
 
-_env1 = _parse_env(".env")
-_env2 = _parse_env("../.env")
-_env3 = _parse_env("config.env")
-_env4 = _parse_env("../config.env")
+_e1 = _parse_env(os.path.join(_THIS_DIR, ".env"))
+_e2 = _parse_env(os.path.join(_PARENT_DIR, ".env"))
+_e3 = _parse_env(os.path.join(_THIS_DIR, "config.env"))
+_e4 = _parse_env(os.path.join(_PARENT_DIR, "config.env"))
 
 def _env(key, default=""):
-    return environ.get(key) or _env1.get(key) or _env2.get(key) or _env3.get(key) or _env4.get(key) or default
+    return (environ.get(key)
+            or _e1.get(key) or _e2.get(key)
+            or _e3.get(key) or _e4.get(key)
+            or default)
 
 class Config:
     API_ID        = int(_env("API_ID", "123456"))
