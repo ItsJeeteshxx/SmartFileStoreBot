@@ -356,15 +356,20 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 @app.get("/api/image/{story_id}")
 async def get_image(story_id: str):
     """
-    Proxy image from Telegram to bypass CORS, with aggressive local disk caching
-    for instant load times.
+    Proxy image from Telegram to bypass CORS, with aggressive local disk caching.
+    Returns a neutral SVG fallback instead of 404 so the UI never shows broken images.
     """
     cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+
+    # ── Serve from disk cache (instant) ──────────────────────────────
     if os.path.exists(cache_path):
         return FileResponse(
             path=cache_path,
             media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=31536000"}
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": f'"{story_id}"',
+            }
         )
 
     try:
@@ -373,54 +378,69 @@ async def get_image(story_id: str):
         from bson.objectid import ObjectId
         story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
         if not story:
-            raise HTTPException(404, "Story not found")
+            return _svg_placeholder(story_id)
 
         file_id = story.get("image") or story.get("image_id") or story.get("poster_id") or story.get("banner_id")
         if not file_id:
-            raise HTTPException(404, "No image found for story")
+            return _svg_placeholder(story_id)
 
-        # If it's already a URL, redirect
+        # If it's already a URL, redirect with long cache
         if _is_url(file_id):
             from fastapi.responses import RedirectResponse
-            return RedirectResponse(file_id)
+            return RedirectResponse(file_id, status_code=302,
+                                    headers={"Cache-Control": "public, max-age=86400"})
 
         token = await _get_bot_token(story.get("bot_id"))
         if not token:
-            raise HTTPException(500, "No bot token to fetch image")
+            return _svg_placeholder(story_id)
 
         import httpx
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=12) as client:
             r = await client.get(
                 f"https://api.telegram.org/bot{token}/getFile",
                 params={"file_id": file_id},
             )
             data = r.json()
             if not data.get("ok"):
-                err = data.get("description", "getFile failed")
-                raise HTTPException(404, f"Telegram error: {err}")
+                return _svg_placeholder(story_id)
 
             file_path = data["result"]["file_path"]
-
             img = await client.get(
                 f"https://api.telegram.org/file/bot{token}/{file_path}"
             )
             if img.status_code != 200:
-                raise HTTPException(502, "Image download failed")
+                return _svg_placeholder(story_id)
 
-            # Save to disk cache asynchronously
+            # Save to disk cache
             async with aiofiles.open(cache_path, 'wb') as f:
                 await f.write(img.content)
 
             return Response(
                 content=img.content,
                 media_type="image/jpeg",
-                headers={"Cache-Control": "public, max-age=31536000"},
+                headers={
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "ETag": f'"{story_id}"',
+                },
             )
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Image proxy error [{story_id}]: {e}", exc_info=True)
-        raise HTTPException(500, "Image fetch failed")
+        logger.warning(f"Image proxy error for {story_id}: {e}")
+        return _svg_placeholder(story_id)
+
+def _svg_placeholder(story_id: str) -> Response:
+    """Return a branded SVG placeholder instead of 404."""
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300">
+  <rect width="300" height="300" fill="#1a1a2e"/>
+  <rect x="100" y="100" width="100" height="100" rx="20" fill="#c9a22733"/>
+  <text x="150" y="145" text-anchor="middle" fill="#c9a227" font-size="28" font-family="sans-serif">A</text>
+  <text x="150" y="175" text-anchor="middle" fill="#666" font-size="10" font-family="sans-serif">AryaPremium</text>
+</svg>'''
+    return Response(
+        content=svg.encode(),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
 
 
 # ── Checkout (Bot UPI flow) ───────────────────────────────────────
