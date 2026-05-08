@@ -105,9 +105,28 @@ async def _warmup_image_cache():
             if not story_id:
                 return "skip"
 
-            cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
-            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
-                return "cached"  # Already have a valid cached file
+            cache_path = os.path.join(CACHE_DIR, f"{story_id}.webp")
+            jpg_path   = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+
+            # Valid WebP already exists — skip
+            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 500:
+                return "cached"
+
+            # Old JPEG exists — convert it to WebP right now (no Telegram fetch needed)
+            if os.path.exists(jpg_path) and os.path.getsize(jpg_path) > 1000:
+                if HAS_PILLOW:
+                    try:
+                        with open(jpg_path, "rb") as f:
+                            jpg_bytes = f.read()
+                        webp_bytes = _compress_to_webp(jpg_bytes)
+                        async with aiofiles.open(cache_path, "wb") as f:
+                            await f.write(webp_bytes)
+                        os.remove(jpg_path)  # Remove old JPEG
+                        return "converted"
+                    except Exception:
+                        pass  # Fall through to Telegram fetch
+                else:
+                    return "cached"  # No Pillow — serve JPEG as-is
 
             if story_id in FAILED_IMAGES:
                 return "failed"
@@ -133,9 +152,9 @@ async def _warmup_image_cache():
                     return "failed"
 
         results  = await asyncio.gather(*[_process_one(s) for s in raw])
-        counts   = {k: results.count(k) for k in ("cached", "fetched", "skip", "failed")}
+        counts   = {k: results.count(k) for k in ("cached", "fetched", "converted", "skip", "failed")}
         logger.info(
-            f"✅ Warmup done — {counts['cached']} cached | "
+            f"✅ Warmup done — {counts['cached']} cached | {counts.get('converted',0)} jpg→webp | "
             f"{counts['fetched']} fetched | {counts['skip']} skipped | "
             f"{counts['failed']} failed"
         )
@@ -143,35 +162,33 @@ async def _warmup_image_cache():
         logger.error(f"Warmup error: {e}", exc_info=True)
 
 
-def _compress_image_bytes(raw_bytes: bytes, max_width: int = 600, quality: int = 78) -> bytes:
+def _compress_to_webp(raw_bytes: bytes, max_width: int = 320, quality: int = 82) -> bytes:
     """
-    Compress image using Pillow:
-    - Resize to max_width if larger (maintains aspect ratio)
-    - Convert to RGB (strip alpha, handle CMYK)
-    - JPEG quality=78 — good quality, ~5-10x smaller than raw
-    Returns original bytes if Pillow unavailable or error.
+    Convert to WebP — 40-60% smaller than JPEG at same visual quality.
+    max_width=320: enough for 2x retina on 160px card display size.
+    quality=82: excellent quality, ~10-20KB per poster.
+    Falls back to original bytes if Pillow unavailable.
     """
     if not HAS_PILLOW:
         return raw_bytes
     try:
         img = PILImage.open(_pil_io.BytesIO(raw_bytes))
-        # Convert to RGB (needed for JPEG — no alpha channel)
+        # RGBA → RGB (WebP supports alpha but we don't need it)
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
-        # Resize if wider than max_width
+        # Resize: 320px max width — cards are 160px, 320 = perfect 2x retina
         w, h = img.size
         if w > max_width:
             new_h = int(h * max_width / w)
             img = img.resize((max_width, new_h), PILImage.LANCZOS)
         buf = _pil_io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
-        compressed = buf.getvalue()
-        # Only use compressed if it's actually smaller
-        if len(compressed) < len(raw_bytes):
-            return compressed
-        return raw_bytes
-    except Exception:
-        return raw_bytes
+        img.save(buf, format="WEBP", quality=quality, method=4)  # method=4: good speed/compression balance
+        webp_bytes = buf.getvalue()
+        logger.debug(f"WebP: {len(raw_bytes)//1024}KB raw → {len(webp_bytes)//1024}KB webp")
+        return webp_bytes
+    except Exception as e:
+        logger.debug(f"WebP convert error: {e}")
+        return raw_bytes  # Graceful fallback
 
 
 async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, bot_id=None) -> bool:
@@ -202,16 +219,15 @@ async def _fetch_and_cache_image(story_id: str, file_id: str, cache_path: str, b
             if img_r.status_code != 200:
                 return False
 
-            # Compress before storing
+            # Convert to WebP before storing — 40-60% smaller than JPEG
             raw_bytes = img_r.content
-            compressed = _compress_image_bytes(raw_bytes, max_width=600, quality=78)
+            webp_bytes = _compress_to_webp(raw_bytes, max_width=320, quality=82)
 
+            # Save as .webp
             async with aiofiles.open(cache_path, "wb") as f:
-                await f.write(compressed)
+                await f.write(webp_bytes)
 
-            saving = len(raw_bytes) - len(compressed)
-            if saving > 0:
-                logger.debug(f"Cached {story_id}: {len(raw_bytes)//1024}KB → {len(compressed)//1024}KB (saved {saving//1024}KB)")
+            logger.info(f"✅ Cached {story_id}: {len(raw_bytes)//1024}KB → {len(webp_bytes)//1024}KB webp")
             return True
 
     except Exception as e:
@@ -715,16 +731,29 @@ async def get_image(story_id: str):
     3. Telegram fetch → save to disk, return image
     Never returns 404 or broken image.
     """
-    cache_path = os.path.join(CACHE_DIR, f"{story_id}.jpg")
+    webp_path = os.path.join(CACHE_DIR, f"{story_id}.webp")
+    jpg_path  = os.path.join(CACHE_DIR, f"{story_id}.jpg")  # Legacy fallback
 
-    # ── Tier 1: Disk cache (instant) ──────────────────────────────────
-    if os.path.exists(cache_path):
+    # ── Tier 1a: WebP cache (optimal — 40-60% smaller) ────────────────
+    if os.path.exists(webp_path) and os.path.getsize(webp_path) > 500:
         return FileResponse(
-            path=cache_path,
-            media_type="image/jpeg",
+            path=webp_path,
+            media_type="image/webp",
             headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
-                "ETag": f'"{story_id}"',
+                "ETag": f'"{story_id}-webp"',
+                "Vary": "Accept",
+            }
+        )
+
+    # ── Tier 1b: Legacy JPEG cache (served until warmup converts it) ───
+    if os.path.exists(jpg_path) and os.path.getsize(jpg_path) > 1000:
+        return FileResponse(
+            path=jpg_path,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "public, max-age=86400",  # Shorter TTL — will be replaced by WebP
+                "ETag": f'"{story_id}-jpg"',
             }
         )
 
@@ -763,22 +792,23 @@ async def get_image(story_id: str):
             return RedirectResponse(file_id, status_code=302,
                                     headers={"Cache-Control": "public, max-age=86400"})
 
-        # Fetch from Telegram
-        success = await _fetch_and_cache_image(story_id, file_id, cache_path, story.get("bot_id"))
+        # Fetch from Telegram → save as WebP
+        success = await _fetch_and_cache_image(story_id, file_id, webp_path, story.get("bot_id"))
         if not success:
             FAILED_IMAGES.add(story_id)
-            logger.warning(f"⚠ Poster permanently failed for story_id={story_id} file_id={str(file_id)[:20]}...")
+            logger.warning(f"⚠ Poster failed for {story_id}")
             return _svg_placeholder(story_id)
 
-        # Serve freshly cached
+        # Serve freshly cached WebP
         return FileResponse(
-            path=cache_path,
-            media_type="image/jpeg",
+            path=webp_path,
+            media_type="image/webp",
             headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
-                "ETag": f'"{story_id}"',
+                "ETag": f'"{story_id}-webp"',
             }
         )
+
 
     except Exception as e:
         logger.warning(f"Image proxy error [{story_id}]: {e}")
