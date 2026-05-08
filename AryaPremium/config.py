@@ -9,7 +9,7 @@ except ImportError:
 class Config:
     API_ID        = int(environ.get("API_ID", 123456))
     API_HASH      = environ.get("API_HASH", "")
-    MONGO_URI     = environ.get("DATABASE", "")
+    MONGO_URI     = environ.get("DATABASE_URI") or environ.get("DATABASE", "")
     DATABASE_NAME = environ.get("DATABASE_NAME", "forward-bot")
     OWNER_IDS     = [int(i.strip()) for i in environ.get("BOT_OWNER_ID", "0").split() if i.strip().isdigit()]
     # Backward-compatible alias used by some callbacks.
