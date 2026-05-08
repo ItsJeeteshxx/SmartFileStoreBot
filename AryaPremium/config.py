@@ -20,11 +20,13 @@ def _parse_env(path):
         pass
     return env_vars
 
-_local_env = _parse_env(".env")
-_parent_env = _parse_env("../.env")
+_env1 = _parse_env(".env")
+_env2 = _parse_env("../.env")
+_env3 = _parse_env("config.env")
+_env4 = _parse_env("../config.env")
 
 def _env(key, default=""):
-    return environ.get(key) or _local_env.get(key) or _parent_env.get(key) or default
+    return environ.get(key) or _env1.get(key) or _env2.get(key) or _env3.get(key) or _env4.get(key) or default
 
 class Config:
     API_ID        = int(_env("API_ID", "123456"))
