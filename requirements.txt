@@ -1,9 +1,8 @@
-pyrofork
+Kurigram
 motor
 TgCrypto
 Dnspython
 cryptg
-tgcrypto
 psutil
 opencv-python-headless
 python-decouple
