@@ -796,11 +796,183 @@ async def market_callback(client, query):
                 "<b>╚══════════════════╝</b>"
             )
             kb = [
-                [InlineKeyboardButton("📄 Export User Data", callback_data=f"mk#usr_export_{uid}")],
-                [InlineKeyboardButton("🧾 View Payment Entries", callback_data=f"mk#usr_pay_{uid}")],
+                [InlineKeyboardButton("📄 Export", callback_data=f"mk#usr_export_{uid}"),
+                 InlineKeyboardButton("🧾 Payments", callback_data=f"mk#usr_pay_{uid}")],
+                [InlineKeyboardButton("📩 Message User", callback_data=f"mk#usr_msg_{uid}")],
+                [InlineKeyboardButton("🗑 Remove Story Access", callback_data=f"mk#usr_rmstory_{uid}")],
+                [InlineKeyboardButton("💣 Complete Wipeout", callback_data=f"mk#usr_confirm_wipe_{uid}"),
+                 InlineKeyboardButton("🚫 Ban User", callback_data=f"mk#usr_confirm_ban_{uid}")],
                 [InlineKeyboardButton("« Back", callback_data="mk#users")],
             ]
             await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+
+        # ── Remove Story Access (select which story) ──────────────────────
+        elif cmd.startswith("usr_rmstory_") and not cmd.startswith("usr_rmstory_confirm_"):
+            uid = int(cmd.split("_")[2])
+            user_doc = await db.db.users.find_one({"id": uid}) or {}
+            purchases = [str(p) for p in user_doc.get("purchases", [])]
+            # Also include mini app orders
+            try:
+                async for order in db.db.orders.find({"user_id": uid, "status": "paid"}, {"story_ids": 1}):
+                    for s in order.get("story_ids", []):
+                        if str(s) not in purchases:
+                            purchases.append(str(s))
+            except Exception:
+                pass
+            if not purchases:
+                return await _safe_answer(query, "No purchases to remove.", show_alert=True)
+            kb = []
+            from bson.objectid import ObjectId
+            for sid in purchases:
+                try:
+                    st = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                    sname = st.get("story_name_en", sid)[:28] if st else sid[:28]
+                except Exception:
+                    sname = sid[:28]
+                kb.append([InlineKeyboardButton(f"❌ {sname}", callback_data=f"mk#usr_rmstory_confirm_{uid}_{sid}")])
+            kb.append([InlineKeyboardButton("« Back", callback_data=f"mk#usr_view_{uid}")])
+            await _safe_answer(query)
+            await query.message.edit_text(
+                f"<b>🗑 Remove Story Access</b>\n\n"
+                f"<b>User:</b> <code>{uid}</code>\n\n"
+                f"Select the story to remove access from (user data remains intact):",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("usr_rmstory_confirm_"):
+            # format: usr_rmstory_confirm_{uid}_{story_id}
+            parts = cmd.split("_")
+            uid = int(parts[3])
+            story_id = parts[4]
+            from bson.objectid import ObjectId
+            # Remove from user.purchases[]
+            await db.db.users.update_one(
+                {"id": uid},
+                {"$pull": {"purchases": story_id}}
+            )
+            # Also remove from orders (mark story access revoked — keep order record)
+            await db.db.orders.update_many(
+                {"user_id": uid, "story_ids": story_id},
+                {"$pull": {"story_ids": story_id}}
+            )
+            # Remove from checkouts for this story
+            try:
+                await db.db.premium_checkout.update_many(
+                    {"user_id": uid, "story_id": ObjectId(story_id)},
+                    {"$set": {"status": "access_revoked"}}
+                )
+            except Exception:
+                pass
+            await _safe_answer(query, "✅ Story access removed!", show_alert=True)
+            query.data = f"mk#usr_view_{uid}"
+            return await market_callback(client, query)
+
+        # ── Complete Wipeout Confirm ──────────────────────────────────────
+        elif cmd.startswith("usr_confirm_wipe_"):
+            uid = int(cmd.split("_")[3])
+            kb = [
+                [InlineKeyboardButton("💣 YES — Complete Wipeout", callback_data=f"mk#usr_wipe_{uid}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"mk#usr_view_{uid}")]
+            ]
+            await _safe_answer(query)
+            await query.message.edit_text(
+                f"<b>⚠️ COMPLETE WIPEOUT — User <code>{uid}</code></b>\n\n"
+                "<blockquote expandable>"
+                "This will permanently delete:\n"
+                "• All purchases from user record\n"
+                "• All orders from orders collection\n"
+                "• All checkout/payment records\n"
+                "• Entire user document from DB\n\n"
+                "<b>User is NOT banned.</b> They can still use the bot but have no history.\n"
+                "This action CANNOT be undone."
+                "</blockquote>",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("usr_wipe_"):
+            uid = int(cmd.split("_")[2])
+            await _safe_answer(query)
+            # 1. Delete user doc
+            await db.db.users.delete_one({"id": uid})
+            # 2. Delete all orders
+            await db.db.orders.delete_many({"user_id": uid})
+            # 3. Delete all checkouts
+            await db.db.premium_checkout.delete_many({"user_id": uid})
+            # 4. Delete all feedback
+            try:
+                await db.db.premium_feedback.delete_many({"user_id": uid})
+            except Exception:
+                pass
+            # 5. Delete all requests
+            try:
+                await db.db.premium_requests.delete_many({"user_id": uid})
+            except Exception:
+                pass
+            await query.message.edit_text(
+                f"<b>💣 Wipeout Complete</b>\n\n"
+                f"All data for user <code>{uid}</code> has been permanently deleted.\n"
+                f"User is NOT banned — they can still access the bot from scratch.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Buyers", callback_data="mk#users")]])
+            )
+
+        # ── Ban User Confirm ──────────────────────────────────────────────
+        elif cmd.startswith("usr_confirm_ban_"):
+            uid = int(cmd.split("_")[3])
+            kb = [
+                [InlineKeyboardButton("🚫 YES — Wipeout + Ban", callback_data=f"mk#usr_ban_{uid}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"mk#usr_view_{uid}")]
+            ]
+            await _safe_answer(query)
+            await query.message.edit_text(
+                f"<b>🚫 BAN USER — <code>{uid}</code></b>\n\n"
+                "<blockquote expandable>"
+                "This will:\n"
+                "• Delete all user data (same as Wipeout)\n"
+                "• Add user to ban list in DB\n"
+                "• Bot will block the user from accessing anything\n\n"
+                "<b>This action CANNOT be undone.</b>"
+                "</blockquote>",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("usr_ban_"):
+            uid = int(cmd.split("_")[2])
+            await _safe_answer(query)
+            # 1. Wipeout all data (same as wipe)
+            await db.db.users.delete_one({"id": uid})
+            await db.db.orders.delete_many({"user_id": uid})
+            await db.db.premium_checkout.delete_many({"user_id": uid})
+            try:
+                await db.db.premium_feedback.delete_many({"user_id": uid})
+            except Exception:
+                pass
+            try:
+                await db.db.premium_requests.delete_many({"user_id": uid})
+            except Exception:
+                pass
+            # 2. Add to ban list in DB
+            await db.db.users.update_one(
+                {"id": uid},
+                {"$set": {"id": uid, "banned": True, "ban_reason": "Admin ban via dashboard"}},
+                upsert=True
+            )
+            await query.message.edit_text(
+                f"<b>🚫 User Banned + Wiped</b>\n\n"
+                f"User <code>{uid}</code> has been banned and all data deleted.\n"
+                f"They will be blocked if they try to use the bot.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Buyers", callback_data="mk#users")]])
+            )
+
+        # ── Message Buyer (single or all) ─────────────────────────────────
+        elif cmd.startswith("usr_msg_"):
+            uid_str = cmd.split("_")[2]
+            await query.message.delete()
+            await _safe_answer(query)
+            if uid_str == "all":
+                asyncio.create_task(_msg_all_buyers_flow(client, user_id))
+            else:
+                asyncio.create_task(_msg_single_buyer_flow(client, user_id, int(uid_str)))
+
 
         elif cmd.startswith("usr_pay_"):
             uid = int(cmd.split("_")[2])
