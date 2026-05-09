@@ -998,9 +998,11 @@ async def verify_payment(payload: dict):
     total   = sum(float(s.get("price") or 0) for s in stories)
     oid     = _make_order_id(tg_id)
 
+    tg_id_int = int(tg_id) if tg_id else 0
+
     await arya_db.db.orders.insert_one({
         "order_id":            oid,
-        "user_id":             tg_id,
+        "user_id":             tg_id_int,  # Always stored as int for consistent querying
         "username":            username,
         "story_ids":           story_ids,
         "story_names":         [s.get("story_name_en", "") for s in stories],
@@ -1012,11 +1014,11 @@ async def verify_payment(payload: dict):
         "created_at":          datetime.now(timezone.utc),
     })
 
-    if tg_id:
+    if tg_id_int:
         for sid in story_ids:
-            await arya_db.add_purchase(int(tg_id), sid)
+            await arya_db.add_purchase(tg_id_int, sid)  # Adds to user's purchases[] field — syncs bot + miniapp
 
-    logger.info(f"Payment verified: {oid} | {rzp_payment_id} | user={tg_id} | ₹{total}")
+    logger.info(f"Payment verified: {oid} | {rzp_payment_id} | user={tg_id_int} | ₹{total}")
 
     bot = os.environ.get("BOT_USERNAME", BOT_USERNAME)
     return {

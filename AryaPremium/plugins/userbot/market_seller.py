@@ -1309,26 +1309,46 @@ async def _process_my_stories(client, message):
     user_id = message.from_user.id
     user = await db.get_user(user_id)
     lang = user.get('lang', 'en')
-    
-    # Send a fresh "My Stories" menu
-    purchases = user.get('purchases', [])
     from bson.objectid import ObjectId
 
+    # ── 1. Bot purchases (via user.purchases[] field) ─────────────
+    bot_purchase_ids = [str(p) for p in user.get('purchases', [])]
+
+    # ── 2. Mini App Razorpay purchases (via orders collection) ────
+    miniapp_purchase_ids = []
+    try:
+        async for order in db.db.orders.find(
+            {"user_id": int(user_id), "status": "paid"},
+            {"story_ids": 1}
+        ):
+            miniapp_purchase_ids.extend([str(s) for s in order.get("story_ids", [])])
+    except Exception:
+        pass
+
+    # ── 3. Merge unique IDs, bot purchases first ──────────────────
+    seen = set()
+    merged_ids = []
+    source_map = {}  # story_id → "bot" | "app" | "both"
+    for pid in bot_purchase_ids:
+        if pid not in seen:
+            merged_ids.append(pid)
+            seen.add(pid)
+            source_map[pid] = "bot"
+    for pid in miniapp_purchase_ids:
+        if pid not in seen:
+            merged_ids.append(pid)
+            seen.add(pid)
+            source_map[pid] = "app"
+        elif pid in source_map:
+            source_map[pid] = "both"
+
+    total = len(merged_ids)
     PAGE_SIZE = 5
     page = 0
-    # Deduplicate for UI
-    unique_p = []
-    seen = set()
-    for p in purchases:
-        p_id = str(p)
-        if p_id not in seen:
-            unique_p.append(p)
-            seen.add(p_id)
-    purchases = unique_p
-    total = len(purchases)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    page_purchases = purchases[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+    page_purchases = merged_ids[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
 
+    # ── 4. Build keyboard ─────────────────────────────────────────
     kb = []
     for pid in page_purchases:
         try:
@@ -1336,37 +1356,38 @@ async def _process_my_stories(client, message):
             if st:
                 en_name = st.get('story_name_en', 'Story')
                 hi_name = st.get('story_name_hi', en_name)
-                # Display only the relevant language name
-                s_name = f"📖 {hi_name if lang == 'hi' else en_name}"
-                kb.append([InlineKeyboardButton(s_name, callback_data=f"mb#purchased_view_{pid}")])
-        except Exception: pass
-
+                s_name = hi_name if lang == 'hi' else en_name
+                src = source_map.get(pid, "bot")
+                badge = "🤖" if src == "bot" else ("📱" if src == "app" else "🔗")
+                kb.append([InlineKeyboardButton(
+                    f"{badge} {s_name}",
+                    callback_data=f"mb#purchased_view_{pid}"
+                )])
         except Exception:
             pass
 
     if lang == 'hi':
-        title = "⟦ मेरी स्टोरीज ⟧"
+        title     = "⟦ मेरी स्टोरीज ⟧"
         total_txt = "कुल स्टोरी ⟶"
-        desc = "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं। किसी भी स्टोरी को देखने या दोबारा एक्सेस करने के लिए उसे चुनें।"
-        next_btn = "आगे ❭"
-        prev_btn = "❬ पीछे"
-        back_btn = "« वापस मेनू"
-        empty_txt = "कोई खरीद नहीं मिली। स्टोर देखें।"
+        desc      = "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं।\n🤖 = Bot से खरीदी | 📱 = Mini App से खरीदी"
+        next_btn  = "आगे ❭"
+        back_btn  = "« वापस मेनू"
+        empty_txt = "कोई खरीद नहीं मिली।"
         market_btn = "स्टोर खोलें"
     else:
-        title = "⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧"
+        title     = "⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧"
         total_txt = "ᴛᴏᴛᴀʟ ⟶"
-        desc = "𝖠𝗅𝗅 𝗌𝗍𝗈𝗋𝗂𝖾𝗌 𝗅𝗂𝗌𝗍𝖾𝖽 𝖻𝖾𝗅𝗈𝗐 𝖺𝗋𝖾 𝖺𝗅𝗋𝖾𝖺𝖽𝗒 𝗈𝗇 𝗒𝗈𝗎𝗋 𝖺𝖼𝖼𝗈𝗎𝗇𝗍. 𝖲𝖾𝗅𝖾𝖼𝗍 𝖺𝗇𝗒 𝗌𝗍𝗈𝗋𝗒 𝗍𝗈 𝗏𝗂𝖾𝗐 𝖽𝖾𝗍𝖺𝗂𝗅𝗌."
-        next_btn = "𝗡𝗲𝘅𝘁 ❭"
-        prev_btn = "❬ 𝗣𝗿𝗲𝘃"
-        back_btn = "Back to Menu"
+        desc      = "All your purchased stories are listed below.\n🤖 = Bought via Bot  |  📱 = Bought via Mini App"
+        next_btn  = "𝗡𝗲𝘅𝘁 ❭"
+        back_btn  = "Back to Menu"
         empty_txt = "ɴᴏ ᴘᴜʀᴄʜᴀꜱᴇꜱ ꜰᴏᴜɴᴅ."
         market_btn = "OPEN MARKETPLACE"
 
     if total_pages > 1:
-        nav = []
-        nav.append(InlineKeyboardButton(f"ᴘᴀɢᴇ 1/{total_pages}", callback_data="mb#noop"))
-        nav.append(InlineKeyboardButton(next_btn, callback_data="mb#my_buys_page_1"))
+        nav = [
+            InlineKeyboardButton(f"ᴘᴀɢᴇ 1/{total_pages}", callback_data="mb#noop"),
+            InlineKeyboardButton(next_btn, callback_data="mb#my_buys_page_1"),
+        ]
         kb.append(nav)
 
     kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
@@ -1386,6 +1407,7 @@ async def _process_my_stories(client, message):
         kb.insert(0, [InlineKeyboardButton(market_btn, callback_data="mb#main_marketplace")])
 
     await client.send_message(user_id, txt_b, reply_markup=InlineKeyboardMarkup(kb))
+
 
 async def _process_text(client, message):
     user_id = message.from_user.id
