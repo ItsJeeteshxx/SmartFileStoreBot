@@ -357,6 +357,33 @@ async def submit_support(
         raise HTTPException(status_code=500, detail="Failed to submit support request")
 
 
+# ─────────────────────────────────────────────────────────────────
+# GET /my-requests
+# ─────────────────────────────────────────────────────────────────
+@app.get("/my-requests")
+async def get_my_requests(telegram_id: str):
+    """Fetches user's requests and support tickets."""
+    arya_db = app.state.db
+    
+    try:
+        user_id = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        cursor = arya_db.db.premium_feedback.find({"user_id": user_id}).sort("created_at", -1)
+        
+        requests = []
+        async for doc in cursor:
+            requests.append({
+                "id": str(doc.get("_id", "")),
+                "type": doc.get("type", "text"),
+                "text": doc.get("text", ""),
+                "status": doc.get("status", "open"),
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+            })
+            
+        return {"success": True, "data": requests}
+    except Exception as e:
+        logger.error(f"Failed to fetch requests: {e}")
+        return {"success": False, "data": []}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("mini_app_api:app", host="0.0.0.0", port=8000, reload=True)
