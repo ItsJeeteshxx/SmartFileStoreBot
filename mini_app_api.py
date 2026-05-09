@@ -3,7 +3,7 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
@@ -382,6 +382,44 @@ async def get_my_requests(telegram_id: str):
         return {"success": True, "data": requests}
     except Exception as e:
         logger.error(f"Failed to fetch requests: {e}")
+        return {"success": False, "data": []}
+
+# ─────────────────────────────────────────────────────────────────
+# GET /my-purchases
+# ─────────────────────────────────────────────────────────────────
+@app.get("/my-purchases")
+async def get_my_purchases(telegram_id: str):
+    """Fetches user's purchased stories."""
+    arya_db = app.state.db
+    try:
+        from bson.objectid import ObjectId
+        
+        # Check both str and int versions of telegram_id
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        
+        # In AryaPremium, purchases might be stored in the `purchases` collection or in `premium_users`.
+        # Assuming `purchases` based on `check-payment-link` logic:
+        cursor = arya_db.db.purchases.find({"user_id": {"$in": [telegram_id, user_id_int]}})
+        
+        purchased_items = []
+        async for purchase in cursor:
+            story_id = purchase.get("story_id")
+            if not story_id: continue
+            
+            # Fetch story details to return full story info
+            try:
+                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+                if story:
+                    formatted = _format_story(story)
+                    if formatted:
+                        formatted["story_id"] = formatted["id"]
+                        purchased_items.append(formatted)
+            except Exception:
+                pass
+                
+        return {"success": True, "data": purchased_items}
+    except Exception as e:
+        logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}
 
 if __name__ == "__main__":
