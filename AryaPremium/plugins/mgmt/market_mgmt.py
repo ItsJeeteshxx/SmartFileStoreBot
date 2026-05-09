@@ -2189,7 +2189,7 @@ async def _add_story_flow(client, user_id):
         sj.setdefault("forwarding_enabled", True)
         result = await db.db.premium_stories.insert_one(sj)
         story_id = str(result.inserted_id)
-        deep_link = f"https://t.me/{sj['bot_username']}?start=buy_{story_id}"
+        deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
         
         await client.send_message(user_id, f"✅ **Story successfully added to Storefront!**\n\nThe Connected bot `@{(sj['bot_username'])}` is now actively selling `{sj['story_name_en']}` for ₹{sj['price']}!\n\n🔗 **Direct Purchase Link:**\n`{deep_link}`", reply_markup=ReplyKeyboardRemove())
 
@@ -2327,7 +2327,7 @@ async def _edit_story_flow(client, user_id, s_id, action):
                                 f"<i>🛒 Click the button below to buy now at the updated price!</i>"
                             )
                             
-                            buy_link = f"https://t.me/{story.get('bot_username')}?start=buy_{s_id}"
+                            buy_link = f"https://t.me/{story.get('bot_username')}/apminibyarya?startapp=story_{s_id}"
                             kb_buy = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ VIEW & BUY STORY", url=buy_link)]])
 
                             sent = 0

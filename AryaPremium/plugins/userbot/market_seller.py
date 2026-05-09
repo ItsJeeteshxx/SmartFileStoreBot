@@ -1123,8 +1123,15 @@ async def _process_start(client, message):
                 t_lang = T[lang]
                 msg = t_lang["already_owned"]
                 await message.reply_text(msg)
+                from plugins.userbot.market_seller import dispatch_delivery_choice
                 return await dispatch_delivery_choice(client, user_id, story)
-            return await _show_story_profile(client, user_id, story, lang)
+            
+            # Redirect to Mini App
+            bot_username = client.me.username
+            wa_url = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{story_id}"
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ Open in Mini App / मिनी ऐप खोलें", url=wa_url)]])
+            txt = "<b>🛍️ View Story / स्टोरी देखें</b>\n\nTap the button below to open this story securely in our new Premium Mini App.\nइस कहानी को सुरक्षित रूप से हमारे प्रीमियम मिनी ऐप में देखने और खरीदने के लिए नीचे दिए गए बटन पर टैप करें।"
+            return await message.reply_text(txt, reply_markup=kb)
 
     # ── Normal Start ──
     if 'lang' not in user:
