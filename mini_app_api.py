@@ -268,16 +268,19 @@ async def check_payment_link(id: str, payload: dict):
 # POST /support
 # ─────────────────────────────────────────────────────────────────
 @app.post("/support")
-async def submit_support(payload: dict):
-    """Submits a support ticket, feedback, or suggestion from the Mini App."""
-    telegram_id = payload.get("telegram_id")
-    support_type = payload.get("type", "support") # support, chat, suggestion
-    message = payload.get("message", "").strip()
-    username = payload.get("username", "")
-    first_name = payload.get("first_name", "Mini App User")
-
-    if not telegram_id or not message:
-        raise HTTPException(status_code=400, detail="Missing required fields")
+async def submit_support(
+    telegram_id: str = Form(...),
+    type: str = Form("support"),
+    message: str = Form(""),
+    username: str = Form(""),
+    first_name: str = Form("Mini App User"),
+    file: UploadFile = File(None)
+):
+    """Submits a support ticket, feedback, or suggestion from the Mini App, with optional file attachment."""
+    message = message.strip()
+    
+    if not telegram_id or (not message and not file):
+        raise HTTPException(status_code=400, detail="Message or file is required")
 
     arya_db = app.state.db
     
@@ -285,8 +288,8 @@ async def submit_support(payload: dict):
     fb_doc = {
         "user_id": int(telegram_id) if str(telegram_id).isdigit() else telegram_id,
         "bot_id": "mini_app",
-        "type": "text",
-        "text": f"[{support_type.upper()}] {message}",
+        "type": "photo" if file and file.content_type and file.content_type.startswith("image/") else ("video" if file and file.content_type and file.content_type.startswith("video/") else ("document" if file else "text")),
+        "text": f"[{type.upper()}] {message}",
         "status": "open",
         "created_at": datetime.now(timezone.utc),
         "user_name": first_name,
@@ -306,7 +309,7 @@ async def submit_support(payload: dict):
             f"<b>👤 User:</b> {first_name}\n"
             f"<b>🔗 Username:</b> @{username}\n"
             f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
-            f"<b>💬 Type:</b> {support_type.title()}\n"
+            f"<b>💬 Type:</b> {type.title()}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Message:</b>\n"
             f"<blockquote>{message[:800]}</blockquote>"
@@ -317,11 +320,34 @@ async def submit_support(payload: dict):
             async with aiohttp.ClientSession() as session:
                 for oid in Config.OWNER_IDS:
                     try:
-                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                            "chat_id": oid,
-                            "text": admin_txt,
-                            "parse_mode": "HTML"
-                        }, timeout=3)
+                        if file:
+                            file_bytes = await file.read()
+                            form = aiohttp.FormData()
+                            form.add_field('chat_id', str(oid))
+                            form.add_field('caption', admin_txt)
+                            form.add_field('parse_mode', 'HTML')
+                            
+                            method = "sendDocument"
+                            field_name = "document"
+                            if file.content_type:
+                                if file.content_type.startswith("image/"):
+                                    method = "sendPhoto"
+                                    field_name = "photo"
+                                elif file.content_type.startswith("video/"):
+                                    method = "sendVideo"
+                                    field_name = "video"
+                                elif file.content_type.startswith("audio/"):
+                                    method = "sendAudio"
+                                    field_name = "audio"
+                                    
+                            form.add_field(field_name, file_bytes, filename=file.filename or "file")
+                            await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
+                        else:
+                            await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": oid,
+                                "text": admin_txt,
+                                "parse_mode": "HTML"
+                            }, timeout=3)
                     except Exception as e:
                         logger.warning(f"Failed to notify admin {oid}: {e}")
                         
