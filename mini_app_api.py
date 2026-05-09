@@ -245,11 +245,7 @@ async def check_payment_link(id: str, payload: dict):
                 
                 # Logic to grant stories to user in DB goes here
                 for sid in order.get("story_ids", []):
-                    await arya_db.db.purchases.update_one(
-                        {"user_id": telegram_id, "story_id": sid},
-                        {"$set": {"purchased_at": datetime.now(timezone.utc)}},
-                        upsert=True
-                    )
+                    await arya_db.add_purchase(int(telegram_id) if str(telegram_id).isdigit() else telegram_id, sid)
             
             bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
             return {
@@ -394,19 +390,17 @@ async def get_my_purchases(telegram_id: str):
     try:
         from bson.objectid import ObjectId
         
-        # Check both str and int versions of telegram_id
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         
-        # In AryaPremium, purchases might be stored in the `purchases` collection or in `premium_users`.
-        # Assuming `purchases` based on `check-payment-link` logic:
-        cursor = arya_db.db.purchases.find({"user_id": {"$in": [telegram_id, user_id_int]}})
+        # In AryaPremium, purchases are in user.purchases
+        user = await arya_db.users.find_one({"id": user_id_int})
+        if not user:
+            return {"success": True, "data": []}
+            
+        purchased_story_ids = user.get("purchases", [])
         
         purchased_items = []
-        async for purchase in cursor:
-            story_id = purchase.get("story_id")
-            if not story_id: continue
-            
-            # Fetch story details to return full story info
+        for story_id in purchased_story_ids:
             try:
                 story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
                 if story:
