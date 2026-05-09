@@ -2273,8 +2273,9 @@ async def _edit_story_flow(client, user_id, s_id, action):
     )
     msg = await native_ask(client, user_id, prompt_txt, reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
     from pyrogram.types import CallbackQuery as _CQ
-    _txt = getattr(msg, 'text', '') or ''
-    if isinstance(msg, _CQ) or "Cancel" in _txt or not _txt:
+    _txt = getattr(msg, 'text', '') or getattr(msg, 'caption', '') or ''
+    is_media = getattr(msg, 'photo', None) is not None
+    if isinstance(msg, _CQ) or "Cancel" in _txt or (not _txt and not is_media):
         back_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"« Back to Story", callback_data=f"mk#st_view_{s_id}")],
             [InlineKeyboardButton("« Story List", callback_data="mk#ms_list_0")]
