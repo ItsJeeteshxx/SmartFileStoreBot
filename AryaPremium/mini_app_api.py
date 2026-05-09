@@ -1040,21 +1040,30 @@ async def my_purchases(telegram_id: int):
         raise HTTPException(400, "telegram_id required")
 
     try:
-        # 1. Get purchased story_ids from user record
-        user = await arya_db.db.users.find_one({"user_id": int(telegram_id)})
+        # 1. Bot purchases — field is "purchases", key is "id" (not user_id)
+        user = await arya_db.db.users.find_one({"id": int(telegram_id)})
         user_story_ids: list = []
         if user:
-            user_story_ids = user.get("purchased_stories", []) or user.get("stories", []) or []
+            # DB stores as "purchases" field (see database.py add_purchase)
+            user_story_ids = user.get("purchases", []) or []
 
-        # 2. Also get story_ids from orders (razorpay paid)
+        # 2. Mini App Razorpay orders
         order_story_ids: list = []
+        order_map: dict = {}  # story_id → order details for the success screen
         async for order in arya_db.db.orders.find(
             {"user_id": int(telegram_id), "status": "paid"},
-            {"story_ids": 1}
         ):
-            order_story_ids.extend(order.get("story_ids", []))
+            for sid in order.get("story_ids", []):
+                order_story_ids.append(sid)
+                order_map[str(sid)] = {
+                    "order_id":   order.get("order_id", ""),
+                    "payment_id": order.get("razorpay_payment_id", ""),
+                    "amount":     order.get("total", 0),
+                    "source":     order.get("source", "razorpay_miniapp"),
+                    "paid_at":    order.get("created_at", "").isoformat() if hasattr(order.get("created_at", ""), "isoformat") else str(order.get("created_at", "")),
+                }
 
-        # 3. Merge all unique story IDs
+        # 3. Merge unique IDs (bot + miniapp)
         all_ids = list(dict.fromkeys(user_story_ids + order_story_ids))
         if not all_ids:
             return {"success": True, "data": []}
@@ -1069,6 +1078,8 @@ async def my_purchases(telegram_id: int):
                 formatted = _format_story(story)
                 if not formatted:
                     continue
+                # Attach order details if purchased via mini app
+                od = order_map.get(str(sid))
                 results.append({
                     "story_id":    formatted["id"],
                     "title":       formatted["title"],
@@ -1078,15 +1089,18 @@ async def my_purchases(telegram_id: int):
                     "genre":       formatted.get("genre"),
                     "isCompleted": formatted.get("isCompleted", False),
                     "episodes":    formatted.get("episodes"),
+                    "source":      od.get("source", "bot") if od else "bot",
+                    "order_details": od,  # None for bot purchases, dict for miniapp
                 })
             except Exception:
                 continue
 
-        logger.info(f"my-purchases: user={telegram_id} → {len(results)} stories")
+        logger.info(f"my-purchases: user={telegram_id} → {len(results)} stories ({len(user_story_ids)} bot, {len(set(order_story_ids))} miniapp)")
         return {"success": True, "data": results}
 
     except Exception as e:
         logger.error(f"my-purchases error: {e}", exc_info=True)
+
         raise HTTPException(500, "Failed to load purchases")
 
 
