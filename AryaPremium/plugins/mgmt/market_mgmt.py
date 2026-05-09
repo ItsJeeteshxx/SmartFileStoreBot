@@ -703,16 +703,34 @@ async def market_callback(client, query):
 
         elif cmd == "users":
             await _safe_answer(query)
-            users = await db.db.users.find({"purchases.0": {"$exists": True}}).sort("id", -1).to_list(length=100)
+            # Merge bot buyers + mini app buyers
+            bot_buyers = await db.db.users.find({"purchases.0": {"$exists": True}}).sort("id", -1).to_list(length=200)
+            bot_buyer_ids = {u.get("id") for u in bot_buyers}
+            # Also get mini app only buyers (paid via Razorpay but no bot purchases)
+            miniapp_only_ids = set()
+            try:
+                async for order in db.db.orders.find({"status": "paid"}, {"user_id": 1}):
+                    oid = order.get("user_id")
+                    if oid and oid not in bot_buyer_ids:
+                        miniapp_only_ids.add(oid)
+            except Exception:
+                pass
+
             kb = []
-            for u in users:
+            for u in bot_buyers:
                 uid = u.get("id")
-                kb.append([InlineKeyboardButton(f"👤 {uid} • stories: {len(u.get('purchases', []))}", callback_data=f"mk#usr_view_{uid}")])
-            if users:
-                kb.append([InlineKeyboardButton("📤 Export All Users Snapshot", callback_data="mk#usr_export_all")])
+                p_count = len(u.get('purchases', []))
+                kb.append([InlineKeyboardButton(f"🤖 {uid} • {p_count} stories", callback_data=f"mk#usr_view_{uid}")])
+            for uid in miniapp_only_ids:
+                kb.append([InlineKeyboardButton(f"📱 {uid} • Mini App buyer", callback_data=f"mk#usr_view_{uid}")])
+
+            total_buyers = len(bot_buyers) + len(miniapp_only_ids)
+            if total_buyers:
+                kb.append([InlineKeyboardButton("📢 Message All Buyers", callback_data="mk#usr_msg_all"),
+                            InlineKeyboardButton("📤 Export All", callback_data="mk#usr_export_all")])
             kb.append([InlineKeyboardButton("« Back", callback_data="mk#back")])
             await query.message.edit_text(
-                f"<b>👥 Buyers ({len(users)})</b>\n\nTap a user to view profile and payment history.",
+                f"<b>👥 Buyers ({total_buyers})</b>\n\n🤖 = Bot buyer  |  📱 = Mini App only\n\nTap a user to manage.",
                 reply_markup=InlineKeyboardMarkup(kb),
             )
 
@@ -725,21 +743,29 @@ async def market_callback(client, query):
             except Exception:
                 pass
             purchases = user_doc.get("purchases", [])
-            used_channels = user_doc.get("used_channels", [])
             joined = user_doc.get("joined_date", "N/A")
             lang = user_doc.get("lang", "en")
 
+            # Also count mini app orders
+            miniapp_order_story_ids = []
+            try:
+                async for order in db.db.orders.find({"user_id": uid, "status": "paid"}, {"story_ids": 1}):
+                    miniapp_order_story_ids.extend([str(s) for s in order.get("story_ids", [])])
+            except Exception:
+                pass
+            bot_ids_set = {str(p) for p in purchases}
+            app_only_count = len(set(miniapp_order_story_ids) - bot_ids_set)
+            all_story_count = len(bot_ids_set) + app_only_count
+
             checkouts = await db.db.premium_checkout.find({"user_id": uid}).sort("_id", -1).to_list(length=20)
-            
-            
+
             if hasattr(joined, "strftime"):
                 joined = joined.strftime('%d %b %Y')
 
             name = f"{getattr(tg_user, 'first_name', '') or ''} {getattr(tg_user, 'last_name', '') or ''}".strip() or "Unknown"
             uname = f"@{tg_user.username}" if tg_user and tg_user.username else "N/A"
             lang_label = "English" if lang == 'en' else "हिंदी"
-            
-            # Payment history — clean, no emojis
+
             lines = []
             for c in checkouts[:6]:
                 st = await db.db.premium_stories.find_one({"_id": c.get("story_id")})
@@ -754,14 +780,14 @@ async def market_callback(client, query):
                 mthd = c.get('method', 'unknown').upper()
                 lines.append(f"<b>»</b> {sn}\n  <code>{mthd}</code>  ·  {utils.to_smallcap(status_label)}")
             history = "\n".join(lines) if lines else "  ɴᴏ ᴘᴀʏᴍᴇɴᴛ ʜɪꜱᴛᴏʀʏ ꜰᴏᴜɴᴅ"
-            
+
             txt = (
                 "<b>╔═⟦ 𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ⟧═╗</b>\n\n"
                 f"<b>⧉ ɴᴀᴍᴇ        ⟶</b> {name}\n"
                 f"<b>⧉ ᴜꜱᴇʀɴᴀᴍᴇ    ⟶</b> {uname}\n"
                 f"<b>⧉ ᴛɢ ɪᴅ       ⟶</b> <code>{uid}</code>\n\n"
                 "<b>╠══════════════════╣</b>\n\n"
-                f"<b>⧉ ᴘᴜʀᴄʜᴀꜱᴇꜱ   ⟶</b> {len(purchases)}\n"
+                f"<b>⧉ ᴘᴜʀᴄʜᴀꜱᴇꜱ   ⟶</b> {all_story_count}  (🤖 {len(purchases)} bot + 📱 {app_only_count} app)\n"
                 f"<b>⧉ ʟᴀɴɢᴜᴀɢᴇ    ⟶</b> {lang_label}\n"
                 f"<b>⧉ ᴊᴏɪɴᴇᴅ      ⟶</b> {joined}\n\n"
                 "<b>╠══════════════════╣</b>\n\n"
@@ -2945,3 +2971,131 @@ async def handle_banner_photo(client, message):
         ]),
         parse_mode=enums.ParseMode.HTML
     )
+
+
+# ── Message Single Buyer Flow ─────────────────────────────────────────────────
+async def _msg_single_buyer_flow(client, admin_id: int, target_uid: int):
+    """Admin composes a message to send to a single buyer via the store bot."""
+    from utils import native_ask
+    try:
+        prompt = await client.send_message(
+            admin_id,
+            f"<b>📩 Message to User <code>{target_uid}</code></b>\n\n"
+            "Send the message you want to deliver (text, photo with caption, etc.).\n"
+            "<i>Send /cancel to abort.</i>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="mk#back")]])
+        )
+        # Wait for admin reply
+        resp = await native_ask(client, admin_id, "", timeout=120)
+        if not resp or (resp.text or "").strip().lower() == "/cancel":
+            await client.send_message(admin_id, "<i>❌ Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
+            return
+
+        # Get a store bot client to send
+        from plugins.userbot.market_seller import market_clients
+        seller_cli = next(iter(market_clients.values()), None) if market_clients else None
+        send_client = seller_cli or client
+
+        try:
+            if resp.photo:
+                await send_client.send_photo(target_uid, resp.photo.file_id, caption=resp.caption or "")
+            elif resp.text:
+                await send_client.send_message(target_uid, resp.text, parse_mode=enums.ParseMode.HTML)
+            await client.send_message(
+                admin_id,
+                f"<b>✅ Message delivered to <code>{target_uid}</code></b>",
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to User", callback_data=f"mk#usr_view_{target_uid}")]])
+            )
+        except Exception as e:
+            await client.send_message(admin_id, f"<b>❌ Failed:</b> <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
+    except asyncio.TimeoutError:
+        await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
+
+
+# ── Message All Buyers Flow ───────────────────────────────────────────────────
+async def _msg_all_buyers_flow(client, admin_id: int):
+    """Admin composes a broadcast message to all buyers (bot + mini app)."""
+    from utils import native_ask
+    try:
+        await client.send_message(
+            admin_id,
+            "<b>📢 Broadcast to ALL Buyers</b>\n\n"
+            "Send the message to broadcast (text or photo with caption).\n"
+            "<i>Send /cancel to abort.</i>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        resp = await native_ask(client, admin_id, "", timeout=120)
+        if not resp or (resp.text or "").strip().lower() == "/cancel":
+            await client.send_message(admin_id, "<i>❌ Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
+            return
+
+        # Confirm
+        preview = (resp.text or resp.caption or "[media]")[:100]
+        confirm_msg = await client.send_message(
+            admin_id,
+            f"<b>⚠️ Confirm Broadcast</b>\n\n"
+            f"<blockquote>{preview}</blockquote>\n\n"
+            f"Send to <b>all buyers</b>?",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, Send", callback_data="CONFIRM_BCAST"),
+                 InlineKeyboardButton("❌ Cancel", callback_data="CANCEL_BCAST")]
+            ])
+        )
+        # Simple wait: if admin taps Yes within 30s proceed (use next message as confirmation)
+        try:
+            confirm_r = await native_ask(client, admin_id, "", timeout=30)
+            if not confirm_r or (confirm_r.text or "").strip().lower() != "yes":
+                await client.send_message(admin_id, "<i>❌ Broadcast cancelled. Send 'yes' to confirm.</i>", parse_mode=enums.ParseMode.HTML)
+                return
+        except asyncio.TimeoutError:
+            await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
+            return
+
+        # Collect all buyer IDs
+        buyer_ids = set()
+        async for u in db.db.users.find({"purchases.0": {"$exists": True}}, {"id": 1}):
+            buyer_ids.add(u.get("id"))
+        async for order in db.db.orders.find({"status": "paid"}, {"user_id": 1}):
+            oid = order.get("user_id")
+            if oid:
+                buyer_ids.add(oid)
+
+        # Get store bot
+        from plugins.userbot.market_seller import market_clients
+        seller_cli = next(iter(market_clients.values()), None) if market_clients else None
+        send_client = seller_cli or client
+
+        sent = failed = 0
+        status_msg = await client.send_message(admin_id, f"<i>⏳ Sending to {len(buyer_ids)} buyers...</i>", parse_mode=enums.ParseMode.HTML)
+
+        for uid in buyer_ids:
+            try:
+                if resp.photo:
+                    await send_client.send_photo(uid, resp.photo.file_id, caption=resp.caption or "")
+                elif resp.text:
+                    await send_client.send_message(uid, resp.text, parse_mode=enums.ParseMode.HTML)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.3)  # rate limit
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        await client.send_message(
+            admin_id,
+            f"<b>📢 Broadcast Complete</b>\n\n"
+            f"✅ Delivered: <b>{sent}</b>\n"
+            f"❌ Failed: <b>{failed}</b>\n"
+            f"📊 Total: <b>{sent + failed}</b>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Buyers", callback_data="mk#users")]])
+        )
+
+    except asyncio.TimeoutError:
+        await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
