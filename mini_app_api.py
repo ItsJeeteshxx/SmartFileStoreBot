@@ -419,6 +419,75 @@ async def get_my_purchases(telegram_id: str):
         logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}
 
+# ─────────────────────────────────────────────────────────────────
+# GET /admin/stats
+# ─────────────────────────────────────────────────────────────────
+@app.get("/admin/stats")
+async def get_admin_stats(telegram_id: str):
+    """Fetches full admin analysis dashboard."""
+    from AryaPremium.config import Config
+    
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized as Admin")
+            
+        arya_db = app.state.db
+        
+        # Total Users
+        total_users = await arya_db.users.count_documents({})
+        
+        # Total Stories
+        total_stories = await arya_db.db.premium_stories.count_documents({})
+        
+        # Total Revenue (sum of total_amount where status='paid')
+        pipeline = [{"$match": {"status": "paid"}}, {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}]
+        rev_res = await arya_db.db.orders.aggregate(pipeline).to_list(length=1)
+        total_revenue = rev_res[0]["total"] if rev_res else 0
+        
+        # Recent Feedbacks
+        feedbacks = []
+        fb_cursor = arya_db.db.premium_feedback.find({}).sort("created_at", -1).limit(10)
+        async for doc in fb_cursor:
+            feedbacks.append({
+                "id": str(doc.get("_id", "")),
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username"),
+                "type": doc.get("type"),
+                "text": doc.get("text"),
+                "status": doc.get("status"),
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+            })
+            
+        # Recent Orders
+        orders = []
+        ord_cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(10)
+        async for doc in ord_cursor:
+            orders.append({
+                "order_id": doc.get("order_id"),
+                "amount": doc.get("total_amount"),
+                "status": doc.get("status"),
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username"),
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+            })
+            
+        return {
+            "success": True,
+            "data": {
+                "total_users": total_users,
+                "total_stories": total_stories,
+                "total_revenue": total_revenue,
+                "recent_feedback": feedbacks,
+                "recent_orders": orders
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch admin stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("mini_app_api:app", host="0.0.0.0", port=8000, reload=True)
