@@ -3,7 +3,7 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Form, File, UploadFile
+from fastapi import FastAPI, APIRouter, HTTPException, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,6 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Disconnected from MongoDB")
 
-
 app = FastAPI(title="Arya Premium Mini App API", lifespan=lifespan)
 
 app.add_middleware(
@@ -46,6 +45,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+api_router = APIRouter()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -109,7 +110,7 @@ def _format_story(s: dict) -> dict | None:
 # ─────────────────────────────────────────────────────────────────
 # GET /stories
 # ─────────────────────────────────────────────────────────────────
-@app.get("/stories")
+@api_router.get("/stories")
 async def get_stories():
     """Fetch all premium stories using AryaPremium's db.get_all_stories()"""
     try:
@@ -143,7 +144,7 @@ rzp_client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
 # ─────────────────────────────────────────────────────────────────
 # POST /create-payment-link
 # ─────────────────────────────────────────────────────────────────
-@app.post("/create-payment-link")
+@api_router.post("/create-payment-link")
 async def create_payment_link(payload: dict):
     """Creates a Razorpay Payment Link linked to an order."""
     telegram_id = payload.get("telegram_id")
@@ -223,7 +224,7 @@ async def create_payment_link(payload: dict):
 # ─────────────────────────────────────────────────────────────────
 # POST /check-payment-link
 # ─────────────────────────────────────────────────────────────────
-@app.post("/check-payment-link")
+@api_router.post("/check-payment-link")
 async def check_payment_link(id: str, payload: dict):
     """Verifies the status of a Razorpay Payment Link."""
     telegram_id = payload.get("telegram_id")
@@ -263,7 +264,7 @@ async def check_payment_link(id: str, payload: dict):
 # ─────────────────────────────────────────────────────────────────
 # POST /support
 # ─────────────────────────────────────────────────────────────────
-@app.post("/support")
+@api_router.post("/support")
 async def submit_support(
     telegram_id: str = Form(...),
     type: str = Form("support"),
@@ -359,7 +360,7 @@ async def submit_support(
 # ─────────────────────────────────────────────────────────────────
 # GET /my-requests
 # ─────────────────────────────────────────────────────────────────
-@app.get("/my-requests")
+@api_router.get("/my-requests")
 async def get_my_requests(telegram_id: str):
     """Fetches user's requests and support tickets."""
     arya_db = app.state.db
@@ -386,7 +387,7 @@ async def get_my_requests(telegram_id: str):
 # ─────────────────────────────────────────────────────────────────
 # GET /my-purchases
 # ─────────────────────────────────────────────────────────────────
-@app.get("/my-purchases")
+@api_router.get("/my-purchases")
 async def get_my_purchases(telegram_id: str):
     """Fetches user's purchased stories."""
     arya_db = app.state.db
@@ -422,7 +423,7 @@ async def get_my_purchases(telegram_id: str):
 # ─────────────────────────────────────────────────────────────────
 # GET /admin/stats
 # ─────────────────────────────────────────────────────────────────
-@app.get("/admin/stats")
+@api_router.get("/admin/stats")
 async def get_admin_stats(telegram_id: str):
     """Fetches full admin analysis dashboard."""
     from AryaPremium.config import Config
@@ -487,6 +488,8 @@ async def get_admin_stats(telegram_id: str):
     except Exception as e:
         logger.error(f"Failed to fetch admin stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+app.include_router(api_router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn
