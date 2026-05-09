@@ -3150,16 +3150,16 @@ async def _msg_single_buyer_flow(client, admin_id: int, target_uid: int):
     """Admin composes a message to send to a single buyer via the store bot."""
     from utils import native_ask
     try:
-        prompt = await client.send_message(
-            admin_id,
+        # Wait for admin reply
+        resp = await native_ask(
+            client, admin_id, 
             f"<b>📩 Message to User <code>{target_uid}</code></b>\n\n"
             "Send the message you want to deliver (text, photo with caption, etc.).\n"
-            "<i>Send /cancel to abort.</i>",
+            "<i>Send /cancel to abort.</i>", 
+            timeout=120,
             parse_mode=enums.ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="mk#back")]])
         )
-        # Wait for admin reply
-        resp = await native_ask(client, admin_id, "", timeout=120)
         if not resp or (resp.text or "").strip().lower() == "/cancel":
             await client.send_message(admin_id, "<i>❌ Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
             return
@@ -3191,14 +3191,14 @@ async def _msg_all_buyers_flow(client, admin_id: int):
     """Admin composes a broadcast message to all buyers (bot + mini app)."""
     from utils import native_ask
     try:
-        await client.send_message(
-            admin_id,
+        resp = await native_ask(
+            client, admin_id, 
             "<b>📢 Broadcast to ALL Buyers</b>\n\n"
             "Send the message to broadcast (text or photo with caption).\n"
-            "<i>Send /cancel to abort.</i>",
-            parse_mode=enums.ParseMode.HTML,
+            "<i>Send /cancel to abort.</i>", 
+            timeout=120,
+            parse_mode=enums.ParseMode.HTML
         )
-        resp = await native_ask(client, admin_id, "", timeout=120)
         if not resp or (resp.text or "").strip().lower() == "/cancel":
             await client.send_message(admin_id, "<i>❌ Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
             return
@@ -3209,16 +3209,12 @@ async def _msg_all_buyers_flow(client, admin_id: int):
             admin_id,
             f"<b>⚠️ Confirm Broadcast</b>\n\n"
             f"<blockquote>{preview}</blockquote>\n\n"
-            f"Send to <b>all buyers</b>?",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Yes, Send", callback_data="CONFIRM_BCAST"),
-                 InlineKeyboardButton("❌ Cancel", callback_data="CANCEL_BCAST")]
-            ])
+            f"Send to <b>all buyers</b>?\n"
+            f"<i>Type 'yes' to confirm, or /cancel to abort.</i>",
+            parse_mode=enums.ParseMode.HTML
         )
-        # Simple wait: if admin taps Yes within 30s proceed (use next message as confirmation)
         try:
-            confirm_r = await native_ask(client, admin_id, "", timeout=30)
+            confirm_r = await native_ask(client, admin_id, "Type 'yes' to send:", timeout=30)
             if not confirm_r or (confirm_r.text or "").strip().lower() != "yes":
                 await client.send_message(admin_id, "<i>❌ Broadcast cancelled. Send 'yes' to confirm.</i>", parse_mode=enums.ParseMode.HTML)
                 return
