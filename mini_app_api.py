@@ -314,10 +314,13 @@ async def submit_support(
         token = Config.MGMT_BOT_TOKEN
         if token and Config.OWNER_IDS:
             async with aiohttp.ClientSession() as session:
+                file_bytes = None
+                if file:
+                    file_bytes = await file.read()
+                
                 for oid in Config.OWNER_IDS:
                     try:
-                        if file:
-                            file_bytes = await file.read()
+                        if file_bytes:
                             form = aiohttp.FormData()
                             form.add_field('chat_id', str(oid))
                             form.add_field('caption', admin_txt)
