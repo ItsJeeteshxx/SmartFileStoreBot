@@ -2013,13 +2013,22 @@ async def _add_story_flow(client, user_id):
         if getattr(msg_img, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_img.text:
             return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
         if getattr(msg_img, 'photo', None):
-            await client.send_message(user_id, "<i>Uploading image to store bot...</i>")
+            await client.send_message(user_id, "<i>Uploading image to store bot and CDN...</i>")
             try:
                 from plugins.userbot.market_seller import market_clients
+                from utils import upload_to_catbox
                 store_cli = market_clients.get(str(sj["bot_id"]))
                 dl = await client.download_media(msg_img.photo.file_id)
+                
+                # Upload to CDN for Mini App
+                catbox_url = await upload_to_catbox(dl)
+                if catbox_url:
+                    sj['poster_url'] = catbox_url
+                    
+                # Upload to Store Bot for Telegram delivery
                 ul = await store_cli.send_photo(user_id, photo=dl)
                 sj['image'] = ul.photo.file_id
+                
                 import os; os.remove(dl)
             except Exception as e:
                 sj['image'] = msg_img.photo.file_id # fallback
@@ -2366,13 +2375,23 @@ async def _edit_story_flow(client, user_id, s_id, action):
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"story_name_hi": msg.text.strip()}})
         elif action == "image":
             if getattr(msg, 'photo', None):
-                await client.send_message(user_id, "<i>Uploading image to store bot...</i>")
+                await client.send_message(user_id, "<i>Uploading image to store bot and CDN...</i>")
                 try:
                     from plugins.userbot.market_seller import market_clients
+                    from utils import upload_to_catbox
                     store_cli = market_clients.get(str(story["bot_id"]))
                     dl = await client.download_media(msg.photo.file_id)
+                    
+                    # Upload to Catbox
+                    catbox_url = await upload_to_catbox(dl)
+                    updates = {}
+                    if catbox_url:
+                        updates["poster_url"] = catbox_url
+                        
                     ul = await store_cli.send_photo(user_id, photo=dl)
-                    await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"image": ul.photo.file_id}})
+                    updates["image"] = ul.photo.file_id
+                    
+                    await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": updates})
                     import os; os.remove(dl)
                 except Exception as e:
                     await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"image": msg.photo.file_id}})

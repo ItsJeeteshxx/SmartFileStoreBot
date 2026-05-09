@@ -364,3 +364,15 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
 
 
 
+
+async def upload_to_catbox(file_path):
+    import aiohttp, os
+    async with aiohttp.ClientSession() as session:
+        data = aiohttp.FormData()
+        data.add_field('reqtype', 'fileupload')
+        data.add_field('userhash', '')
+        data.add_field('fileToUpload', open(file_path, 'rb'), filename=os.path.basename(file_path))
+        async with session.post('https://catbox.moe/user/api.php', data=data) as resp:
+            if resp.status == 200:
+                return await resp.text()
+    return None
