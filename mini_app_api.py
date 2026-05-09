@@ -489,6 +489,117 @@ async def get_admin_stats(telegram_id: str):
         logger.error(f"Failed to fetch admin stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ─────────────────────────────────────────────────────────────────
+# GET /admin/stories
+# ─────────────────────────────────────────────────────────────────
+@api_router.get("/admin/stories")
+async def get_admin_stories(telegram_id: str):
+    """Fetches all stories for admin management."""
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized as Admin")
+            
+        arya_db = app.state.db
+        stories = await arya_db.get_all_stories()
+        # Return raw stories for admin editing
+        return {"success": True, "data": [{**s, "_id": str(s["_id"])} for s in stories]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+from pydantic import BaseModel
+from typing import Optional, List
+
+class StoryUpdate(BaseModel):
+    telegram_id: str
+    story_id: str
+    bot_id: Optional[int] = None
+    bot_username: Optional[str] = None
+    start_id: Optional[int] = None
+    end_id: Optional[int] = None
+    source: Optional[int] = None
+    story_name_en: str
+    story_name_hi: str
+    description: str
+    description_hi: str
+    episodes: str
+    status: str
+    genre: str
+    language: str
+    price: int
+    discount_price: int
+    payment_methods: List[str]
+    platform: str
+    delivery_mode: str
+    channel_id: Optional[int] = None
+    image: Optional[str] = None
+    poster_url: str
+    is_completed: bool
+
+# ─────────────────────────────────────────────────────────────────
+# POST /admin/story
+# ─────────────────────────────────────────────────────────────────
+@api_router.post("/admin/story")
+async def save_admin_story(data: StoryUpdate):
+    """Creates or updates a story."""
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        story_doc = {
+            "story_id": data.story_id,
+            "bot_id": data.bot_id,
+            "bot_username": data.bot_username,
+            "start_id": data.start_id,
+            "end_id": data.end_id,
+            "source": data.source,
+            "story_name_en": data.story_name_en,
+            "story_name_hi": data.story_name_hi,
+            "description": data.description,
+            "description_hi": data.description_hi,
+            "episodes": data.episodes,
+            "status": data.status,
+            "genre": data.genre,
+            "language": data.language,
+            "price": data.price,
+            "discount_price": data.discount_price,
+            "payment_methods": data.payment_methods,
+            "platform": data.platform,
+            "delivery_mode": data.delivery_mode,
+            "channel_id": data.channel_id,
+            "image": data.image,
+            "poster_url": data.poster_url,
+            "is_completed": data.is_completed,
+            "updated_via": "mini_app_admin"
+        }
+        await arya_db.save_story(story_doc)
+        return {"success": True, "message": "Story saved successfully"}
+    except Exception as e:
+        logger.error(f"Error saving story: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────
+# DELETE /admin/story/{story_id}
+# ─────────────────────────────────────────────────────────────────
+@api_router.delete("/admin/story/{story_id}")
+async def delete_admin_story(story_id: str, telegram_id: str):
+    """Deletes a story."""
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        await arya_db.delete_story(story_id)
+        return {"success": True, "message": "Story deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 app.include_router(api_router, prefix="/api")
 
 if __name__ == "__main__":
