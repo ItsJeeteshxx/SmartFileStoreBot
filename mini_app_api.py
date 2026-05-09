@@ -601,6 +601,7 @@ async def delete_admin_story(story_id: str, telegram_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 app.include_router(api_router, prefix="/api")
+app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
 
 if __name__ == "__main__":
     import uvicorn
