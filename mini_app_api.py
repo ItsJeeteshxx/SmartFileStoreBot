@@ -599,6 +599,214 @@ async def delete_admin_story(story_id: str, telegram_id: str):
         return {"success": True, "message": "Story deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+# ─────────────────────────────────────────────────────────────────
+# SUPPORT MANAGEMENT
+# ─────────────────────────────────────────────────────────────────
+@api_router.get("/admin/support")
+async def get_admin_support(telegram_id: str):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        cursor = arya_db.db.premium_feedback.find({"status": {"$ne": "resolved"}}).sort("created_at", -1).limit(100)
+        tickets = []
+        async for doc in cursor:
+            tickets.append({
+                "id": str(doc["_id"]),
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username", "Unknown"),
+                "text": doc.get("text", ""),
+                "type": doc.get("type", "text"),
+                "status": doc.get("status", "open"),
+                "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            })
+        return {"success": True, "data": tickets}
+    except Exception as e:
+        return {"success": False, "data": []}
+
+class SupportReply(BaseModel):
+    telegram_id: str
+    ticket_id: str
+    reply_text: str
+
+@api_router.post("/admin/support/reply")
+async def reply_support(data: SupportReply):
+    from AryaPremium.config import Config
+    from bson.objectid import ObjectId
+    import aiohttp
+    try:
+        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(data.ticket_id)})
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+            
+        # Send reply to user via Bot API
+        token = Config.MGMT_BOT_TOKEN
+        if token:
+            async with aiohttp.ClientSession() as session:
+                await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                    "chat_id": ticket["user_id"],
+                    "text": f"<b>📬 Admin Reply to your ticket:</b>\n\n{data.reply_text}",
+                    "parse_mode": "HTML"
+                })
+                
+        # Mark resolved
+        await arya_db.db.premium_feedback.update_one({"_id": ObjectId(data.ticket_id)}, {"$set": {"status": "resolved"}})
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────
+# BANNERS MANAGEMENT
+# ─────────────────────────────────────────────────────────────────
+@api_router.get("/admin/banners")
+async def get_admin_banners(telegram_id: str):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        cursor = arya_db.db.mini_app_banners.find({}).sort("order", 1)
+        banners = []
+        async for doc in cursor:
+            banners.append({
+                "id": str(doc["_id"]),
+                "image_url": doc.get("image_url", ""),
+                "target_link": doc.get("target_link", ""),
+                "order": doc.get("order", 0)
+            })
+        return {"success": True, "data": banners}
+    except Exception as e:
+        logger.error(f"Error fetching banners: {e}")
+        return {"success": False, "data": []}
+
+class BannerUpdate(BaseModel):
+    telegram_id: str
+    id: Optional[str] = None
+    image_url: str
+    target_link: str
+    order: int
+
+@api_router.post("/admin/banner")
+async def save_admin_banner(data: BannerUpdate):
+    from AryaPremium.config import Config
+    from bson.objectid import ObjectId
+    try:
+        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        doc = {
+            "image_url": data.image_url,
+            "target_link": data.target_link,
+            "order": data.order
+        }
+        if data.id and data.id != "new":
+            await arya_db.db.mini_app_banners.update_one({"_id": ObjectId(data.id)}, {"$set": doc})
+        else:
+            await arya_db.db.mini_app_banners.insert_one(doc)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/admin/banner")
+async def delete_admin_banner(telegram_id: str, banner_id: str):
+    from AryaPremium.config import Config
+    from bson.objectid import ObjectId
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        await arya_db.db.mini_app_banners.delete_one({"_id": ObjectId(banner_id)})
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────
+# BUYERS MANAGEMENT
+# ─────────────────────────────────────────────────────────────────
+@api_router.get("/admin/buyers")
+async def get_admin_buyers(telegram_id: str):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        # Get orders instead of users to show purchase history
+        cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(100)
+        buyers = []
+        async for doc in cursor:
+            buyers.append({
+                "order_id": str(doc.get("order_id", doc["_id"])),
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username", "Unknown"),
+                "amount": doc.get("total_amount", doc.get("amount", 0)),
+                "status": doc.get("status", "unknown"),
+                "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            })
+        return {"success": True, "data": buyers}
+    except Exception as e:
+        return {"success": False, "data": []}
+
+# ─────────────────────────────────────────────────────────────────
+# ANALYTICS TRACKING
+# ─────────────────────────────────────────────────────────────────
+class TrackEvent(BaseModel):
+    telegram_id: str
+    event_type: str  # "search", "view_story", "add_to_cart", "open_app"
+    event_data: dict
+
+@api_router.post("/track")
+async def track_event(data: TrackEvent):
+    try:
+        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        arya_db = app.state.db
+        await arya_db.db.mini_app_analytics.insert_one({
+            "user_id": user_id_int,
+            "type": data.event_type,
+            "data": data.event_data,
+            "timestamp": datetime.now(timezone.utc)
+        })
+        return {"success": True}
+    except Exception:
+        return {"success": False}
+
+@api_router.get("/admin/analytics")
+async def get_analytics(telegram_id: str):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        
+        # Get latest searches
+        search_cursor = arya_db.db.mini_app_analytics.find({"type": "search"}).sort("timestamp", -1).limit(20)
+        searches = []
+        async for doc in search_cursor:
+            searches.append({"user_id": doc["user_id"], "query": doc["data"].get("query", ""), "time": doc["timestamp"].isoformat() if isinstance(doc["timestamp"], datetime) else str(doc["timestamp"])})
+            
+        # Get latest views
+        view_cursor = arya_db.db.mini_app_analytics.find({"type": "view_story"}).sort("timestamp", -1).limit(20)
+        views = []
+        async for doc in view_cursor:
+            views.append({"user_id": doc["user_id"], "story_id": doc["data"].get("story_id", ""), "time": doc["timestamp"].isoformat() if isinstance(doc["timestamp"], datetime) else str(doc["timestamp"])})
+
+        return {"success": True, "data": {"recent_searches": searches, "recent_views": views}}
+    except Exception as e:
+        return {"success": False, "data": {}}
 
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
