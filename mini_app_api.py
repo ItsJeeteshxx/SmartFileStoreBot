@@ -264,6 +264,73 @@ async def check_payment_link(id: str, payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─────────────────────────────────────────────────────────────────
+# POST /support
+# ─────────────────────────────────────────────────────────────────
+@app.post("/support")
+async def submit_support(payload: dict):
+    """Submits a support ticket, feedback, or suggestion from the Mini App."""
+    telegram_id = payload.get("telegram_id")
+    support_type = payload.get("type", "support") # support, chat, suggestion
+    message = payload.get("message", "").strip()
+    username = payload.get("username", "")
+    first_name = payload.get("first_name", "Mini App User")
+
+    if not telegram_id or not message:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    arya_db = app.state.db
+    
+    # Save to premium_feedback collection so it appears in Management Bot Support Panel
+    fb_doc = {
+        "user_id": int(telegram_id) if str(telegram_id).isdigit() else telegram_id,
+        "bot_id": "mini_app",
+        "type": "text",
+        "text": f"[{support_type.upper()}] {message}",
+        "status": "open",
+        "created_at": datetime.now(timezone.utc),
+        "user_name": first_name,
+        "username": username,
+    }
+    
+    try:
+        await arya_db.db.premium_feedback.insert_one(fb_doc)
+        
+        # Notify admins via Telegram API using Management Bot Token
+        from AryaPremium.config import Config
+        import aiohttp
+        
+        admin_txt = (
+            f"<b>📨 New Feedback from Mini App</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>👤 User:</b> {first_name}\n"
+            f"<b>🔗 Username:</b> @{username}\n"
+            f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
+            f"<b>💬 Type:</b> {support_type.title()}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Message:</b>\n"
+            f"<blockquote>{message[:800]}</blockquote>"
+        )
+        
+        token = Config.MGMT_BOT_TOKEN
+        if token and Config.OWNER_IDS:
+            async with aiohttp.ClientSession() as session:
+                for oid in Config.OWNER_IDS:
+                    try:
+                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                            "chat_id": oid,
+                            "text": admin_txt,
+                            "parse_mode": "HTML"
+                        }, timeout=3)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin {oid}: {e}")
+                        
+        return {"success": True, "message": "Support request submitted successfully"}
+    except Exception as e:
+        logger.error(f"Support submission failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit support request")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("mini_app_api:app", host="0.0.0.0", port=8000, reload=True)
