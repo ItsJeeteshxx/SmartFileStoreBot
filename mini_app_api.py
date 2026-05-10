@@ -411,6 +411,7 @@ async def create_razorpay_order(payload: dict):
     """Create Razorpay order. Returns order_id + key for frontend SDK modal."""
     story_ids = payload.get("story_ids", [])
     tg_id     = payload.get("telegram_id") or 0
+    is_int    = payload.get("is_international", False)
 
     if not story_ids:
         raise HTTPException(400, "Cart is empty")
@@ -431,7 +432,11 @@ async def create_razorpay_order(payload: dict):
     if not valid_stories:
         raise HTTPException(400, "No valid stories")
 
-    total_paise = int(sum(float(s.get("price", 0) or 0) for s in valid_stories) * 100)
+    total_price = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    if is_int:
+        total_price += round(total_price * 0.0354)  # Add 3.54% international fee
+        
+    total_paise = int(total_price * 100)
     receipt     = _make_order_id(tg_id)
 
     import httpx
