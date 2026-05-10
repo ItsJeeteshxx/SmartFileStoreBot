@@ -1207,32 +1207,65 @@ async def get_popular():
         arya_db = app.state.db
         from bson.objectid import ObjectId
         
-        pipeline = [
-            {"$unwind": "$purchases"},
-            {"$group": {"_id": "$purchases", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-            {"$limit": 9}
-        ]
+        user_counts = []
+        order_counts = []
+        try:
+            pipeline_users = [
+                {"$unwind": "$purchases"},
+                {"$group": {"_id": "$purchases", "count": {"$sum": 1}}}
+            ]
+            user_counts = await arya_db.db.users.aggregate(pipeline_users).to_list(None)
+        except Exception as e:
+            logger.warning(f"Failed to aggregate users: {e}")
+            
+        try:
+            pipeline_orders = [
+                {"$match": {"status": "paid"}},
+                {"$unwind": "$story_ids"},
+                {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}}
+            ]
+            order_counts = await arya_db.db.orders.aggregate(pipeline_orders).to_list(None)
+        except Exception as e:
+            logger.warning(f"Failed to aggregate orders: {e}")
+            
+        # Combine counts
+        counts_map = {}
+        for item in user_counts:
+            sid = str(item.get("_id"))
+            counts_map[sid] = counts_map.get(sid, 0) + item.get("count", 0)
+            
+        for item in order_counts:
+            sid = str(item.get("_id"))
+            counts_map[sid] = counts_map.get(sid, 0) + item.get("count", 0)
+            
+        sorted_counts = sorted(counts_map.items(), key=lambda x: x[1], reverse=True)[:9]
         
-        agg = await arya_db.db.premium_users.aggregate(pipeline).to_list(9)
         result = []
-        
-        for item in agg:
+        for sid, count in sorted_counts:
+            if not sid or sid == "None": continue
             try:
-                story_id = item["_id"]
-                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(story_id))})
+                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
                 if story:
                     fmt = _format_story(story)
                     if fmt:
-                        fmt["buy_count"] = item["count"]
+                        fmt["buy_count"] = count
                         result.append(fmt)
             except Exception as e:
-                logger.warning(f"Error formatting popular story {item.get('_id')}: {e}")
+                pass
                 
+        # If still empty for some reason, fallback to hardcoded top recent stories
+        if not result:
+            cursor = arya_db.db.premium_stories.find({"status": "active"}).sort("_id", -1).limit(6)
+            async for s in cursor:
+                fmt = _format_story(s)
+                if fmt:
+                    fmt["buy_count"] = 1
+                    result.append(fmt)
+                    
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"/popular error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"success": False, "data": []}
 
 
 @api_router.get("/admin/banners")
@@ -1315,23 +1348,55 @@ async def get_admin_buyers(telegram_id: str):
         buyers = []
         
         # 1. Bot buyers
-        bot_buyers_cursor = arya_db.db.premium_users.find({"purchases.0": {"$exists": True}}).sort("id", -1).limit(100)
+        bot_buyers_cursor = arya_db.db.users.find({"purchases.0": {"$exists": True}}).sort("id", -1).limit(100)
         bot_buyers = await bot_buyers_cursor.to_list(length=100)
         bot_buyer_ids = {u.get("id") for u in bot_buyers}
         
         for u in bot_buyers:
             uid = u.get("id")
+            
+            # Fetch checkout history
+            checkouts = await arya_db.db.premium_checkout.find({"user_id": uid}).sort("_id", -1).to_list(length=10)
+            payments = []
+            total_amt = 0
+            
+            for c in checkouts:
+                story_id = c.get("story_id")
+                story = await arya_db.db.premium_stories.find_one({"_id": story_id}) if story_id else None
+                sname = story.get("story_name_en", "Deleted Story") if story else "Deleted Story"
+                amt = c.get("amount", 0)
+                # Ensure amt is a number
+                try: amt = float(amt)
+                except: amt = 0
+                total_amt += amt
+                
+                status_label = {
+                    "approved": "PAID",
+                    "waiting_screenshot": "PENDING",
+                    "rejected": "REJECTED",
+                    "pending_gateway": "PROCESSING",
+                }.get(c.get("status", "unknown"), c.get("status", "unknown").upper())
+                
+                payments.append({
+                    "story_name": sname,
+                    "amount": amt,
+                    "method": c.get("method", "unknown").upper(),
+                    "status": status_label,
+                    "date": c.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at", ""))
+                })
+                
             buyers.append({
                 "order_id": f"bot_{uid}",
                 "user_id": uid,
                 "username": u.get("username", "Unknown"),
                 "first_name": u.get("first_name", ""),
-                "amount": 0, # Cannot determine amount easily without looking at premium_checkout
+                "amount": total_amt,
                 "status": "paid",
                 "payment_id": "",
                 "source": "bot",
                 "story_ids": u.get("purchases", []),
                 "story_names": [f"Bot Purchases ({len(u.get('purchases', []))})"],
+                "payments": payments,
                 "date": u.get("joined_date", datetime.now(timezone.utc)).isoformat() if isinstance(u.get("joined_date"), datetime) else str(u.get("joined_date", ""))
             })
 
@@ -1357,18 +1422,32 @@ async def get_admin_buyers(telegram_id: str):
                     story_names.append(story.get("story_name_en", sid))
                 else:
                     story_names.append(sid)
+            date_str = doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            amt = doc.get("total_amount", doc.get("amount", 0))
+            try: amt = float(amt)
+            except: amt = 0
+            
+            payments = [{
+                "story_name": ", ".join(story_names) if story_names else "App Purchase",
+                "amount": amt,
+                "method": "RAZORPAY",
+                "status": "PAID",
+                "date": date_str
+            }]
+            
             buyers.append({
                 "order_id": str(doc.get("order_id", doc["_id"])),
                 "user_id": uid_int,
                 "username": doc.get("username", "Unknown"),
                 "first_name": doc.get("first_name", ""),
-                "amount": doc.get("total_amount", doc.get("amount", 0)),
+                "amount": amt,
                 "status": doc.get("status", "unknown"),
                 "payment_id": doc.get("payment_id", doc.get("razorpay_payment_id", "")),
                 "source": doc.get("source", "miniapp"),
                 "story_ids": story_ids,
                 "story_names": story_names,
-                "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+                "payments": payments,
+                "date": date_str
             })
             
         # Sort combined buyers by date
@@ -1392,16 +1471,16 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
         arya_db = app.state.db
         
         if action == "wipe":
-            await arya_db.db.premium_users.delete_one({"id": target_uid})
+            await arya_db.db.users.delete_one({"id": target_uid})
             await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
             await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
             return {"success": True, "message": "User data wiped completely."}
             
         elif action == "ban":
-            await arya_db.db.premium_users.delete_one({"id": target_uid})
+            await arya_db.db.users.delete_one({"id": target_uid})
             await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
             await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
-            await arya_db.db.premium_users.update_one(
+            await arya_db.db.users.update_one(
                 {"id": target_uid},
                 {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App"}},
                 upsert=True
