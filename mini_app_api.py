@@ -717,29 +717,36 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
         poster_url = ""
         file_id = ""
 
-        # Upload to Catbox
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("reqtype", "fileupload")
-            form.add_field("fileToUpload", img_bytes, filename="poster.jpg", content_type="image/jpeg")
-            async with session.post("https://catbox.moe/user/api.php", data=form) as resp:
-                if resp.status == 200:
-                    poster_url = await resp.text()
+        # Upload to Catbox (with timeout so it doesn't break Vercel proxy if Catbox is slow/blocking)
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("reqtype", "fileupload")
+                form.add_field("fileToUpload", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+                async with session.post("https://catbox.moe/user/api.php", data=form, timeout=6) as resp:
+                    if resp.status == 200:
+                        poster_url = await resp.text()
+        except Exception as e:
+            logger.error(f"Catbox upload failed: {e}")
+            poster_url = ""
         
         # Upload to Telegram to get file_id
         token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
         if token:
-            async with aiohttp.ClientSession() as session:
-                form = aiohttp.FormData()
-                form.add_field("chat_id", str(user_id_int))
-                form.add_field("photo", img_bytes, filename="poster.jpg", content_type="image/jpeg")
-                form.add_field("caption", f"Auto-uploaded poster from Mini App Admin")
-                async with session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        photos = data.get("result", {}).get("photo", [])
-                        if photos:
-                            file_id = photos[-1]["file_id"]
+            try:
+                async with aiohttp.ClientSession() as session:
+                    form = aiohttp.FormData()
+                    form.add_field("chat_id", str(user_id_int))
+                    form.add_field("photo", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+                    form.add_field("caption", f"Auto-uploaded poster from Mini App Admin")
+                    async with session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form, timeout=6) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            photos = data.get("result", {}).get("photo", [])
+                            if photos:
+                                file_id = photos[-1]["file_id"]
+            except Exception as e:
+                logger.error(f"Telegram upload failed: {e}")
         
         return {"success": True, "poster_url": poster_url, "file_id": file_id}
     except Exception as e:
