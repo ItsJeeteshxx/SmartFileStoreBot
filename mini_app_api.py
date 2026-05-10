@@ -927,6 +927,101 @@ async def reply_support(data: SupportReply):
 # ─────────────────────────────────────────────────────────────────
 # BANNERS MANAGEMENT
 # ─────────────────────────────────────────────────────────────────
+@api_router.get("/banners")
+async def get_banners():
+    """
+    Returns up to 10 hero banners:
+     - 1 auto: most-purchased story (trending)
+     - 1 auto: newest story added
+     - up to 8 manual: from mini_app_banners collection
+    """
+    try:
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+        result = []
+
+        # Auto: Trending (most purchased story)
+        try:
+            top_order = await arya_db.db.orders.find_one(
+                {"status": {"$in": ["paid", "delivered"]}},
+                sort=[("created_at", -1)]
+            )
+            if top_order:
+                pipeline = [
+                    {"$match": {"status": {"$in": ["paid", "delivered"]}}},
+                    {"$unwind": "$story_ids"},
+                    {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}},
+                    {"$sort": {"count": -1}},
+                    {"$limit": 1}
+                ]
+                agg = await arya_db.db.orders.aggregate(pipeline).to_list(1)
+                if agg:
+                    trend_story = await arya_db.db.premium_stories.find_one(
+                        {"_id": ObjectId(str(agg[0]["_id"]))}
+                    )
+                    if trend_story:
+                        fmt = _format_story(trend_story)
+                        if fmt:
+                            result.append({
+                                "id": f"trending_{fmt['id']}",
+                                "type": "trending",
+                                "story_id": fmt["id"],
+                                "image": fmt["poster"] or fmt["banner"],
+                                "title": fmt["title"],
+                                "subtitle": "🔥 Trending Now",
+                                "badge": "TRENDING",
+                            })
+        except Exception as e:
+            logger.warning(f"Trending banner error: {e}")
+
+        # Auto: Newest story
+        try:
+            newest = await arya_db.db.premium_stories.find_one(
+                {}, sort=[("_id", -1)]
+            )
+            if newest:
+                fmt = _format_story(newest)
+                if fmt:
+                    result.append({
+                        "id": f"new_{fmt['id']}",
+                        "type": "new",
+                        "story_id": fmt["id"],
+                        "image": fmt["poster"] or fmt["banner"],
+                        "title": fmt["title"],
+                        "subtitle": "✨ New Release",
+                        "badge": "NEW",
+                    })
+        except Exception as e:
+            logger.warning(f"Newest banner error: {e}")
+
+        # Manual banners from DB (up to 8)
+        try:
+            cursor = arya_db.db.mini_app_banners.find({}).sort("order", 1).limit(8)
+            manual = await cursor.to_list(length=8)
+            for b in manual:
+                bid = str(b["_id"])
+                image_url = b.get("image_url") or ""
+                # If image_url isn't an http link, assume it's a file ID
+                if image_url and not image_url.startswith("http"):
+                    image_url = f"/api/tg-image?file_id={image_url}"
+                result.append({
+                    "id": bid,
+                    "type": "manual",
+                    "story_id": b.get("target_link"),
+                    "image": image_url,
+                    "title": b.get("title", ""),
+                    "subtitle": b.get("subtitle", ""),
+                    "badge": b.get("badge", ""),
+                })
+        except Exception as e:
+            logger.warning(f"Manual banners error: {e}")
+
+        return {"success": True, "data": result[:10]}
+    except Exception as e:
+        logger.error(f"/banners error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.get("/admin/banners")
 async def get_admin_banners(telegram_id: str):
     from AryaPremium.config import Config
