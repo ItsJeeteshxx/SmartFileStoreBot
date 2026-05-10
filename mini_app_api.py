@@ -513,71 +513,58 @@ from typing import Optional, List
 
 class StoryUpdate(BaseModel):
     telegram_id: str
-    story_id: str
+    story_id: Optional[str] = None
+    _id: Optional[str] = None  # MongoDB id fallback
     bot_id: Optional[int] = None
     bot_username: Optional[str] = None
     start_id: Optional[int] = None
     end_id: Optional[int] = None
     source: Optional[int] = None
-    story_name_en: str
-    story_name_hi: str
-    description: str
-    description_hi: str
-    episodes: str
-    status: str
-    genre: str
-    language: str
-    price: int
-    discount_price: int
-    payment_methods: List[str]
-    platform: str
-    delivery_mode: str
+    story_name_en: Optional[str] = ""
+    story_name_hi: Optional[str] = ""
+    description: Optional[str] = ""
+    description_hi: Optional[str] = ""
+    episodes: Optional[str] = "1"
+    status: Optional[str] = "available"
+    genre: Optional[str] = ""
+    language: Optional[str] = "Hindi"
+    price: Optional[int] = 0
+    discount_price: Optional[int] = 0
+    payment_methods: Optional[List[str]] = ["upi"]
+    platform: Optional[str] = ""
+    delivery_mode: Optional[str] = "pool"
     channel_id: Optional[int] = None
     image: Optional[str] = None
-    poster_url: str
-    is_completed: bool
+    poster_url: Optional[str] = ""
+    is_completed: Optional[bool] = False
 
 # ─────────────────────────────────────────────────────────────────
 # POST /admin/story
 # ─────────────────────────────────────────────────────────────────
 @api_router.post("/admin/story")
-async def save_admin_story(data: StoryUpdate):
-    """Creates or updates a story."""
+async def save_admin_story(request: Request):
+    """Creates or updates a story — accepts any JSON payload."""
     from AryaPremium.config import Config
     try:
-        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        data = await request.json()
+        telegram_id = str(data.get("telegram_id", ""))
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if user_id_int not in Config.OWNER_IDS:
             raise HTTPException(status_code=403, detail="Not authorized")
-            
+        
+        # Remove non-DB fields
+        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "_id")}
+        
+        # Ensure story_id exists
+        if not save_doc.get("story_id"):
+            raise HTTPException(status_code=400, detail="story_id is required")
+        
+        save_doc["updated_via"] = "mini_app_admin"
         arya_db = app.state.db
-        story_doc = {
-            "story_id": data.story_id,
-            "bot_id": data.bot_id,
-            "bot_username": data.bot_username,
-            "start_id": data.start_id,
-            "end_id": data.end_id,
-            "source": data.source,
-            "story_name_en": data.story_name_en,
-            "story_name_hi": data.story_name_hi,
-            "description": data.description,
-            "description_hi": data.description_hi,
-            "episodes": data.episodes,
-            "status": data.status,
-            "genre": data.genre,
-            "language": data.language,
-            "price": data.price,
-            "discount_price": data.discount_price,
-            "payment_methods": data.payment_methods,
-            "platform": data.platform,
-            "delivery_mode": data.delivery_mode,
-            "channel_id": data.channel_id,
-            "image": data.image,
-            "poster_url": data.poster_url,
-            "is_completed": data.is_completed,
-            "updated_via": "mini_app_admin"
-        }
-        await arya_db.save_story(story_doc)
+        await arya_db.save_story(save_doc)
         return {"success": True, "message": "Story saved successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error saving story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -618,19 +605,25 @@ async def get_admin_support(telegram_id: str):
                 "id": str(doc["_id"]),
                 "user_id": doc.get("user_id"),
                 "username": doc.get("username", "Unknown"),
+                "first_name": doc.get("user_name", doc.get("first_name", "Unknown")),
                 "text": doc.get("text", ""),
-                "type": doc.get("type", "text"),
+                "type": doc.get("type", "text"),  # text, photo, video, audio, document
+                "file_id": doc.get("file_id", ""),  # Telegram file_id for media
+                "file_url": doc.get("file_url", ""),  # CDN URL if available
                 "status": doc.get("status", "open"),
                 "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
         return {"success": True, "data": tickets}
     except Exception as e:
+        logger.error(f"Error fetching support: {e}")
         return {"success": False, "data": []}
 
 class SupportReply(BaseModel):
     telegram_id: str
     ticket_id: str
     reply_text: str
+    reply_media_file_id: Optional[str] = None  # Telegram file_id to forward as media
+    reply_media_type: Optional[str] = None  # photo, video, audio, document
 
 @api_router.post("/admin/support/reply")
 async def reply_support(data: SupportReply):
@@ -646,20 +639,44 @@ async def reply_support(data: SupportReply):
         ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(data.ticket_id)})
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
-            
-        # Send reply to user via Bot API
-        token = Config.MGMT_BOT_TOKEN
+        
+        # Determine which bot token to use (management bot preferred)
+        token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
         if token:
             async with aiohttp.ClientSession() as session:
-                await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                    "chat_id": ticket["user_id"],
-                    "text": f"<b>📬 Admin Reply to your ticket:</b>\n\n{data.reply_text}",
-                    "parse_mode": "HTML"
-                })
-                
+                chat_id = ticket["user_id"]
+                # Send text reply
+                if data.reply_text:
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": f"<b>Admin Reply:</b>\n\n{data.reply_text}",
+                        "parse_mode": "HTML"
+                    })
+                # Forward media if provided
+                if data.reply_media_file_id and data.reply_media_type:
+                    method_map = {
+                        "photo": "sendPhoto", "video": "sendVideo",
+                        "audio": "sendAudio", "document": "sendDocument"
+                    }
+                    method = method_map.get(data.reply_media_type, "sendDocument")
+                    field_map = {
+                        "photo": "photo", "video": "video",
+                        "audio": "audio", "document": "document"
+                    }
+                    field = field_map.get(data.reply_media_type, "document")
+                    await session.post(f"https://api.telegram.org/bot{token}/{method}", json={
+                        "chat_id": chat_id,
+                        field: data.reply_media_file_id
+                    })
+        
         # Mark resolved
-        await arya_db.db.premium_feedback.update_one({"_id": ObjectId(data.ticket_id)}, {"$set": {"status": "resolved"}})
+        await arya_db.db.premium_feedback.update_one(
+            {"_id": ObjectId(data.ticket_id)},
+            {"$set": {"status": "resolved", "admin_reply": data.reply_text}}
+        )
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -743,20 +760,37 @@ async def get_admin_buyers(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
-        # Get orders instead of users to show purchase history
-        cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(100)
+        # Get full order data
+        cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(200)
         buyers = []
         async for doc in cursor:
+            # Try to get story names
+            story_ids = doc.get("story_ids", [])
+            if not story_ids and doc.get("story_id"):
+                story_ids = [doc.get("story_id")]
+            story_names = []
+            for sid in story_ids:
+                story = await arya_db.db.premium_stories.find_one({"story_id": sid}, {"story_name_en": 1})
+                if story:
+                    story_names.append(story.get("story_name_en", sid))
+                else:
+                    story_names.append(sid)
             buyers.append({
                 "order_id": str(doc.get("order_id", doc["_id"])),
                 "user_id": doc.get("user_id"),
                 "username": doc.get("username", "Unknown"),
+                "first_name": doc.get("first_name", ""),
                 "amount": doc.get("total_amount", doc.get("amount", 0)),
                 "status": doc.get("status", "unknown"),
+                "payment_id": doc.get("payment_id", doc.get("razorpay_payment_id", "")),
+                "source": doc.get("source", "unknown"),
+                "story_ids": story_ids,
+                "story_names": story_names,
                 "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
         return {"success": True, "data": buyers}
     except Exception as e:
+        logger.error(f"Error fetching buyers: {e}")
         return {"success": False, "data": []}
 
 # ─────────────────────────────────────────────────────────────────
