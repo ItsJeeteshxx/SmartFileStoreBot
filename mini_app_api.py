@@ -121,7 +121,7 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
     if bot_id:
         try:
             arya_db = app.state.db
-            bot_doc = await arya_db.db.premium_bots.find_one({"id": int(bot_id)})
+            bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]})
             if bot_doc and bot_doc.get("token"):
                 token = bot_doc["token"]
         except Exception as e:
