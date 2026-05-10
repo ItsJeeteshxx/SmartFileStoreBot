@@ -112,6 +112,62 @@ async def optimize_image(url: str):
         # If optimization fails, we can redirect to the original URL
         return Response(status_code=302, headers={"Location": url})
 
+@api_router.get("/tg-image")
+async def tg_image_proxy(file_id: str):
+    """Fetches image directly from Telegram using a file_id, optimizes to WebP and caches it."""
+    from AryaPremium.config import Config
+    
+    token = Config.MGMT_BOT_TOKEN or os.environ.get("MGMT_BOT_TOKEN")
+    if not token:
+        raise HTTPException(status_code=500, detail="No bot token available")
+        
+    if file_id in IMAGE_CACHE:
+        return Response(content=IMAGE_CACHE[file_id], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+        
+    try:
+        async with aiohttp.ClientSession() as session:
+            # 1. Get file path
+            async with session.get(f"https://api.telegram.org/bot{token}/getFile", params={"file_id": file_id}, timeout=10) as resp:
+                data = await resp.json()
+                if not data.get("ok"):
+                    raise HTTPException(status_code=404, detail="getFile failed")
+                file_path = data["result"]["file_path"]
+                
+            # 2. Download file
+            dl_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+            async with session.get(dl_url, timeout=15) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=404, detail="File download failed")
+                img_bytes = await resp.read()
+                
+        # Optimize using Pillow
+        img = Image.open(io.BytesIO(img_bytes))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA")
+            
+        img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+        
+        output = io.BytesIO()
+        img.save(output, format="WEBP", quality=85, method=6)
+        optimized_bytes = output.getvalue()
+        
+        if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
+            IMAGE_CACHE.clear()
+            
+        IMAGE_CACHE[file_id] = optimized_bytes
+        
+        return Response(
+            content=optimized_bytes, 
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TG Image proxy error for {file_id}: {e}")
+        # Return a fallback or 404
+        raise HTTPException(status_code=404, detail="Image fetch failed")
+
 # ─────────────────────────────────────────────────────────────────
 # Helper: format a single MongoDB story doc → frontend Story shape
 # ─────────────────────────────────────────────────────────────────
@@ -149,6 +205,8 @@ def _format_story(s: dict) -> dict | None:
         or s.get("image")       # Telegram file_id (mgmt bot saves this)
         or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400"
     )
+    if cover and not cover.startswith("http"):
+        cover = f"/api/tg-image?file_id={cover}"
 
     return {
         "id":           story_id,
@@ -324,56 +382,6 @@ async def check_payment_link(id: str, payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────────────────────────────────
-# POST /admin/upload-image  — compress + catbox upload + TG file_id
-# ─────────────────────────────────────────────────────────────────
-@api_router.post("/admin/upload-image")
-async def upload_image(telegram_id: str = Form(...), file: UploadFile = File(...)):
-    """Compress image, upload to catbox.moe for URL, send to TG to get file_id."""
-    from AryaPremium.config import Config
-    import aiohttp, io
-    try:
-        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
-            raise HTTPException(status_code=403, detail="Not authorized")
-        raw = await file.read()
-        # Compress with Pillow
-        try:
-            from PIL import Image
-            img = Image.open(io.BytesIO(raw)).convert("RGB")
-            if img.width > 800:
-                img = img.resize((800, int(img.height * 800 / img.width)), Image.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format="WEBP", quality=82, optimize=True)
-            compressed = buf.getvalue(); ext = "webp"; mime = "image/webp"
-        except ImportError:
-            compressed = raw; ext = (file.filename or "img.jpg").rsplit(".", 1)[-1]; mime = file.content_type or "image/jpeg"
-        # Upload to catbox.moe
-        poster_url = ""
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("reqtype", "fileupload")
-            form.add_field("fileToUpload", compressed, filename=f"story.{ext}", content_type=mime)
-            r = await session.post("https://catbox.moe/user.php", data=form, timeout=aiohttp.ClientTimeout(total=30))
-            if r.status == 200:
-                poster_url = (await r.text()).strip()
-        # Send to TG to get file_id
-        tg_file_id = ""
-        token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
-        log_ch = getattr(Config, "LOG_CHANNEL", None) or (Config.OWNER_IDS[0] if Config.OWNER_IDS else None)
-        if token and log_ch and poster_url:
-            async with aiohttp.ClientSession() as session:
-                r = await session.post(f"https://api.telegram.org/bot{token}/sendPhoto",
-                    json={"chat_id": log_ch, "photo": poster_url, "caption": "Admin Panel image upload"})
-                d = await r.json()
-                if d.get("ok"):
-                    tg_file_id = d["result"]["photo"][-1]["file_id"]
-        return {"success": True, "poster_url": poster_url, "file_id": tg_file_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Image upload failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────────────────────────────────────────────────────────────
 # POST /support
