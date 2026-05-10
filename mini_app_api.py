@@ -700,6 +700,24 @@ async def get_my_purchases(telegram_id: str):
                     formatted = _format_story(story)
                     if formatted:
                         formatted["story_id"] = formatted["id"]
+                        
+                        # Find if there's an order via Mini App for this story
+                        order = await arya_db.db.orders.find_one({
+                            "user_id": {"$in": [user_id_int, str(user_id_int)]},
+                            "story_ids": story_id,
+                            "status": {"$in": ["paid", "delivered"]}
+                        })
+                        
+                        if order:
+                            formatted["order_details"] = {
+                                "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
+                                "source": order.get("source", "miniapp"),
+                                "status": order.get("status"),
+                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", ""))
+                            }
+                        else:
+                            formatted["order_details"] = None
+
                         purchased_items.append(formatted)
             except Exception:
                 pass
@@ -1190,14 +1208,13 @@ async def get_popular():
         from bson.objectid import ObjectId
         
         pipeline = [
-            {"$match": {"status": {"$in": ["paid", "delivered"]}}},
-            {"$unwind": "$story_ids"},
-            {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}},
+            {"$unwind": "$purchases"},
+            {"$group": {"_id": "$purchases", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
-            {"$limit": 10}
+            {"$limit": 9}
         ]
         
-        agg = await arya_db.db.orders.aggregate(pipeline).to_list(10)
+        agg = await arya_db.db.premium_users.aggregate(pipeline).to_list(9)
         result = []
         
         for item in agg:
@@ -1295,14 +1312,44 @@ async def get_admin_buyers(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
-        # Get full order data
-        cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(200)
         buyers = []
+        
+        # 1. Bot buyers
+        bot_buyers_cursor = arya_db.db.premium_users.find({"purchases.0": {"$exists": True}}).sort("id", -1).limit(100)
+        bot_buyers = await bot_buyers_cursor.to_list(length=100)
+        bot_buyer_ids = {u.get("id") for u in bot_buyers}
+        
+        for u in bot_buyers:
+            uid = u.get("id")
+            buyers.append({
+                "order_id": f"bot_{uid}",
+                "user_id": uid,
+                "username": u.get("username", "Unknown"),
+                "first_name": u.get("first_name", ""),
+                "amount": 0, # Cannot determine amount easily without looking at premium_checkout
+                "status": "paid",
+                "payment_id": "",
+                "source": "bot",
+                "story_ids": u.get("purchases", []),
+                "story_names": [f"Bot Purchases ({len(u.get('purchases', []))})"],
+                "date": u.get("joined_date", datetime.now(timezone.utc)).isoformat() if isinstance(u.get("joined_date"), datetime) else str(u.get("joined_date", ""))
+            })
+
+        # 2. Mini app buyers
+        cursor = arya_db.db.orders.find({"status": "paid"}).sort("created_at", -1).limit(100)
         async for doc in cursor:
-            # Try to get story names
+            uid = doc.get("user_id")
+            # Avoid duplicate rows if they bought both via bot and app
+            if uid in bot_buyer_ids:
+                continue
+                
+            try: uid_int = int(uid)
+            except: uid_int = uid
+            
             story_ids = doc.get("story_ids", [])
             if not story_ids and doc.get("story_id"):
                 story_ids = [doc.get("story_id")]
+                
             story_names = []
             for sid in story_ids:
                 story = await arya_db.db.premium_stories.find_one({"story_id": sid}, {"story_name_en": 1})
@@ -1312,21 +1359,59 @@ async def get_admin_buyers(telegram_id: str):
                     story_names.append(sid)
             buyers.append({
                 "order_id": str(doc.get("order_id", doc["_id"])),
-                "user_id": doc.get("user_id"),
+                "user_id": uid_int,
                 "username": doc.get("username", "Unknown"),
                 "first_name": doc.get("first_name", ""),
                 "amount": doc.get("total_amount", doc.get("amount", 0)),
                 "status": doc.get("status", "unknown"),
                 "payment_id": doc.get("payment_id", doc.get("razorpay_payment_id", "")),
-                "source": doc.get("source", "unknown"),
+                "source": doc.get("source", "miniapp"),
                 "story_ids": story_ids,
                 "story_names": story_names,
                 "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
-        return {"success": True, "data": buyers}
+            
+        # Sort combined buyers by date
+        buyers.sort(key=lambda x: x.get("date", ""), reverse=True)
+            
+        return {"success": True, "data": buyers[:200]}
     except Exception as e:
         logger.error(f"Error fetching buyers: {e}")
         return {"success": False, "data": []}
+
+@api_router.post("/admin/buyers/{user_id}/action")
+async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        action = payload.get("action")
+        target_uid = int(user_id) if user_id.isdigit() else user_id
+        arya_db = app.state.db
+        
+        if action == "wipe":
+            await arya_db.db.premium_users.delete_one({"id": target_uid})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
+            return {"success": True, "message": "User data wiped completely."}
+            
+        elif action == "ban":
+            await arya_db.db.premium_users.delete_one({"id": target_uid})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
+            await arya_db.db.premium_users.update_one(
+                {"id": target_uid},
+                {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App"}},
+                upsert=True
+            )
+            return {"success": True, "message": "User wiped and banned."}
+            
+        raise HTTPException(status_code=400, detail="Invalid action")
+    except Exception as e:
+        logger.error(f"Buyer action error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────────────────────────────────────────────────────────────
 # ANALYTICS TRACKING
