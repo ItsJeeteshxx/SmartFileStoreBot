@@ -113,11 +113,23 @@ async def optimize_image(url: str):
         return Response(status_code=302, headers={"Location": url})
 
 @api_router.get("/tg-image")
-async def tg_image_proxy(file_id: str):
+async def tg_image_proxy(file_id: str, bot_id: str = None):
     """Fetches image directly from Telegram using a file_id, optimizes to WebP and caches it."""
     from AryaPremium.config import Config
     
-    token = Config.MGMT_BOT_TOKEN or os.environ.get("MGMT_BOT_TOKEN")
+    token = None
+    if bot_id:
+        try:
+            arya_db = app.state.db
+            bot_doc = await arya_db.db.premium_bots.find_one({"id": int(bot_id)})
+            if bot_doc and bot_doc.get("token"):
+                token = bot_doc["token"]
+        except Exception as e:
+            logger.error(f"Failed to fetch bot token for {bot_id}: {e}")
+            
+    if not token:
+        token = Config.MGMT_BOT_TOKEN or os.environ.get("MGMT_BOT_TOKEN")
+        
     if not token:
         raise HTTPException(status_code=500, detail="No bot token available")
         
@@ -206,7 +218,8 @@ def _format_story(s: dict) -> dict | None:
         or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400"
     )
     if cover and not cover.startswith("http"):
-        cover = f"/api/tg-image?file_id={cover}"
+        bot_id = s.get("bot_id")
+        cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
 
     return {
         "id":           story_id,
