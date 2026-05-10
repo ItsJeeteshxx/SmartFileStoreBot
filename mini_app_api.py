@@ -1039,6 +1039,92 @@ async def get_admin_support(telegram_id: str):
         logger.error(f"Error fetching support: {e}")
         return {"success": False, "data": []}
 
+# ─────────────────────────────────────────────────────────────────
+# ADMIN STORY REQUESTS MANAGEMENT
+# ─────────────────────────────────────────────────────────────────
+@api_router.get("/admin/requests")
+async def get_admin_requests(telegram_id: str):
+    """Fetch all story requests (type=REQUEST) for admin management."""
+    from AryaPremium.config import Config
+    from bson.objectid import ObjectId
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        cursor = arya_db.db.premium_feedback.find(
+            {"text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}}
+        ).sort("created_at", -1).limit(200)
+        items = []
+        async for doc in cursor:
+            raw_text = doc.get("text", "")
+            # Strip [REQUEST] prefix for display
+            display_text = raw_text.replace("[REQUEST]", "").replace("[request]", "").strip()
+            items.append({
+                "id": str(doc["_id"]),
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username", ""),
+                "first_name": doc.get("user_name", doc.get("first_name", "Unknown")),
+                "text": display_text,
+                "raw_text": raw_text,
+                "file_url": doc.get("file_url", ""),
+                "status": doc.get("status", "open"),
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            })
+        return {"success": True, "data": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching admin requests: {e}")
+        return {"success": False, "data": []}
+
+class RequestStatusUpdate(BaseModel):
+    telegram_id: str
+    status: str  # "open" | "in_progress" | "completed" | "rejected"
+    reply_text: Optional[str] = None
+
+@api_router.patch("/admin/requests/{request_id}")
+async def update_request_status(request_id: str, data: RequestStatusUpdate):
+    """Update the status of a story request, optionally notifying the user via Telegram."""
+    from AryaPremium.config import Config
+    from bson.objectid import ObjectId
+    import aiohttp
+    try:
+        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        doc = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(request_id)})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Request not found")
+        update_fields = {"status": data.status}
+        if data.reply_text:
+            update_fields["admin_reply"] = data.reply_text
+        await arya_db.db.premium_feedback.update_one(
+            {"_id": ObjectId(request_id)},
+            {"$set": update_fields}
+        )
+        # Optionally notify user
+        if data.reply_text:
+            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            if token and doc.get("user_id"):
+                status_emoji = {"open": "🟡", "in_progress": "🔵", "completed": "✅", "rejected": "❌"}.get(data.status, "📢")
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                            "chat_id": doc["user_id"],
+                            "text": f"<b>{status_emoji} Story Request Update</b>\n\n<b>Status:</b> {data.status.replace('_',' ').title()}\n\n{data.reply_text}",
+                            "parse_mode": "HTML"
+                        }, timeout=5)
+                except Exception as e:
+                    logger.warning(f"Failed to notify user: {e}")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating request: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update request")
+
 class SupportReply(BaseModel):
     telegram_id: str
     ticket_id: str
