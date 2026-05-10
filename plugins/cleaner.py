@@ -360,7 +360,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         # ── Audio Ad Injection Setup ───────────────────────────────────────
         # Download ad files once for the entire job, reuse for each injection
         _ad_local = {}   # {"hindi": path, "eng": path, "cleaner": path}
-        _ad_report = []  # [(serial_num, ad_type, at_ts)] — for final report
+        # Load existing ad injection report from DB (persists across resumes)
+        _ad_report = list(job.get("ad_inject_report", []) or [])
 
         # Compute which serial numbers get which ad type (based on total batch size)
         # Batch Rule: ≤50 files → 1+1+1; >50 → 2+2+1
@@ -886,7 +887,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         # Build ffmpeg command: -i main_file, -i ad1, -i ad2, ...
                         _inj_out = os.path.abspath(f"temp_cl_inj_{job_id}_{active_mid}_out.mp3")
                         _ff_inj_one = [
-                            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                            "ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
                             "-analyzeduration", "2M", "-probesize", "2M",
                             "-i", out_path,  # input 0: main file
                         ]
@@ -972,6 +973,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 for _si, _at in enumerate(_valid_ads):
                                     _ad_report.append((curr_num, _at, f"{int(_split_pts[_si]//60)}m{int(_split_pts[_si]%60)}s"))
                                 logger.info(f"[Cleaner {job_id}] One-shot injected {_n_valid} ads into serial={curr_num}")
+                                # Persist cumulative ad_inject_report to DB so resume doesn't lose count
+                                try:
+                                    await _cl_update_job(job_id, {"ad_inject_report": _ad_report})
+                                except Exception:
+                                    pass
                             else:
                                 logger.warning(f"[Cleaner {job_id}] One-shot ad inject failed serial={curr_num}: {_inj_err[:120]}")
                                 try:

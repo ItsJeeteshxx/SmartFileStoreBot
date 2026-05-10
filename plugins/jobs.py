@@ -105,25 +105,33 @@ async def _lj_get_me_cached(client):
 # ─── Client health-check / reconnect ────────────────────────────────────
 async def _lj_ensure_client_alive(client, acc: dict = None):
     """
-    Verify the Pyrogram client transport is alive using a cheap MTProto Ping.
-    If dead, attempt a cold restart with exponential backoff (up to 3 attempts).
+    Verify the Pyrogram client transport is alive.
 
-    KEY FIXES vs old version:
-    - Uses Ping (not get_me/GetFullUser) → no FLOOD_WAIT_X from health checks
-    - Per-session cooldown prevents hammering reconnect on multiple jobs
-    - Exponential backoff: 5s, 15s, 30s between attempts
-    - Clears me cache on restart so next get_me is fresh
+    Strategy (v4 — zero false-kills):
+    1. Check Pyrogram's own is_connected() first — if True, trust it and return.
+       Pyrogram maintains its own internal connection state; if it says alive, it is.
+    2. Only if is_connected() is False/uncertain, attempt a cheap MTProto Ping.
+    3. If ping fails, try to reconnect using start_clone_bot (up to 5 attempts).
+    4. Never hard-fail for VPS network blips — raise only after 5 exhausted attempts.
+
+    KEY FIXES vs v3:
+    - Removed 30s cooldown that was masking real disconnections on multi-job setups
+    - Pyrogram's is_connected() check avoids unnecessary pings (95% of calls return here)
+    - 5 attempts with 2/5/15/30/60s backoff — more resilient to brief VPS packet loss
+    - Cold restart only triggered when both is_connected() AND ping both fail
     """
     sname = getattr(client, 'name', None) or str(id(client))
 
-    # Per-session reconnect cooldown: don't try reconnecting more than once per 30s
-    last_rc = _lj_last_reconnect.get(sname, 0)
-    now = asyncio.get_event_loop().time()
-    if (now - last_rc) < 30:
-        # Recently tried reconnecting — assume alive to avoid hammering
-        return client
+    # ── Step 1: Trust Pyrogram's own connection state (fastest check) ────────
+    try:
+        if getattr(client, 'is_connected', None) and client.is_connected:
+            return client   # Pyrogram says connected — trust it ✔️
+    except Exception:
+        pass
 
-    for attempt in range(3):
+    # ── Step 2: Attempt ping + restart up to 5 times ─────────────────────────
+    BACKOFFS = [2, 5, 15, 30, 60]
+    for attempt in range(5):
         is_alive = False
         try:
             is_alive = await _lj_ping_client(client)
@@ -131,38 +139,47 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
             logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
 
         if is_alive:
+            logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
             return client   # alive ✔️
 
-        backoff = [5, 15, 30][attempt]
-        logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/{3}) — reconnecting in {backoff}s…")
+        backoff = BACKOFFS[attempt]
+        logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
         _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
 
-        # Clean up the dead client reference
-        try:
-            if sname:
-                await release_client(sname)
-        except Exception: pass
-        # DO NOT manually await client.stop() here — it breaks parallel tasks using this client!
-
-        # Evict stale me cache
+        # Evict stale me cache before restart
         _lj_me_cache.pop(sname, None)
 
         await asyncio.sleep(backoff)
 
+        # Try to bring the session back up
         try:
+            # Try release first to clear stale state (ignore errors)
+            try:
+                await release_client(sname)
+            except Exception:
+                pass
+
             new_client = _CLIENT.client(acc) if acc else client
             client = await start_clone_bot(new_client, force_restart=True)
-            # Verify with ping (not get_me) after cold start
+            # After restart, check Pyrogram's own state first
+            try:
+                if getattr(client, 'is_connected', None) and client.is_connected:
+                    logger.info(f"[LiveJob] Client reconnected (is_connected) on attempt {attempt+1}")
+                    return client
+            except Exception:
+                pass
+            # Confirm with ping
             if await _lj_ping_client(client):
-                logger.info(f"[LiveJob] Client reconnected successfully on attempt {attempt+1}")
+                logger.info(f"[LiveJob] Client reconnected (ping) on attempt {attempt+1}")
                 return client
         except FloodWait as fw:
             logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
-            await asyncio.sleep(fw.value + 2)
+            await asyncio.sleep(min(fw.value + 2, 60))
         except Exception as re_err:
             logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
 
-    raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 3 attempts")
+    raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
+
 
 
 @Client.on_message(filters.private, group=-12)

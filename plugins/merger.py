@@ -537,7 +537,8 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
         if not needs_reencode:
             # Lossless concat copy (only for uniform-codec part files)
-            cmd = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS,
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                   "-threads", FFMPEG_THREADS,
                    "-f", "concat", "-safe", "0", "-i", lst,
                    "-fflags", "+genpts",
                    "-avoid_negative_ts", "make_zero"]
@@ -577,7 +578,8 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             # -af atempo chain applies exact 2.5x (or whatever speed) here
             # 48 kHz / 192 kbps AAC — lossless-equivalent for speech/audio dramas
             audio_join_cmd = [
-                "ffmpeg", "-y", "-threads", FFMPEG_THREADS,
+                "ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                "-threads", FFMPEG_THREADS,
                 "-f", "concat", "-safe", "0",
                 "-i", lst,
                 "-vn",                              # drop any video streams
@@ -627,7 +629,8 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             #   • -shortest       → stop when audio ends (not when static image loop ends)
             #   • -fflags +genpts → regenerate timestamps cleanly
 
-            cmd_v = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS]
+            cmd_v = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                     "-threads", FFMPEG_THREADS]
 
             if valid_outros and len(valid_outros) >= 4:
                 outro_positions = [
@@ -709,7 +712,8 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
         elif mtype == "video":
             # Pure video file concat with optional speed adjustment
             # superfast preset ~35% less CPU than veryfast for full-motion video
-            cmd2 = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS,
+            cmd2 = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                    "-threads", FFMPEG_THREADS,
                     "-f", "concat", "-safe", "0", "-i", lst,
                     "-fflags", "+genpts",
                     "-avoid_negative_ts", "make_zero"]
@@ -742,7 +746,8 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             # Audio re-encode path — used for CHUNK merges (≤CHUNK_SIZE files).
             # filter_complex concat handles mixed codecs (mp3 + m4a + ogg) safely.
             # Final combine of uniform .mp3 parts uses the fast lossless path above.
-            cmd2 = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS]
+            cmd2 = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                    "-threads", FFMPEG_THREADS]
             for p in file_list:
                 cmd2 += ["-i", os.path.abspath(p)]
             n = len(file_list)
