@@ -152,16 +152,18 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
                     raise HTTPException(status_code=404, detail="File download failed")
                 img_bytes = await resp.read()
                 
-        # Optimize using Pillow
-        img = Image.open(io.BytesIO(img_bytes))
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGBA")
+        # Optimize using Pillow in a separate thread
+        import asyncio
+        def process_image(img_data):
+            img = Image.open(io.BytesIO(img_data))
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            img.save(output, format="WEBP", quality=85, method=6)
+            return output.getvalue()
             
-        img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
-        
-        output = io.BytesIO()
-        img.save(output, format="WEBP", quality=85, method=6)
-        optimized_bytes = output.getvalue()
+        optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
         
         if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
             IMAGE_CACHE.clear()
@@ -726,55 +728,60 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
     try:
         contents = await file.read()
         
-        # Compress image
-        img = Image.open(io.BytesIO(contents))
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.thumbnail((800, 800))
-        output = io.BytesIO()
-        img.save(output, format="JPEG", quality=75, optimize=True)
-        img_bytes = output.getvalue()
-
-        poster_url = ""
-        file_id = ""
-
-        # Try Cloudflare R2 if configured
+        import asyncio
         import os
         import uuid
         from decouple import config
+        
         r2_account_id = config("R2_ACCOUNT_ID", default="")
         r2_access_key = config("R2_ACCESS_KEY_ID", default="")
         r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
         r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
-        r2_domain = config("R2_CUSTOM_DOMAIN", default="") # e.g., "images.my-app.com"
+        r2_domain = config("R2_CUSTOM_DOMAIN", default="")
         
-        if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
-            import boto3
-            try:
-                s3 = boto3.client(
-                    "s3",
-                    endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
-                    aws_access_key_id=r2_access_key,
-                    aws_secret_access_key=r2_secret_key,
-                    region_name="auto"
-                )
-                filename = f"{uuid.uuid4().hex}.jpg"
-                s3.put_object(
-                    Bucket=r2_bucket,
-                    Key=filename,
-                    Body=img_bytes,
-                    ContentType="image/jpeg"
-                )
-                if r2_domain:
-                    domain = r2_domain.strip("/")
-                    if not domain.startswith("http"):
-                        domain = "https://" + domain
-                    poster_url = f"{domain}/{filename}"
-                else:
-                    poster_url = f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{filename}"
-            except Exception as e:
-                logger.error(f"Cloudflare R2 upload failed: {e}")
-                poster_url = ""
+        def process_and_upload(data_bytes):
+            # Compress image
+            img = Image.open(io.BytesIO(data_bytes))
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.thumbnail((800, 800))
+            output = io.BytesIO()
+            img.save(output, format="JPEG", quality=75, optimize=True)
+            compressed_bytes = output.getvalue()
+            
+            url = ""
+            if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
+                import boto3
+                try:
+                    s3 = boto3.client(
+                        "s3",
+                        endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                        aws_access_key_id=r2_access_key,
+                        aws_secret_access_key=r2_secret_key,
+                        region_name="auto"
+                    )
+                    filename = f"{uuid.uuid4().hex}.jpg"
+                    s3.put_object(
+                        Bucket=r2_bucket,
+                        Key=filename,
+                        Body=compressed_bytes,
+                        ContentType="image/jpeg"
+                    )
+                    if r2_domain:
+                        domain = r2_domain.strip("/")
+                        if not domain.startswith("http"):
+                            domain = "https://" + domain
+                        url = f"{domain}/{filename}"
+                    else:
+                        url = f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{filename}"
+                except Exception as e:
+                    logger.error(f"Cloudflare R2 upload failed: {e}")
+            
+            return compressed_bytes, url
+            
+        img_bytes, poster_url = await asyncio.to_thread(process_and_upload, contents)
+        
+        file_id = ""
         
         # Fallback to Catbox
         if not poster_url:
@@ -1019,6 +1026,43 @@ async def get_banners():
         return {"success": True, "data": result[:10]}
     except Exception as e:
         logger.error(f"/banners error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/popular")
+async def get_popular():
+    """
+    Returns the top 10 most purchased stories.
+    """
+    try:
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+        
+        pipeline = [
+            {"$match": {"status": {"$in": ["paid", "delivered"]}}},
+            {"$unwind": "$story_ids"},
+            {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 10}
+        ]
+        
+        agg = await arya_db.db.orders.aggregate(pipeline).to_list(10)
+        result = []
+        
+        for item in agg:
+            try:
+                story_id = item["_id"]
+                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(story_id))})
+                if story:
+                    fmt = _format_story(story)
+                    if fmt:
+                        fmt["buy_count"] = item["count"]
+                        result.append(fmt)
+            except Exception as e:
+                logger.warning(f"Error formatting popular story {item.get('_id')}: {e}")
+                
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"/popular error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
