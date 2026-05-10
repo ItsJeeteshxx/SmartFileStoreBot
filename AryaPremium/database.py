@@ -66,10 +66,25 @@ class PremiumDatabase:
         return await self.stories.find_one({"story_id": story_id})
 
     async def save_story(self, data: dict):
-        # Insert or update
         story_id = data.get("story_id")
-        await self.stories.update_one({"story_id": story_id}, {"$set": data}, upsert=True)
+        query = {"story_id": story_id}
         
+        # If story_id looks like a 24-char ObjectId, it might be an old story that didn't have story_id
+        if story_id and len(str(story_id)) == 24:
+            from bson.objectid import ObjectId
+            try:
+                obj_id = ObjectId(str(story_id))
+                query = {"$or": [{"story_id": story_id}, {"_id": obj_id}]}
+            except:
+                pass
+                
+        existing = await self.stories.find_one(query)
+        if existing:
+            # Strip _id from data if present to avoid modifying immutable field
+            data.pop("_id", None)
+            await self.stories.update_one({"_id": existing["_id"]}, {"$set": data})
+        else:
+            await self.stories.insert_one(data)
     async def delete_story(self, story_id: str):
         await self.stories.delete_one({"story_id": story_id})
 
