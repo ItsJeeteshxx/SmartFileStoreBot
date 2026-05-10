@@ -720,11 +720,12 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
         # Try Cloudflare R2 if configured
         import os
         import uuid
-        r2_account_id = os.getenv("R2_ACCOUNT_ID")
-        r2_access_key = os.getenv("R2_ACCESS_KEY_ID")
-        r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
-        r2_bucket = os.getenv("R2_BUCKET_NAME")
-        r2_domain = os.getenv("R2_CUSTOM_DOMAIN") # e.g., "images.my-app.com"
+        from decouple import config
+        r2_account_id = config("R2_ACCOUNT_ID", default="")
+        r2_access_key = config("R2_ACCESS_KEY_ID", default="")
+        r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
+        r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
+        r2_domain = config("R2_CUSTOM_DOMAIN", default="") # e.g., "images.my-app.com"
         
         if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
             import boto3
