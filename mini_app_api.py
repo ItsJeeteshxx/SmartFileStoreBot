@@ -48,6 +48,69 @@ app.add_middleware(
 
 api_router = APIRouter()
 
+import aiohttp
+import io
+import hashlib
+from fastapi.responses import Response
+from PIL import Image
+
+# In-memory LRU cache for image bytes (simple dict to prevent memory leaks if it gets too large)
+IMAGE_CACHE = {}
+MAX_CACHE_ITEMS = 500
+
+@api_router.get("/image")
+async def optimize_image(url: str):
+    """
+    Acts as an Image Proxy: Fetches external image (like Catbox), converts to WebP,
+    compresses to maintain visual quality without large file size, and caches it.
+    """
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+
+    # Check cache
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    if url_hash in IMAGE_CACHE:
+        return Response(content=IMAGE_CACHE[url_hash], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=404, detail="Image not found")
+                img_bytes = await resp.read()
+
+        # Optimize using Pillow
+        img = Image.open(io.BytesIO(img_bytes))
+        
+        # Convert to RGB if needed (WebP supports RGBA, but we drop alpha for poster if we want, or keep it)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA")
+            
+        # Resize if extremely large (e.g., > 1200px) to save bandwidth, else keep original resolution
+        max_size = (1200, 1200)
+        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Save as WebP
+        output = io.BytesIO()
+        img.save(output, format="WEBP", quality=85, method=6) # method=6 is max compression effort
+        optimized_bytes = output.getvalue()
+        
+        # Manage cache size
+        if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
+            # simple clear, or we could pop random. In-memory is fast enough to just clear.
+            IMAGE_CACHE.clear()
+            
+        IMAGE_CACHE[url_hash] = optimized_bytes
+        
+        return Response(
+            content=optimized_bytes, 
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"}
+        )
+    except Exception as e:
+        logger.error(f"Image proxy error for {url}: {e}")
+        # If optimization fails, we can redirect to the original URL
+        return Response(status_code=302, headers={"Location": url})
 
 # ─────────────────────────────────────────────────────────────────
 # Helper: format a single MongoDB story doc → frontend Story shape
