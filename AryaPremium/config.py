@@ -43,7 +43,7 @@ class Config:
     # Support all common key names for MongoDB URI
     MONGO_URI     = _env("MONGO_URI") or _env("DATABASE_URI") or _env("DATABASE", "")
     DATABASE_NAME = _env("DATABASE_NAME", "forward-bot")
-    OWNER_IDS     = [int(i.strip()) for i in _env("BOT_OWNER_ID", "0").split() if i.strip().isdigit()]
+    OWNER_IDS     = [int(i.strip()) for i in _env("BOT_OWNER_ID", "0").replace(",", " ").split() if i.strip().isdigit()]
     # Backward-compatible alias used by some callbacks.
     SUDO_USERS    = OWNER_IDS
     PAYMENT_LOGS_CHANNEL = _env("PAYMENT_LOGS_CHANNEL", "")
