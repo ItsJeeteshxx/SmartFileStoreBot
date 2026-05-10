@@ -262,6 +262,57 @@ async def check_payment_link(id: str, payload: dict):
 
 
 # ─────────────────────────────────────────────────────────────────
+# POST /admin/upload-image  — compress + catbox upload + TG file_id
+# ─────────────────────────────────────────────────────────────────
+@api_router.post("/admin/upload-image")
+async def upload_image(telegram_id: str = Form(...), file: UploadFile = File(...)):
+    """Compress image, upload to catbox.moe for URL, send to TG to get file_id."""
+    from AryaPremium.config import Config
+    import aiohttp, io
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        raw = await file.read()
+        # Compress with Pillow
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+            if img.width > 800:
+                img = img.resize((800, int(img.height * 800 / img.width)), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="WEBP", quality=82, optimize=True)
+            compressed = buf.getvalue(); ext = "webp"; mime = "image/webp"
+        except ImportError:
+            compressed = raw; ext = (file.filename or "img.jpg").rsplit(".", 1)[-1]; mime = file.content_type or "image/jpeg"
+        # Upload to catbox.moe
+        poster_url = ""
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("reqtype", "fileupload")
+            form.add_field("fileToUpload", compressed, filename=f"story.{ext}", content_type=mime)
+            r = await session.post("https://catbox.moe/user.php", data=form, timeout=aiohttp.ClientTimeout(total=30))
+            if r.status == 200:
+                poster_url = (await r.text()).strip()
+        # Send to TG to get file_id
+        tg_file_id = ""
+        token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+        log_ch = getattr(Config, "LOG_CHANNEL", None) or (Config.OWNER_IDS[0] if Config.OWNER_IDS else None)
+        if token and log_ch and poster_url:
+            async with aiohttp.ClientSession() as session:
+                r = await session.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                    json={"chat_id": log_ch, "photo": poster_url, "caption": "Admin Panel image upload"})
+                d = await r.json()
+                if d.get("ok"):
+                    tg_file_id = d["result"]["photo"][-1]["file_id"]
+        return {"success": True, "poster_url": poster_url, "file_id": tg_file_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Image upload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────
 # POST /support
 # ─────────────────────────────────────────────────────────────────
 @api_router.post("/support")
@@ -503,8 +554,13 @@ async def get_admin_stories(telegram_id: str):
             
         arya_db = app.state.db
         stories = await arya_db.get_all_stories()
-        # Return raw stories for admin editing
-        return {"success": True, "data": [{**s, "_id": str(s["_id"])} for s in stories]}
+        result = []
+        for s in stories:
+            _id_str = str(s["_id"])
+            # Always ensure story_id is set — fallback to _id if missing
+            story_id = s.get("story_id") or _id_str
+            result.append({**s, "_id": _id_str, "story_id": story_id})
+        return {"success": True, "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
