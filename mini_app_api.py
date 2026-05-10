@@ -626,6 +626,64 @@ async def save_admin_story(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────────────────────────────────────────────────────────────
+# UPLOAD ADMIN IMAGE (POST /admin/upload-image)
+# ─────────────────────────────────────────────────────────────────
+@api_router.post("/admin/upload-image")
+async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = File(...)):
+    from AryaPremium.config import Config
+    import aiohttp
+    import io
+    from PIL import Image
+
+    user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+    if user_id_int not in Config.OWNER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        contents = await file.read()
+        
+        # Compress image
+        img = Image.open(io.BytesIO(contents))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.thumbnail((800, 800))
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=75, optimize=True)
+        img_bytes = output.getvalue()
+
+        poster_url = ""
+        file_id = ""
+
+        # Upload to Catbox
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("reqtype", "fileupload")
+            form.add_field("fileToUpload", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+            async with session.post("https://catbox.moe/user/api.php", data=form) as resp:
+                if resp.status == 200:
+                    poster_url = await resp.text()
+        
+        # Upload to Telegram to get file_id
+        token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+        if token:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("chat_id", str(user_id_int))
+                form.add_field("photo", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+                form.add_field("caption", f"Auto-uploaded poster from Mini App Admin")
+                async with session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        photos = data.get("result", {}).get("photo", [])
+                        if photos:
+                            file_id = photos[-1]["file_id"]
+        
+        return {"success": True, "poster_url": poster_url, "file_id": file_id}
+    except Exception as e:
+        logger.error(f"Image upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────
 # DELETE /admin/story/{story_id}
 # ─────────────────────────────────────────────────────────────────
 @api_router.delete("/admin/story/{story_id}")
