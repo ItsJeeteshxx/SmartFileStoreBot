@@ -717,18 +717,56 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
         poster_url = ""
         file_id = ""
 
-        # Upload to Catbox (with timeout so it doesn't break Vercel proxy if Catbox is slow/blocking)
-        try:
-            async with aiohttp.ClientSession() as session:
-                form = aiohttp.FormData()
-                form.add_field("reqtype", "fileupload")
-                form.add_field("fileToUpload", img_bytes, filename="poster.jpg", content_type="image/jpeg")
-                async with session.post("https://catbox.moe/user/api.php", data=form, timeout=6) as resp:
-                    if resp.status == 200:
-                        poster_url = await resp.text()
-        except Exception as e:
-            logger.error(f"Catbox upload failed: {e}")
-            poster_url = ""
+        # Try Cloudflare R2 if configured
+        import os
+        import uuid
+        r2_account_id = os.getenv("R2_ACCOUNT_ID")
+        r2_access_key = os.getenv("R2_ACCESS_KEY_ID")
+        r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
+        r2_bucket = os.getenv("R2_BUCKET_NAME")
+        r2_domain = os.getenv("R2_CUSTOM_DOMAIN") # e.g., "images.my-app.com"
+        
+        if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
+            import boto3
+            try:
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                    aws_access_key_id=r2_access_key,
+                    aws_secret_access_key=r2_secret_key,
+                    region_name="auto"
+                )
+                filename = f"{uuid.uuid4().hex}.jpg"
+                s3.put_object(
+                    Bucket=r2_bucket,
+                    Key=filename,
+                    Body=img_bytes,
+                    ContentType="image/jpeg"
+                )
+                if r2_domain:
+                    domain = r2_domain.strip("/")
+                    if not domain.startswith("http"):
+                        domain = "https://" + domain
+                    poster_url = f"{domain}/{filename}"
+                else:
+                    poster_url = f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{filename}"
+            except Exception as e:
+                logger.error(f"Cloudflare R2 upload failed: {e}")
+                poster_url = ""
+        
+        # Fallback to Catbox
+        if not poster_url:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    form = aiohttp.FormData()
+                    form.add_field("reqtype", "fileupload")
+                    form.add_field("fileToUpload", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+                    async with session.post("https://catbox.moe/user/api.php", data=form, timeout=6) as resp:
+                        if resp.status == 200:
+                            poster_url = await resp.text()
+            except Exception as e:
+                logger.error(f"Catbox upload failed: {e}")
+                poster_url = ""
         
         # Upload to Telegram to get file_id
         token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
