@@ -1,4 +1,4 @@
-import os
+﻿import os
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -9,9 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Use AryaPremium's own database module (already tested, working)
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import sys
 import importlib
 
@@ -20,16 +20,16 @@ _arya_path = os.path.join(os.path.dirname(__file__), "AryaPremium")
 if _arya_path not in sys.path:
     sys.path.insert(0, _arya_path)
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Lifespan: connect/disconnect
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         from AryaPremium.database import db as arya_db
         await arya_db.connect()
         app.state.db = arya_db
-        logger.info("✅ Connected to MongoDB via AryaPremium DB module")
+        logger.info("âœ… Connected to MongoDB via AryaPremium DB module")
     except Exception as e:
         logger.error(f"DB connect failed: {e}")
         raise
@@ -182,16 +182,16 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
         # Return a fallback or 404
         raise HTTPException(status_code=404, detail="Image fetch failed")
 
-# ─────────────────────────────────────────────────────────────────
-# Helper: format a single MongoDB story doc → frontend Story shape
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Helper: format a single MongoDB story doc â†’ frontend Story shape
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _format_story(s: dict) -> dict | None:
-    # ID — never null
+    # ID â€” never null
     story_id = str(s["_id"]) if s.get("_id") else None
     if not story_id:
         return None
 
-    # TITLE — real value, never "Unknown"
+    # TITLE â€” real value, never "Unknown"
     title = (
         s.get("story_name_en")
         or s.get("story_name_hi")
@@ -204,14 +204,14 @@ def _format_story(s: dict) -> dict | None:
     if not title:
         return None  # skip stories with no title
 
-    # DESCRIPTION — clean UTF-8
+    # DESCRIPTION â€” clean UTF-8
     description = s.get("description") or s.get("description_hi") or ""
     try:
         description = description.encode("utf-8", errors="ignore").decode("utf-8").strip()
     except Exception:
         description = ""
 
-    # COVER — prefer HTTP URL, fallback to Telegram file_id, then placeholder
+    # COVER â€” prefer HTTP URL, fallback to Telegram file_id, then placeholder
     cover = (
         s.get("poster_url")
         or s.get("cover")
@@ -243,9 +243,9 @@ def _format_story(s: dict) -> dict | None:
     }
 
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /stories
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/stories")
 async def get_stories():
     """Fetch all premium stories using AryaPremium's db.get_all_stories()"""
@@ -277,9 +277,9 @@ RZP_KEY_ID = Config.RAZORPAY_KEY
 RZP_KEY_SECRET = Config.RAZORPAY_SECRET
 rzp_client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /create-payment-link
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/create-payment-link")
 async def create_payment_link(payload: dict):
     """Creates a Razorpay Payment Link linked to an order."""
@@ -357,9 +357,9 @@ async def create_payment_link(payload: dict):
         logger.error(f"Razorpay link creation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /check-payment-link
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/check-payment-link")
 async def check_payment_link(id: str, payload: dict):
     """Verifies the status of a Razorpay Payment Link."""
@@ -405,7 +405,7 @@ def _make_order_id(tg_id: str) -> str:
     import uuid
     return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
 
-# ── Razorpay: Create Order ────────────────────────────────────────
+# â”€â”€ Razorpay: Create Order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/create-order")
 async def create_razorpay_order(payload: dict):
     """Create Razorpay order. Returns order_id + key for frontend SDK modal."""
@@ -476,12 +476,12 @@ async def create_razorpay_order(payload: dict):
         raise HTTPException(500, str(e))
 
 
-# ── Razorpay: Verify Payment (HMAC) ──────────────────────────────
+# â”€â”€ Razorpay: Verify Payment (HMAC) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/verify-payment")
 async def verify_payment(payload: dict):
     """
     Verify Razorpay HMAC signature after successful payment.
-    Called automatically by the frontend handler — no user action needed.
+    Called automatically by the frontend handler â€” no user action needed.
     """
     rzp_order_id   = payload.get("razorpay_order_id", "")
     rzp_payment_id = payload.get("razorpay_payment_id", "")
@@ -502,9 +502,9 @@ async def verify_payment(payload: dict):
 
     if not hmac.compare_digest(expected, rzp_signature):
         logger.warning(f"Invalid Razorpay signature for {rzp_payment_id}")
-        raise HTTPException(400, "Payment verification failed — invalid signature")
+        raise HTTPException(400, "Payment verification failed â€” invalid signature")
 
-    # Signature OK — store order + unlock content
+    # Signature OK â€” store order + unlock content
     arya_db = app.state.db
     from bson.objectid import ObjectId
     valid_stories = []
@@ -539,7 +539,7 @@ async def verify_payment(payload: dict):
         for sid in story_ids:
             await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
 
-    logger.info(f"Payment verified: {oid} | {rzp_payment_id} | user={tg_id} | ₹{total}")
+    logger.info(f"Payment verified: {oid} | {rzp_payment_id} | user={tg_id} | â‚¹{total}")
 
     bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
     return {
@@ -550,9 +550,9 @@ async def verify_payment(payload: dict):
     }
 
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /support
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/support")
 async def submit_support(
     telegram_id: str = Form(...),
@@ -590,13 +590,13 @@ async def submit_support(
         import aiohttp
         
         admin_txt = (
-            f"<b>📨 New Feedback from Mini App</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>👤 User:</b> {first_name}\n"
-            f"<b>🔗 Username:</b> @{username}\n"
-            f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
-            f"<b>💬 Type:</b> {type.title()}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>ðŸ“¨ New Feedback from Mini App</b>\n"
+            f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+            f"<b>ðŸ‘¤ User:</b> {first_name}\n"
+            f"<b>ðŸ”— Username:</b> @{username}\n"
+            f"<b>ðŸ†” User ID:</b> <code>{telegram_id}</code>\n"
+            f"<b>ðŸ’¬ Type:</b> {type.title()}\n"
+            f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
             f"<b>Message:</b>\n"
             f"<blockquote>{message[:800]}</blockquote>"
         )
@@ -646,9 +646,9 @@ async def submit_support(
         raise HTTPException(status_code=500, detail="Failed to submit support request")
 
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /my-requests
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/my-requests")
 async def get_my_requests(telegram_id: str):
     """Fetches user's requests and support tickets."""
@@ -673,9 +673,9 @@ async def get_my_requests(telegram_id: str):
         logger.error(f"Failed to fetch requests: {e}")
         return {"success": False, "data": []}
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /my-purchases
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/my-purchases")
 async def get_my_purchases(telegram_id: str):
     """Fetches user's purchased stories."""
@@ -727,9 +727,9 @@ async def get_my_purchases(telegram_id: str):
         logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /admin/stats
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/stats")
 async def get_admin_stats(telegram_id: str):
     """Fetches full admin analysis dashboard."""
@@ -796,9 +796,9 @@ async def get_admin_stats(telegram_id: str):
         logger.error(f"Failed to fetch admin stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /admin/stories
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/stories")
 async def get_admin_stories(telegram_id: str):
     """Fetches all stories for admin management."""
@@ -813,7 +813,7 @@ async def get_admin_stories(telegram_id: str):
         result = []
         for s in stories:
             _id_str = str(s["_id"])
-            # Always ensure story_id is set — fallback to _id if missing
+            # Always ensure story_id is set â€” fallback to _id if missing
             story_id = s.get("story_id") or _id_str
             result.append({**s, "_id": _id_str, "story_id": story_id})
         return {"success": True, "data": result}
@@ -850,12 +850,12 @@ class StoryUpdate(BaseModel):
     poster_url: Optional[str] = ""
     is_completed: Optional[bool] = False
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /admin/story
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/admin/story")
 async def save_admin_story(request: Request):
-    """Creates or updates a story — accepts any JSON payload."""
+    """Creates or updates a story â€” accepts any JSON payload."""
     from AryaPremium.config import Config
     try:
         data = await request.json()
@@ -881,9 +881,9 @@ async def save_admin_story(request: Request):
         logger.error(f"Error saving story: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # UPLOAD ADMIN IMAGE (POST /admin/upload-image)
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/admin/upload-image")
 async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = File(...)):
     from AryaPremium.config import Config
@@ -990,9 +990,9 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
         logger.error(f"Image upload error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DELETE /admin/story/{story_id}
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.delete("/admin/story/{story_id}")
 async def delete_admin_story(story_id: str, telegram_id: str):
     """Deletes a story."""
@@ -1007,9 +1007,9 @@ async def delete_admin_story(story_id: str, telegram_id: str):
         return {"success": True, "message": "Story deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SUPPORT MANAGEMENT
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/support")
 async def get_admin_support(telegram_id: str):
     from AryaPremium.config import Config
@@ -1039,9 +1039,9 @@ async def get_admin_support(telegram_id: str):
         logger.error(f"Error fetching support: {e}")
         return {"success": False, "data": []}
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # ADMIN STORY REQUESTS MANAGEMENT
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/requests")
 async def get_admin_requests(telegram_id: str):
     """Fetch all story requests (type=REQUEST) for admin management."""
@@ -1108,7 +1108,7 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
         if data.reply_text:
             token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
             if token and doc.get("user_id"):
-                status_emoji = {"open": "🟡", "in_progress": "🔵", "completed": "✅", "rejected": "❌"}.get(data.status, "📢")
+                status_emoji = {"open": "ðŸŸ¡", "in_progress": "ðŸ”µ", "completed": "âœ…", "rejected": "âŒ"}.get(data.status, "ðŸ“¢")
                 try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
@@ -1187,9 +1187,9 @@ async def reply_support(data: SupportReply):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # BANNERS MANAGEMENT
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/banners")
 async def get_banners():
     """
@@ -1231,7 +1231,7 @@ async def get_banners():
                                 "story_id": fmt["id"],
                                 "image": fmt["poster"] or fmt["banner"],
                                 "title": fmt["title"],
-                                "subtitle": "🔥 Trending Now",
+                                "subtitle": "ðŸ”¥ Trending Now",
                                 "badge": "TRENDING",
                             })
         except Exception as e:
@@ -1251,7 +1251,7 @@ async def get_banners():
                         "story_id": fmt["id"],
                         "image": fmt["poster"] or fmt["banner"],
                         "title": fmt["title"],
-                        "subtitle": "✨ New Release",
+                        "subtitle": "âœ¨ New Release",
                         "badge": "NEW",
                     })
         except Exception as e:
@@ -1419,9 +1419,9 @@ async def delete_admin_banner(telegram_id: str, banner_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # BUYERS MANAGEMENT
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/buyers")
 async def get_admin_buyers(telegram_id: str):
     from AryaPremium.config import Config
@@ -1578,28 +1578,157 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────────────────────────────────────────────────────────────
-# ANALYTICS TRACKING
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ANALYTICS TRACKING â€” IP Geolocation + Device + Referrer
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
 class TrackEvent(BaseModel):
     telegram_id: str
     event_type: str  # "search", "view_story", "add_to_cart", "open_app"
     event_data: dict
 
+
+def _parse_ua(ua: str) -> dict:
+    """Parse User-Agent to extract device_type, browser, os."""
+    ua_lower = ua.lower()
+    # Device type
+    if any(k in ua_lower for k in ("mobile", "android", "iphone", "ipod", "webos", "blackberry")):
+        device_type = "tablet" if any(k in ua_lower for k in ("ipad", "tablet")) else "mobile"
+    else:
+        device_type = "desktop"
+    # Browser
+    if "telegram" in ua_lower:  browser = "Telegram"
+    elif "whatsapp" in ua_lower: browser = "WhatsApp"
+    elif "instagram" in ua_lower: browser = "Instagram"
+    elif "fban" in ua_lower or "fbav" in ua_lower: browser = "Facebook"
+    elif "edg" in ua_lower:   browser = "Edge"
+    elif "chrome" in ua_lower: browser = "Chrome"
+    elif "firefox" in ua_lower: browser = "Firefox"
+    elif "safari" in ua_lower: browser = "Safari"
+    elif "opera" in ua_lower or "opr" in ua_lower: browser = "Opera"
+    else: browser = "Other"
+    # OS
+    if "windows" in ua_lower: os_name = "Windows"
+    elif "mac os" in ua_lower: os_name = "macOS"
+    elif "android" in ua_lower: os_name = "Android"
+    elif "ios" in ua_lower or "iphone" in ua_lower or "ipad" in ua_lower: os_name = "iOS"
+    elif "linux" in ua_lower: os_name = "Linux"
+    else: os_name = "Other"
+    return {"device_type": device_type, "browser": browser, "os": os_name}
+
+
+async def _geo_provider(session: aiohttp.ClientSession, url: str, parser) -> dict | None:
+    """Query a single geo provider with timeout."""
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=3),
+                               headers={"User-Agent": "AryaBot-Analytics/1.0"}) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json(content_type=None)
+            return parser(data)
+    except Exception:
+        return None
+
+
+async def _get_geo(ip: str) -> dict:
+    """Consensus geolocation using 4 free providers â€” same strategy as SliceURL."""
+    if not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172.")):
+        return {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
+
+    providers = [
+        (f"https://ipwho.is/{ip}?fields=success,country,city,region",
+         lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}
+         if d.get("success") else None),
+        (f"https://ipapi.co/{ip}/json/",
+         lambda d: {"country": d.get("country_name"), "city": d.get("city"), "region": d.get("region")}),
+        (f"https://freeipapi.com/api/json/{ip}",
+         lambda d: {"country": d.get("countryName"), "city": d.get("cityName"), "region": d.get("regionName")}),
+        (f"https://get.geojs.io/v1/ip/geo/{ip}.json",
+         lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}),
+    ]
+
+    results = []
+    async with aiohttp.ClientSession() as session:
+        tasks = [_geo_provider(session, url, parser) for url, parser in providers]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = [r for r in raw_results if isinstance(r, dict) and r]
+
+    if not results:
+        return {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
+
+    # Majority vote on city
+    city_votes: dict[str, int] = {}
+    for r in results:
+        c = (r.get("city") or "").strip()
+        if c and c.lower() not in ("unknown", "null", ""):
+            city_votes[c] = city_votes.get(c, 0) + 1
+
+    best_city = max(city_votes, key=city_votes.__getitem__) if city_votes else "Unknown"
+    country = next((r.get("country") for r in results if r.get("country") and r["country"].lower() != "unknown"), "Unknown")
+    region  = next((r.get("region")  for r in results if r.get("region")  and r["region"].lower()  != "unknown"), "Unknown")
+    return {"country": country or "Unknown", "city": best_city, "region": region or "Unknown"}
+
+
 @api_router.post("/track")
-async def track_event(data: TrackEvent):
+async def track_event(data: TrackEvent, request: Request):
+    """Track a mini-app event with full IP geolocation + device info."""
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
         arya_db = app.state.db
+
+        # â”€â”€ Extract IP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        ip = (
+            request.headers.get("cf-connecting-ip")
+            or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+            or request.headers.get("x-real-ip")
+            or (request.client.host if request.client else "unknown")
+        )
+        ua  = request.headers.get("user-agent", "")
+        ref = request.headers.get("referer") or data.event_data.get("referrer")
+
+        # â”€â”€ Parse UA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        ua_info = _parse_ua(ua)
+
+        # â”€â”€ Referrer source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        def _ref_source(r, u):
+            if not r:
+                if "telegram" in u.lower(): return "Telegram"
+                return "Direct"
+            rl = r.lower()
+            if "t.me" in rl or "telegram" in rl: return "Telegram"
+            if "whatsapp" in rl: return "WhatsApp"
+            if "instagram" in rl: return "Instagram"
+            if "facebook" in rl or "fb.com" in rl: return "Facebook"
+            if "google" in rl: return "Google"
+            return "Web"
+        referrer_source = _ref_source(ref, ua)
+
+        # â”€â”€ Geolocation (async â€” don't block if slow) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        try:
+            geo = await asyncio.wait_for(_get_geo(ip), timeout=5)
+        except asyncio.TimeoutError:
+            geo = {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
+
         await arya_db.db.mini_app_analytics.insert_one({
-            "user_id": user_id_int,
-            "type": data.event_type,
-            "data": data.event_data,
+            "user_id":  user_id_int,
+            "type":     data.event_type,
+            "data":     data.event_data,
+            "ip":       ip,
+            "country":  geo["country"],
+            "city":     geo["city"],
+            "region":   geo["region"],
+            "device":   ua_info["device_type"],
+            "browser":  ua_info["browser"],
+            "os":       ua_info["os"],
+            "referrer": referrer_source,
             "timestamp": datetime.now(timezone.utc)
         })
         return {"success": True}
-    except Exception:
+    except Exception as e:
+        logging.warning(f"[track] failed: {e}")
         return {"success": False}
+
 
 @api_router.get("/admin/analytics")
 async def get_analytics(telegram_id: str):
@@ -1611,13 +1740,11 @@ async def get_analytics(telegram_id: str):
             
         arya_db = app.state.db
         
-        # Get latest searches
         search_cursor = arya_db.db.mini_app_analytics.find({"type": "search"}).sort("timestamp", -1).limit(20)
         searches = []
         async for doc in search_cursor:
             searches.append({"user_id": doc["user_id"], "query": doc["data"].get("query", ""), "time": doc["timestamp"].isoformat() if isinstance(doc["timestamp"], datetime) else str(doc["timestamp"])})
             
-        # Get latest views
         view_cursor = arya_db.db.mini_app_analytics.find({"type": "view_story"}).sort("timestamp", -1).limit(20)
         views = []
         async for doc in view_cursor:
@@ -1626,6 +1753,89 @@ async def get_analytics(telegram_id: str):
         return {"success": True, "data": {"recent_searches": searches, "recent_views": views}}
     except Exception as e:
         return {"success": False, "data": {}}
+
+
+@api_router.get("/admin/location-analytics")
+async def get_location_analytics(telegram_id: str, days: int = 30):
+    """Rich location + device analytics for the admin panel â€” SliceURL-style."""
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        arya_db = app.state.db
+        since = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)
+        pipeline_base = {"timestamp": {"$gte": since}}
+
+        async def _top(field: str, limit: int = 10) -> list:
+            pipeline = [
+                {"$match": {**pipeline_base, field: {"$exists": True, "$ne": "Unknown", "$ne": None, "$ne": ""}}},
+                {"$group": {"_id": f"${field}", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": limit},
+            ]
+            result = []
+            async for doc in arya_db.db.mini_app_analytics.aggregate(pipeline):
+                result.append({"name": doc["_id"], "count": doc["count"]})
+            return result
+
+        # Hourly trend for last 48h
+        now = datetime.now(timezone.utc)
+        h48_since = now - __import__("datetime").timedelta(hours=48)
+        hourly_pipeline = [
+            {"$match": {"timestamp": {"$gte": h48_since}}},
+            {"$group": {
+                "_id": {
+                    "y": {"$year": "$timestamp"},
+                    "mo": {"$month": "$timestamp"},
+                    "d": {"$dayOfMonth": "$timestamp"},
+                    "h": {"$hour": "$timestamp"}
+                },
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"_id.y": 1, "_id.mo": 1, "_id.d": 1, "_id.h": 1}},
+        ]
+        hourly = []
+        async for doc in arya_db.db.mini_app_analytics.aggregate(hourly_pipeline):
+            _id = doc["_id"]
+            label = f"{_id.get('d',1):02d}/{_id.get('mo',1):02d} {_id.get('h',0):02d}:00"
+            hourly.append({"label": label, "count": doc["count"]})
+
+        # Unique visitors (distinct user_ids)
+        unique_users = await arya_db.db.mini_app_analytics.distinct("user_id", {"timestamp": {"$gte": since}})
+        total_events = await arya_db.db.mini_app_analytics.count_documents({"timestamp": {"$gte": since}})
+
+        countries, cities, devices, browsers, os_list, referrers = await asyncio.gather(
+            _top("country", 15),
+            _top("city", 15),
+            _top("device", 10),
+            _top("browser", 10),
+            _top("os", 10),
+            _top("referrer", 10),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "summary": {
+                    "total_events":   total_events,
+                    "unique_visitors": len(unique_users),
+                    "days":           days,
+                },
+                "hourly_trend": hourly,
+                "countries":    countries,
+                "cities":       cities,
+                "devices":      devices,
+                "browsers":     browsers,
+                "os":           os_list,
+                "referrers":    referrers,
+            }
+        }
+    except Exception as e:
+        logging.error(f"[location-analytics] {e}")
+        return {"success": False, "data": {}}
+
 
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
