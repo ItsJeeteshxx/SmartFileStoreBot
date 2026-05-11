@@ -1057,17 +1057,19 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                             else: break
                                             await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
                                         else:
-                                            # Normal replace mode: upload to me → file_id → edit
+                                            # Normal replace mode: direct file upload → edit
+                                            # NOTE: Previously used "upload to me → file_id → edit"
+                                            # which FAILS for database channels when the file DC does not
+                                            # match the Saved Messages DC, causing MEDIA_EMPTY / silent failures.
+                                            # Direct file path in InputMedia always works regardless of DC.
                                             if is_ff or is_aud:
-                                                _g = await asyncio.wait_for(u_cli.send_audio("me", p_out, title=c_title or None, performer=art or None, file_name=c_file), timeout=300)
-                                                _im = InputMediaAudio(_g.audio.file_id, caption=cap, title=c_title or None, performer=art or None, thumb=thumb)
+                                                _im = InputMediaAudio(p_out, caption=cap,
+                                                    title=c_title or None, performer=art or None,
+                                                    thumb=thumb)
                                             elif is_vid:
-                                                _g = await asyncio.wait_for(u_cli.send_video("me", p_out, file_name=c_file), timeout=300)
-                                                _im = InputMediaVideo(_g.video.file_id, caption=cap, thumb=thumb)
+                                                _im = InputMediaVideo(p_out, caption=cap, thumb=thumb)
                                             else: break
-                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=120)
-                                            try: await _g.delete()
-                                            except: pass
+                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
 
                                     else:
                                         if is_ff or is_aud:
