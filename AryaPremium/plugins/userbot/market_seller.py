@@ -1466,7 +1466,8 @@ async def _process_text(client, message):
             return await _process_callback(client, MockQuery(m, message.from_user, mapping[cmd_text]))
     # -- Feedback submission state handler --
     if user.get("state") == "feedback_pending":
-        if txt.strip().lower() == "/cancel":
+        is_cancel = txt.strip().lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "back to menu", "वापस मेनू", "« वापस मेनू", "« cancel"]
+        if is_cancel:
             await db.update_user(user_id, {"state": None})
             await message.reply_text("<i>❌ Feedback cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
             return await _send_main_menu(client, user_id, message.from_user, lang)

@@ -334,15 +334,19 @@ async def create_payment_link(payload: dict):
             "callback_method": "get"
         })
         
+        tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
+        
         # Save order to DB
         order_doc = {
             "order_id":    order_id,
             "payment_link_id": link_data["id"],
-            "user_id":     telegram_id,
-            "username":    username,
+            "user_id":     tg_id_int,
+            "username":    username or "Unknown",
             "story_ids":   story_ids,
-            "total_amount":total_price,
+            "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "total":       total_price,
             "status":      "pending",
+            "source":      "razorpay_link",
             "created_at":  datetime.now(timezone.utc),
         }
         await arya_db.db.orders.insert_one(order_doc)
