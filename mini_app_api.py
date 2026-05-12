@@ -542,6 +542,92 @@ async def verify_payment(payload: dict):
     return {"success": True, "message": "Payment verified successfully"}
 
 
+from fastapi import Form
+from fastapi.responses import RedirectResponse
+
+@api_router.post("/razorpay-callback")
+async def razorpay_callback(
+    razorpay_payment_id: str = Form(...),
+    razorpay_order_id: str = Form(...),
+    razorpay_signature: str = Form(...)
+):
+    """
+    Callback URL for Razorpay when redirect flow is used (e.g. Wallets, Netbanking).
+    """
+    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
+        raise HTTPException(400, "Missing payment verification fields")
+
+    expected = hmac.new(
+        RZP_KEY_SECRET.encode("utf-8"),
+        f"{razorpay_order_id}|{razorpay_payment_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected, razorpay_signature):
+        logger.warning(f"Invalid Razorpay signature for {razorpay_payment_id}")
+        raise HTTPException(400, "Payment verification failed — invalid signature")
+
+    # Fetch order from Razorpay to get notes
+    import httpx
+    import base64
+    auth_header = "Basic " + base64.b64encode(f"{RZP_KEY_ID}:{RZP_KEY_SECRET}".encode()).decode()
+    
+    notes = {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"https://api.razorpay.com/v1/orders/{razorpay_order_id}",
+                headers={"Authorization": auth_header}
+            )
+            if r.status_code == 200:
+                notes = r.json().get("notes", {})
+    except Exception as e:
+        logger.error(f"Failed to fetch order notes: {e}")
+
+    tg_id = notes.get("telegram_id", "")
+    story_ids_str = notes.get("story_ids", "")
+    story_ids = story_ids_str.split(",") if story_ids_str else []
+    username = notes.get("username", "")
+
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    valid_stories = []
+    if story_ids:
+        for sid in story_ids:
+            try:
+                doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                if doc:
+                    valid_stories.append(doc)
+            except Exception:
+                pass
+
+    total = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    oid = _make_order_id(str(tg_id)) if tg_id else razorpay_order_id
+    tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
+
+    # Store order
+    await arya_db.db.orders.insert_one({
+        "order_id":            oid,
+        "user_id":             tg_id_int if tg_id_int else tg_id,
+        "username":            username,
+        "story_ids":           story_ids,
+        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "total":               total,
+        "status":              "paid",
+        "source":              "razorpay_callback",
+        "razorpay_order_id":   razorpay_order_id,
+        "razorpay_payment_id": razorpay_payment_id,
+        "created_at":          datetime.now(timezone.utc),
+    })
+
+    if tg_id:
+        for sid in story_ids:
+            await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
+
+    bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
+    return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
+
+
 # ===== OxaPay: Create Crypto Invoice =====
 
 @api_router.post("/create-oxapay-order")
