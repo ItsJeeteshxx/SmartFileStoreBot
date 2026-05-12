@@ -322,7 +322,7 @@ async def create_payment_link(payload: dict):
             "amount": int(total_price * 100), # in paise
             "currency": "INR",
             "accept_partial": False,
-            "description": ", ".join([s.get("title", s.get("story_name_en", "Premium Content")) for s in valid_stories])[:37],
+            "description": ", ".join([s.get("story_name_en") or s.get("title") or s.get("story_name_hi") or "Arya Premium Content" for s in valid_stories])[:200] or "Arya Premium Content",
             "customer": {
                 "name": username or f"User {telegram_id}",
                 "email": f"user{telegram_id}@sliceurl.com"
