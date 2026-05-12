@@ -1809,28 +1809,124 @@ COUNTRY_CURRENCY_MAP = {
     "Kenya": "KES", "Tanzania": "TZS", "Egypt": "EGP",
     "Germany": "EUR", "France": "EUR", "Italy": "EUR", "Spain": "EUR", "Netherlands": "EUR",
     "Belgium": "EUR", "Greece": "EUR", "Portugal": "EUR", "Austria": "EUR", "Finland": "EUR",
-    "Ireland": "EUR"
+    "Ireland": "EUR", "Luxembourg": "EUR", "Malta": "EUR", "Cyprus": "EUR", "Estonia": "EUR",
+    "Latvia": "EUR", "Lithuania": "EUR", "Slovakia": "EUR", "Slovenia": "EUR",
 }
+
+# Country code → currency (backup for when only ISO code is returned)
+COUNTRY_CODE_CURRENCY_MAP = {
+    "IN": "INR", "NP": "NPR", "LK": "LKR", "BD": "BDT", "PK": "PKR",
+    "AE": "AED", "SA": "SAR", "QA": "QAR", "KW": "KWD", "BH": "BHD", "OM": "OMR",
+    "MY": "MYR", "SG": "SGD", "TH": "THB", "ID": "IDR", "PH": "PHP", "VN": "VND",
+    "US": "USD", "GB": "GBP", "CA": "CAD", "AU": "AUD", "NZ": "NZD",
+    "CH": "CHF", "SE": "SEK", "NO": "NOK", "DK": "DKK", "JP": "JPY",
+    "CN": "CNY", "KR": "KRW", "ZA": "ZAR", "NG": "NGN", "KE": "KES",
+    "TZ": "TZS", "EG": "EGP",
+    "DE": "EUR", "FR": "EUR", "IT": "EUR", "ES": "EUR", "NL": "EUR",
+    "BE": "EUR", "GR": "EUR", "PT": "EUR", "AT": "EUR", "FI": "EUR",
+    "IE": "EUR", "LU": "EUR", "MT": "EUR", "CY": "EUR", "EE": "EUR",
+    "LV": "EUR", "LT": "EUR", "SK": "EUR", "SI": "EUR",
+}
+
+# In-memory cache: ip → (currency, country, timestamp)
+_ip_currency_cache: dict = {}
+_IP_CACHE_TTL = 600  # 10 minutes
 
 @api_router.get("/app-context")
 async def get_app_context(request: Request):
-    """Auto-detect location and suggested currency for the user."""
+    """Auto-detect location and suggested currency for the user.
+    Works with VPN IPs too. Results cached 10 mins per IP.
+    """
+    # IP priority: Cloudflare > X-Forwarded-For > X-Real-IP > direct
     ip = (
         request.headers.get("cf-connecting-ip")
         or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
         or request.headers.get("x-real-ip")
-        or (request.client.host if request.client else "unknown")
+        or (request.client.host if request.client else None)
+        or "unknown"
     )
-    
-    geo = await _get_geo(ip)
-    country = geo.get("country", "Unknown")
-    currency = COUNTRY_CURRENCY_MAP.get(country, "INR")
-    
-    return {
-        "ip": ip,
-        "country": country,
-        "currency": currency
-    }
+    ip = ip.strip()
+
+    # Check cache first
+    import time as _time
+    now_ts = _time.time()
+    cached = _ip_currency_cache.get(ip)
+    if cached and (now_ts - cached["ts"]) < _IP_CACHE_TTL:
+        return {"ip": ip, "country": cached["country"], "currency": cached["currency"]}
+
+    # Private / local IPs → default INR
+    if not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172.")):
+        return {"ip": ip, "country": "India", "currency": "INR"}
+
+    country_name = "Unknown"
+    country_code = ""
+    currency = "INR"
+
+    # Try providers in priority order — ipinfo.io handles VPNs best
+    providers = [
+        # ipinfo.io — best VPN detection, returns ISO code
+        (
+            f"https://ipinfo.io/{ip}/json",
+            lambda d: {"name": None, "code": d.get("country", "")}
+        ),
+        # ipwho.is — full country name
+        (
+            f"https://ipwho.is/{ip}?fields=success,country,country_code",
+            lambda d: {"name": d.get("country"), "code": d.get("country_code", "")} if d.get("success") else None
+        ),
+        # ipapi.co — good fallback
+        (
+            f"https://ipapi.co/{ip}/json/",
+            lambda d: {"name": d.get("country_name"), "code": d.get("country_code", "")}
+        ),
+        # freeipapi.com
+        (
+            f"https://freeipapi.com/api/json/{ip}",
+            lambda d: {"name": d.get("countryName"), "code": d.get("countryCode", "")}
+        ),
+    ]
+
+    async with aiohttp.ClientSession() as session:
+        for url, parser in providers:
+            try:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=3),
+                    headers={"User-Agent": "AryaBot/1.0"}
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        result = parser(data)
+                        if result:
+                            code = (result.get("code") or "").strip().upper()
+                            name = (result.get("name") or "").strip()
+                            # Try currency by country name first, then by code
+                            if name and name in COUNTRY_CURRENCY_MAP:
+                                country_name = name
+                                country_code = code
+                                currency = COUNTRY_CURRENCY_MAP[name]
+                                break
+                            elif code and code in COUNTRY_CODE_CURRENCY_MAP:
+                                country_code = code
+                                country_name = name or code
+                                currency = COUNTRY_CODE_CURRENCY_MAP[code]
+                                break
+                            elif name and name not in ("Unknown", "", "None"):
+                                # Country found but not in our currency map → keep INR
+                                country_name = name
+                                break
+            except Exception:
+                continue
+
+    # Cache the result
+    _ip_currency_cache[ip] = {"country": country_name, "currency": currency, "ts": now_ts}
+    # Limit cache size
+    if len(_ip_currency_cache) > 5000:
+        oldest = sorted(_ip_currency_cache.items(), key=lambda x: x[1]["ts"])[:1000]
+        for k, _ in oldest:
+            _ip_currency_cache.pop(k, None)
+
+    return {"ip": ip, "country": country_name, "currency": currency}
 
 @api_router.post("/track")
 async def track_event(data: TrackEvent, request: Request):
