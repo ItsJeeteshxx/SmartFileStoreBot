@@ -542,18 +542,23 @@ async def verify_payment(payload: dict):
     return {"success": True, "message": "Payment verified successfully"}
 
 
-# 💎💎💎 OxaPay: Create Order 💎💎💎
-OXAPAY_KEY = getattr(Config, "OXAPAY_KEY", "sandbox")  # Define this in config.py or use 'sandbox'
+# ===== OxaPay: Create Crypto Invoice =====
 
 @api_router.post("/create-oxapay-order")
 async def create_oxapay_order(payload: dict):
-    """Create an OxaPay crypto invoice."""
+    """Create an OxaPay crypto invoice. Reads API key fresh at request time."""
+    # Read key fresh each request so .env changes take effect without restart
+    oxapay_key = getattr(Config, "OXAPAY_KEY", "") or os.environ.get("OXAPAY_KEY", "")
+    if not oxapay_key or oxapay_key == "sandbox":
+        logger.error("OXAPAY_KEY not configured! Add it to .env as OXAPAY_KEY=your_key")
+        raise HTTPException(status_code=503, detail="Crypto payment not configured. Contact admin.")
+
     story_ids = payload.get("story_ids", [])
     tg_id     = payload.get("telegram_id") or 0
     username  = payload.get("username", "")
 
     if not story_ids:
-        raise HTTPException(400, "Cart is empty")
+        raise HTTPException(status_code=400, detail="Cart is empty")
 
     arya_db = app.state.db
     from bson.objectid import ObjectId
@@ -567,116 +572,132 @@ async def create_oxapay_order(payload: dict):
             pass
 
     if not valid_stories:
-        raise HTTPException(400, "No valid stories found in cart")
+        raise HTTPException(status_code=400, detail="No valid stories found in cart")
 
     total_inr = sum(float(s.get("price", 0) or 0) for s in valid_stories)
-    # Convert INR to USD approx. OxaPay natively supports USD amount logic.
-    total_usd = max(0.5, round(total_inr / 85.0, 2))  # Minimum $0.50 mostly
-
+    # OxaPay expects USD. Minimum $0.50.
+    total_usd = max(0.5, round(total_inr / 85.0, 2))
     oid = _make_order_id(str(tg_id))
 
+    # Call OxaPay API
+    oxapay_result = None
+    oxapay_error = None
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
                 "https://api.oxapay.com/merchants/request",
                 json={
-                    "merchant": OXAPAY_KEY,
+                    "merchant": oxapay_key,
                     "amount": total_usd,
                     "currency": "USD",
                     "lifeTime": 30,
                     "feePaidByPayer": 1,
                     "orderId": oid,
-                    "description": f"Purchase {len(valid_stories)} stories for {tg_id}",
-                    "returnUrl": "https://t.me/AryaPremiumBot/app"
+                    "description": f"{len(valid_stories)} Arya Premium stories for {tg_id}",
+                    "returnUrl": "https://t.me/UseAryaBot/app",
                 }
             )
-            data = r.json()
-            if data.get("result") != 100:
-                logger.error(f"OxaPay create failed: {data}")
-                raise HTTPException(502, "OxaPay order creation failed")
-
-            # Store pending order
-            await arya_db.db.orders.insert_one({
-                "order_id": oid,
-                "user_id": int(tg_id) if str(tg_id).isdigit() else tg_id,
-                "username": username,
-                "story_ids": story_ids,
-                "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
-                "total": total_inr,
-                "status": "pending",
-                "source": "oxapay_miniapp",
-                "track_id": data.get("trackId"),
-                "pay_link": data.get("payLink"),
-                "created_at": datetime.now(timezone.utc),
-            })
-
-            return {"success": True, "payLink": data.get("payLink"), "trackId": data.get("trackId")}
+            oxapay_result = r.json()
     except Exception as e:
-        logger.error(f"OxaPay request error: {e}")
-        raise HTTPException(500, "Internal Server Error during OxaPay request")
+        oxapay_error = str(e)
+
+    if oxapay_error:
+        logger.error(f"OxaPay network error: {oxapay_error}")
+        raise HTTPException(status_code=502, detail="Failed to reach OxaPay. Try again.")
+
+    if oxapay_result.get("result") != 100:
+        logger.error(f"OxaPay rejected: {oxapay_result}")
+        raise HTTPException(status_code=502, detail=f"OxaPay error: {oxapay_result.get('message', 'Unknown')}")
+
+    pay_link  = oxapay_result.get("payLink") or oxapay_result.get("pay_link")
+    track_id  = oxapay_result.get("trackId") or oxapay_result.get("track_id")
+
+    # Store pending order in DB
+    try:
+        await arya_db.db.orders.insert_one({
+            "order_id":    oid,
+            "user_id":     int(tg_id) if str(tg_id).isdigit() else tg_id,
+            "username":    username,
+            "story_ids":   story_ids,
+            "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "total":       total_inr,
+            "total_usd":   total_usd,
+            "status":      "pending",
+            "source":      "oxapay_miniapp",
+            "track_id":    track_id,
+            "pay_link":    pay_link,
+            "created_at":  datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        logger.error(f"DB insert error for OxaPay order: {e}")
+
+    logger.info(f"OxaPay invoice created: order={oid} usd={total_usd} user={tg_id}")
+    return {"success": True, "payLink": pay_link, "trackId": track_id}
+
 
 @api_router.post("/oxapay-webhook")
 async def oxapay_webhook(request: Request):
     """Webhook from OxaPay upon successful payment."""
+    oxapay_key = getattr(Config, "OXAPAY_KEY", "") or os.environ.get("OXAPAY_KEY", "")
     try:
         data = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON")
 
     track_id = data.get("trackId")
-    status = data.get("status")
+    status   = data.get("status")
 
     if status != "Paid" or not track_id:
         return {"success": False, "message": "Ignored or invalid status"}
 
-    # Verify using OxaPay Inquiry API for security (prevent fake webhooks)
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            "https://api.oxapay.com/merchants/inquiry",
-            json={"merchant": OXAPAY_KEY, "trackId": track_id}
-        )
-        inquiry = r.json()
-        if inquiry.get("result") != 100 or inquiry.get("status") != "Paid":
-            logger.warning(f"OxaPay Fake Webhook or Not Paid: {track_id}")
-            return {"success": False, "message": "Verification failed"}
+    # Verify via OxaPay Inquiry API to prevent fake webhooks
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.oxapay.com/merchants/inquiry",
+                json={"merchant": oxapay_key, "trackId": track_id}
+            )
+            inquiry = r.json()
+            if inquiry.get("result") != 100 or inquiry.get("status") != "Paid":
+                logger.warning(f"OxaPay verification failed: {track_id} → {inquiry}")
+                return {"success": False, "message": "Verification failed"}
+    except Exception as e:
+        logger.error(f"OxaPay inquiry error: {e}")
+        return {"success": False, "message": "Inquiry error"}
 
-    # Verification passed!
+    # Verified! Unlock stories
     arya_db = app.state.db
     order = await arya_db.db.orders.find_one({"track_id": track_id})
-    
+
     if not order:
+        logger.warning(f"OxaPay webhook: order not found for trackId={track_id}")
         return {"success": False, "message": "Order not found"}
-    
+
     if order.get("status") == "paid":
         return {"success": True, "message": "Already processed"}
 
-    # Mark as paid and unlock
     await arya_db.db.orders.update_one(
         {"_id": order["_id"]},
         {"$set": {
-            "status": "paid",
-            "payment_id": data.get("txID", ""),
-            "paid_currency": data.get("payCurrency", "")
+            "status":       "paid",
+            "payment_id":   data.get("txID", ""),
+            "paid_currency": data.get("payCurrency", ""),
+            "paid_at":      datetime.now(timezone.utc),
         }}
     )
 
-    user_id = order.get("user_id")
+    user_id   = order.get("user_id")
     story_ids = order.get("story_ids", [])
     if user_id:
         for sid in story_ids:
-            await arya_db.add_purchase(user_id, sid)
+            try:
+                await arya_db.add_purchase(user_id, sid)
+            except Exception as e:
+                logger.error(f"add_purchase error for {sid}: {e}")
 
-    logger.info(f"OxaPay verified & unlocked {len(story_ids)} stories for user {user_id}")
+    logger.info(f"OxaPay ✅ unlocked {len(story_ids)} stories for user={user_id} trackId={track_id}")
     return {"success": True, "message": "Payment verified and processed"}
 
-
-    bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
-    return {
-        "success":      True,
-        "order_id":     oid,
-        "total":        total,
-        "checkout_url": f"https://t.me/{bot_username}?start=buy_{story_ids[0]}" if len(story_ids) == 1 else f"https://t.me/{bot_username}",
-    }
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

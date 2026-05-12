@@ -70,3 +70,4 @@ class Config:
     SLICEURL_SHORTEN_URL = _env("SLICEURL_SHORTEN_URL", "").strip()
     PAYMENT_TOS_URL = _env("PAYMENT_TOS_URL", "")
     REFUND_POLICY_URL = _env("REFUND_POLICY_URL", "")
+    OXAPAY_KEY = _env("OXAPAY_KEY", "sandbox")
