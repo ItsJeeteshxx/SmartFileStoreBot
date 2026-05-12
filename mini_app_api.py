@@ -1798,6 +1798,39 @@ async def _get_geo(ip: str) -> dict:
     region  = next((r.get("region")  for r in results if r.get("region")  and r["region"].lower()  != "unknown"), "Unknown")
     return {"country": country or "Unknown", "city": best_city, "region": region or "Unknown"}
 
+COUNTRY_CURRENCY_MAP = {
+    "India": "INR", "Nepal": "NPR", "Sri Lanka": "LKR", "Bangladesh": "BDT", "Pakistan": "PKR",
+    "United Arab Emirates": "AED", "Saudi Arabia": "SAR", "Qatar": "QAR", "Kuwait": "KWD",
+    "Bahrain": "BHD", "Oman": "OMR", "Malaysia": "MYR", "Singapore": "SGD", "Thailand": "THB",
+    "Indonesia": "IDR", "Philippines": "PHP", "Vietnam": "VND", "United States": "USD",
+    "United Kingdom": "GBP", "Canada": "CAD", "Australia": "AUD", "New Zealand": "NZD",
+    "Switzerland": "CHF", "Sweden": "SEK", "Norway": "NOK", "Denmark": "DKK", "Japan": "JPY",
+    "China": "CNY", "South Korea": "KRW", "South Africa": "ZAR", "Nigeria": "NGN",
+    "Kenya": "KES", "Tanzania": "TZS", "Egypt": "EGP",
+    "Germany": "EUR", "France": "EUR", "Italy": "EUR", "Spain": "EUR", "Netherlands": "EUR",
+    "Belgium": "EUR", "Greece": "EUR", "Portugal": "EUR", "Austria": "EUR", "Finland": "EUR",
+    "Ireland": "EUR"
+}
+
+@api_router.get("/app-context")
+async def get_app_context(request: Request):
+    """Auto-detect location and suggested currency for the user."""
+    ip = (
+        request.headers.get("cf-connecting-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or request.headers.get("x-real-ip")
+        or (request.client.host if request.client else "unknown")
+    )
+    
+    geo = await _get_geo(ip)
+    country = geo.get("country", "Unknown")
+    currency = COUNTRY_CURRENCY_MAP.get(country, "INR")
+    
+    return {
+        "ip": ip,
+        "country": country,
+        "currency": currency
+    }
 
 @api_router.post("/track")
 async def track_event(data: TrackEvent, request: Request):
