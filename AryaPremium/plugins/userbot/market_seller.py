@@ -1097,6 +1097,38 @@ async def _process_start(client, message):
     lang = user.get('lang', 'en')
 
     # ── Deep Link Handler (Bypass Force Join & Lang Prompt) ──
+    if len(args) > 1 and args[1].startswith("demo_"):
+        story_id = args[1].replace("demo_", "").strip()
+        from bson.objectid import ObjectId
+        from bson.errors import InvalidId
+        
+        story = None
+        try:
+            o_id = ObjectId(story_id)
+            story = await db.db.premium_stories.find_one({"_id": o_id})
+        except InvalidId:
+            pass
+            
+        if not story:
+            story = await db.db.premium_stories.find_one({"_id": story_id})
+            
+        if not story:
+            story = await db.db.premium_stories.find_one({"story_id": story_id})
+            
+        if story:
+            from utils import log_arya_event
+            s_name = story.get(f"story_name_{lang}", story.get("story_name_en", "Unknown"))
+            asyncio.create_task(log_arya_event(
+                "VIEWED DEMO", 
+                user_id, 
+                {"first_name": getattr(message.from_user, "first_name", ""), "username": getattr(message.from_user, "username", "")}, 
+                f"User requested demo files via deeplink for story: {s_name}"
+            ))
+            await message.reply_text("⏳ Processing your demo request...")
+            from plugins.userbot.market_seller import _send_demo_files
+            asyncio.create_task(_send_demo_files(client, user_id, story, lang))
+            return
+
     if len(args) > 1 and args[1].startswith("buy_"):
         story_id = args[1].replace("buy_", "").strip()
         from bson.objectid import ObjectId
