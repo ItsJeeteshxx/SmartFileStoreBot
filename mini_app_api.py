@@ -1055,6 +1055,15 @@ async def get_admin_stories(telegram_id: str):
             _id_str = str(s["_id"])
             # Always ensure story_id is set â€” fallback to _id if missing
             story_id = s.get("story_id") or _id_str
+            
+            # Normalize poster_url so it always exists
+            cover = s.get("poster_url") or s.get("cover") or s.get("image_url") or s.get("image") or ""
+            if cover and not cover.startswith("http"):
+                bot_id = s.get("bot_id")
+                cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
+                
+            s["poster_url"] = cover
+
             result.append({**s, "_id": _id_str, "story_id": story_id})
         return {"success": True, "data": result}
     except Exception as e:
