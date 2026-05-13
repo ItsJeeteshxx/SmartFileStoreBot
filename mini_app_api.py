@@ -226,6 +226,7 @@ def _format_story(s: dict) -> dict | None:
     return {
         "id":           story_id,
         "title":        title,
+        "titleHi":      (s.get("story_name_hi") or "").strip() or None,
         "description":  description,
         "poster":       cover,
         "banner":       cover,
