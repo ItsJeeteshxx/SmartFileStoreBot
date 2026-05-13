@@ -2205,6 +2205,36 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
             _top("referrer", 10),
         )
 
+        # Heatmap (day of week vs hour)
+        heatmap_pipeline = [
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {
+                "_id": {
+                    "dayOfWeek": {"$dayOfWeek": "$timestamp"}, # 1 (Sun) to 7 (Sat)
+                    "hour": {"$hour": "$timestamp"}
+                },
+                "count": {"$sum": 1}
+            }}
+        ]
+        heatmap = []
+        async for doc in arya_db.db.mini_app_analytics.aggregate(heatmap_pipeline):
+            heatmap.append({"day": doc["_id"]["dayOfWeek"] - 1, "hour": doc["_id"]["hour"], "count": doc["count"]})
+
+        # Live Activity / Click Log (last 50 events)
+        live_cursor = arya_db.db.mini_app_analytics.find({"timestamp": {"$gte": since}}).sort("timestamp", -1).limit(50)
+        live_activity = []
+        async for doc in live_cursor:
+            live_activity.append({
+                "time": doc["timestamp"].isoformat() if isinstance(doc["timestamp"], datetime) else str(doc["timestamp"]),
+                "country": doc.get("country", "Unknown"),
+                "city": doc.get("city", "Unknown"),
+                "device": doc.get("device", "Unknown"),
+                "browser": doc.get("browser", "Unknown"),
+                "os": doc.get("os", "Unknown"),
+                "referrer": doc.get("referrer", "Direct"),
+                "type": doc.get("type", "unknown")
+            })
+
         return {
             "success": True,
             "data": {
@@ -2216,6 +2246,8 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
                     "total_session_seconds": total_session,
                 },
                 "hourly_trend": hourly,
+                "heatmap":      heatmap,
+                "live_activity": live_activity,
                 "countries":    countries,
                 "cities":       cities,
                 "devices":      devices,
