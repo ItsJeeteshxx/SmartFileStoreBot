@@ -1031,16 +1031,40 @@ async def get_admin_stats(telegram_id: str):
         ord_cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(10)
         async for doc in ord_cursor:
             orders.append({
-                "order_id": doc.get("order_id"),
+                "order_id": str(doc.get("order_id", doc.get("_id", ""))),
                 "amount": doc.get("total_amount") or doc.get("total") or doc.get("amount", 0),
-                "status": doc.get("status"),
-                "user_id": doc.get("user_id"),
+                "status": doc.get("status", "unknown"),
+                "user_id": doc.get("user_id", ""),
                 "first_name": doc.get("first_name", ""),
                 "username": doc.get("username", ""),
                 "story_names": doc.get("story_names", []),
                 "source": doc.get("source", "miniapp"),
-                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
+            
+        bot_ord_cursor = arya_db.db.premium_checkout.find({}).sort("created_at", -1).limit(10)
+        async for doc in bot_ord_cursor:
+            user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
+            first_name = user_doc.get("first_name", "") if user_doc else ""
+            username = user_doc.get("username", "") if user_doc else ""
+            
+            story_doc = await arya_db.db.premium_stories.find_one({"_id": doc.get("story_id")}) if doc.get("story_id") else None
+            story_name = story_doc.get("story_name_en", "Story") if story_doc else "Story"
+
+            orders.append({
+                "order_id": f"bot_{doc.get('_id', '')}",
+                "amount": doc.get("amount", 0),
+                "status": doc.get("status", "unknown"),
+                "user_id": doc.get("user_id", ""),
+                "first_name": first_name,
+                "username": username,
+                "story_names": [story_name],
+                "source": "bot",
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            })
+            
+        # Sort and take top 10
+        orders = sorted(orders, key=lambda x: x["created_at"], reverse=True)[:10]
             
         return {
             "success": True,
@@ -1707,78 +1731,84 @@ async def get_admin_buyers(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
-        buyers = []
+        # Fetch all recent checkouts (Bot) and orders (MiniApp) and merge by User
+        buyers_map = {}
         
-        # 1. Bot buyers
-        bot_buyers_cursor = arya_db.db.users.find({"purchases.0": {"$exists": True}}).sort("id", -1).limit(100)
-        bot_buyers = await bot_buyers_cursor.to_list(length=100)
-        bot_buyer_ids = {u.get("id") for u in bot_buyers}
+        # 1. Fetch Bot checkouts
+        checkouts = await arya_db.db.premium_checkout.find({}).sort("_id", -1).limit(100).to_list(length=100)
         
-        for u in bot_buyers:
-            uid = u.get("id")
+        # Pre-fetch users and stories to optimize DB calls
+        uids = list(set([c.get("user_id") for c in checkouts] + [o.get("user_id") for o in await arya_db.db.orders.find({}).sort("_id", -1).limit(100).to_list(length=100)]))
+        user_docs_list = await arya_db.db.users.find({"id": {"$in": [uid for uid in uids if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit())]}}).to_list(length=500)
+        user_cache = {u.get("id"): u for u in user_docs_list}
+        
+        for c in checkouts:
+            uid = c.get("user_id")
+            if not uid: continue
+            try: uid = int(uid)
+            except: pass
             
-            # Fetch checkout history
-            checkouts = await arya_db.db.premium_checkout.find({"user_id": uid}).sort("_id", -1).to_list(length=10)
-            payments = []
-            total_amt = 0
+            if uid not in buyers_map:
+                u = user_cache.get(uid, {})
+                buyers_map[uid] = {
+                    "user_id": uid,
+                    "username": u.get("username", "Unknown"),
+                    "first_name": u.get("first_name", "Unknown"),
+                    "photo_url": u.get("photo_url", ""),
+                    "payments": [],
+                    "total_amt": 0,
+                    "date": c.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at", "")),
+                    "source": "bot"
+                }
             
-            for c in checkouts:
-                story_id = c.get("story_id")
-                story = await arya_db.db.premium_stories.find_one({"_id": story_id}) if story_id else None
-                sname = story.get("story_name_en", "Deleted Story") if story else "Deleted Story"
-                amt = c.get("amount", 0)
-                # Ensure amt is a number
-                try: amt = float(amt)
-                except: amt = 0
-                total_amt += amt
-                
-                status_label = {
-                    "approved": "PAID",
-                    "waiting_screenshot": "PENDING",
-                    "rejected": "REJECTED",
-                    "pending_gateway": "PROCESSING",
-                }.get(c.get("status", "unknown"), c.get("status", "unknown").upper())
-                
-                payments.append({
-                    "story_name": sname,
-                    "amount": amt,
-                    "method": c.get("method", "unknown").upper(),
-                    "status": status_label,
-                    "date": c.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at", ""))
-                })
-                
-            buyers.append({
-                "order_id": f"bot_{uid}",
-                "user_id": uid,
-                "username": u.get("username", "Unknown"),
-                "first_name": u.get("first_name", ""),
-                "photo_url": u.get("photo_url", ""),
-                "amount": total_amt,
-                "status": "paid",
-                "payment_id": "",
-                "source": "bot",
-                "story_ids": u.get("purchases", []),
-                "story_names": [f"Bot Purchases ({len(u.get('purchases', []))})"],
-                "payments": payments,
-                "date": u.get("joined_date", datetime.now(timezone.utc)).isoformat() if isinstance(u.get("joined_date"), datetime) else str(u.get("joined_date", ""))
+            story_id = c.get("story_id")
+            story = await arya_db.db.premium_stories.find_one({"_id": story_id}) if story_id else None
+            sname = story.get("story_name_en", "Deleted Story") if story else "Deleted Story"
+            amt = c.get("amount", 0)
+            try: amt = float(amt)
+            except: amt = 0
+            
+            status_label = {
+                "approved": "paid",
+                "waiting_screenshot": "pending",
+                "rejected": "rejected",
+                "pending_gateway": "processing",
+            }.get(c.get("status", "unknown"), c.get("status", "unknown").lower())
+            
+            buyers_map[uid]["total_amt"] += amt
+            buyers_map[uid]["payments"].append({
+                "story_name": sname,
+                "amount": amt,
+                "method": c.get("method", "unknown").upper(),
+                "status": status_label,
+                "date": c.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at", "")),
+                "source": "bot"
             })
-
-        # 2. Mini app buyers
-        cursor = arya_db.db.orders.find({"status": "paid"}).sort("created_at", -1).limit(100)
-        async for doc in cursor:
+            
+        # 2. Fetch Mini app orders
+        orders = await arya_db.db.orders.find({}).sort("created_at", -1).limit(100).to_list(length=100)
+        for doc in orders:
             uid = doc.get("user_id")
-            # Avoid duplicate rows if they bought both via bot and app
-            if uid in bot_buyer_ids:
-                continue
+            if not uid: continue
+            try: uid = int(uid)
+            except: pass
+            
+            if uid not in buyers_map:
+                u = user_cache.get(uid, {})
+                buyers_map[uid] = {
+                    "user_id": uid,
+                    "username": u.get("username", doc.get("username", "Unknown")) if u else doc.get("username", "Unknown"),
+                    "first_name": u.get("first_name", doc.get("first_name", "Unknown")) if u else doc.get("first_name", "Unknown"),
+                    "photo_url": u.get("photo_url", ""),
+                    "payments": [],
+                    "total_amt": 0,
+                    "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", "")),
+                    "source": doc.get("source", "miniapp")
+                }
+            else:
+                if buyers_map[uid]["source"] == "bot":
+                    buyers_map[uid]["source"] = "both"
                 
-            try: uid_int = int(uid)
-            except: uid_int = uid
-            
-            u_doc = await arya_db.db.users.find_one({"id": uid_int})
-            u_fname = u_doc.get("first_name", doc.get("first_name", "")) if u_doc else doc.get("first_name", "")
-            u_uname = u_doc.get("username", doc.get("username", "Unknown")) if u_doc else doc.get("username", "Unknown")
-            u_photo = u_doc.get("photo_url", "") if u_doc else ""
-            
             story_ids = doc.get("story_ids", [])
             if not story_ids and doc.get("story_id"):
                 story_ids = [doc.get("story_id")]
@@ -1790,37 +1820,38 @@ async def get_admin_buyers(telegram_id: str):
                     story_names.append(story.get("story_name_en", sid))
                 else:
                     story_names.append(sid)
+            
             date_str = doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
             try: amt = float(amt)
             except: amt = 0
             
-            payments = [{
+            buyers_map[uid]["total_amt"] += amt
+            buyers_map[uid]["payments"].append({
                 "story_name": ", ".join(story_names) if story_names else "App Purchase",
                 "amount": amt,
                 "method": "RAZORPAY",
-                "status": "PAID",
-                "date": date_str
-            }]
-            
+                "status": doc.get("status", "unknown").lower(),
+                "date": date_str,
+                "source": doc.get("source", "miniapp")
+            })
+
+        buyers = []
+        for uid, data in buyers_map.items():
             buyers.append({
-                "order_id": str(doc.get("order_id", doc["_id"])),
-                "user_id": uid_int,
-                "username": u_uname,
-                "first_name": u_fname,
-                "photo_url": u_photo,
-                "amount": amt,
-                "status": doc.get("status", "unknown"),
-                "payment_id": doc.get("payment_id", doc.get("razorpay_payment_id", "")),
-                "source": doc.get("source", "miniapp"),
-                "story_ids": story_ids,
-                "story_names": story_names,
-                "payments": payments,
-                "date": date_str
+                "order_id": f"uid_{uid}",
+                "user_id": uid,
+                "username": data["username"],
+                "first_name": data["first_name"],
+                "photo_url": data["photo_url"],
+                "amount": data["total_amt"],
+                "status": "paid" if any(p["status"] == "paid" for p in data["payments"]) else data["payments"][0]["status"] if data["payments"] else "pending",
+                "source": data["source"],
+                "payments": sorted(data["payments"], key=lambda x: x["date"], reverse=True),
+                "date": data["date"]
             })
             
-        # Sort combined buyers by date
-        buyers.sort(key=lambda x: x.get("date", ""), reverse=True)
+        buyers.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
             
         return {"success": True, "data": buyers[:200]}
     except Exception as e:
@@ -2164,6 +2195,25 @@ async def track_event(data: TrackEvent, request: Request):
         )
         ua  = request.headers.get("user-agent", "")
         ref = request.headers.get("referer") or data.event_data.get("referrer")
+
+        # â”€â”€ Register / Update User in db.users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        user_data = data.event_data.get("user_data")
+        if user_id_int > 0 and isinstance(user_data, dict):
+            await arya_db.db.users.update_one(
+                {"id": user_id_int},
+                {"$set": {
+                    "first_name": user_data.get("first_name", ""),
+                    "username": user_data.get("username", ""),
+                    "photo_url": user_data.get("photo_url", ""),
+                    "last_active": datetime.now(timezone.utc)
+                },
+                "$setOnInsert": {
+                    "joined_date": datetime.now(timezone.utc),
+                    "purchases": [],
+                    "language": "en"
+                }},
+                upsert=True
+            )
 
         # â”€â”€ Parse UA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ua_info = _parse_ua(ua)
