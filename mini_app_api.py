@@ -982,27 +982,32 @@ async def get_admin_stats(telegram_id: str):
             
         arya_db = app.state.db
         
-        # Total Users
-        total_users = await arya_db.users.count_documents({})
+        # Bot Users (users who have interacted with the Telegram bot)
+        bot_users_count = await arya_db.db.users.count_documents({})
+        
+        # Mini App Users (users who have a session / placed an order via mini app)
+        miniapp_users_count = await arya_db.db.orders.distinct("user_id")
+        miniapp_users_count = len(miniapp_users_count) if miniapp_users_count else 0
         
         # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})
         
-        # Total Revenue (sum of total_amount OR total where status='paid')
-        pipeline = [
+        # Mini App Revenue (orders with status=paid)
+        miniapp_rev_pipeline = [
             {"$match": {"status": "paid"}},
             {"$group": {"_id": None, "total": {"$sum": {"$cond": [{"$gt": ["$total_amount", 0]}, "$total_amount", {"$ifNull": ["$total", 0]}]}}}}
         ]
-        rev_res = await arya_db.db.orders.aggregate(pipeline).to_list(length=1)
-        total_revenue = rev_res[0]["total"] if rev_res else 0
-        # Also add bot purchases from premium_checkout
+        miniapp_rev_res = await arya_db.db.orders.aggregate(miniapp_rev_pipeline).to_list(length=1)
+        miniapp_revenue = miniapp_rev_res[0]["total"] if miniapp_rev_res else 0
+        
+        # Bot Revenue (from premium_checkout with status=approved)
         bot_rev_pipeline = [
             {"$match": {"status": "approved"}},
             {"$group": {"_id": None, "total": {"$sum": {"$toDouble": {"$ifNull": ["$amount", 0]}}}}}
         ]
         bot_rev_res = await arya_db.db.premium_checkout.aggregate(bot_rev_pipeline).to_list(length=1)
         bot_revenue = bot_rev_res[0]["total"] if bot_rev_res else 0
-        total_revenue = (total_revenue or 0) + (bot_revenue or 0)
+        total_revenue = (miniapp_revenue or 0) + (bot_revenue or 0)
         
         # Recent Feedbacks
         feedbacks = []
@@ -1012,6 +1017,7 @@ async def get_admin_stats(telegram_id: str):
                 "id": str(doc.get("_id", "")),
                 "user_id": doc.get("user_id"),
                 "username": doc.get("username"),
+                "first_name": doc.get("first_name", ""),
                 "type": doc.get("type"),
                 "text": doc.get("text"),
                 "status": doc.get("status"),
@@ -1037,9 +1043,13 @@ async def get_admin_stats(telegram_id: str):
         return {
             "success": True,
             "data": {
-                "total_users": total_users,
+                "total_users": bot_users_count + miniapp_users_count,
+                "bot_users": bot_users_count,
+                "miniapp_users": miniapp_users_count,
                 "total_stories": total_stories,
                 "total_revenue": total_revenue,
+                "miniapp_revenue": miniapp_revenue,
+                "bot_revenue": bot_revenue,
                 "recent_feedback": feedbacks,
                 "recent_orders": orders
             }
