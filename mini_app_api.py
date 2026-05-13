@@ -242,6 +242,7 @@ def _format_story(s: dict) -> dict | None:
         "size":         s.get("total_size") or s.get("size") or None,
         "isCompleted":  bool(s.get("is_completed") or s.get("completed") or
                             (s.get("status", "") == "Completed")),
+        "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
     }
 
 
