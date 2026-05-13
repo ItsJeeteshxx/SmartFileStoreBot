@@ -988,10 +988,21 @@ async def get_admin_stats(telegram_id: str):
         # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})
         
-        # Total Revenue (sum of total_amount where status='paid')
-        pipeline = [{"$match": {"status": "paid"}}, {"$group": {"_id": None, "total": {"$sum": "$total_amount"}}}]
+        # Total Revenue (sum of total_amount OR total where status='paid')
+        pipeline = [
+            {"$match": {"status": "paid"}},
+            {"$group": {"_id": None, "total": {"$sum": {"$cond": [{"$gt": ["$total_amount", 0]}, "$total_amount", {"$ifNull": ["$total", 0]}]}}}}
+        ]
         rev_res = await arya_db.db.orders.aggregate(pipeline).to_list(length=1)
         total_revenue = rev_res[0]["total"] if rev_res else 0
+        # Also add bot purchases from premium_checkout
+        bot_rev_pipeline = [
+            {"$match": {"status": "approved"}},
+            {"$group": {"_id": None, "total": {"$sum": {"$toDouble": {"$ifNull": ["$amount", 0]}}}}}
+        ]
+        bot_rev_res = await arya_db.db.premium_checkout.aggregate(bot_rev_pipeline).to_list(length=1)
+        bot_revenue = bot_rev_res[0]["total"] if bot_rev_res else 0
+        total_revenue = (total_revenue or 0) + (bot_revenue or 0)
         
         # Recent Feedbacks
         feedbacks = []
@@ -1013,10 +1024,13 @@ async def get_admin_stats(telegram_id: str):
         async for doc in ord_cursor:
             orders.append({
                 "order_id": doc.get("order_id"),
-                "amount": doc.get("total_amount"),
+                "amount": doc.get("total_amount") or doc.get("total") or doc.get("amount", 0),
                 "status": doc.get("status"),
                 "user_id": doc.get("user_id"),
-                "username": doc.get("username"),
+                "first_name": doc.get("first_name", ""),
+                "username": doc.get("username", ""),
+                "story_names": doc.get("story_names", []),
+                "source": doc.get("source", "miniapp"),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
             })
             
