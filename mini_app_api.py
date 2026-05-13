@@ -1031,13 +1031,15 @@ async def get_admin_stats(telegram_id: str):
         orders = []
         ord_cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(10)
         async for doc in ord_cursor:
+            user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
+            if not user_doc: continue
             orders.append({
                 "order_id": str(doc.get("order_id", doc.get("_id", ""))),
                 "amount": doc.get("total_amount") or doc.get("total") or doc.get("amount", 0),
                 "status": doc.get("status", "unknown"),
                 "user_id": doc.get("user_id", ""),
-                "first_name": doc.get("first_name", ""),
-                "username": doc.get("username", ""),
+                "first_name": user_doc.get("first_name", ""),
+                "username": user_doc.get("username", ""),
                 "story_names": doc.get("story_names", []),
                 "source": doc.get("source", "miniapp"),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
@@ -1046,8 +1048,9 @@ async def get_admin_stats(telegram_id: str):
         bot_ord_cursor = arya_db.db.premium_checkout.find({}).sort("created_at", -1).limit(10)
         async for doc in bot_ord_cursor:
             user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
-            first_name = user_doc.get("first_name", "") if user_doc else ""
-            username = user_doc.get("username", "") if user_doc else ""
+            if not user_doc: continue
+            first_name = user_doc.get("first_name", "")
+            username = user_doc.get("username", "")
             
             story_doc = await arya_db.db.premium_stories.find_one({"_id": doc.get("story_id")}) if doc.get("story_id") else None
             story_name = story_doc.get("story_name_en", "Story") if story_doc else "Story"
@@ -1750,7 +1753,8 @@ async def get_admin_buyers(telegram_id: str):
             except: pass
             
             if uid not in buyers_map:
-                u = user_cache.get(uid, {})
+                u = user_cache.get(uid)
+                if not u: continue
                 buyers_map[uid] = {
                     "user_id": uid,
                     "username": u.get("username", "Unknown"),
@@ -1795,7 +1799,8 @@ async def get_admin_buyers(telegram_id: str):
             except: pass
             
             if uid not in buyers_map:
-                u = user_cache.get(uid, {})
+                u = user_cache.get(uid)
+                if not u: continue
                 buyers_map[uid] = {
                     "user_id": uid,
                     "username": u.get("username", doc.get("username", "Unknown")) if u else doc.get("username", "Unknown"),

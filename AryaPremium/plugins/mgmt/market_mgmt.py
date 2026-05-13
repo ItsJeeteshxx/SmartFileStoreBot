@@ -895,9 +895,9 @@ async def market_callback(client, query):
             # 1. Delete user doc
             await db.db.users.delete_one({"id": uid})
             # 2. Delete all orders
-            await db.db.orders.delete_many({"user_id": uid})
+            await db.db.orders.delete_many({"user_id": {"$in": [uid, str(uid)]}})
             # 3. Delete all checkouts
-            await db.db.premium_checkout.delete_many({"user_id": uid})
+            await db.db.premium_checkout.delete_many({"user_id": {"$in": [uid, str(uid)]}})
             # 4. Delete all feedback
             try:
                 await db.db.premium_feedback.delete_many({"user_id": uid})
