@@ -63,7 +63,7 @@ WorkingDirectory=${WORKDIR}
 ExecStart=${PYTHON_PATH} ${WORKDIR}/mini_app_api.py
 Restart=always
 RestartSec=5
-Environment=BOT_USERNAME=AryaPremiumBot
+Environment=BOT_USERNAME=UseAryaBot
 
 [Install]
 WantedBy=multi-user.target

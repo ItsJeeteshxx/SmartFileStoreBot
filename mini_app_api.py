@@ -314,7 +314,7 @@ async def create_payment_link(payload: dict):
         raise HTTPException(status_code=400, detail="Invalid price")
 
     order_id = f"OD_{uuid.uuid4().hex[:8].upper()}"
-    bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
+    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     
     try:
         if not RZP_KEY_ID or not RZP_KEY_SECRET:
@@ -391,7 +391,7 @@ async def check_payment_link(id: str, payload: dict):
                 for sid in order.get("story_ids", []):
                     await arya_db.add_purchase(int(telegram_id) if str(telegram_id).isdigit() else telegram_id, sid)
             
-            bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
+            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
             return {
                 "success": True,
                 "status": "paid",
@@ -631,7 +631,7 @@ async def razorpay_callback(
         for sid in story_ids:
             await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
 
-    bot_username = os.environ.get("BOT_USERNAME", "AryaPremiumBot")
+    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
 
 
