@@ -2175,6 +2175,27 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
         unique_users = await arya_db.db.mini_app_analytics.distinct("user_id", {"timestamp": {"$gte": since}})
         total_events = await arya_db.db.mini_app_analytics.count_documents({"timestamp": {"$gte": since}})
 
+        session_pipeline = [
+            {"$match": {"type": "session_duration", "timestamp": {"$gte": since}}},
+            {"$group": {
+                "_id": {
+                    "user_id": "$user_id",
+                    "day": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}}
+                },
+                "max_duration": {"$max": "$data.duration"}
+            }},
+            {"$group": {
+                "_id": None,
+                "avg_duration": {"$avg": "$max_duration"},
+                "total_duration": {"$sum": "$max_duration"}
+            }}
+        ]
+        avg_session = 0
+        total_session = 0
+        async for doc in arya_db.db.mini_app_analytics.aggregate(session_pipeline):
+            avg_session = doc.get("avg_duration", 0)
+            total_session = doc.get("total_duration", 0)
+
         countries, cities, devices, browsers, os_list, referrers = await asyncio.gather(
             _top("country", 15),
             _top("city", 15),
@@ -2191,6 +2212,8 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
                     "total_events":   total_events,
                     "unique_visitors": len(unique_users),
                     "days":           days,
+                    "avg_session_seconds": avg_session,
+                    "total_session_seconds": total_session,
                 },
                 "hourly_trend": hourly,
                 "countries":    countries,
