@@ -1725,6 +1725,7 @@ async def get_admin_buyers(telegram_id: str):
                 "user_id": uid,
                 "username": u.get("username", "Unknown"),
                 "first_name": u.get("first_name", ""),
+                "photo_url": u.get("photo_url", ""),
                 "amount": total_amt,
                 "status": "paid",
                 "payment_id": "",
@@ -1746,6 +1747,11 @@ async def get_admin_buyers(telegram_id: str):
             try: uid_int = int(uid)
             except: uid_int = uid
             
+            u_doc = await arya_db.db.users.find_one({"id": uid_int})
+            u_fname = u_doc.get("first_name", doc.get("first_name", "")) if u_doc else doc.get("first_name", "")
+            u_uname = u_doc.get("username", doc.get("username", "Unknown")) if u_doc else doc.get("username", "Unknown")
+            u_photo = u_doc.get("photo_url", "") if u_doc else ""
+            
             story_ids = doc.get("story_ids", [])
             if not story_ids and doc.get("story_id"):
                 story_ids = [doc.get("story_id")]
@@ -1758,7 +1764,7 @@ async def get_admin_buyers(telegram_id: str):
                 else:
                     story_names.append(sid)
             date_str = doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
-            amt = doc.get("total_amount", doc.get("amount", 0))
+            amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
             try: amt = float(amt)
             except: amt = 0
             
@@ -1773,8 +1779,9 @@ async def get_admin_buyers(telegram_id: str):
             buyers.append({
                 "order_id": str(doc.get("order_id", doc["_id"])),
                 "user_id": uid_int,
-                "username": doc.get("username", "Unknown"),
-                "first_name": doc.get("first_name", ""),
+                "username": u_uname,
+                "first_name": u_fname,
+                "photo_url": u_photo,
                 "amount": amt,
                 "status": doc.get("status", "unknown"),
                 "payment_id": doc.get("payment_id", doc.get("razorpay_payment_id", "")),
@@ -1792,6 +1799,72 @@ async def get_admin_buyers(telegram_id: str):
     except Exception as e:
         logger.error(f"Error fetching buyers: {e}")
         return {"success": False, "data": []}
+
+
+class ManualPurchase(BaseModel):
+    telegram_id: str
+    user_id: int
+    first_name: str
+    username: str
+    story_id: str
+    amount: float
+
+@api_router.post("/admin/manual-purchase")
+async def manual_purchase(data: ManualPurchase):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+        
+        # Verify story
+        try:
+            story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(data.story_id)})
+        except:
+            story = await arya_db.db.premium_stories.find_one({"story_id": data.story_id})
+            
+        if not story:
+            raise HTTPException(404, "Story not found")
+            
+        story_id_str = str(story["_id"])
+        
+        # Upsert user
+        user = await arya_db.db.users.find_one({"id": data.user_id})
+        if not user:
+            await arya_db.db.users.insert_one({
+                "id": data.user_id,
+                "first_name": data.first_name,
+                "username": data.username,
+                "purchases": [story_id_str],
+                "joined_date": datetime.now(timezone.utc)
+            })
+        else:
+            await arya_db.db.users.update_one(
+                {"id": data.user_id},
+                {"$addToSet": {"purchases": story_id_str}}
+            )
+            
+        # Insert Order
+        await arya_db.db.orders.insert_one({
+            "order_id": f"MANUAL_{data.user_id}_{int(datetime.now().timestamp())}",
+            "user_id": data.user_id,
+            "username": data.username,
+            "first_name": data.first_name,
+            "story_ids": [story_id_str],
+            "story_names": [story.get("story_name_en", "")],
+            "total": data.amount,
+            "status": "paid",
+            "source": "manual_admin",
+            "created_at": datetime.now(timezone.utc)
+        })
+        
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Manual purchase error: {e}")
+        raise HTTPException(500, detail=str(e))
 
 @api_router.post("/admin/buyers/{user_id}/action")
 async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
