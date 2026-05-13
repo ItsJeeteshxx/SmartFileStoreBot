@@ -227,6 +227,7 @@ def _format_story(s: dict) -> dict | None:
         "id":           story_id,
         "title":        title,
         "titleHi":      (s.get("story_name_hi") or "").strip() or None,
+        "titleHin":     (s.get("story_name_hin") or "").strip() or None,
         "description":  description,
         "poster":       cover,
         "banner":       cover,
@@ -1108,6 +1109,7 @@ class StoryUpdate(BaseModel):
     source: Optional[int] = None
     story_name_en: Optional[str] = ""
     story_name_hi: Optional[str] = ""
+    story_name_hin: Optional[str] = ""
     description: Optional[str] = ""
     description_hi: Optional[str] = ""
     episodes: Optional[str] = "1"
