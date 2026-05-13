@@ -2235,6 +2235,17 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
                 "type": doc.get("type", "unknown")
             })
 
+        # Top Pages (for type="page_view")
+        top_pages_pipeline = [
+            {"$match": {**pipeline_base, "type": "page_view", "data.page": {"$exists": True}}},
+            {"$group": {"_id": "$data.page", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 10},
+        ]
+        pages = []
+        async for doc in arya_db.db.mini_app_analytics.aggregate(top_pages_pipeline):
+            pages.append({"name": doc["_id"], "count": doc["count"]})
+
         return {
             "success": True,
             "data": {
@@ -2254,6 +2265,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
                 "browsers":     browsers,
                 "os":           os_list,
                 "referrers":    referrers,
+                "pages":        pages,
             }
         }
     except Exception as e:
