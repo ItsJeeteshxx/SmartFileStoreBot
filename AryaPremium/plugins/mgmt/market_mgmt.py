@@ -197,6 +197,36 @@ async def _render_banners_menu(client, message, *, edit: bool = False):
         await client.send_message(message.chat.id, txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
 
+async def _render_settings(client, query):
+    """Renders the settings panel with all toggle states fetched from DB."""
+    groq_key_raw = await db.get_config("groq_api_key")
+    groq_status = f"✅ Set ({(groq_key_raw or '')[:8]}…)" if groq_key_raw else "❌ Not Set"
+
+    # Fetch feature toggles
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    mini_app_on = cfg.get("mini_app_enabled", True)
+    tnc_on = cfg.get("tnc_enabled", True)
+
+    mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
+    tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
+
+    kb = [
+        [InlineKeyboardButton("💳 Set UPI ID", callback_data="mk#set_upi")],
+        [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
+        [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
+        [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
+        [InlineKeyboardButton("« Back", callback_data="mk#back")]
+    ]
+    txt = (
+        "<b>⚙️ Ecosystem Settings</b>\n\n"
+        "<b>💳 Payment:</b> Configure UPI & AI integrations.\n"
+        "<b>📱 Mini App Deep Links:</b> When ON, story buy links open in Mini App. When OFF, they open in Bot only (old behavior).\n"
+        "<b>📜 T&amp;C Requirement:</b> When ON, users must accept Terms before purchasing. When OFF, T&amp;C is auto-accepted.\n\n"
+        "<i>Tap any toggle button below to switch it.</i>"
+    )
+    await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+
+
 @Client.on_callback_query(filters.regex(r'^mk#'))
 async def market_callback(client, query):
     try:
@@ -265,21 +295,36 @@ async def market_callback(client, query):
             return
 
         elif cmd == "settings":
-            if "query" in locals() and query:
-                await query.answer()
-            groq_key_raw = await db.get_config("groq_api_key")
-            groq_status = f"✅ Set ({(groq_key_raw or '')[:8]}…)" if groq_key_raw else "❌ Not Set"
-            kb = [
-                [InlineKeyboardButton("💳 Set UPI ID", callback_data="mk#set_upi")],
-                [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
-                [InlineKeyboardButton("« Back", callback_data="mk#back")]
-            ]
-            await query.message.edit_text(
-                "<b>⚙️ Ecosystem Settings</b>\n\n"
-                "Configure global payment settings and AI integrations here.\n"
-                "<i>Groq AI Key powers smart Hindi transliteration and description translation in story creation.</i>",
-                reply_markup=InlineKeyboardMarkup(kb)
+            await _safe_answer(query)
+            await _render_settings(client, query)
+
+        elif cmd == "toggle_miniapp":
+            await _safe_answer(query)
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            current = cfg.get("mini_app_enabled", True)
+            new_val = not current
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": {"mini_app_enabled": new_val}},
+                upsert=True
             )
+            status = "✅ ON" if new_val else "❌ OFF"
+            await query.answer(f"Mini App Deep Links: {status}", show_alert=True)
+            await _render_settings(client, query)
+
+        elif cmd == "toggle_tnc":
+            await _safe_answer(query)
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            current = cfg.get("tnc_enabled", True)
+            new_val = not current
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": {"tnc_enabled": new_val}},
+                upsert=True
+            )
+            status = "✅ ON" if new_val else "❌ OFF"
+            await query.answer(f"T&C Requirement: {status}", show_alert=True)
+            await _render_settings(client, query)
 
         # ── Support Panel (Feedback/Suggestions) ──
         elif cmd.startswith("fb_panel_"):

@@ -93,72 +93,105 @@ async def buy_upi_cb(bot: Client, query):
     story_id = query.data.split("_")[2]
     story = await db.get_story(story_id)
     user_id = query.from_user.id
-    
-    # Send strict T&C
-    tnc = (
-        f"⚠️ **TERMS & CONDITIONS**\n\n"
-        f"1. Some episodes may be missing or low quality.\n"
-        f"2. Episodes may not be in exact order.\n"
-        f"3. Strictly NO Refunds after payment.\n"
-        f"4. Submitting fake payment screenshots will result in a permanent ecosystem ban.\n\n"
-        f"Do you accept these terms to proceed to payment?"
-    )
-    
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ I ACCEPT", callback_data=f"confirm_tnc_{story_id}")],
-        [InlineKeyboardButton("❌ CANCEL", callback_data="open_marketplace")]
-    ])
-    if query.message.photo:
-        await query.message.delete()
-        await bot.send_message(query.message.chat.id, tnc, reply_markup=btns)
+
+    # Check T&C setting from DB
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    tnc_enabled = cfg.get("tnc_enabled", True)
+
+    if tnc_enabled:
+        # Send strict T&C
+        tnc = (
+            f"⚠️ **TERMS & CONDITIONS**\n\n"
+            f"1. Some episodes may be missing or low quality.\n"
+            f"2. Episodes may not be in exact order.\n"
+            f"3. Strictly NO Refunds after payment.\n"
+            f"4. Submitting fake payment screenshots will result in a permanent ecosystem ban.\n\n"
+            f"Do you accept these terms to proceed to payment?"
+        )
+
+        btns = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ I ACCEPT", callback_data=f"confirm_tnc_{story_id}")],
+            [InlineKeyboardButton("❌ CANCEL", callback_data="open_marketplace")]
+        ])
+        if query.message.photo:
+            await query.message.delete()
+            await bot.send_message(query.message.chat.id, tnc, reply_markup=btns)
+        else:
+            await query.message.edit_text(tnc, reply_markup=btns)
     else:
-        await query.message.edit_text(tnc, reply_markup=btns)
+        # T&C disabled — proceed directly to payment
+        await _do_payment(bot, query, story_id, story)
+
 
 @Client.on_callback_query(filters.regex(r'^confirm_tnc_'))
 async def confirm_tnc_cb(bot: Client, query):
     story_id = query.data.split("_")[2]
     story = await db.get_story(story_id)
+    await _do_payment(bot, query, story_id, story)
+
+
+async def _do_payment(bot: Client, query, story_id: str, story: dict):
+    """Shared payment flow — used whether T&C was accepted or skipped."""
     user_id = query.from_user.id
-    
+    user = query.from_user
+
+    # Build full clickable name
+    first = (user.first_name or "").strip()
+    last = (user.last_name or "").strip()
+    full_name = " ".join(filter(None, [first, last])) or user.username or str(user_id)
+    username = user.username or ""
+    user_link = f'<a href="tg://user?id={user_id}">{full_name}</a>'
+
     await query.message.delete()
-    
+
     amt = story.get("price", 99)
     upi_id = await db.get_config("upi_id", "Not configured. Ask admin.")
-    
+
     # Prompt for screenshot using ask
     resp_msg = await native_ask(
         bot,
-        query.message.chat.id, 
+        query.message.chat.id,
         f"**Manual UPI Payment — ₹{amt}**\n\n"
         f"Please send the exact amount to: `{upi_id}`\n\n"
         f"Once paid, **Send your payment screenshot here.**\n"
         f"*(Send 'cancel' to abort)*"
     )
-    
+
     if getattr(resp_msg, 'text', '').lower() == 'cancel':
         return await bot.send_message(query.message.chat.id, "Payment cancelled.")
-        
+
     if not resp_msg.photo:
         return await bot.send_message(query.message.chat.id, "❌ Valid screenshot not provided. Order cancelled.")
-        
+
     await bot.send_message(query.message.chat.id, "⏳ **Payment received. Verification in progress (Est. 5 minutes)...**")
-    
+
     db_channel = await db.get_config("db_channel")
     target = db_channel if db_channel else (Config.OWNER_IDS[0] if Config.OWNER_IDS else user_id)
-    
+
     approval_btns = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Approve", callback_data=f"upi_approve_{user_id}_{story_id}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"upi_reject_{user_id}_{story_id}")
         ]
     ])
-    
+
+    caption = (
+        f"💸 <b>NEW UPI PAYMENT</b>\n\n"
+        f"<b>👤 Buyer:</b> {user_link}\n"
+        f"<b>🔗 Username:</b> @{username}\n"
+        f"<b>🆔 User ID:</b> <code>{user_id}</code>\n"
+        f"<b>📚 Story:</b> {story.get('name_en', story.get('story_name_en', 'Unknown'))}\n"
+        f"<b>💰 Amount:</b> ₹{amt}"
+    )
+
     try:
         await bot.send_photo(
-            chat_id=target, 
-            photo=resp_msg.photo.file_id, 
-            caption=f"💸 **NEW UPI PAYMENT**\n\n**Buyer ID:** `{user_id}`\n**Story:** {story.get('name_en')}\n**Amount:** ₹{amt}",
-            reply_markup=approval_btns
+            chat_id=target,
+            photo=resp_msg.photo.file_id,
+            caption=caption,
+            reply_markup=approval_btns,
+            parse_mode="html"
         )
-    except Exception as e:
+    except Exception:
         await bot.send_message(query.message.chat.id, "Error notifying admins. Please contact support.")
+

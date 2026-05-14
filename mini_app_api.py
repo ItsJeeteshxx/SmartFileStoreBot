@@ -1033,12 +1033,15 @@ async def get_admin_stats(telegram_id: str):
         async for doc in ord_cursor:
             user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
             if not user_doc: continue
+            _fn = (user_doc.get("first_name") or "").strip()
+            _ln = (user_doc.get("last_name") or "").strip()
+            _full = " ".join(filter(None, [_fn, _ln])) or user_doc.get("username", "") or "User"
             orders.append({
                 "order_id": str(doc.get("order_id", doc.get("_id", ""))),
                 "amount": doc.get("total_amount") or doc.get("total") or doc.get("amount", 0),
                 "status": doc.get("status", "unknown"),
                 "user_id": doc.get("user_id", ""),
-                "first_name": user_doc.get("first_name", ""),
+                "first_name": _full,
                 "username": user_doc.get("username", ""),
                 "story_names": doc.get("story_names", []),
                 "source": doc.get("source", "miniapp"),
@@ -1049,7 +1052,9 @@ async def get_admin_stats(telegram_id: str):
         async for doc in bot_ord_cursor:
             user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
             if not user_doc: continue
-            first_name = user_doc.get("first_name", "")
+            _fn2 = (user_doc.get("first_name") or "").strip()
+            _ln2 = (user_doc.get("last_name") or "").strip()
+            _full2 = " ".join(filter(None, [_fn2, _ln2])) or user_doc.get("username", "") or "User"
             username = user_doc.get("username", "")
             
             story_doc = await arya_db.db.premium_stories.find_one({"_id": doc.get("story_id")}) if doc.get("story_id") else None
@@ -1060,7 +1065,7 @@ async def get_admin_stats(telegram_id: str):
                 "amount": doc.get("amount", 0),
                 "status": doc.get("status", "unknown"),
                 "user_id": doc.get("user_id", ""),
-                "first_name": first_name,
+                "first_name": _full2,
                 "username": username,
                 "story_names": [story_name],
                 "source": "bot",
@@ -1755,10 +1760,13 @@ async def get_admin_buyers(telegram_id: str):
             if uid not in buyers_map:
                 u = user_cache.get(uid)
                 if not u: continue
+                _ufn = (u.get("first_name") or "").strip()
+                _uln = (u.get("last_name") or "").strip()
+                _ufull = " ".join(filter(None, [_ufn, _uln])) or u.get("username", "") or "User"
                 buyers_map[uid] = {
                     "user_id": uid,
                     "username": u.get("username", "Unknown"),
-                    "first_name": u.get("first_name", "Unknown"),
+                    "first_name": _ufull,
                     "photo_url": u.get("photo_url", ""),
                     "payments": [],
                     "total_amt": 0,
@@ -1801,10 +1809,13 @@ async def get_admin_buyers(telegram_id: str):
             if uid not in buyers_map:
                 u = user_cache.get(uid)
                 if not u: continue
+                _ofn = (u.get("first_name") or doc.get("first_name") or "").strip()
+                _oln = (u.get("last_name") or "").strip()
+                _ofull = " ".join(filter(None, [_ofn, _oln])) or u.get("username", doc.get("username", "")) or "User"
                 buyers_map[uid] = {
                     "user_id": uid,
                     "username": u.get("username", doc.get("username", "Unknown")) if u else doc.get("username", "Unknown"),
-                    "first_name": u.get("first_name", doc.get("first_name", "Unknown")) if u else doc.get("first_name", "Unknown"),
+                    "first_name": _ofull,
                     "photo_url": u.get("photo_url", ""),
                     "payments": [],
                     "total_amt": 0,
@@ -2209,6 +2220,7 @@ async def track_event(data: TrackEvent, request: Request):
                 {"id": user_id_int},
                 {"$set": {
                     "first_name": user_data.get("first_name", ""),
+                    "last_name": user_data.get("last_name", ""),
                     "username": user_data.get("username", ""),
                     "photo_url": user_data.get("photo_url", ""),
                     "last_active": datetime.now(timezone.utc)
@@ -2436,6 +2448,79 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
     except Exception as e:
         logging.error(f"[location-analytics] {e}")
         return {"success": False, "data": {}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN SETTINGS — GET / POST
+# Stores: mini_app_enabled (bool), tnc_enabled (bool)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_router.get("/admin/settings")
+async def get_admin_settings(telegram_id: str):
+    """Returns current feature toggle settings for the Mini App."""
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        return {
+            "success": True,
+            "data": {
+                "mini_app_enabled": cfg.get("mini_app_enabled", True),
+                "tnc_enabled": cfg.get("tnc_enabled", True),
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"get_admin_settings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/settings")
+async def update_admin_settings(payload: dict):
+    """Update feature toggle settings. Accepts mini_app_enabled and/or tnc_enabled."""
+    from AryaPremium.config import Config
+    try:
+        telegram_id = str(payload.get("telegram_id", ""))
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        update_fields = {}
+        if "mini_app_enabled" in payload:
+            update_fields["mini_app_enabled"] = bool(payload["mini_app_enabled"])
+        if "tnc_enabled" in payload:
+            update_fields["tnc_enabled"] = bool(payload["tnc_enabled"])
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+        await arya_db.db.mini_app_config.update_one(
+            {"_key": "feature_toggles"},
+            {"$set": update_fields},
+            upsert=True
+        )
+        logger.info(f"Admin {telegram_id} updated settings: {update_fields}")
+        return {"success": True, "data": update_fields}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"update_admin_settings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/settings")
+async def get_public_settings():
+    """Public endpoint: returns feature flags readable by the Mini App frontend."""
+    try:
+        arya_db = app.state.db
+        cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        return {
+            "success": True,
+            "mini_app_enabled": cfg.get("mini_app_enabled", True),
+            "tnc_enabled": cfg.get("tnc_enabled", True),
+        }
+    except Exception as e:
+        logger.warning(f"get_public_settings error: {e}")
+        return {"success": True, "mini_app_enabled": True, "tnc_enabled": True}
 
 
 app.include_router(api_router, prefix="/api")
