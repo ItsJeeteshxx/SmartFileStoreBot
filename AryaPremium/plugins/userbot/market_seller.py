@@ -1158,12 +1158,20 @@ async def _process_start(client, message):
                 from plugins.userbot.market_seller import dispatch_delivery_choice
                 return await dispatch_delivery_choice(client, user_id, story)
             
-            # Redirect to Mini App
-            bot_username = client.me.username
-            wa_url = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{story_id}"
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ Open in Mini App / मिनी ऐप खोलें", url=wa_url)]])
-            txt = "<b>🛍️ View Story / स्टोरी देखें</b>\n\nTap the button below to open this story securely in our new Premium Mini App.\nइस कहानी को सुरक्षित रूप से हमारे प्रीमियम मिनी ऐप में देखने और खरीदने के लिए नीचे दिए गए बटन पर टैप करें।"
-            return await message.reply_text(txt, reply_markup=kb)
+            # Check mini_app_enabled toggle from DB
+            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+
+            if _mini_app_on:
+                # Redirect to Mini App
+                bot_username = client.me.username
+                wa_url = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{story_id}"
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ Open in Mini App / मिनी ऐप खोलें", url=wa_url)]])
+                txt = "<b>🛍️ View Story / स्टोरी देखें</b>\n\nTap the button below to open this story securely in our new Premium Mini App.\nइस कहानी को सुरक्षित रूप से हमारे प्रीमियम मिनी ऐप में देखने और खरीदने के लिए नीचे दिए गए बटन पर टैप करें।"
+                return await message.reply_text(txt, reply_markup=kb)
+            else:
+                # Old bot flow: show story preview directly (skips mini app)
+                return await _show_story_preview(client, user_id, story, lang)
 
     # ── Normal Start ──
     if 'lang' not in user:
@@ -2309,6 +2317,15 @@ async def _process_callback(client, query):
             await query.message.delete()
         except:
             pass
+        # Check if T&C is globally disabled by admin
+        _tnc_cfg1 = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        if not _tnc_cfg1.get("tnc_enabled", True):
+            from bson.objectid import ObjectId as _ObjId1
+            _s1 = await db.db.premium_stories.find_one({"_id": _ObjId1(s_id)})
+            if _s1:
+                _bt1 = await db.db.premium_bots.find_one({"id": client.me.id})
+                _bt_cfg1 = (_bt1 or {}).get("config", {})
+                return await _show_story_details(client, query, _s1, lang, bot_cfg=_bt_cfg1)
         return await _show_tc(client, user_id, s_id, lang)
 
     elif cmd == "demo":
@@ -2508,6 +2525,15 @@ async def _process_callback(client, query):
         s_id = cmd.replace("story_preview_continue_", "")
         await query.answer()
         await query.message.delete()
+        # Check if T&C is globally disabled by admin
+        _tnc_cfg0 = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        if not _tnc_cfg0.get("tnc_enabled", True):
+            from bson.objectid import ObjectId as _ObjId0
+            _s0 = await db.db.premium_stories.find_one({"_id": _ObjId0(s_id)})
+            if _s0:
+                _bt0 = await db.db.premium_bots.find_one({"id": client.me.id})
+                _bt_cfg0 = (_bt0 or {}).get("config", {})
+                return await _show_story_details(client, query, _s0, lang, bot_cfg=_bt_cfg0)
         return await _show_tc(client, user_id, s_id, lang)
 
     # ── T&C Accept ──
@@ -2682,6 +2708,15 @@ async def _process_callback(client, query):
             await query.message.delete()
         except:
             pass
+        # Check if T&C is globally disabled by admin
+        _tnc_cfg2 = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        if not _tnc_cfg2.get("tnc_enabled", True):
+            from bson.objectid import ObjectId as _ObjId2
+            _s2 = await db.db.premium_stories.find_one({"_id": _ObjId2(s_id)})
+            if _s2:
+                _bt2 = await db.db.premium_bots.find_one({"id": client.me.id})
+                _bt_cfg2 = (_bt2 or {}).get("config", {})
+                return await _show_story_details(client, query, _s2, lang, bot_cfg=_bt_cfg2)
         return await _show_tc(client, user_id, s_id, lang)
 
     elif cmd == "back":
