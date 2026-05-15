@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -39,6 +38,49 @@ COUNTRY_CENTROIDS: dict[str, tuple[float, float]] = {
     "Nigeria": (9.08, 8.68),
     "Unknown": (0, 0),
 }
+
+# Fallback map pins when events have no map_lat/map_lng (India: state/region centroid)
+INDIA_REGION_COORDS: dict[str, tuple[float, float]] = {
+    "madhya pradesh": (22.9734, 78.6569),
+    "maharashtra": (19.7515, 75.7139),
+    "uttar pradesh": (26.8467, 80.9462),
+    "gujarat": (22.2587, 71.1924),
+    "karnataka": (15.3173, 75.7139),
+    "rajasthan": (27.0238, 74.2179),
+    "telangana": (18.1124, 79.0193),
+    "tamil nadu": (11.1271, 78.6569),
+    "west bengal": (22.9868, 87.8550),
+    "bihar": (25.0961, 85.3131),
+    "punjab": (31.1471, 75.3412),
+    "haryana": (29.0588, 76.0856),
+    "delhi": (28.7041, 77.1025),
+    "uttarakhand": (30.0668, 79.0193),
+    "himachal pradesh": (31.1048, 77.1734),
+    "jharkhand": (23.6102, 85.2799),
+    "chhattisgarh": (21.2787, 81.8661),
+    "odisha": (20.9517, 85.0985),
+    "assam": (26.2006, 92.9376),
+    "kerala": (10.8505, 76.2711),
+    "andhra pradesh": (15.9129, 79.7400),
+    "goa": (15.2993, 74.1240),
+}
+
+
+def _map_pin_coords(country: str, region: str, city: str, mlat: Any, mlng: Any) -> tuple[float, float]:
+    try:
+        la = float(mlat) if mlat is not None else None
+        lo = float(mlng) if mlng is not None else None
+    except (TypeError, ValueError):
+        la, lo = None, None
+    if la is not None and lo is not None and -90 <= la <= 90 and -180 <= lo <= 180:
+        return la, lo
+    reg = (region or "").strip().lower()
+    cname = (country or "").strip()
+    if cname == "India" and reg:
+        for key, coords in INDIA_REGION_COORDS.items():
+            if key in reg or reg in key:
+                return coords
+    return COUNTRY_CENTROIDS.get(cname, COUNTRY_CENTROIDS["Unknown"])
 
 
 @dataclass
@@ -140,16 +182,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     stories = arya_db.db.premium_stories
     checkouts = arya_db.db.premium_checkout
 
-    # ── Hero metrics (users / orders span wider than analytics filter for revenue truth) ──
-    total_users = await users.count_documents({})
-    distinct_analytics_users = await analytics.distinct("user_id", m)
-    n_distinct = len([x for x in distinct_analytics_users if x])
+    # ── Hero metrics (parallel I/O) ──
     active_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
-    active_now = len(
-        await analytics.distinct("user_id", {"timestamp": {"$gte": active_cutoff}})
-    )
-
-    # Returning: users with >1 calendar day of activity in window
     ret_pipeline = [
         {"$match": m},
         {"$group": {"_id": "$user_id", "days": {"$addToSet": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}}}}},
@@ -157,43 +191,52 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$match": {"n": {"$gte": 2}, "_id": {"$ne": None}}},
         {"$count": "c"},
     ]
-    ret = await _safe_agg(analytics, ret_pipeline, [])
+    rev_mini_pipeline = [
+        {"$match": {"status": "paid"}},
+        {"$group": {"_id": None, "t": {"$sum": {"$ifNull": ["$total_amount", {"$ifNull": ["$total", 0]}]}}}},
+    ]
+    rev_bot_pipeline = [
+        {"$match": {"status": "approved"}},
+        {"$group": {"_id": None, "t": {"$sum": {"$toDouble": {"$ifNull": ["$amount", 0]}}}}},
+    ]
+    session_match = {**m, "type": "session_duration"}
+    sess_pipeline = [
+        {"$match": session_match},
+        {"$group": {"_id": None, "avg": {"$avg": "$data.duration"}, "n": {"$sum": 1}}},
+    ]
+    (
+        total_users,
+        distinct_analytics_users,
+        active_distinct_ids,
+        ret,
+        mini_paid,
+        bot_appr,
+        rev_mini,
+        rev_bot,
+        premium_users,
+        sess,
+    ) = await asyncio.gather(
+        users.count_documents({}),
+        analytics.distinct("user_id", m),
+        analytics.distinct("user_id", {"timestamp": {"$gte": active_cutoff}}),
+        _safe_agg(analytics, ret_pipeline, []),
+        orders.count_documents({"status": {"$in": ["paid", "delivered"]}}),
+        checkouts.count_documents({"status": "approved"}),
+        _safe_agg(orders, rev_mini_pipeline, []),
+        _safe_agg(checkouts, rev_bot_pipeline, []),
+        users.count_documents({"purchases": {"$exists": True, "$ne": [], "$not": {"$size": 0}}}),
+        _safe_agg(analytics, sess_pipeline, []),
+    )
+    n_distinct = len([x for x in distinct_analytics_users if x])
+    active_now = len([x for x in active_distinct_ids if x])
     returning_count = ret[0]["c"] if ret else 0
 
-    mini_paid = await orders.count_documents({"status": {"$in": ["paid", "delivered"]}})
-    bot_appr = await checkouts.count_documents({"status": "approved"})
-    rev_mini = await _safe_agg(
-        orders,
-        [
-            {"$match": {"status": "paid"}},
-            {"$group": {"_id": None, "t": {"$sum": {"$ifNull": ["$total_amount", {"$ifNull": ["$total", 0]}]}}}},
-        ],
-        [],
-    )
-    rev_bot = await _safe_agg(
-        checkouts,
-        [
-            {"$match": {"status": "approved"}},
-            {"$group": {"_id": None, "t": {"$sum": {"$toDouble": {"$ifNull": ["$amount", 0]}}}}},
-        ],
-        [],
-    )
     mini_rev = float(rev_mini[0]["t"]) if rev_mini else 0.0
     bot_rev = float(rev_bot[0]["t"]) if rev_bot else 0.0
     total_revenue = mini_rev + bot_rev
 
-    premium_users = await users.count_documents({"purchases": {"$exists": True, "$ne": [], "$not": {"$size": 0}}})
     premium_conversion = (premium_users / total_users * 100) if total_users else 0.0
 
-    session_match = {**m, "type": "session_duration"}
-    sess = await _safe_agg(
-        analytics,
-        [
-            {"$match": session_match},
-            {"$group": {"_id": None, "avg": {"$avg": "$data.duration"}, "n": {"$sum": 1}}},
-        ],
-        [],
-    )
     avg_session = float(sess[0]["avg"]) if sess and sess[0].get("avg") else 0.0
     session_events = int(sess[0]["n"]) if sess else 0
 
@@ -212,63 +255,11 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         "orders_paid_or_delivered": mini_paid + bot_appr,
     }
 
-    # ── Live feed ──
-    live_cursor = analytics.find(m).sort("timestamp", -1).limit(80)
-    live_feed = []
-    async for doc in live_cursor:
-        live_feed.append(
-            {
-                "time": _iso(doc.get("timestamp")),
-                "type": doc.get("type"),
-                "user_id": doc.get("user_id"),
-                "country": doc.get("country"),
-                "city": doc.get("city"),
-                "device": doc.get("device"),
-                "browser": doc.get("browser"),
-                "os": doc.get("os"),
-                "referrer": doc.get("referrer"),
-                "story_id": doc.get("story_id") or (doc.get("data") or {}).get("story_id"),
-                "page": doc.get("page") or (doc.get("data") or {}).get("page"),
-            }
-        )
+    story_since = since
+    se_match: dict[str, Any] = {"ts": {"$gte": story_since}}
+    if flt.story_id:
+        se_match["story_id"] = flt.story_id
 
-    # ── Map points (country aggregates + jitter) ──
-    map_pipeline = [
-        {"$match": m},
-        {"$group": {"_id": {"c": "$country", "city": "$city"}, "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 60},
-    ]
-    map_rows = await _safe_agg(analytics, map_pipeline, [])
-    map_points = []
-    for row in map_rows:
-        cid = row["_id"]
-        cname = (cid or {}).get("c") or "Unknown"
-        city = (cid or {}).get("city") or ""
-        lat, lon = COUNTRY_CENTROIDS.get(cname, COUNTRY_CENTROIDS["Unknown"])
-        if lat == 0 and lon == 0:
-            continue
-
-        map_points.append(
-            {
-                "country": cname,
-                "city": city,
-                "count": row["count"],
-                "lat": lat + (random.random() - 0.5) * 4,
-                "lon": lon + (random.random() - 0.5) * 4,
-            }
-        )
-
-    # ── Hourly trend ──
-    hourly_pipeline = [
-        {"$match": m},
-        {"$group": {"_id": {"$hour": "$timestamp"}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}},
-    ]
-    hourly_raw = await _safe_agg(analytics, hourly_pipeline, [])
-    hourly = [{"hour": r["_id"], "events": r["count"]} for r in hourly_raw]
-
-    # ── Device / browser / OS ──
     async def top_field(field: str, limit: int = 8):
         p = [
             {"$match": {**m, field: {"$exists": True, "$nin": [None, "", "Unknown"]}}},
@@ -279,41 +270,186 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         rows = await _safe_agg(analytics, p, [])
         return [{"name": r["_id"], "value": r["count"]} for r in rows]
 
-    browsers, devices, os_list = await asyncio.gather(
-        top_field("browser", 10), top_field("device", 8), top_field("os", 8)
-    )
-    mobile = sum(d["value"] for d in devices if str(d["name"]).lower() in ("mobile", "tablet"))
-    desktop = sum(d["value"] for d in devices if str(d["name"]).lower() == "desktop")
-    twv = await analytics.count_documents({**m, "browser": "Telegram"})
-
-    # ── Geo ──
-    countries = await top_field("country", 15)
-    cities = await top_field("city", 15)
+    map_pipeline = [
+        {"$match": m},
+        {
+            "$group": {
+                "_id": {"c": "$country", "region": "$region", "city": "$city"},
+                "count": {"$sum": 1},
+                "mlat": {"$avg": "$map_lat"},
+                "mlng": {"$avg": "$map_lng"},
+            }
+        },
+        {"$sort": {"count": -1}},
+        {"$limit": 60},
+    ]
+    hourly_pipeline = [
+        {"$match": m},
+        {"$group": {"_id": {"$hour": "$timestamp"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]
     heatmap_pipeline = [
         {"$match": m},
         {"$group": {"_id": {"d": {"$dayOfWeek": "$timestamp"}, "h": {"$hour": "$timestamp"}}, "count": {"$sum": 1}}},
     ]
-    hm = await _safe_agg(analytics, heatmap_pipeline, [])
-    heatmap = [{"day": x["_id"]["d"] - 1, "hour": x["_id"]["h"], "count": x["count"]} for x in hm]
+    top_viewed_pipeline = [
+        {"$match": se_match},
+        {"$group": {"_id": "$story_id", "views": {"$sum": 1}}},
+        {"$sort": {"views": -1}},
+        {"$limit": 12},
+    ]
+    search_pipeline = [
+        {"$match": {**m, "type": "search"}},
+        {"$group": {"_id": "$data.query", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 20},
+    ]
+    perf_match = {**m, "type": {"$in": ["performance", "perf", "web_vitals"]}}
+    perf_avg_pipeline = [
+        {"$match": perf_match},
+        {"$group": {"_id": None, "avg_load": {"$avg": "$data.load_ms"}, "avg_api": {"$avg": "$data.api_ms"}, "n": {"$sum": 1}}},
+    ]
+    slow_pages_pipeline = [
+        {"$match": {**m, "type": "performance", "data.page": {"$exists": True}}},
+        {"$group": {"_id": "$data.page", "avg": {"$avg": "$data.load_ms"}}},
+        {"$match": {"avg": {"$gte": 2500}}},
+        {"$sort": {"avg": -1}},
+        {"$limit": 8},
+    ]
+    peak_pipeline = [
+        {"$match": m},
+        {"$group": {"_id": {"$hour": "$timestamp"}, "c": {"$sum": 1}}},
+        {"$sort": {"c": -1}},
+        {"$limit": 1},
+    ]
+    growth_pipeline = [
+        {"$match": {"joined_date": {"$gte": since}}},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$joined_date"}}, "n": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]
+    j_pipeline = [
+        {"$match": {**m, "type": "page_view", "data.page": {"$exists": True}}},
+        {"$group": {"_id": "$data.page", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 8},
+    ]
+    genre_pipeline = [
+        {"$match": {}},
+        {"$group": {"_id": "$genre", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10},
+    ]
+    se_counts_pipeline = [
+        {"$match": se_match},
+        {"$group": {"_id": "$event", "c": {"$sum": 1}}},
+    ]
 
-    # ── Story performance (story_events + premium_stories) ──
-    story_since = since
-    se_match = {"ts": {"$gte": story_since}}
-    if flt.story_id:
-        se_match["story_id"] = flt.story_id
-    top_viewed = await _safe_agg(
-        story_events,
-        [
-            {"$match": se_match},
-            {"$group": {"_id": "$story_id", "views": {"$sum": 1}}},
-            {"$sort": {"views": -1}},
-            {"$limit": 12},
-        ],
-        [],
+    (
+        live_docs,
+        map_rows,
+        hourly_raw,
+        hm,
+        top_viewed,
+        browsers,
+        devices,
+        os_list,
+        countries,
+        cities,
+        states_top,
+        twv,
+        genres,
+        se_counts,
+        top_searches,
+        failed_search,
+        perf_avg,
+        slow_pages,
+        console_errors_n,
+        peak,
+        growth,
+        pages,
+        rage_n,
+        dead_n,
+        scroll_n,
+        mini_opens_n,
+        tg_premium_n,
+    ) = await asyncio.gather(
+        analytics.find(m).sort("timestamp", -1).limit(80).to_list(80),
+        _safe_agg(analytics, map_pipeline, []),
+        _safe_agg(analytics, hourly_pipeline, []),
+        _safe_agg(analytics, heatmap_pipeline, []),
+        _safe_agg(story_events, top_viewed_pipeline, []),
+        top_field("browser", 10),
+        top_field("device", 8),
+        top_field("os", 8),
+        top_field("country", 15),
+        top_field("city", 15),
+        top_field("region", 12),
+        analytics.count_documents({**m, "browser": "Telegram"}),
+        _safe_agg(stories, genre_pipeline, []),
+        _safe_agg(story_events, se_counts_pipeline, []),
+        _safe_agg(analytics, search_pipeline, []),
+        analytics.count_documents({**m, "type": "search_failed"}),
+        _safe_agg(analytics, perf_avg_pipeline, []),
+        _safe_agg(analytics, slow_pages_pipeline, []),
+        analytics.count_documents({**m, "type": "console_error"}),
+        _safe_agg(analytics, peak_pipeline, []),
+        _safe_agg(users, growth_pipeline, []),
+        _safe_agg(analytics, j_pipeline, []),
+        analytics.count_documents({**m, "type": "rage_click"}),
+        analytics.count_documents({**m, "type": "dead_click"}),
+        analytics.count_documents({**m, "type": "scroll_depth"}),
+        analytics.count_documents({**m, "type": "open_app"}),
+        analytics.count_documents({**m, "telegram_premium": True}),
     )
-    top_viewed_fmt = []
-    for r in top_viewed:
-        sid = str(r["_id"])
+
+    live_feed = []
+    for doc in live_docs:
+        live_feed.append(
+            {
+                "time": _iso(doc.get("timestamp")),
+                "ts": _iso(doc.get("timestamp")),
+                "type": doc.get("type"),
+                "user_id": doc.get("user_id"),
+                "country": doc.get("country"),
+                "region": doc.get("region"),
+                "city": doc.get("city"),
+                "lat": doc.get("map_lat"),
+                "lng": doc.get("map_lng"),
+                "device": doc.get("device"),
+                "browser": doc.get("browser"),
+                "os": doc.get("os"),
+                "referrer": doc.get("referrer"),
+                "story_id": doc.get("story_id") or (doc.get("data") or {}).get("story_id"),
+                "page": doc.get("page") or (doc.get("data") or {}).get("page"),
+            }
+        )
+
+    map_points = []
+    for row in map_rows:
+        cid = row.get("_id") or {}
+        cname = cid.get("c") or "Unknown"
+        city = (cid.get("city") or "").strip()
+        region = (cid.get("region") or "").strip()
+        lat, lon = _map_pin_coords(cname, region, city, row.get("mlat"), row.get("mlng"))
+        if lat == 0 and lon == 0:
+            continue
+        map_points.append(
+            {
+                "country": cname,
+                "region": region,
+                "city": city or "—",
+                "count": row["count"],
+                "lat": lat,
+                "lon": lon,
+            }
+        )
+
+    hourly = [{"hour": r["_id"], "events": r["count"]} for r in hourly_raw]
+    heatmap = [{"day": x["_id"]["d"] - 1, "hour": x["_id"]["h"], "count": x["count"]} for x in hm]
+    mobile = sum(d["value"] for d in devices if str(d["name"]).lower() in ("mobile", "tablet"))
+    desktop = sum(d["value"] for d in devices if str(d["name"]).lower() == "desktop")
+
+    async def _story_row(sid: str, views: int) -> dict[str, Any]:
         st = None
         if len(sid) == 24:
             try:
@@ -322,28 +458,17 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
                 st = None
         if st is None:
             st = await stories.find_one({"story_id": sid})
-        title = None
+        title = sid
         if st:
             title = st.get("story_name_en") or st.get("story_name_hi") or st.get("title") or sid
-        top_viewed_fmt.append({"story_id": sid, "title": title or sid, "views": r["views"]})
+        return {"story_id": sid, "title": title, "views": views}
 
-    genre_pipeline = [
-        {"$match": {}},
-        {"$group": {"_id": "$genre", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 10},
-    ]
-    genres = await _safe_agg(stories, genre_pipeline, [])
-
-    # Drop-off / completion placeholders from story_events ratio (view vs purchase events)
-    se_counts = await _safe_agg(
-        story_events,
-        [
-            {"$match": se_match},
-            {"$group": {"_id": "$event", "c": {"$sum": 1}}},
-        ],
-        [],
+    top_viewed_fmt = (
+        list(await asyncio.gather(*[_story_row(str(r["_id"]), int(r["views"])) for r in top_viewed]))
+        if top_viewed
+        else []
     )
+
     ev_map = {str(x["_id"]): x["c"] for x in se_counts}
     views_n = ev_map.get("view", 0) + ev_map.get("open", 0)
     purch_n = ev_map.get("purchase", 0)
@@ -356,92 +481,34 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         "story_completion_proxy_pct": round(min(100, completion_proxy), 2),
         "dropoff_proxy_pct": round(max(0, 100 - completion_proxy), 2) if views_n else 0,
         "replay_rate_pct": None,
-        "episode_analytics_note": "Wire chapter-level events via /api/track event_data.chapter_id",
     }
 
-    # ── Search ──
-    search_pipeline = [
-        {"$match": {**m, "type": "search"}},
-        {"$group": {"_id": "$data.query", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 20},
-    ]
-    top_searches = await _safe_agg(analytics, search_pipeline, [])
-    failed_search = await analytics.count_documents({**m, "type": "search_failed"})
-
-    # ── Performance (client-sent) ──
-    perf_match = {**m, "type": {"$in": ["performance", "perf", "web_vitals"]}}
-    perf_avg = await _safe_agg(
-        analytics,
-        [
-            {"$match": perf_match},
-            {"$group": {"_id": None, "avg_load": {"$avg": "$data.load_ms"}, "avg_api": {"$avg": "$data.api_ms"}, "n": {"$sum": 1}}},
-        ],
-        [],
-    )
     performance = {
         "samples": int(perf_avg[0]["n"]) if perf_avg else 0,
         "avg_page_load_ms": round(float(perf_avg[0]["avg_load"]), 1) if perf_avg and perf_avg[0].get("avg_load") else None,
         "avg_api_ms": round(float(perf_avg[0]["avg_api"]), 1) if perf_avg and perf_avg[0].get("avg_api") else None,
-        "slow_pages": await _safe_agg(
-            analytics,
-            [
-                {"$match": {**m, "type": "performance", "data.page": {"$exists": True}}},
-                {"$group": {"_id": "$data.page", "avg": {"$avg": "$data.load_ms"}}},
-                {"$match": {"avg": {"$gte": 2500}}},
-                {"$sort": {"avg": -1}},
-                {"$limit": 8},
-            ],
-            [],
-        ),
-        "console_errors": await analytics.count_documents({**m, "type": "console_error"}),
+        "slow_pages": slow_pages,
+        "console_errors": int(console_errors_n),
     }
 
-    # ── Intelligence ──
-    peak = await _safe_agg(
-        analytics,
-        [
-            {"$match": m},
-            {"$group": {"_id": {"$hour": "$timestamp"}, "c": {"$sum": 1}}},
-            {"$sort": {"c": -1}},
-            {"$limit": 1},
-        ],
-        [],
-    )
     peak_hour = peak[0]["_id"] if peak else None
 
-    growth_pipeline = [
-        {"$match": {"joined_date": {"$gte": since}}},
-        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$joined_date"}}, "n": {"$sum": 1}}},
-        {"$sort": {"_id": 1}},
-    ]
-    growth = await _safe_agg(users, growth_pipeline, [])
-
-    # ── User journey (simplified from page_view) ──
-    j_pipeline = [
-        {"$match": {**m, "type": "page_view", "data.page": {"$exists": True}}},
-        {"$group": {"_id": "$data.page", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 8},
-    ]
-    pages = await _safe_agg(analytics, j_pipeline, [])
     journey = {
         "nodes": [{"id": p["_id"], "count": p["count"]} for p in pages],
-        "flow_note": "Sequence analytics: emit event_data.nav_path as ordered list from the mini app.",
+        "flow_note": "Emit event_data.nav_path from the client for sequence analytics.",
     }
 
-    # ── Behavior placeholders (requires richer client events) ──
     behavior = {
-        "rage_clicks": await analytics.count_documents({**m, "type": "rage_click"}),
-        "dead_clicks": await analytics.count_documents({**m, "type": "dead_click"}),
-        "scroll_samples": await analytics.count_documents({**m, "type": "scroll_depth"}),
+        "rage_clicks": int(rage_n),
+        "dead_clicks": int(dead_n),
+        "scroll_samples": int(scroll_n),
         "bounce_rate_proxy": None,
     }
 
     telegram_section = {
-        "mini_app_opens": await analytics.count_documents({**m, "type": "open_app"}),
+        "mini_app_opens": int(mini_opens_n),
         "telegram_browser_sessions": twv,
-        "telegram_premium_flagged": await analytics.count_documents({**m, "telegram_premium": True}),
+        "telegram_premium_flagged": int(tg_premium_n),
     }
 
     return {
@@ -464,13 +531,12 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
             "countries": countries,
             "cities": cities,
             "heatmap": heatmap,
-            "states": await top_field("region", 12),
+            "states": states_top,
         },
         "stories": stories_section,
         "search": {
             "top": [{"query": (t["_id"] or "").strip() or "(empty)", "count": t["count"]} for t in top_searches if t["_id"] is not None],
             "failed_searches": failed_search,
-            "trending_note": "Compare 7d vs prior 7d window in future revision.",
         },
         "performance": performance,
         "telegram": telegram_section,

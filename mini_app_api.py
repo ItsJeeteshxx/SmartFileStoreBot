@@ -2029,43 +2029,148 @@ async def _geo_provider(session: aiohttp.ClientSession, url: str, parser) -> dic
         return None
 
 
-async def _get_geo(ip: str) -> dict:
-    """Consensus geolocation using 4 free providers â€” same strategy as SliceURL."""
-    if not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172.")):
-        return {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
+_geo_lookup_cache: dict[str, tuple[float, dict]] = {}
+_GEO_LOOKUP_TTL = 900.0  # seconds
 
-    providers = [
-        (f"https://ipwho.is/{ip}?fields=success,country,city,region",
-         lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}
-         if d.get("success") else None),
-        (f"https://ipapi.co/{ip}/json/",
-         lambda d: {"country": d.get("country_name"), "city": d.get("city"), "region": d.get("region")}),
-        (f"https://freeipapi.com/api/json/{ip}",
-         lambda d: {"country": d.get("countryName"), "city": d.get("cityName"), "region": d.get("regionName")}),
-        (f"https://get.geojs.io/v1/ip/geo/{ip}.json",
-         lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}),
-    ]
 
-    results = []
-    async with aiohttp.ClientSession() as session:
-        tasks = [_geo_provider(session, url, parser) for url, parser in providers]
-        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-        results = [r for r in raw_results if isinstance(r, dict) and r]
+def _geo_empty() -> dict:
+    return {"country": "Unknown", "city": "Unknown", "region": "Unknown", "latitude": None, "longitude": None}
 
+
+def _norm_geo_token(s: str | None) -> str:
+    if not s or not isinstance(s, str):
+        return ""
+    t = s.strip().lower()
+    if t in ("unknown", "null", "none", "-", ""):
+        return ""
+    return t
+
+
+def _geo_consensus_from_rows(results: list[dict]) -> dict:
+    """When ipwho.is fails: pick region by vote, then city preferring rows that agree on region."""
     if not results:
-        return {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
+        return _geo_empty()
 
-    # Majority vote on city
+    region_votes: dict[str, int] = {}
+    for r in results:
+        reg = _norm_geo_token(r.get("region"))
+        if reg:
+            region_votes[reg] = region_votes.get(reg, 0) + 1
+    best_region = max(region_votes, key=region_votes.__getitem__) if region_votes else ""
+
     city_votes: dict[str, int] = {}
     for r in results:
-        c = (r.get("city") or "").strip()
-        if c and c.lower() not in ("unknown", "null", ""):
-            city_votes[c] = city_votes.get(c, 0) + 1
+        city = _norm_geo_token(r.get("city"))
+        if not city:
+            continue
+        reg = _norm_geo_token(r.get("region"))
+        if best_region and reg and best_region not in reg and reg not in best_region:
+            continue
+        city_votes[city] = city_votes.get(city, 0) + 1
+
+    if not city_votes:
+        for r in results:
+            city = _norm_geo_token(r.get("city"))
+            if city:
+                city_votes[city] = city_votes.get(city, 0) + 1
 
     best_city = max(city_votes, key=city_votes.__getitem__) if city_votes else "Unknown"
-    country = next((r.get("country") for r in results if r.get("country") and r["country"].lower() != "unknown"), "Unknown")
-    region  = next((r.get("region")  for r in results if r.get("region")  and r["region"].lower()  != "unknown"), "Unknown")
-    return {"country": country or "Unknown", "city": best_city, "region": region or "Unknown"}
+
+    country = "Unknown"
+    for r in results:
+        c = (r.get("country") or "").strip()
+        if c and _norm_geo_token(c):
+            country = c
+            break
+
+    display_region = best_region.title() if best_region else "Unknown"
+    if display_region == "Unknown":
+        for r in results:
+            reg = (r.get("region") or "").strip()
+            if reg and _norm_geo_token(reg):
+                display_region = reg
+                break
+
+    return {
+        "country": country or "Unknown",
+        "city": best_city if best_city != "Unknown" else "Unknown",
+        "region": display_region,
+        "latitude": None,
+        "longitude": None,
+    }
+
+
+async def _get_geo(ip: str) -> dict:
+    """Prefer ipwho.is (city, region, lat/lon); fallback to multi-provider region-aware consensus."""
+    import time as _time
+
+    now = _time.time()
+    cached = _geo_lookup_cache.get(ip)
+    if cached and (now - cached[0]) < _GEO_LOOKUP_TTL:
+        return dict(cached[1])
+
+    if not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172.")):
+        g = _geo_empty()
+        _geo_lookup_cache[ip] = (now, g)
+        return dict(g)
+
+    primary_url = f"https://ipwho.is/{ip}?fields=success,country,region,city,latitude,longitude"
+
+    async with aiohttp.ClientSession() as session:
+        primary = await _geo_provider(
+            session,
+            primary_url,
+            lambda d: d if isinstance(d, dict) and d.get("success") else None,
+        )
+
+        if primary and _norm_geo_token(primary.get("country")):
+            lat = primary.get("latitude")
+            lon = primary.get("longitude")
+            try:
+                lat_f = float(lat) if lat is not None else None
+            except (TypeError, ValueError):
+                lat_f = None
+            try:
+                lon_f = float(lon) if lon is not None else None
+            except (TypeError, ValueError):
+                lon_f = None
+            if lat_f is not None and (lat_f < -90 or lat_f > 90):
+                lat_f = None
+            if lon_f is not None and (lon_f < -180 or lon_f > 180):
+                lon_f = None
+            g = {
+                "country": (primary.get("country") or "Unknown").strip() or "Unknown",
+                "region": (primary.get("region") or "Unknown").strip() or "Unknown",
+                "city": (primary.get("city") or "Unknown").strip() or "Unknown",
+                "latitude": lat_f,
+                "longitude": lon_f,
+            }
+            _geo_lookup_cache[ip] = (now, g)
+            if len(_geo_lookup_cache) > 6000:
+                for k, _ in sorted(_geo_lookup_cache.items(), key=lambda x: x[1][0])[:1500]:
+                    _geo_lookup_cache.pop(k, None)
+            return dict(g)
+
+        providers = [
+            (f"https://ipapi.co/{ip}/json/",
+             lambda d: {"country": d.get("country_name"), "city": d.get("city"), "region": d.get("region")}),
+            (f"https://freeipapi.com/api/json/{ip}",
+             lambda d: {"country": d.get("countryName"), "city": d.get("cityName"), "region": d.get("regionName")}),
+            (f"https://get.geojs.io/v1/ip/geo/{ip}.json",
+             lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}),
+        ]
+        raw_results = await asyncio.gather(
+            *[_geo_provider(session, url, parser) for url, parser in providers],
+            return_exceptions=True,
+        )
+        results = [r for r in raw_results if isinstance(r, dict) and r]
+
+    g = _geo_consensus_from_rows(results) if results else _geo_empty()
+    _geo_lookup_cache[ip] = (now, g)
+    if len(_geo_lookup_cache) > 6000:
+        for k, _ in sorted(_geo_lookup_cache.items(), key=lambda x: x[1][0])[:1500]:
+            _geo_lookup_cache.pop(k, None)
+    return dict(g)
 
 COUNTRY_CURRENCY_MAP = {
     "India": "INR", "Nepal": "NPR", "Sri Lanka": "LKR", "Bangladesh": "BDT", "Pakistan": "PKR",
@@ -2255,9 +2360,16 @@ async def track_event(data: TrackEvent, request: Request):
         try:
             geo = await asyncio.wait_for(_get_geo(ip), timeout=5)
         except asyncio.TimeoutError:
-            geo = {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
+            geo = {"country": "Unknown", "city": "Unknown", "region": "Unknown", "latitude": None, "longitude": None}
 
         ed = data.event_data or {}
+        map_lat = geo.get("latitude")
+        map_lng = geo.get("longitude")
+        if isinstance(ed.get("lat"), (int, float)):
+            map_lat = float(ed["lat"])
+        if isinstance(ed.get("lng"), (int, float)):
+            map_lng = float(ed["lng"])
+
         doc: dict = {
             "user_id":  user_id_int,
             "type":     data.event_type,
@@ -2272,6 +2384,10 @@ async def track_event(data: TrackEvent, request: Request):
             "referrer": referrer_source,
             "timestamp": datetime.now(timezone.utc),
         }
+        if map_lat is not None and -90 <= map_lat <= 90:
+            doc["map_lat"] = map_lat
+        if map_lng is not None and -180 <= map_lng <= 180:
+            doc["map_lng"] = map_lng
         for k in (
             "timezone", "language", "isp", "lat", "lng", "screen_w", "screen_h", "color_scheme",
             "connection_type", "telegram_premium", "telegram_lang", "story_id", "page", "genre",
@@ -2295,6 +2411,9 @@ async def track_event(data: TrackEvent, request: Request):
                         "user_id": user_id_int,
                         "country": geo.get("country"),
                         "city": geo.get("city"),
+                        "region": geo.get("region"),
+                        "lat": doc.get("map_lat"),
+                        "lng": doc.get("map_lng"),
                         "device": ua_info["device_type"],
                         "browser": ua_info["browser"],
                         "story_id": doc.get("story_id"),
