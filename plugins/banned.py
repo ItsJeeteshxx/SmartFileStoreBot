@@ -1,7 +1,6 @@
 import logging
-from pyrogram import Client, filters
+from pyrogram import Client, filters, StopPropagation
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
-from pyrogram.errors import StopPropagation
 from pyrogram.types import Message
 from database import db
 from config import Config
