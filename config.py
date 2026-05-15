@@ -24,10 +24,12 @@ class Config:
     DATABASE_NAME = environ.get("DATABASE_NAME", "arya")
 
     # -------- OWNER (FIXED) --------
-    OWNER_IDS = [
-        int(i) for i in environ.get("OWNER_IDS", "").replace(",", " ").split()
-        if i.isdigit()
-    ]
+    # Reads from BOTH "OWNER_IDS" and "BOT_OWNER_ID" env vars (either or both can be set)
+    _raw_ids = (
+        environ.get("OWNER_IDS", "") + " " +
+        environ.get("BOT_OWNER_ID", "")
+    ).replace(",", " ").split()
+    OWNER_IDS = list({int(i) for i in _raw_ids if i.strip().isdigit()})
 
     BOT_OWNER_ID = OWNER_IDS
 
