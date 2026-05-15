@@ -67,8 +67,15 @@ def _sc(text: str) -> str:
     ))
 
 
-def _is_owner(user_id: int) -> bool:
-    return user_id in Config.BOT_OWNER_ID
+async def _is_owner(user_id: int) -> bool:
+    """Returns True if primary owner (Config) OR co-owner (DB)."""
+    if Config.BOT_OWNER_ID and user_id in Config.BOT_OWNER_ID:
+        return True
+    try:
+        from database import db as _db
+        return await _db.is_co_owner(user_id)
+    except Exception:
+        return False
 
 
 # ── Bar renderer ───────────────────────────────────────────────────────────────
@@ -565,7 +572,7 @@ def start_monitor(bot):
 
 @Client.on_message(filters.private & filters.command("sysstat"))
 async def cmd_sysstat(bot, message: Message):
-    if not _is_owner(message.from_user.id):
+    if not await _is_owner(message.from_user.id):
         return await message.reply_text("⛔ Owner-only command.")
 
     await message.reply_text("<i>Fetching system info...</i>")
@@ -597,10 +604,10 @@ async def cmd_sysstat(bot, message: Message):
 
 @Client.on_message(filters.private & filters.command("cleanup"))
 async def cmd_cleanup(bot, message: Message):
-    if not _is_owner(message.from_user.id):
+    if not await _is_owner(message.from_user.id):
         return await message.reply_text("⛔ Owner-only command.")
 
-    temps = _temp_dir_sizes()
+    temps = await _temp_dir_sizes()
     total = sum(temps.values())
     lines = [f"  • <code>{d}/</code> — <code>{sz:.1f} MB</code>" for d, sz in temps.items()]
     txt = (
@@ -626,7 +633,7 @@ async def cmd_cleanup(bot, message: Message):
 
 @Client.on_message(filters.private & filters.command("pauseall"))
 async def cmd_pauseall(bot, message: Message):
-    if not _is_owner(message.from_user.id):
+    if not await _is_owner(message.from_user.id):
         return await message.reply_text("⛔ Owner-only command.")
     m = await message.reply_text("<i>Pausing all jobs...</i>")
     reason = "Manual /pauseall by owner"
@@ -647,7 +654,7 @@ async def cmd_pauseall(bot, message: Message):
 
 @Client.on_message(filters.private & filters.command("resumeall"))
 async def cmd_resumeall(bot, message: Message):
-    if not _is_owner(message.from_user.id):
+    if not await _is_owner(message.from_user.id):
         return await message.reply_text("⛔ Owner-only command.")
     m = await message.reply_text("<i>Resuming system-paused jobs...</i>")
     res = await _resume_sys_paused_jobs(bot)
@@ -667,7 +674,7 @@ async def cmd_resumeall(bot, message: Message):
 @Client.on_callback_query(filters.regex(r"^sysmon#"))
 async def sysmon_cb(bot, query: CallbackQuery):
     uid = query.from_user.id
-    if not _is_owner(uid):
+    if not await _is_owner(uid):
         return await query.answer("⛔ Owner only!", show_alert=True)
 
     action = query.data.split("#", 1)[1]
@@ -734,10 +741,21 @@ async def sysmon_cb(bot, query: CallbackQuery):
             if not os.path.exists(d):
                 continue
             if d == "merge_tmp":
-                # Only delete subdirs that are NOT active jobs
+                # Delete subdirs that are NOT active job working dirs
                 for sub in os.listdir(d):
                     sub_path = os.path.join(d, sub)
-                    if sub_path in active_wdirs or os.path.join(d, sub) in active_wdirs:
+                    if not os.path.isdir(sub_path):
+                        # Delete stray files directly inside merge_tmp
+                        try:
+                            sz = os.path.getsize(sub_path)
+                            os.remove(sub_path)
+                            freed += sz / 1024 / 1024
+                        except Exception:
+                            pass
+                        continue
+                    # Normalize path for comparison
+                    norm = sub_path.replace("\\", "/")
+                    if any(norm.endswith(a.replace("\\", "/")) or a.replace("\\", "/").endswith(sub) for a in active_wdirs):
                         skipped.append(sub_path)
                         continue
                     try:
@@ -746,15 +764,22 @@ async def sysmon_cb(bot, query: CallbackQuery):
                         freed += sub_size / 1024 / 1024
                     except Exception:
                         pass
-            else:
-                # delete all files inside but keep the dir
-                try:
-                    dir_size = sum(f.stat().st_size for f in __import__("pathlib").Path(d).rglob("*") if f.is_file())
-                    shutil.rmtree(d, ignore_errors=True)
-                    os.makedirs(d, exist_ok=True)
-                    freed += dir_size / 1024 / 1024
-                except Exception:
-                    pass
+            elif d == "downloads":
+                # Delete everything inside downloads/ — these are already-sent files
+                # Do NOT delete the directory itself (bot may need it)
+                for item in os.listdir(d):
+                    item_path = os.path.join(d, item)
+                    try:
+                        if os.path.isfile(item_path) or os.path.islink(item_path):
+                            sz = os.path.getsize(item_path)
+                            os.remove(item_path)
+                            freed += sz / 1024 / 1024
+                        elif os.path.isdir(item_path):
+                            sub_size = sum(f.stat().st_size for f in __import__("pathlib").Path(item_path).rglob("*") if f.is_file())
+                            shutil.rmtree(item_path, ignore_errors=True)
+                            freed += sub_size / 1024 / 1024
+                    except Exception:
+                        pass
 
         skip_note = f"\n⚠️ Skipped {len(skipped)} active merger folder(s)." if skipped else ""
         loop = asyncio.get_event_loop()
@@ -998,6 +1023,6 @@ async def _show_user_detail(bot, query: CallbackQuery, owner_uid: int, target_ui
 
 @Client.on_message(filters.private & filters.command("users"))
 async def cmd_users(bot, message: Message):
-    if not _is_owner(message.from_user.id):
+    if not await _is_owner(message.from_user.id):
         return await message.reply_text("⛔ Owner-only command.")
     await _show_users_panel(bot, message, message.from_user.id, page=1, edit=False)
