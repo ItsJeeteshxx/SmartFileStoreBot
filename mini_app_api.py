@@ -2286,22 +2286,22 @@ def _apply_client_geo_override(geo: dict, ed: dict) -> tuple[dict, str]:
                 return v.strip()
         return None
 
-    cc = _pick_str("client_country", "country")
-    cr = _pick_str("client_region", "region")
-    ci = _pick_str("client_city", "city")
+    cc = _pick_str("geo_country", "client_country", "country")
+    cr = _pick_str("geo_region", "client_region", "region")
+    ci = _pick_str("geo_city", "client_city", "city")
     if cc:
         g["country"] = cc
-        src = "client"
+        src = ed.get("geo_source") or "client"
     if cr:
         g["region"] = cr
-        src = "client"
+        src = ed.get("geo_source") or "client"
     if ci:
         g["city"] = ci
-        src = "client"
+        src = ed.get("geo_source") or "client"
 
     for coord, ed_keys, cg_keys in (
-        ("latitude", ("client_lat", "lat"), ("latitude", "client_lat")),
-        ("longitude", ("client_lng", "lng"), ("longitude", "client_lng")),
+        ("latitude", ("geo_lat", "client_lat", "lat"), ("latitude", "client_lat")),
+        ("longitude", ("geo_lon", "client_lng", "lng"), ("longitude", "client_lng")),
     ):
         v = None
         for k in ed_keys:
