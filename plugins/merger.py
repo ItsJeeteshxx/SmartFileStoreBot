@@ -954,6 +954,37 @@ async def _run_job(jid, uid, bot):
             except: pass
             return
 
+        # ── Cleanup Stale Folders & Check Disk Space ──
+        try:
+            mt_dir = "merge_tmp"
+            if os.path.exists(mt_dir):
+                now_ts = time.time()
+                for fd in os.listdir(mt_dir):
+                    p = os.path.join(mt_dir, fd)
+                    if os.path.isdir(p) and now_ts - os.path.getmtime(p) > 86400: # 24 hours
+                        shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+
+        required_space = (est_size * 2.5) + (500 * 1024**2) # est_size * 2.5 + 500MB safety buffer
+        try:
+            free_space = shutil.disk_usage(os.path.abspath(".")).free
+            if free_space < required_space:
+                msg = (f"<b>❌ Insufficient Server Storage:</b>\n"
+                       f"Found {media_count} files ({_sz(est_size)}).\n\n"
+                       f"The VPS needs at least {_sz(required_space)} of free space to process this safely, "
+                       f"but only {_sz(free_space)} is currently available.\n"
+                       f"Please wait for other jobs to finish or clear up server space.")
+                await _db_up(jid, status="error", error=msg)
+                try:
+                    if scan_msg: await scan_msg.edit_text(msg)
+                    else: await bot.send_message(uid, msg)
+                except: pass
+                return
+        except Exception as e:
+            logger.warning(f"Disk check failed: {e}")
+        # ─────────────────────────────────────────────
+
         try:
             txt = (f"<b>✅ Pre-scan complete</b>\n"
                    f"📁 {media_count} media files found\n"
