@@ -15,11 +15,11 @@ async def ban_interceptor(client, update):
             raise StopPropagation
 
 # These automatically register on the main bot (Arya Forward Bot) because it uses plugins mechanism
-@Client.on_message(filters.all, group=-1)
+@Client.on_message(filters.all, group=-999)
 async def main_bot_ban_message_interceptor(client, message):
     await ban_interceptor(client, message)
 
-@Client.on_callback_query(filters.all, group=-1)
+@Client.on_callback_query(filters.all, group=-999)
 async def main_bot_ban_callback_interceptor(client, query):
     await ban_interceptor(client, query)
 

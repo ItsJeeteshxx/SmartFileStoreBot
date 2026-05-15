@@ -889,8 +889,8 @@ async def _process_fsub_check(client, query):
 def register_share_handlers(app: Client):
     """Register all handlers on a started Client instance."""
     from plugins.banned import ban_interceptor
-    app.add_handler(MessageHandler(ban_interceptor, filters.all), group=-1)
-    app.add_handler(CallbackQueryHandler(ban_interceptor, filters.all), group=-1)
+    app.add_handler(MessageHandler(ban_interceptor, filters.all), group=-999)
+    app.add_handler(CallbackQueryHandler(ban_interceptor, filters.all), group=-999)
     
     # Auto-approve join requests for JR channels so users get instant access
     app.add_handler(ChatJoinRequestHandler(_fsub_record_jr))
