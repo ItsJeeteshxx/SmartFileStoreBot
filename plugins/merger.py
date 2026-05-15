@@ -969,19 +969,17 @@ async def _run_job(jid, uid, bot):
         required_space = (est_size * 1.5) + (200 * 1024**2)  # est_size * 1.5 + 200MB safety buffer
         try:
             free_space = shutil.disk_usage(os.path.abspath(".")).free
-            if free_space < required_space:
-                msg = (f"<b>❌ Insufficient Server Storage:</b>\n"
-                       f"Found {media_count} files ({_sz(est_size)}).\n\n"
-                       f"Need at least <b>{_sz(required_space)}</b> free space (1.5× file size + 200 MB buffer), "
-                       f"but only <b>{_sz(free_space)}</b> is currently available.\n"
-                       f"Please wait for other jobs to finish or clear up server space.\n\n"
-                       f"<i>💡 Tip: Owner can clear temp files via /sysmon to free space.</i>")
-                await _db_up(jid, status="error", error=msg)
+            # Soft warning only — don't block the job. Let FFmpeg fail naturally if truly out of space.
+            if free_space < est_size:
+                warn_msg = (f"⚠️ <b>Low Disk Space Warning:</b>\n"
+                            f"Files: {media_count} ({_sz(est_size)}) | Free: <b>{_sz(free_space)}</b>\n"
+                            f"Proceeding anyway — job may fail if disk fills up.\n"
+                            f"<i>💡 Clear temp files via /sysmon if job fails.</i>")
                 try:
-                    if scan_msg: await scan_msg.edit_text(msg)
-                    else: await bot.send_message(uid, msg)
+                    if scan_msg: await scan_msg.edit_text(warn_msg)
+                    else: await bot.send_message(uid, warn_msg)
                 except: pass
-                return
+                await asyncio.sleep(2)  # Give user time to read warning
         except Exception as e:
             logger.warning(f"Disk check failed: {e}")
         # ─────────────────────────────────────────────
