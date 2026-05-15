@@ -236,6 +236,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$match": {"u": {"$elemMatch": {"purchases": {"$exists": True, "$ne": []}}}}},
         {"$count": "c"},
     ]
+    # Session length from explicit session_duration events (see mini_app_api track_event).
+    session_match = {**m, "type": "session_duration"}
     sess_pipeline = [
         {"$match": session_match},
         {"$group": {"_id": None, "avg": {"$avg": "$data.duration"}, "n": {"$sum": 1}}},
