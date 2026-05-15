@@ -157,7 +157,14 @@ hub = AnalyticsHub()
 
 def _iso(dt: Any) -> str:
     if isinstance(dt, datetime):
-        return dt.isoformat()
+        try:
+            import pytz
+            ist = pytz.timezone('Asia/Kolkata')
+            return dt.astimezone(ist).isoformat()
+        except ImportError:
+            # Fallback if pytz is not installed, though it usually is
+            ist_offset = timezone(timedelta(hours=5, minutes=30))
+            return dt.astimezone(ist_offset).isoformat()
     return str(dt or "")
 
 
@@ -209,7 +216,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     active_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
     ret_pipeline = [
         {"$match": m},
-        {"$group": {"_id": "$user_id", "days": {"$addToSet": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}}}}},
+        {"$group": {"_id": "$user_id", "days": {"$addToSet": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp", "timezone": "Asia/Kolkata"}}}}},
         {"$project": {"_id": 1, "n": {"$size": "$days"}}},
         {"$match": {"n": {"$gte": 2}, "_id": {"$ne": None}}},
         {"$count": "c"},
@@ -331,12 +338,12 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     ]
     hourly_pipeline = [
         {"$match": m},
-        {"$group": {"_id": {"$hour": "$timestamp"}, "count": {"$sum": 1}}},
+        {"$group": {"_id": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}, "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ]
     heatmap_pipeline = [
         {"$match": m},
-        {"$group": {"_id": {"d": {"$dayOfWeek": "$timestamp"}, "h": {"$hour": "$timestamp"}}, "count": {"$sum": 1}}},
+        {"$group": {"_id": {"d": {"$dayOfWeek": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}, "h": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}}, "count": {"$sum": 1}}},
     ]
     top_viewed_pipeline = [
         {"$match": se_match},
@@ -364,7 +371,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     ]
     peak_pipeline = [
         {"$match": m},
-        {"$group": {"_id": {"$hour": "$timestamp"}, "c": {"$sum": 1}}},
+        {"$group": {"_id": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}, "c": {"$sum": 1}}},
         {"$sort": {"c": -1}},
         {"$limit": 1},
     ]
@@ -372,7 +379,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$match": {"user_id": {"$gt": 0}}},
         {"$group": {"_id": "$user_id", "first": {"$min": "$timestamp"}}},
         {"$match": {"first": {"$gte": since}}},
-        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$first"}}, "n": {"$sum": 1}}},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$first", "timezone": "Asia/Kolkata"}}, "n": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ]
     j_pipeline = [
