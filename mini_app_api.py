@@ -2016,6 +2016,70 @@ def _parse_ua(ua: str) -> dict:
     return {"device_type": device_type, "browser": browser, "os": os_name}
 
 
+def _is_private_or_local_ip(ip: str) -> bool:
+    if not ip or ip in ("unknown", "127.0.0.1", "::1"):
+        return True
+    ip = ip.strip().lower()
+    if ip.startswith(("192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31.", "fc00:", "fe80:")):
+        return True
+    if ip.startswith("172."):
+        try:
+            second = int(ip.split(".")[1])
+            if 16 <= second <= 31:
+                return True
+        except (ValueError, IndexError):
+            pass
+    return False
+
+
+def _client_ip_from_request(request: Request) -> str:
+    """Best-effort real client IP behind Cloudflare, Vercel, Fly, or other reverse proxies."""
+    h = request.headers
+
+    def _first_public_ip(raw: str | None) -> str | None:
+        if not raw:
+            return None
+        for part in raw.split(","):
+            ip = part.strip()
+            if ip and not _is_private_or_local_ip(ip):
+                if ip.startswith("[") and "]" in ip:
+                    ip = ip[1 : ip.index("]")]
+                if ":" in ip and "." in ip:
+                    if ip.lower().startswith("::ffff:"):
+                        ip = ip.split(":")[-1]
+                if not _is_private_or_local_ip(ip):
+                    return ip
+        return None
+
+    for key in (
+        "cf-connecting-ip",
+        "true-client-ip",
+        "fastly-client-ip",
+        "fly-client-ip",
+        "x-real-ip",
+    ):
+        v = h.get(key)
+        if v:
+            ip = v.split(",")[0].strip()
+            if ip and not _is_private_or_local_ip(ip):
+                return ip
+
+    vercel = h.get("x-vercel-forwarded-for")
+    ip = _first_public_ip(vercel)
+    if ip:
+        return ip
+
+    xff = h.get("x-forwarded-for") or h.get("X-Forwarded-For")
+    ip = _first_public_ip(xff)
+    if ip:
+        return ip
+
+    ch = request.client.host if request.client else None
+    if ch and not _is_private_or_local_ip(ch):
+        return ch.strip()
+    return "unknown"
+
+
 async def _geo_provider(session: aiohttp.ClientSession, url: str, parser) -> dict | None:
     """Query a single geo provider with timeout."""
     try:
@@ -2030,7 +2094,7 @@ async def _geo_provider(session: aiohttp.ClientSession, url: str, parser) -> dic
 
 
 _geo_lookup_cache: dict[str, tuple[float, dict]] = {}
-_GEO_LOOKUP_TTL = 900.0  # seconds
+_GEO_LOOKUP_TTL = 300.0  # seconds — shorter to reduce stale ISP DB mismatches
 
 
 def _geo_empty() -> dict:
@@ -2100,8 +2164,170 @@ def _geo_consensus_from_rows(results: list[dict]) -> dict:
     }
 
 
+def _haversine_km(lat1: float | None, lon1: float | None, lat2: float | None, lon2: float | None) -> float:
+    from math import atan2, cos, radians, sin, sqrt
+
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return 1e9
+    r = 6371.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dphi = radians(lat2 - lat1)
+    dl = radians(lon2 - lon1)
+    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dl / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return r * c
+
+
+def _regions_loosely_match(a: str | None, b: str | None) -> bool:
+    ra, rb = _norm_geo_token(a), _norm_geo_token(b)
+    if not ra or not rb:
+        return False
+    if ra == rb:
+        return True
+    return ra in rb or rb in ra
+
+
+def _normalize_geo_row(
+    country: str | None,
+    region: str | None,
+    city: str | None,
+    lat: object | None,
+    lon: object | None,
+) -> dict:
+    try:
+        lat_f = float(lat) if lat is not None else None
+    except (TypeError, ValueError):
+        lat_f = None
+    try:
+        lon_f = float(lon) if lon is not None else None
+    except (TypeError, ValueError):
+        lon_f = None
+    if lat_f is not None and (lat_f < -90 or lat_f > 90):
+        lat_f = None
+    if lon_f is not None and (lon_f < -180 or lon_f > 180):
+        lon_f = None
+    return {
+        "country": (country or "Unknown").strip() or "Unknown",
+        "region": (region or "Unknown").strip() or "Unknown",
+        "city": (city or "Unknown").strip() or "Unknown",
+        "latitude": lat_f,
+        "longitude": lon_f,
+    }
+
+
+def _merge_ipwho_ipapi(iw_raw: dict | None, ia_raw: dict | None) -> dict:
+    """Blend ipwho.is + ipapi.co when both succeed — reduces wrong city within same state (ISP edge POP)."""
+    iw = None
+    if isinstance(iw_raw, dict) and iw_raw.get("success") and _norm_geo_token(iw_raw.get("country")):
+        iw = _normalize_geo_row(
+            iw_raw.get("country"),
+            iw_raw.get("region"),
+            iw_raw.get("city"),
+            iw_raw.get("latitude"),
+            iw_raw.get("longitude"),
+        )
+    ia = None
+    if isinstance(ia_raw, dict) and not ia_raw.get("error") and _norm_geo_token(ia_raw.get("country")):
+        ia = _normalize_geo_row(
+            ia_raw.get("country_name") or ia_raw.get("country"),
+            ia_raw.get("region"),
+            ia_raw.get("city"),
+            ia_raw.get("latitude"),
+            ia_raw.get("longitude"),
+        )
+    if not iw and not ia:
+        return _geo_empty()
+    if iw and not ia:
+        return iw
+    if ia and not iw:
+        return ia
+    assert iw is not None and ia is not None
+    if iw["city"] == ia["city"]:
+        return iw
+    if _norm_geo_token(iw["country"]) != _norm_geo_token(ia["country"]):
+        return iw
+    dist = _haversine_km(iw["latitude"], iw["longitude"], ia["latitude"], ia["longitude"])
+    if _regions_loosely_match(iw["region"], ia["region"]) and dist < 220 and ia["city"] and ia["city"] != "Unknown":
+        if (
+            iw["latitude"] is not None
+            and ia["latitude"] is not None
+            and iw["longitude"] is not None
+            and ia["longitude"] is not None
+        ):
+            lat_m = (iw["latitude"] + ia["latitude"]) / 2
+            lon_m = (iw["longitude"] + ia["longitude"]) / 2
+        else:
+            lat_m = iw["latitude"] if iw["latitude"] is not None else ia["latitude"]
+            lon_m = iw["longitude"] if iw["longitude"] is not None else ia["longitude"]
+        return {
+            "country": iw["country"],
+            "region": iw["region"] if len(str(iw["region"])) >= len(str(ia["region"])) else ia["region"],
+            "city": ia["city"],
+            "latitude": lat_m,
+            "longitude": lon_m,
+        }
+    return iw
+
+
+def _apply_client_geo_override(geo: dict, ed: dict) -> tuple[dict, str]:
+    """Optional labels/coords from the Mini App (recommended when IP geo is wrong for mobile ISPs)."""
+    g = dict(geo)
+    src = "ip"
+    cg = ed.get("client_geo") if isinstance(ed.get("client_geo"), dict) else {}
+
+    def _pick_str(*keys: str) -> str | None:
+        for k in keys:
+            v = ed.get(k)
+            if isinstance(v, str) and _norm_geo_token(v):
+                return v.strip()
+            v = cg.get(k) if isinstance(cg, dict) else None
+            if isinstance(v, str) and _norm_geo_token(v):
+                return v.strip()
+        return None
+
+    cc = _pick_str("client_country", "country")
+    cr = _pick_str("client_region", "region")
+    ci = _pick_str("client_city", "city")
+    if cc:
+        g["country"] = cc
+        src = "client"
+    if cr:
+        g["region"] = cr
+        src = "client"
+    if ci:
+        g["city"] = ci
+        src = "client"
+
+    for coord, ed_keys, cg_keys in (
+        ("latitude", ("client_lat", "lat"), ("latitude", "client_lat")),
+        ("longitude", ("client_lng", "lng"), ("longitude", "client_lng")),
+    ):
+        v = None
+        for k in ed_keys:
+            if isinstance(ed.get(k), (int, float)):
+                v = ed.get(k)
+                break
+        if v is None and isinstance(cg, dict):
+            for k in cg_keys:
+                if isinstance(cg.get(k), (int, float)):
+                    v = cg.get(k)
+                    break
+        if v is not None:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if coord == "latitude" and -90 <= fv <= 90:
+                g["latitude"] = fv
+                src = "client"
+            if coord == "longitude" and -180 <= fv <= 180:
+                g["longitude"] = fv
+                src = "client"
+    return g, src
+
+
 async def _get_geo(ip: str) -> dict:
-    """Prefer ipwho.is (city, region, lat/lon); fallback to multi-provider region-aware consensus."""
+    """Parallel ipwho.is + ipapi.co, merged for India/same-region city disagreements; cached per IP."""
     import time as _time
 
     now = _time.time()
@@ -2109,63 +2335,40 @@ async def _get_geo(ip: str) -> dict:
     if cached and (now - cached[0]) < _GEO_LOOKUP_TTL:
         return dict(cached[1])
 
-    if not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172.")):
+    if not ip or ip == "unknown" or _is_private_or_local_ip(ip):
         g = _geo_empty()
         _geo_lookup_cache[ip] = (now, g)
         return dict(g)
 
-    primary_url = f"https://ipwho.is/{ip}?fields=success,country,region,city,latitude,longitude"
-
     async with aiohttp.ClientSession() as session:
-        primary = await _geo_provider(
+        iw_task = _geo_provider(
             session,
-            primary_url,
+            f"https://ipwho.is/{ip}?fields=success,country,region,city,latitude,longitude",
             lambda d: d if isinstance(d, dict) and d.get("success") else None,
         )
-
-        if primary and _norm_geo_token(primary.get("country")):
-            lat = primary.get("latitude")
-            lon = primary.get("longitude")
-            try:
-                lat_f = float(lat) if lat is not None else None
-            except (TypeError, ValueError):
-                lat_f = None
-            try:
-                lon_f = float(lon) if lon is not None else None
-            except (TypeError, ValueError):
-                lon_f = None
-            if lat_f is not None and (lat_f < -90 or lat_f > 90):
-                lat_f = None
-            if lon_f is not None and (lon_f < -180 or lon_f > 180):
-                lon_f = None
-            g = {
-                "country": (primary.get("country") or "Unknown").strip() or "Unknown",
-                "region": (primary.get("region") or "Unknown").strip() or "Unknown",
-                "city": (primary.get("city") or "Unknown").strip() or "Unknown",
-                "latitude": lat_f,
-                "longitude": lon_f,
-            }
-            _geo_lookup_cache[ip] = (now, g)
-            if len(_geo_lookup_cache) > 6000:
-                for k, _ in sorted(_geo_lookup_cache.items(), key=lambda x: x[1][0])[:1500]:
-                    _geo_lookup_cache.pop(k, None)
-            return dict(g)
-
-        providers = [
-            (f"https://ipapi.co/{ip}/json/",
-             lambda d: {"country": d.get("country_name"), "city": d.get("city"), "region": d.get("region")}),
-            (f"https://freeipapi.com/api/json/{ip}",
-             lambda d: {"country": d.get("countryName"), "city": d.get("cityName"), "region": d.get("regionName")}),
-            (f"https://get.geojs.io/v1/ip/geo/{ip}.json",
-             lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}),
-        ]
-        raw_results = await asyncio.gather(
-            *[_geo_provider(session, url, parser) for url, parser in providers],
-            return_exceptions=True,
+        ia_task = _geo_provider(
+            session,
+            f"https://ipapi.co/{ip}/json/",
+            lambda d: d if isinstance(d, dict) and not d.get("error") else None,
         )
-        results = [r for r in raw_results if isinstance(r, dict) and r]
+        iw_raw, ia_raw = await asyncio.gather(iw_task, ia_task, return_exceptions=True)
+        iw_ok = iw_raw if isinstance(iw_raw, dict) else None
+        ia_ok = ia_raw if isinstance(ia_raw, dict) else None
+        g = _merge_ipwho_ipapi(iw_ok, ia_ok)
+        if g["country"] == "Unknown" or not _norm_geo_token(g.get("country")):
+            providers = [
+                (f"https://freeipapi.com/api/json/{ip}",
+                 lambda d: {"country": d.get("countryName"), "city": d.get("cityName"), "region": d.get("regionName")}),
+                (f"https://get.geojs.io/v1/ip/geo/{ip}.json",
+                 lambda d: {"country": d.get("country"), "city": d.get("city"), "region": d.get("region")}),
+            ]
+            raw_results = await asyncio.gather(
+                *[_geo_provider(session, url, parser) for url, parser in providers],
+                return_exceptions=True,
+            )
+            results = [r for r in raw_results if isinstance(r, dict) and r]
+            g = _geo_consensus_from_rows(results) if results else _geo_empty()
 
-    g = _geo_consensus_from_rows(results) if results else _geo_empty()
     _geo_lookup_cache[ip] = (now, g)
     if len(_geo_lookup_cache) > 6000:
         for k, _ in sorted(_geo_lookup_cache.items(), key=lambda x: x[1][0])[:1500]:
@@ -2211,14 +2414,7 @@ async def get_app_context(request: Request):
     """Auto-detect location and suggested currency for the user.
     Works with VPN IPs too. Results cached 10 mins per IP.
     """
-    # IP priority: Cloudflare > X-Forwarded-For > X-Real-IP > direct
-    ip = (
-        request.headers.get("cf-connecting-ip")
-        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        or request.headers.get("x-real-ip")
-        or (request.client.host if request.client else None)
-        or "unknown"
-    )
+    ip = _client_ip_from_request(request)
     ip = ip.strip()
 
     # Check cache first
@@ -2302,25 +2498,42 @@ async def get_app_context(request: Request):
 
     return {"ip": ip, "country": country_name, "currency": currency}
 
+
+def _live_event_summary(event_type: str, ed: dict, doc: dict) -> str:
+    page = str(doc.get("page") or ed.get("page") or "").strip()
+    story = str(doc.get("story_id") or ed.get("story_id") or "").strip()
+    ch = str(doc.get("chapter_id") or ed.get("chapter_id") or "").strip()
+    if event_type == "page_view":
+        return f"Enter · {page}" if page else "App opened"
+    if event_type == "view_story":
+        return f"Story · {story}" if story else "Story opened"
+    if event_type == "session_duration":
+        return "Session heartbeat"
+    if event_type == "search":
+        q = str(ed.get("query") or "").strip()
+        return f"Search · {q[:48]}" if q else "Search"
+    if event_type.startswith("checkout_"):
+        return event_type.replace("_", " ").title()
+    if ch:
+        return f"{event_type} · ch {ch}"
+    return (event_type or "event").replace("_", " ").strip().title()
+
+
 @api_router.post("/track")
 async def track_event(data: TrackEvent, request: Request):
     """Track a mini-app event with full IP geolocation + device info."""
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
         arya_db = app.state.db
+        ed = data.event_data or {}
 
-        # â”€â”€ Extract IP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        ip = (
-            request.headers.get("cf-connecting-ip")
-            or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-            or request.headers.get("x-real-ip")
-            or (request.client.host if request.client else "unknown")
-        )
+        # Extract client IP (Cloudflare / Vercel / Fly / X-Forwarded-For)
+        ip = _client_ip_from_request(request)
         ua  = request.headers.get("user-agent", "")
-        ref = request.headers.get("referer") or data.event_data.get("referrer")
+        ref = request.headers.get("referer") or ed.get("referrer")
 
         # â”€â”€ Register / Update User in db.users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        user_data = data.event_data.get("user_data")
+        user_data = ed.get("user_data")
         if user_id_int > 0 and isinstance(user_data, dict):
             await arya_db.db.users.update_one(
                 {"id": user_id_int},
@@ -2360,9 +2573,10 @@ async def track_event(data: TrackEvent, request: Request):
         try:
             geo = await asyncio.wait_for(_get_geo(ip), timeout=5)
         except asyncio.TimeoutError:
-            geo = {"country": "Unknown", "city": "Unknown", "region": "Unknown", "latitude": None, "longitude": None}
+            geo = _geo_empty()
 
-        ed = data.event_data or {}
+        geo, geo_source = _apply_client_geo_override(geo, ed)
+
         map_lat = geo.get("latitude")
         map_lng = geo.get("longitude")
         if isinstance(ed.get("lat"), (int, float)):
@@ -2378,6 +2592,7 @@ async def track_event(data: TrackEvent, request: Request):
             "country":  geo["country"],
             "city":     geo["city"],
             "region":   geo["region"],
+            "geo_source": geo_source,
             "device":   ua_info["device_type"],
             "browser":  ua_info["browser"],
             "os":       ua_info["os"],
@@ -2392,7 +2607,7 @@ async def track_event(data: TrackEvent, request: Request):
             "timezone", "language", "isp", "lat", "lng", "screen_w", "screen_h", "color_scheme",
             "connection_type", "telegram_premium", "telegram_lang", "story_id", "page", "genre",
             "scroll_depth", "duration_ms", "load_ms", "api_ms", "error_text", "network_type",
-            "chapter_id", "episode_id",
+            "chapter_id", "episode_id", "click_target", "element", "button_id", "utm_source", "utm_campaign",
         ):
             if k in ed and ed[k] is not None:
                 doc[k] = ed[k]
@@ -2408,10 +2623,12 @@ async def track_event(data: TrackEvent, request: Request):
                         "channel": "live",
                         "id": str(ins.inserted_id),
                         "type": data.event_type,
+                        "summary": _live_event_summary(data.event_type, ed, doc),
                         "user_id": user_id_int,
                         "country": geo.get("country"),
                         "city": geo.get("city"),
                         "region": geo.get("region"),
+                        "geo_source": geo_source,
                         "lat": doc.get("map_lat"),
                         "lng": doc.get("map_lng"),
                         "device": ua_info["device_type"],
