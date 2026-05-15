@@ -966,15 +966,16 @@ async def _run_job(jid, uid, bot):
         except Exception:
             pass
 
-        required_space = (est_size * 2.5) + (500 * 1024**2) # est_size * 2.5 + 500MB safety buffer
+        required_space = (est_size * 1.5) + (200 * 1024**2)  # est_size * 1.5 + 200MB safety buffer
         try:
             free_space = shutil.disk_usage(os.path.abspath(".")).free
             if free_space < required_space:
                 msg = (f"<b>❌ Insufficient Server Storage:</b>\n"
                        f"Found {media_count} files ({_sz(est_size)}).\n\n"
-                       f"The VPS needs at least {_sz(required_space)} of free space to process this safely, "
-                       f"but only {_sz(free_space)} is currently available.\n"
-                       f"Please wait for other jobs to finish or clear up server space.")
+                       f"Need at least <b>{_sz(required_space)}</b> free space (1.5× file size + 200 MB buffer), "
+                       f"but only <b>{_sz(free_space)}</b> is currently available.\n"
+                       f"Please wait for other jobs to finish or clear up server space.\n\n"
+                       f"<i>💡 Tip: Owner can clear temp files via /sysmon to free space.</i>")
                 await _db_up(jid, status="error", error=msg)
                 try:
                     if scan_msg: await scan_msg.edit_text(msg)

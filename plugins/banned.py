@@ -10,8 +10,17 @@ logger = logging.getLogger(__name__)
 async def ban_interceptor(client, update):
     user = update.from_user
     if user:
+        # Never block owners/co-owners
+        if user.id in Config.OWNER_IDS:
+            return
         ban_status = await db.get_ban_status(user.id)
         if ban_status.get('is_banned'):
+            # Answer callback to clear the spinner before stopping
+            if hasattr(update, 'answer'):
+                try:
+                    await update.answer("⛔ You are banned from using this bot.", show_alert=True)
+                except Exception:
+                    pass
             raise StopPropagation
 
 # These automatically register on the main bot (Arya Forward Bot) because it uses plugins mechanism

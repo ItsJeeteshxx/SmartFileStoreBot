@@ -92,14 +92,26 @@ async def settings(client, message):
 
 
 def is_owner(user_id: int) -> bool:
-    """Returns True if user_id is a primary or co-owner (checked sync from Config)."""
+    """Returns True if user_id is a primary owner (checked sync from Config)."""
+    # If OWNER_IDS env is not configured, fall back to checking DB primary owner
+    if not Config.BOT_OWNER_ID:
+        return False  # Will be caught by is_any_owner with DB check
     return user_id in Config.BOT_OWNER_ID
 
 async def is_any_owner(user_id: int) -> bool:
     """Returns True if primary owner or co-owner stored in DB."""
-    if is_owner(user_id):
+    # Check env-configured primary owners first
+    if Config.BOT_OWNER_ID and user_id in Config.BOT_OWNER_ID:
         return True
-    return await db.is_co_owner(user_id)
+    # Check DB co-owners
+    if await db.is_co_owner(user_id):
+        return True
+    # Fallback: if no owners configured at all, check if user is a 'primary' in DB
+    if not Config.BOT_OWNER_ID:
+        primary_doc = await db.stats.find_one({'_id': 'primary_owner'})
+        if primary_doc and primary_doc.get('user_id') == user_id:
+            return True
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
