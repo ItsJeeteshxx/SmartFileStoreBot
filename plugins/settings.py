@@ -1527,57 +1527,51 @@ async def settings_query(bot, query):
               has_media = bool(getattr(msg_obj, "media", None))
 
               if has_media and sb_app:
-                  # ── Strategy A: Forward from main bot context to delivery bot context ──
-                  try:
-                      fwd = await sb_app.forward_messages(
-                          chat_id=admin_id,
-                          from_chat_id=msg_obj.chat.id,
-                          message_ids=msg_obj.id,
-                      )
-                      if fwd:
-                          staged_msg_id = fwd.id if not isinstance(fwd, list) else fwd[0].id
-                  except Exception as fwd_err:
-                      logger.warning(f"[Broadcast] Forward staging failed ({fwd_err}), trying download+upload")
+                  cap = msg_obj.caption or ""
+
+                  # Strategy 1: file_id directly (no download, fastest)
+                  def _get_fid(m):
+                      for a in ("voice","audio","video","animation","video_note","sticker","document","photo"):
+                          o = getattr(m, a, None)
+                          if o: return getattr(o, "file_id", None)
+                      return None
+
+                  async def _sb_send(tgt, src):
+                      m = msg_obj
+                      if   getattr(m,"voice",      None): return await sb_app.send_voice(tgt,      voice=src,      caption=cap)
+                      elif getattr(m,"audio",      None): return await sb_app.send_audio(tgt,      audio=src,      caption=cap)
+                      elif getattr(m,"video",      None): return await sb_app.send_video(tgt,      video=src,      caption=cap)
+                      elif getattr(m,"animation",  None): return await sb_app.send_animation(tgt,  animation=src,  caption=cap)
+                      elif getattr(m,"video_note", None): return await sb_app.send_video_note(tgt, video_note=src)
+                      elif getattr(m,"sticker",    None): return await sb_app.send_sticker(tgt,    sticker=src)
+                      elif getattr(m,"document",   None): return await sb_app.send_document(tgt,   document=src,   caption=cap)
+                      elif getattr(m,"photo",      None): return await sb_app.send_photo(tgt,      photo=src,      caption=cap)
+
+                  fid = _get_fid(msg_obj)
+                  if fid:
+                      try:
+                          r = await _sb_send(admin_id, fid)
+                          if r: staged_msg_id = r.id; logger.info(f"[Broadcast] staged via file_id {staged_msg_id}")
+                      except Exception as e: logger.warning(f"[Broadcast] file_id failed: {e}")
 
               if has_media and sb_app and staged_msg_id is None:
-                  # ── Strategy B: Download via main bot, re-upload via delivery bot ──
+                  # Strategy 2: download to /tmp, re-upload via delivery bot
+                  cap = msg_obj.caption or ""
+                  import tempfile as _tf
+                  dl_path = None
                   try:
-                      dl_path = await main_bot.download_media(msg_obj)
-                  except Exception as dl_err:
-                      logger.error(f"[Broadcast] Download failed: {dl_err}")
+                      _tmp = _tf.gettempdir() + f"/arya_bc_{msg_obj.id}"
+                      dl_path = await main_bot.download_media(msg_obj, file_name=_tmp)
+                      logger.info(f"[Broadcast] downloaded to {dl_path}")
+                  except Exception as e: logger.error(f"[Broadcast] /tmp download failed: {e}")
 
                   if dl_path:
                       try:
-                          cap = msg_obj.caption or ""
-                          # Detect exact media type — ALL types covered
-                          if getattr(msg_obj, "voice", None):
-                              staged = await sb_app.send_voice(admin_id, voice=dl_path, caption=cap)
-                          elif getattr(msg_obj, "audio", None):
-                              staged = await sb_app.send_audio(admin_id, audio=dl_path, caption=cap)
-                          elif getattr(msg_obj, "animation", None):
-                              staged = await sb_app.send_animation(admin_id, animation=dl_path, caption=cap)
-                          elif getattr(msg_obj, "video_note", None):
-                              staged = await sb_app.send_video_note(admin_id, video_note=dl_path)
-                          elif getattr(msg_obj, "video", None):
-                              staged = await sb_app.send_video(admin_id, video=dl_path, caption=cap)
-                          elif getattr(msg_obj, "photo", None):
-                              staged = await sb_app.send_photo(admin_id, photo=dl_path, caption=cap)
-                          elif getattr(msg_obj, "sticker", None):
-                              staged = await sb_app.send_sticker(admin_id, sticker=dl_path)
-                          elif getattr(msg_obj, "document", None):
-                              staged = await sb_app.send_document(admin_id, document=dl_path, caption=cap)
-                          else:
-                              staged = await sb_app.send_document(admin_id, document=dl_path, caption=cap)
-
-                          if staged:
-                              staged_msg_id = staged.id
-                      except Exception as up_err:
-                          logger.error(f"[Broadcast] Re-upload staging failed: {up_err}")
-                      try:
-                          import os
-                          os.remove(dl_path)
-                      except Exception:
-                          pass
+                          r = await _sb_send(admin_id, dl_path)
+                          if r: staged_msg_id = r.id; logger.info(f"[Broadcast] staged via upload {staged_msg_id}")
+                      except Exception as e: logger.error(f"[Broadcast] upload failed: {e}")
+                      try: os.remove(dl_path)
+                      except: pass
 
               elif not has_media and sb_app:
                   # ── Strategy C: Text — stage via delivery bot ──
@@ -1588,29 +1582,27 @@ async def settings_query(bot, query):
                   except Exception as txt_err:
                       logger.error(f"[Broadcast] Text staging failed: {txt_err}")
 
-              # ── Step 2: Send to all users via delivery bot ────────────────
+              # ── Step 2: Send to all users ──────────────────────────────────
               async def send_to_user(uid_int):
+                  # Primary: delivery bot copies its staged message
                   if staged_msg_id and sb_app:
                       return await sb_app.copy_message(
                           chat_id=uid_int,
                           from_chat_id=staged_chat_id,
                           message_id=staged_msg_id
                       )
-                  elif sb_app and not has_media:
-                      # Text fallback via delivery bot
+                  # Fallback A: text-only via delivery bot
+                  if sb_app and not has_media:
                       return await sb_app.send_message(
                           chat_id=uid_int,
                           text=msg_obj.text or msg_obj.caption or "Broadcast message"
                       )
-                  elif sb_app and has_media:
-                      # Media fallback: forward directly from admin's original message via delivery bot
-                      return await sb_app.forward_messages(
-                          chat_id=uid_int,
-                          from_chat_id=msg_obj.chat.id,
-                          message_ids=msg_obj.id
-                      )
-                  else:
-                      raise Exception("Delivery bot not available")
+                  # Fallback B: main bot copies directly (ALWAYS works for any media type)
+                  return await main_bot.copy_message(
+                      chat_id=uid_int,
+                      from_chat_id=msg_obj.chat.id,
+                      message_id=msg_obj.id
+                  )
 
               for u in uids:
                   processed += 1
@@ -1622,6 +1614,7 @@ async def settings_query(bot, query):
                   except Exception as e:
                       failed += 1
                       estr = str(e).upper()
+                      logger.warning(f"[Broadcast] uid={u} failed: {e}")
                       if any(k in estr for k in ("USER_IS_BLOCKED", "BOT WAS BLOCKED", "PEER_ID_INVALID",
                                                    "USER_DEACTIVATED", "INPUT_USER_DEACTIVATED")):
                           blocked += 1
