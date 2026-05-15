@@ -1,9 +1,10 @@
 import os
 import uuid
 import logging
+import asyncio
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter, HTTPException, Form, File, UploadFile, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Form, File, UploadFile, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
@@ -2256,10 +2257,11 @@ async def track_event(data: TrackEvent, request: Request):
         except asyncio.TimeoutError:
             geo = {"country": "Unknown", "city": "Unknown", "region": "Unknown"}
 
-        await arya_db.db.mini_app_analytics.insert_one({
+        ed = data.event_data or {}
+        doc: dict = {
             "user_id":  user_id_int,
             "type":     data.event_type,
-            "data":     data.event_data,
+            "data":     ed,
             "ip":       ip,
             "country":  geo["country"],
             "city":     geo["city"],
@@ -2268,8 +2270,41 @@ async def track_event(data: TrackEvent, request: Request):
             "browser":  ua_info["browser"],
             "os":       ua_info["os"],
             "referrer": referrer_source,
-            "timestamp": datetime.now(timezone.utc)
-        })
+            "timestamp": datetime.now(timezone.utc),
+        }
+        for k in (
+            "timezone", "language", "isp", "lat", "lng", "screen_w", "screen_h", "color_scheme",
+            "connection_type", "telegram_premium", "telegram_lang", "story_id", "page", "genre",
+            "scroll_depth", "duration_ms", "load_ms", "api_ms", "error_text", "network_type",
+            "chapter_id", "episode_id",
+        ):
+            if k in ed and ed[k] is not None:
+                doc[k] = ed[k]
+        if isinstance(ed.get("nav_path"), list):
+            doc["nav_path"] = ed["nav_path"]
+
+        ins = await arya_db.db.mini_app_analytics.insert_one(doc)
+        try:
+            from arya_enterprise_analytics import hub as _analytics_hub
+            asyncio.create_task(
+                _analytics_hub.broadcast(
+                    {
+                        "channel": "live",
+                        "id": str(ins.inserted_id),
+                        "type": data.event_type,
+                        "user_id": user_id_int,
+                        "country": geo.get("country"),
+                        "city": geo.get("city"),
+                        "device": ua_info["device_type"],
+                        "browser": ua_info["browser"],
+                        "story_id": doc.get("story_id"),
+                        "page": doc.get("page"),
+                        "ts": doc["timestamp"].isoformat(),
+                    }
+                )
+            )
+        except Exception:
+            pass
         return {"success": True}
     except Exception as e:
         logging.warning(f"[track] failed: {e}")
@@ -2523,8 +2558,60 @@ async def get_public_settings():
         return {"success": True, "mini_app_enabled": True, "tnc_enabled": True}
 
 
+@api_router.get("/analytics/enterprise-dashboard")
+async def enterprise_dashboard(
+    telegram_id: str,
+    days: int = 30,
+    country: Optional[str] = None,
+    city: Optional[str] = None,
+    story_id: Optional[str] = None,
+    device: Optional[str] = None,
+    telegram_only: bool = False,
+    premium_only: bool = False,
+    new_users: bool = False,
+    returning_users: bool = False,
+):
+    """Enterprise analytics JSON for the Next.js intelligence console (Mongo-backed)."""
+    from AryaPremium.config import Config
+    from arya_enterprise_analytics import build_enterprise_dashboard, filters_from_query
+
+    user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+    if user_id_int not in Config.OWNER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    arya_db = app.state.db
+    flt = filters_from_query(
+        days, country, city, story_id, device,
+        telegram_only, premium_only, new_users, returning_users,
+    )
+    return await build_enterprise_dashboard(arya_db, flt)
+
+
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
+
+
+@app.websocket("/api/ws/analytics")
+async def analytics_websocket(websocket: WebSocket, telegram_id: str = Query(...)):
+    """Owner-only live event stream (JSON lines). Scale-out: replace hub with Redis."""
+    from AryaPremium.config import Config
+    from arya_enterprise_analytics import hub as _analytics_ws_hub
+
+    try:
+        uid = int(telegram_id)
+    except ValueError:
+        await websocket.close(code=4400)
+        return
+    if uid not in Config.OWNER_IDS:
+        await websocket.close(code=4403)
+        return
+    await websocket.accept()
+    await _analytics_ws_hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await _analytics_ws_hub.disconnect(websocket)
+
 
 if __name__ == "__main__":
     import uvicorn
