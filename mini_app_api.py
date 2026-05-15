@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 import asyncio
+import urllib.parse
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter, HTTPException, Form, File, UploadFile, Request, WebSocket, WebSocketDisconnect, Query
@@ -2577,8 +2578,29 @@ async def track_event(data: TrackEvent, request: Request):
 
         geo, geo_source = _apply_client_geo_override(geo, ed)
 
+        # ── Vercel Edge Geo Headers Override (Highly Accurate) ──
+        v_city = request.headers.get("x-vercel-ip-city")
+        v_region = request.headers.get("x-vercel-ip-country-region")
+        v_country = request.headers.get("x-vercel-ip-country")
+        
+        if v_city and v_city != "Unknown":
+            geo["city"] = urllib.parse.unquote(v_city) if "%" in v_city else v_city
+            geo_source = "vercel_edge"
+        if v_region and v_region != "Unknown":
+            geo["region"] = urllib.parse.unquote(v_region) if "%" in v_region else v_region
+        if v_country and v_country != "Unknown":
+            # Optional: Map ISO code back to name if needed, but often Vercel sends ISO (e.g. IN)
+            geo["country"] = v_country
+
         map_lat = geo.get("latitude")
         map_lng = geo.get("longitude")
+        v_lat = request.headers.get("x-vercel-ip-latitude")
+        v_lng = request.headers.get("x-vercel-ip-longitude")
+        if v_lat and v_lng:
+            try:
+                map_lat, map_lng = float(v_lat), float(v_lng)
+            except ValueError: pass
+
         if isinstance(ed.get("lat"), (int, float)):
             map_lat = float(ed["lat"])
         if isinstance(ed.get("lng"), (int, float)):
