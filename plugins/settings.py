@@ -1515,44 +1515,80 @@ async def settings_query(bot, query):
               total_users = len(uids)
               processed = 0
 
-              # -- Step 1: Stage the message into the Share Bot's context --
-              # We do this by downloading constraints (if media), and uploading via Share Bot to the admin.
-              # This gives the Share Bot a message in its own context that it can then copy_message to everyone.
-              staged_msg_id = None
-              staged_chat_id = admin_id
-              
-              if getattr(msg_obj, "media", None) and sb_app:
-                  dl_path = await main_bot.download_media(msg_obj)
+              # ── Step 1: Stage the message into the Share Bot's context ──────
+              # Strategy A: Forward the admin's original message to the delivery bot's DM with admin
+              #   → delivery bot now has a copy it owns → can copy_message to all users
+              # Strategy B: If forward fails, download + re-upload via delivery bot
+              # Strategy C: Text-only — just stage a text via delivery bot
+              staged_msg_id  = None
+              staged_chat_id = admin_id  # we always stage in admin's DM with the delivery bot
+              dl_path = None
+
+              has_media = bool(getattr(msg_obj, "media", None))
+
+              if has_media and sb_app:
+                  # ── Strategy A: Forward from main bot context to delivery bot context ──
+                  try:
+                      fwd = await sb_app.forward_messages(
+                          chat_id=admin_id,
+                          from_chat_id=msg_obj.chat.id,
+                          message_ids=msg_obj.id,
+                      )
+                      if fwd:
+                          staged_msg_id = fwd.id if not isinstance(fwd, list) else fwd[0].id
+                  except Exception as fwd_err:
+                      logger.warning(f"[Broadcast] Forward staging failed ({fwd_err}), trying download+upload")
+
+              if has_media and sb_app and staged_msg_id is None:
+                  # ── Strategy B: Download via main bot, re-upload via delivery bot ──
+                  try:
+                      dl_path = await main_bot.download_media(msg_obj)
+                  except Exception as dl_err:
+                      logger.error(f"[Broadcast] Download failed: {dl_err}")
+
                   if dl_path:
                       try:
-                          if msg_obj.animation:
-                              staged = await sb_app.send_animation(admin_id, animation=dl_path, caption=msg_obj.caption or "")
+                          cap = msg_obj.caption or ""
+                          # Detect exact media type — ALL types covered
+                          if getattr(msg_obj, "voice", None):
+                              staged = await sb_app.send_voice(admin_id, voice=dl_path, caption=cap)
+                          elif getattr(msg_obj, "audio", None):
+                              staged = await sb_app.send_audio(admin_id, audio=dl_path, caption=cap)
+                          elif getattr(msg_obj, "animation", None):
+                              staged = await sb_app.send_animation(admin_id, animation=dl_path, caption=cap)
+                          elif getattr(msg_obj, "video_note", None):
+                              staged = await sb_app.send_video_note(admin_id, video_note=dl_path)
                           elif getattr(msg_obj, "video", None):
-                              staged = await sb_app.send_video(admin_id, video=dl_path, caption=msg_obj.caption or "")
+                              staged = await sb_app.send_video(admin_id, video=dl_path, caption=cap)
                           elif getattr(msg_obj, "photo", None):
-                              staged = await sb_app.send_photo(admin_id, photo=dl_path, caption=msg_obj.caption or "")
+                              staged = await sb_app.send_photo(admin_id, photo=dl_path, caption=cap)
+                          elif getattr(msg_obj, "sticker", None):
+                              staged = await sb_app.send_sticker(admin_id, sticker=dl_path)
                           elif getattr(msg_obj, "document", None):
-                              staged = await sb_app.send_document(admin_id, document=dl_path, caption=msg_obj.caption or "")
+                              staged = await sb_app.send_document(admin_id, document=dl_path, caption=cap)
                           else:
-                              # fallback 
-                              staged = await sb_app.send_message(admin_id, text=msg_obj.text or "Unsupported media")
-                              
+                              staged = await sb_app.send_document(admin_id, document=dl_path, caption=cap)
+
                           if staged:
                               staged_msg_id = staged.id
-                      except Exception as e:
-                          logger.error(f"[Broadcast Staging] {e}")
-                      try: os.remove(dl_path)
-                      except: pass
-              elif not getattr(msg_obj, "media", None) and sb_app:
-                  # Text only
+                      except Exception as up_err:
+                          logger.error(f"[Broadcast] Re-upload staging failed: {up_err}")
+                      try:
+                          import os
+                          os.remove(dl_path)
+                      except Exception:
+                          pass
+
+              elif not has_media and sb_app:
+                  # ── Strategy C: Text — stage via delivery bot ──
                   try:
                       staged = await sb_app.send_message(admin_id, text=msg_obj.text or "")
                       if staged:
                           staged_msg_id = staged.id
-                  except Exception as e:
-                      logger.error(f"[Broadcast Staging] {e}")
+                  except Exception as txt_err:
+                      logger.error(f"[Broadcast] Text staging failed: {txt_err}")
 
-              # Define our sending strategy
+              # ── Step 2: Send to all users via delivery bot ────────────────
               async def send_to_user(uid_int):
                   if staged_msg_id and sb_app:
                       return await sb_app.copy_message(
@@ -1560,16 +1596,21 @@ async def settings_query(bot, query):
                           from_chat_id=staged_chat_id,
                           message_id=staged_msg_id
                       )
-                  elif sb_app and not getattr(msg_obj, "media", None):
-                      # Fallback text-only if staging failed
-                      return await sb_app.send_message(chat_id=uid_int, text=msg_obj.text or msg_obj.caption or "Broadcast message")
-                  else:
-                      # Absolute fallback: send from main bot
-                      return await main_bot.copy_message(
+                  elif sb_app and not has_media:
+                      # Text fallback via delivery bot
+                      return await sb_app.send_message(
+                          chat_id=uid_int,
+                          text=msg_obj.text or msg_obj.caption or "Broadcast message"
+                      )
+                  elif sb_app and has_media:
+                      # Media fallback: forward directly from admin's original message via delivery bot
+                      return await sb_app.forward_messages(
                           chat_id=uid_int,
                           from_chat_id=msg_obj.chat.id,
-                          message_id=msg_obj.id
+                          message_ids=msg_obj.id
                       )
+                  else:
+                      raise Exception("Delivery bot not available")
 
               for u in uids:
                   processed += 1
