@@ -57,7 +57,12 @@ _monitor_task: asyncio.Task | None = None
 _ram_baseline: float = 0.0             # RAM % at startup (OS background usage)
 
 # ── Temp dirs the cleanup command will wipe ────────────────────────────────────
-TEMP_DIRS = ["merge_tmp", "downloads"]
+# MUST be absolute paths — relative paths break when working directory changes
+_BOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
+TEMP_DIRS = [
+    os.path.join(_BOT_DIR, "merge_tmp"),
+    os.path.join(_BOT_DIR, "downloads"),
+]
 
 # ── Arya Small-Caps font helper (reuse from share_bot) ────────────────────────
 def _sc(text: str) -> str:
@@ -117,19 +122,23 @@ def _sys_snapshot() -> dict:
 
 
 def _temp_dir_sizes_sync() -> dict:
-    """Blocking disk scan — run via executor, never directly from async code."""
-    result = {}
+    sizes = {}
     for d in TEMP_DIRS:
-        if os.path.exists(d):
-            total = sum(
-                f.stat().st_size
-                for f in __import__("pathlib").Path(d).rglob("*")
-                if f.is_file()
-            )
-            result[d] = total / 1024 / 1024
-        else:
-            result[d] = 0.0
-    return result
+        name = os.path.basename(d)
+        try:
+            if os.path.exists(d):
+                total = sum(
+                    os.path.getsize(os.path.join(dp, fn))
+                    for dp, _, fns in os.walk(d)
+                    for fn in fns
+                )
+                sizes[name] = total / 1024 / 1024  # MB
+            else:
+                sizes[name] = 0.0
+        except Exception as e:
+            logger.warning(f"[SysMonitor] size check failed for {d}: {e}")
+            sizes[name] = 0.0
+    return sizes
 
 
 async def _temp_dir_sizes() -> dict:
@@ -723,77 +732,131 @@ async def sysmon_cb(bot, query: CallbackQuery):
         await query.message.edit_text(txt, reply_markup=btns)
 
     elif action == "do_cleanup":
-        await query.message.edit_text("<i>Cleaning temp files...</i>")
-        freed = 0.0
-        skipped = []
+        await query.message.edit_text("<i>🔄 Scanning and cleaning temp files... please wait.</i>")
 
-        # Get active merger working dirs to skip
-        active_wdirs = set()
+        # Get active merger working dirs BEFORE running cleanup
+        active_wdirs: set = set()
         try:
             from plugins.merger import _mg_tasks
             for jid, task in _mg_tasks.items():
                 if not task.done():
-                    active_wdirs.add(f"merge_tmp/{jid}")
+                    active_wdirs.add(os.path.join(_BOT_DIR, "merge_tmp", str(jid)))
         except Exception:
             pass
 
-        for d in TEMP_DIRS:
-            if not os.path.exists(d):
-                continue
-            if d == "merge_tmp":
-                # Delete subdirs that are NOT active job working dirs
-                for sub in os.listdir(d):
-                    sub_path = os.path.join(d, sub)
-                    if not os.path.isdir(sub_path):
-                        # Delete stray files directly inside merge_tmp
-                        try:
-                            sz = os.path.getsize(sub_path)
-                            os.remove(sub_path)
-                            freed += sz / 1024 / 1024
-                        except Exception:
-                            pass
-                        continue
-                    # Normalize path for comparison
-                    norm = sub_path.replace("\\", "/")
-                    if any(norm.endswith(a.replace("\\", "/")) or a.replace("\\", "/").endswith(sub) for a in active_wdirs):
-                        skipped.append(sub_path)
-                        continue
-                    try:
-                        sub_size = sum(f.stat().st_size for f in __import__("pathlib").Path(sub_path).rglob("*") if f.is_file())
-                        shutil.rmtree(sub_path, ignore_errors=True)
-                        freed += sub_size / 1024 / 1024
-                    except Exception:
-                        pass
-            elif d == "downloads":
-                # Delete everything inside downloads/ — these are already-sent files
-                # Do NOT delete the directory itself (bot may need it)
-                for item in os.listdir(d):
-                    item_path = os.path.join(d, item)
-                    try:
-                        if os.path.isfile(item_path) or os.path.islink(item_path):
-                            sz = os.path.getsize(item_path)
-                            os.remove(item_path)
-                            freed += sz / 1024 / 1024
-                        elif os.path.isdir(item_path):
-                            sub_size = sum(f.stat().st_size for f in __import__("pathlib").Path(item_path).rglob("*") if f.is_file())
-                            shutil.rmtree(item_path, ignore_errors=True)
-                            freed += sub_size / 1024 / 1024
-                    except Exception:
-                        pass
+        def _do_cleanup_sync():
+            """Run entirely in a thread — no event loop blocking on large files."""
+            freed_bytes = 0
+            skipped_dirs = []
+            errors = []
 
-        skip_note = f"\n⚠️ Skipped {len(skipped)} active merger folder(s)." if skipped else ""
+            for base_dir in TEMP_DIRS:
+                dir_name = os.path.basename(base_dir)
+
+                if not os.path.exists(base_dir):
+                    logger.info(f"[Cleanup] {base_dir} does not exist, skipping")
+                    continue
+
+                logger.info(f"[Cleanup] Processing {base_dir}")
+
+                if dir_name == "merge_tmp":
+                    # Delete only subdirs that are NOT active merger jobs
+                    try:
+                        entries = os.listdir(base_dir)
+                    except Exception as e:
+                        errors.append(f"listdir({base_dir}): {e}")
+                        continue
+
+                    for entry in entries:
+                        entry_path = os.path.join(base_dir, entry)
+
+                        if not os.path.isdir(entry_path):
+                            # Stray file directly in merge_tmp — delete it
+                            try:
+                                sz = os.path.getsize(entry_path)
+                                os.remove(entry_path)
+                                freed_bytes += sz
+                                logger.info(f"[Cleanup] Removed stray file {entry_path} ({sz//1024} KB)")
+                            except Exception as e:
+                                errors.append(f"remove({entry_path}): {e}")
+                            continue
+
+                        # Check if this subdir is an active merger job
+                        if entry_path in active_wdirs:
+                            skipped_dirs.append(entry)
+                            logger.info(f"[Cleanup] Skipping active merger dir: {entry_path}")
+                            continue
+
+                        # Calculate size then delete
+                        try:
+                            sz = 0
+                            for dp, _, fns in os.walk(entry_path):
+                                for fn in fns:
+                                    try:
+                                        sz += os.path.getsize(os.path.join(dp, fn))
+                                    except Exception:
+                                        pass
+                            shutil.rmtree(entry_path, ignore_errors=False)
+                            freed_bytes += sz
+                            logger.info(f"[Cleanup] Removed merge dir {entry_path} ({sz//1024//1024} MB)")
+                        except Exception as e:
+                            errors.append(f"rmtree({entry_path}): {e}")
+
+                elif dir_name == "downloads":
+                    # Delete everything inside downloads/ file by file
+                    try:
+                        entries = os.listdir(base_dir)
+                    except Exception as e:
+                        errors.append(f"listdir({base_dir}): {e}")
+                        continue
+
+                    for entry in entries:
+                        entry_path = os.path.join(base_dir, entry)
+                        try:
+                            if os.path.isfile(entry_path) or os.path.islink(entry_path):
+                                sz = os.path.getsize(entry_path)
+                                os.remove(entry_path)
+                                freed_bytes += sz
+                            elif os.path.isdir(entry_path):
+                                sz = 0
+                                for dp, _, fns in os.walk(entry_path):
+                                    for fn in fns:
+                                        try:
+                                            sz += os.path.getsize(os.path.join(dp, fn))
+                                        except Exception:
+                                            pass
+                                shutil.rmtree(entry_path, ignore_errors=False)
+                                freed_bytes += sz
+                        except Exception as e:
+                            errors.append(f"delete({entry_path}): {e}")
+
+            return freed_bytes, skipped_dirs, errors
+
+        # Run blocking I/O in thread pool — never blocks the event loop
         loop = asyncio.get_event_loop()
+        freed_bytes, skipped_dirs, errors = await loop.run_in_executor(None, _do_cleanup_sync)
+
+        freed_mb = freed_bytes / 1024 / 1024
         snap = await loop.run_in_executor(None, _sys_snapshot)
-        txt = (
+
+        skip_note = f"\n⚠️ Skipped <b>{len(skipped_dirs)}</b> active merger job(s)." if skipped_dirs else ""
+        err_note  = f"\n⚠️ <b>{len(errors)}</b> error(s) — check bot logs." if errors else ""
+
+        if errors:
+            for err in errors[:5]:  # log first 5 errors
+                logger.error(f"[Cleanup] {err}")
+
+        result_txt = (
             f"<b>✅ Cleanup Complete!</b>\n\n"
-            f"🗑 Freed: <code>{freed:.1f} MB</code>{skip_note}\n\n"
-            f"<b>Current Disk Free:</b> <code>{snap['disk_free_gb']:.1f} GB</code>\n"
-            f"<b>Current RAM Free:</b> <code>{snap['ram_avail_gb']:.1f} GB</code>"
+            f"🗑 <b>Freed:</b> <code>{freed_mb:.1f} MB</code>{skip_note}{err_note}\n\n"
+            f"<b>Disk Free:</b> <code>{snap['disk_free_gb']:.2f} GB</code>\n"
+            f"<b>RAM Free:</b>  <code>{snap['ram_avail_gb']:.2f} GB</code>"
         )
         btns = InlineKeyboardMarkup([[
             InlineKeyboardButton("📊 Sᴛᴀᴛs", callback_data="sysmon#stats"),
+            InlineKeyboardButton("🗑 Cʟᴇᴀɴ Aɢᴀɪɴ", callback_data="sysmon#cleanup"),
         ]])
-        await query.message.edit_text(txt, reply_markup=btns)
+        await query.message.edit_text(result_txt, reply_markup=btns)
 
     elif action == "cancel":
         await query.message.delete()
