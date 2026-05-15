@@ -550,7 +550,7 @@ async def _process_start(client, message):
     donate_btn = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("💳 " + _sc("Support via UPI"), callback_data="sbd#donate"),
-            InlineKeyboardButton("🔗 " + _sc("Razorpay"), url="https://razorpay.me/@SusJeetX")
+            InlineKeyboardButton("💎 " + _sc("Razorpay"), callback_data="sbd#razorpay")
         ]
     ])
     try:
@@ -736,7 +736,7 @@ async def _process_delivery_button(client, query):
                 InlineKeyboardButton("📝 " + _sc("custom amount"), callback_data="sbd#pay_upi#custom")
             ],
             [
-                InlineKeyboardButton("🌍 " + _sc("non-upi / intl (razorpay)"), url="https://razorpay.me/@SusJeetX")
+                InlineKeyboardButton("💎 " + _sc("pay via razorpay"), callback_data="sbd#razorpay")
             ]
         ]
         try:
@@ -774,7 +774,7 @@ async def _process_delivery_button(client, query):
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_uri}"
         
         buttons = [
-            [InlineKeyboardButton("🌍 " + _sc("pay via razorpay instead"), url="https://razorpay.me/@SusJeetX")]
+            [InlineKeyboardButton("💎 " + _sc("pay via razorpay instead"), callback_data="sbd#razorpay")]
         ]
         
         try:
@@ -782,6 +782,136 @@ async def _process_delivery_button(client, query):
             await client.send_photo(query.from_user.id, photo=qr_url, caption=caption, reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
             logger.error(f"Support QR Error: {e}")
+
+    elif cmd == "razorpay":
+        await query.answer()
+        from config import Config
+        rz_key = Config.RAZORPAY_KEY
+        # Show amount selection panel
+        rz_txt = (
+            f"<b>💎 " + _sc("support via razorpay") + "</b>\n\n"
+            f"<i>Cards, Net Banking, UPI, Wallets — all accepted!\n"
+            f"International payments also supported.</i>\n\n"
+            f"<b>" + _sc("select an amount to generate your payment link:") + "</b>"
+        )
+        rz_btns = [
+            [
+                InlineKeyboardButton("💎 ₹49",  callback_data="sbd#pay_rzp#49"),
+                InlineKeyboardButton("💎 ₹99",  callback_data="sbd#pay_rzp#99"),
+                InlineKeyboardButton("💎 ₹199", callback_data="sbd#pay_rzp#199"),
+            ],
+            [
+                InlineKeyboardButton("💎 ₹499", callback_data="sbd#pay_rzp#499"),
+                InlineKeyboardButton("💎 ₹999", callback_data="sbd#pay_rzp#999"),
+                InlineKeyboardButton("📝 " + _sc("custom"), callback_data="sbd#pay_rzp#custom"),
+            ],
+            [InlineKeyboardButton("💳 " + _sc("upi instead"), callback_data="sbd#donate")],
+        ]
+        try:
+            await client.send_message(query.from_user.id, rz_txt, reply_markup=InlineKeyboardMarkup(rz_btns))
+        except Exception:
+            pass
+
+    elif cmd == "pay_rzp":
+        parts = query.data.split('#')
+        am_str = parts[2] if len(parts) > 2 else "99"
+        uid    = query.from_user.id
+        u_name = getattr(query.from_user, 'first_name', 'User') or 'User'
+        await query.answer()
+
+        from config import Config
+        import aiohttp, json as _json
+
+        rz_key    = Config.RAZORPAY_KEY
+        rz_secret = Config.RAZORPAY_SECRET
+
+        if am_str == "custom":
+            # Ask user to type custom amount
+            ask_msg = await client.send_message(
+                uid,
+                "<b>📝 " + _sc("enter your custom amount (in ₹)") + "</b>\n\n"
+                "<i>Type the amount you wish to donate (e.g. 150, 350, 1000):</i>\n"
+                "/cancel to abort."
+            )
+            try:
+                resp = await client.listen(chat_id=uid, timeout=120)
+                txt = (resp.text or "").strip()
+                await resp.delete()
+                if txt.lower() in ("/cancel", "cancel"):
+                    await ask_msg.edit_text("<i>Cancelled.</i>")
+                    return
+                if not txt.isdigit() or int(txt) < 1:
+                    await ask_msg.edit_text("<i>Invalid amount. Please try again.</i>")
+                    return
+                amount = int(txt)
+                await ask_msg.delete()
+            except Exception:
+                try: await ask_msg.edit_text("<i>Timed out.</i>")
+                except: pass
+                return
+        else:
+            amount = int(am_str)
+
+        # Generate Razorpay Payment Link via API
+        gen_msg = await client.send_message(uid, "<i>⏳ Generating your payment link...</i>")
+        try:
+            if not rz_key or not rz_secret:
+                raise ValueError("Razorpay keys not configured")
+
+            payload = {
+                "amount": amount * 100,   # Razorpay uses paise
+                "currency": "INR",
+                "accept_partial": False,
+                "description": f"Arya Bot Support — {u_name}",
+                "customer": {"name": u_name},
+                "notify": {"sms": False, "email": False},
+                "reminder_enable": False,
+                "notes": {"telegram_id": str(uid)},
+                "callback_url": "",
+                "callback_method": "",
+            }
+            auth = aiohttp.BasicAuth(rz_key, rz_secret)
+            async with aiohttp.ClientSession(auth=auth) as sess:
+                async with sess.post(
+                    "https://api.razorpay.com/v1/payment_links",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    data = await resp.json()
+
+            if resp.status != 200:
+                raise ValueError(data.get("error", {}).get("description", "API error"))
+
+            pay_url  = data["short_url"]
+            link_id  = data["id"]
+
+            link_txt = (
+                f"<b>💎 " + _sc("your razorpay payment link") + "</b>\n\n"
+                f"<b>" + _sc("amount:") + "</b>  <code>₹{amount}</code>\n"
+                f"<b>" + _sc("link id:") + "</b>  <code>{link_id}</code>\n\n"
+                f"<b>🔗 <a href='{pay_url}'>Tap here to pay ₹{amount}</a></b>\n\n"
+                f"<i>✅ Cards, Net Banking, UPI, Wallets accepted.\n"
+                f"This link is valid for 24 hours and is unique to you.</i>"
+            )
+            btn = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"💎 Pay ₹{amount}", url=pay_url)
+            ]])
+            await gen_msg.delete()
+            await client.send_message(uid, link_txt, reply_markup=btn)
+
+        except Exception as rz_err:
+            logger.error(f"[Razorpay] Link generation failed: {rz_err}")
+            # Fallback: show UPI if Razorpay fails
+            await gen_msg.edit_text(
+                f"<b>⚠️ Razorpay link generation failed.</b>\n"
+                f"<i>Error: {rz_err}</i>\n\n"
+                f"Please use UPI instead: <code>heyjeetx@naviaxis</code>",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 " + _sc("try upi instead"), callback_data="sbd#donate")
+                ]])
+            )
+
+
 
     elif cmd == "back":
         await query.answer()

@@ -33,6 +33,10 @@ class Config:
 
     BOT_OWNER_ID = OWNER_IDS
 
+    # -------- RAZORPAY --------
+    RAZORPAY_KEY    = environ.get("RAZORPAY_KEY", "")
+    RAZORPAY_SECRET = environ.get("RAZORPAY_SECRET", "")
+
 
 class temp(object):
     lock = {}
