@@ -1517,6 +1517,7 @@ async def settings_query(bot, query):
               cap_ent = getattr(msg_obj, "caption_entities", None)
               txt_ent = getattr(msg_obj, "entities", None)
               txt = getattr(msg_obj, "text", None) or cap or "Broadcast message"
+              pm_disabled = __import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.DISABLED
 
               # ── Extract file_id from main bot's message ───────────────────
               # Telegram file_ids from main bot can be used by delivery bot
@@ -1535,14 +1536,14 @@ async def settings_query(bot, query):
               async def _sb_media(target, src):
                   """src = file_id or local path. Returns sent message."""
                   m = msg_obj
-                  if   getattr(m,"voice",      None): return await sb_app.send_voice(target,      voice=src,      caption=cap, caption_entities=cap_ent)
-                  elif getattr(m,"audio",      None): return await sb_app.send_audio(target,      audio=src,      caption=cap, caption_entities=cap_ent)
-                  elif getattr(m,"video",      None): return await sb_app.send_video(target,      video=src,      caption=cap, caption_entities=cap_ent)
-                  elif getattr(m,"animation",  None): return await sb_app.send_animation(target,  animation=src,  caption=cap, caption_entities=cap_ent)
+                  if   getattr(m,"voice",      None): return await sb_app.send_voice(target,      voice=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
+                  elif getattr(m,"audio",      None): return await sb_app.send_audio(target,      audio=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
+                  elif getattr(m,"video",      None): return await sb_app.send_video(target,      video=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
+                  elif getattr(m,"animation",  None): return await sb_app.send_animation(target,  animation=src,  caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
                   elif getattr(m,"video_note", None): return await sb_app.send_video_note(target, video_note=src)
                   elif getattr(m,"sticker",    None): return await sb_app.send_sticker(target,    sticker=src)
-                  elif getattr(m,"document",   None): return await sb_app.send_document(target,   document=src,   caption=cap, caption_entities=cap_ent)
-                  elif getattr(m,"photo",      None): return await sb_app.send_photo(target,      photo=src,      caption=cap, caption_entities=cap_ent)
+                  elif getattr(m,"document",   None): return await sb_app.send_document(target,   document=src,   caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
+                  elif getattr(m,"photo",      None): return await sb_app.send_photo(target,      photo=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
                   raise ValueError("Unknown media type")
 
               # ── Pre-download to /tmp if file_id approach fails later ──────
@@ -1563,7 +1564,7 @@ async def settings_query(bot, query):
                   if not has_media:
                       # ── Text ──
                       if sb_app:
-                          return await sb_app.send_message(uid_int, text=txt, entities=txt_ent)
+                          return await sb_app.send_message(uid_int, text=txt, entities=txt_ent, parse_mode=pm_disabled)
                       return await main_bot.copy_message(uid_int, msg_obj.chat.id, msg_obj.id)
 
                   # ── Media ──
