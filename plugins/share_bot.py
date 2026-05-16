@@ -590,7 +590,7 @@ async def _send_welcome(client, message, bot_id: str = None):
 
     buttons = [
         [
-            InlineKeyboardButton("🌟 Aʀʏᴀ Pʀᴇᴍɪᴜᴍ 🌟", callback_data="sbd#premium"),
+            InlineKeyboardButton("»  " + _sc("Arya Premium"), callback_data="sbd#premium"),
         ],
         [
             InlineKeyboardButton(_sc("Help"), callback_data="sbd#help"),
@@ -637,21 +637,21 @@ async def _send_welcome(client, message, bot_id: str = None):
 async def _send_premium_menu(client, query):
     """Show the Arya Premium submenu."""
     txt = (
-        "<b>🌟 Arya Premium (No Restrictions)</b>\n\n"
-        "<i>Yaha se aap bina kisi restriction (limit) ke stories buy kar sakte hain!</i>\n\n"
-        "✨ <b>Kya faayda hai?</b>\n"
-        "• Aap stories ko <b>Forward</b> aur <b>Save</b> kar sakte hain.\n"
-        "• Ye stories aapki <b>'My Stories'</b> me Lifetime tak safe rahengi.\n"
-        "• Zero ads and instant delivery.\n\n"
-        "Niche diye gaye buttons se Bot ya Mini App open karein 👇"
+        f"<b>»  " + _sc("Arya Premium") + "</b>\n\n"
+        f"<i>Yaha se aap bina kisi restriction ke stories buy karke sun sakte hain, "
+        f"aapko yaha kisi tarah ke channels join karne ki jarurat nahi hain.</i>\n\n"
+        f"<b>" + _sc("Features:") + "</b>\n"
+        f"• Aap stories ko <b>Forward</b> aur <b>Save</b> kar sakte hain.\n"
+        f"• Ye stories aapki <b>'My Stories'</b> me Lifetime tak safe rahengi.\n"
+        f"• Zero ads and instant delivery."
     )
     buttons = [
         [
-            InlineKeyboardButton("🤖 Bᴏᴛ", url="https://t.me/UseAryaBot"),
-            InlineKeyboardButton("📱 Mɪɴɪ Aᴘᴘ", url="http://t.me/UseAryaBot/apminibyarya")
+            InlineKeyboardButton("»  " + _sc("Bot"), url="https://t.me/UseAryaBot"),
+            InlineKeyboardButton("»  " + _sc("Mini App"), url="http://t.me/UseAryaBot/apminibyarya")
         ],
         [
-            InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="sbd#back")
+            InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")
         ]
     ]
     await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
