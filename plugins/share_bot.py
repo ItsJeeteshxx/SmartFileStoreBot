@@ -573,17 +573,25 @@ async def _send_welcome(client, message, bot_id: str = None):
     user = message.from_user
     bot_name = client.me.first_name if client.me else "Delivery Bot"
 
-    # Bot-specific welcome text or global
-    custom_wel = (await db.get_share_bot_text(bot_id, "welcome_msg") if bot_id else "") or \
-                 await db.get_share_text("welcome_msg", "")
+    # Fetch DB info concurrently to save time
+    custom_wel_task = asyncio.create_task(db.get_share_bot_text(bot_id, "welcome_msg") if bot_id else asyncio.sleep(0))
+    global_wel_task = asyncio.create_task(db.get_share_text("welcome_msg", ""))
+    about_task = asyncio.create_task(db.get_share_bot_about(bot_id) if bot_id else asyncio.sleep(0))
+    
+    custom_wel = await custom_wel_task
+    if not custom_wel:
+        global_wel = await global_wel_task
+        custom_wel = global_wel
 
     txt = _get_welcome_text(user, bot_name, custom_wel)
 
-    bot_about = await db.get_share_bot_about(bot_id) if bot_id else {}
-    # menu_image_id is set by admin via "🖼 Menu Image" in per-bot settings
+    bot_about = await about_task or {}
     welcome_img = random.choice(bot_about.get('menu_image_ids', [])) if bot_about and bot_about.get('menu_image_ids') else None
 
     buttons = [
+        [
+            InlineKeyboardButton("🌟 Aʀʏᴀ Pʀᴇᴍɪᴜᴍ 🌟", callback_data="sbd#premium"),
+        ],
         [
             InlineKeyboardButton(_sc("Help"), callback_data="sbd#help"),
             InlineKeyboardButton(_sc("About"), callback_data="sbd#about"),
@@ -594,7 +602,6 @@ async def _send_welcome(client, message, bot_id: str = None):
 
     try:
         if welcome_img:
-            # Handle new dict format {"file_id": ..., "media_type": ...} vs old string format (photo)
             wid  = welcome_img.get('file_id') if isinstance(welcome_img, dict) else welcome_img
             wtyp = welcome_img.get('media_type', 'photo') if isinstance(welcome_img, dict) else 'photo'
 
@@ -605,10 +612,9 @@ async def _send_welcome(client, message, bot_id: str = None):
                     await client.send_video(user.id, video=wid, caption=txt, reply_markup=markup)
                 else:
                     await client.send_photo(user.id, photo=wid, caption=txt, reply_markup=markup)
-                return  # success — skip text fallback
+                return
             except Exception as _media_err:
                 logger.warning(f"[Welcome] Media send failed ({_media_err}), auto-clearing bad image and falling back to text")
-                # Auto-clear stale/expired file_ids from DB so the error won't repeat
                 try:
                     if bot_id:
                         about = await db.get_share_bot_about(bot_id) or {}
@@ -623,11 +629,32 @@ async def _send_welcome(client, message, bot_id: str = None):
                 except Exception:
                     pass
 
-        # Reached here either because welcome_img is None or media send failed
         await message.reply_text(txt, reply_markup=markup)
     except Exception as _wel_err:
         logger.warning(f"[Welcome] Text fallback also failed: {_wel_err}")
         pass
+
+async def _send_premium_menu(client, query):
+    """Show the Arya Premium submenu."""
+    txt = (
+        "<b>🌟 Arya Premium (No Restrictions)</b>\n\n"
+        "<i>Yaha se aap bina kisi restriction (limit) ke stories buy kar sakte hain!</i>\n\n"
+        "✨ <b>Kya faayda hai?</b>\n"
+        "• Aap stories ko <b>Forward</b> aur <b>Save</b> kar sakte hain.\n"
+        "• Ye stories aapki <b>'My Stories'</b> me Lifetime tak safe rahengi.\n"
+        "• Zero ads and instant delivery.\n\n"
+        "Niche diye gaye buttons se Bot ya Mini App open karein 👇"
+    )
+    buttons = [
+        [
+            InlineKeyboardButton("🤖 Bᴏᴛ", url="https://t.me/UseAryaBot"),
+            InlineKeyboardButton("📱 Mɪɴɪ Aᴘᴘ", url="http://t.me/UseAryaBot/apminibyarya")
+        ],
+        [
+            InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="sbd#back")
+        ]
+    ]
+    await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
 
 
 async def _send_help(client, message, bot_id: str = None):
@@ -710,6 +737,10 @@ async def _process_delivery_button(client, query):
             if is_media_msg: await msg.edit_caption(caption=txt, reply_markup=markup)
             else: await msg.edit_text(txt, reply_markup=markup)
         except Exception: pass
+
+    elif cmd == "premium":
+        await query.answer()
+        await _send_premium_menu(client, query)
 
     elif cmd == "about":
         await query.answer()
