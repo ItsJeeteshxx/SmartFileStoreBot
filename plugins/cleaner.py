@@ -179,7 +179,7 @@ def _build_cl_info(job: dict) -> str:
 def _run_ffmpeg_sync(cmd: list) -> tuple:
     """Blocking FFmpeg call — runs in ThreadPoolExecutor thread."""
     try:
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2700)
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=2700)
         if r.returncode != 0:
             return False, r.stderr.decode('utf-8', 'ignore')[:500]
         return True, ""
@@ -815,7 +815,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _pr = __import__("subprocess").run(
                                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                                  "-of", "default=noprint_wrappers=1:nokey=1", _ppath],
-                                capture_output=True, text=True, timeout=60
+                                capture_output=True, text=True, timeout=60, stdin=__import__("subprocess").DEVNULL
                             )
                             return float(_pr.stdout.strip() or "0")
                         except Exception:
