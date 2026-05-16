@@ -634,7 +634,7 @@ async def _send_welcome(client, message, bot_id: str = None):
         logger.warning(f"[Welcome] Text fallback also failed: {_wel_err}")
         pass
 
-async def _send_premium_menu(client, query):
+async def _send_premium_menu(client, query_or_msg, edit: bool = False):
     """Show the Arya Premium submenu."""
     txt = (
         f"<b>»  " + _sc("Arya Premium") + "</b>\n\n"
@@ -654,13 +654,19 @@ async def _send_premium_menu(client, query):
             InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")
         ]
     ]
-    await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+    markup = InlineKeyboardMarkup(buttons)
+    if edit and hasattr(query_or_msg, "message"):
+        await query_or_msg.message.edit_text(txt, reply_markup=markup, disable_web_page_preview=True)
+    else:
+        msg = query_or_msg.message if hasattr(query_or_msg, "message") else query_or_msg
+        await msg.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
 
 
 async def _send_help(client, message, bot_id: str = None):
     """Send the Help menu for /start help."""
     txt = _get_help_text(message.from_user)
     buttons = [
+        [InlineKeyboardButton("💬 " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
         [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
         [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
     ]
@@ -729,6 +735,7 @@ async def _process_delivery_button(client, query):
         await query.answer()
         txt = _get_help_text(query.from_user)
         buttons = [
+            [InlineKeyboardButton("💬 " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
             [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
             [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
         ]
@@ -740,7 +747,7 @@ async def _process_delivery_button(client, query):
 
     elif cmd == "premium":
         await query.answer()
-        await _send_premium_menu(client, query)
+        await _send_premium_menu(client, query, edit=True)
 
     elif cmd == "about":
         await query.answer()
@@ -1127,6 +1134,34 @@ def register_share_handlers(app: Client):
         _process_start,
         filters.private & filters.command("start")
     ))
+
+    async def _cmd_about(client, message):
+        bot_id = str(client.me.id) if client.me else None
+        await _send_about(client, message, bot_id=bot_id, edit=False)
+        
+    async def _cmd_help(client, message):
+        bot_id = str(client.me.id) if client.me else None
+        await _send_help(client, message, bot_id)
+        
+    async def _cmd_premium(client, message):
+        await _send_premium_menu(client, message, edit=False)
+        
+    async def _cmd_support(client, message):
+        txt = "💬 <b>" + _sc("Support") + "</b>\n\n<i>If you need help or have any questions, join our support group.</i>"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("💬 " + _sc("Support Group"), url="https://t.me/+EAc-6v1bmZ1iMDBl")]])
+        await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
+
+    async def _cmd_updates(client, message):
+        txt = "📢 <b>" + _sc("Updates") + "</b>\n\n<i>Stay updated with our latest news and announcements.</i>"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]])
+        await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
+
+    app.add_handler(MessageHandler(_cmd_about, filters.private & filters.command("about")))
+    app.add_handler(MessageHandler(_cmd_help, filters.private & filters.command("help")))
+    app.add_handler(MessageHandler(_cmd_premium, filters.private & filters.command(["norestrictions", "premium"])))
+    app.add_handler(MessageHandler(_cmd_support, filters.private & filters.command("support")))
+    app.add_handler(MessageHandler(_cmd_updates, filters.private & filters.command("updates")))
+
     app.add_handler(CallbackQueryHandler(
         _process_delivery_button,
         filters.regex(r'^sbd#')
