@@ -714,7 +714,7 @@ async def sysmon_cb(bot, query: CallbackQuery):
             await bot.send_message(uid, txt, reply_markup=btns)
 
     elif action == "cleanup":
-        temps = _temp_dir_sizes()
+        temps = await _temp_dir_sizes()
         total = sum(temps.values())
         lines = [f"  • <code>{d}/</code> — <code>{sz:.1f} MB</code>" for d, sz in temps.items()]
         txt = (
