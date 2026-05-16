@@ -666,7 +666,7 @@ async def _send_help(client, message, bot_id: str = None):
     """Send the Help menu for /start help."""
     txt = _get_help_text(message.from_user)
     buttons = [
-        [InlineKeyboardButton("💬 " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
+        [InlineKeyboardButton("»  " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
         [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
         [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
     ]
@@ -735,7 +735,7 @@ async def _process_delivery_button(client, query):
         await query.answer()
         txt = _get_help_text(query.from_user)
         buttons = [
-            [InlineKeyboardButton("💬 " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
+            [InlineKeyboardButton("»  " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
             [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
             [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
         ]
@@ -1147,12 +1147,12 @@ def register_share_handlers(app: Client):
         await _send_premium_menu(client, message, edit=False)
         
     async def _cmd_support(client, message):
-        txt = "💬 <b>" + _sc("Support") + "</b>\n\n<i>If you need help or have any questions, join our support group.</i>"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("💬 " + _sc("Support Group"), url="https://t.me/+EAc-6v1bmZ1iMDBl")]])
+        txt = "<b>»  " + _sc("Support") + "</b>\n\n<i>" + _sc("If you need help or have any questions, join our support group.") + "</i>"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Support Group"), url="https://t.me/+EAc-6v1bmZ1iMDBl")]])
         await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
 
     async def _cmd_updates(client, message):
-        txt = "📢 <b>" + _sc("Updates") + "</b>\n\n<i>Stay updated with our latest news and announcements.</i>"
+        txt = "<b>»  " + _sc("Updates") + "</b>\n\n<i>" + _sc("Stay updated with our latest news and announcements.") + "</i>"
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]])
         await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
 
