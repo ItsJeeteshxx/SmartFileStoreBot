@@ -1545,7 +1545,7 @@ async def settings_query(bot, query):
               # ── Pre-download to /tmp if file_id approach fails later ──────
               # We do this ONCE now, before the loop, so we only download once.
               dl_path = None
-              if has_media and src_fid is None:
+              if has_media:
                   try:
                       _tmp = _tf.gettempdir() + f"/arya_bc_{msg_obj.id}"
                       dl_path = await main_bot.download_media(msg_obj, file_name=_tmp)
