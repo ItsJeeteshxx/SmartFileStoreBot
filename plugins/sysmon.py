@@ -830,6 +830,19 @@ async def sysmon_cb(bot, query: CallbackQuery):
                         except Exception as e:
                             errors.append(f"delete({entry_path}): {e}")
 
+            # Clean root directory of orphaned temp files
+            import glob as _glob
+            try:
+                for pattern in ["temp_cl_*", "temp_cover_*", "temp_ad_*"]:
+                    for f in _glob.glob(os.path.join(_BOT_DIR, pattern)):
+                        if os.path.isfile(f):
+                            sz = os.path.getsize(f)
+                            os.remove(f)
+                            freed_bytes += sz
+                            logger.info(f"[Cleanup] Removed orphaned root file {os.path.basename(f)} ({sz//1024//1024} MB)")
+            except Exception as e:
+                errors.append(f"root_cleanup: {e}")
+
             return freed_bytes, skipped_dirs, errors
 
         # Run blocking I/O in thread pool — never blocks the event loop

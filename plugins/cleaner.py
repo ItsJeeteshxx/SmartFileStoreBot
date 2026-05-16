@@ -348,7 +348,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
 
         # ── Cover Image ───────────────────────────────────────────────────
-        local_cover = os.path.abspath(f"temp_cover_{job_id}.jpg")
+        local_cover = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cover_{job_id}.jpg"))
         if cov_fid and not os.path.exists(local_cover):
             try:
                 dl = await (_bot or client).download_media(cov_fid, file_name=local_cover)
@@ -388,7 +388,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             _ad_dl_cli = _bot or client
             for _akey, _afid in _ads_cfg_load.items():
                 if not _afid: continue
-                _ap = os.path.abspath(f"temp_ad_{job_id}_{_akey}.mp3")
+                _ap = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_ad_{job_id}_{_akey}.mp3"))
                 # Always re-download to ensure fresh ad (never use stale cached file)
                 try:
                     if os.path.exists(_ap): os.remove(_ap)
@@ -537,7 +537,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 orig_fn = getattr(m_obj, 'file_name', '') or ''
                 ext = (os.path.splitext(orig_fn)[1]
                        or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
-                ipath = os.path.abspath(f"temp_cl_in_{job_id}_{m.id}{ext}")
+                ipath = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_in_{job_id}_{m.id}{ext}"))
 
                 # Size-aware timeout: 1s per 200KB, min 300s, max 600s
                 fsize = getattr(m_obj, 'file_size', 0) or 0
@@ -723,7 +723,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         out_ext = ".mp3"
                 else:
                     out_ext = orig_ext
-                out_path   = os.path.abspath(f"temp_cl_out_{job_id}_{active_mid}{out_ext}")
+                out_path   = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_out_{job_id}_{active_mid}{out_ext}"))
                 
                 # Telegram backend slugifies (replaces spaces/hyphens with underscores) any filename containing 
                 # non-ASCII/fancy fonts or special symbols. We sanitize the filename using our helper function.
@@ -786,7 +786,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 if os.path.exists(out_path): os.remove(out_path)
                             except: pass
                             out_ext = orig_ext
-                            out_path = os.path.abspath(f"temp_cl_out_{job_id}_{active_mid}{out_ext}")
+                            out_path = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_out_{job_id}_{active_mid}{out_ext}"))
                             clean_file = f"{_sanitize_for_filename(clean_title)}{out_ext}"
                             shutil.move(dl_path, out_path)
                             use_ff = False  # Mark as raw file for uploader
@@ -885,7 +885,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         ]
 
                         # Build ffmpeg command: -i main_file, -i ad1, -i ad2, ...
-                        _inj_out = os.path.abspath(f"temp_cl_inj_{job_id}_{active_mid}_out.mp3")
+                        _inj_out = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_inj_{job_id}_{active_mid}_out.mp3"))
                         _ff_inj_one = [
                             "ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
                             "-analyzeduration", "2M", "-probesize", "2M",
@@ -1734,7 +1734,7 @@ async def _create_cl_flow(bot, user_id):
         await _cl_save_default(user_id, "audio_ads", {})
         # Delete any stale cached temp ad files on disk
         import glob as _glob
-        for _stale in _glob.glob(os.path.abspath("temp_ad_*.mp3")):
+        for _stale in _glob.glob(os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, "temp_ad_*.mp3"))):
             try: os.remove(_stale)
             except: pass
         await bot.send_message(user_id,
