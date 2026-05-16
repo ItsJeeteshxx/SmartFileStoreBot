@@ -231,6 +231,8 @@ def _format_story(s: dict) -> dict | None:
         "titleHi":      (s.get("story_name_hi") or "").strip() or None,
         "titleHin":     (s.get("story_name_hin") or "").strip() or None,
         "description":  description,
+        "descriptionHi": (s.get("description_hi") or "").strip() or None,
+        "descriptionHin": (s.get("description_hin") or "").strip() or None,
         "poster":       cover,
         "banner":       cover,
         "cover":        cover,
@@ -991,8 +993,8 @@ async def get_admin_stats(telegram_id: str):
         bot_users_count = await arya_db.db.users.count_documents({})
         
         # Mini App Users (users who have a session / placed an order via mini app)
-        miniapp_users_count = await arya_db.db.orders.distinct("user_id")
-        miniapp_users_count = len(miniapp_users_count) if miniapp_users_count else 0
+        miniapp_users_list = await arya_db.db.mini_app_analytics.distinct("user_id", {"user_id": {"$gt": 0}})
+        miniapp_users_count = len(miniapp_users_list) if miniapp_users_list else 0
         
         # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})

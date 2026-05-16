@@ -10,7 +10,7 @@ async def broadcast (bot, message):
     users = await db.get_all_users()
     b_msg = message.reply_to_message
     sts = await message.reply_text(
-        text='Broadcasting your messages...'
+        text='Broadcasting your messages...\n\n(Note: This broadcasts via the Main Bot. If you want to broadcast via the Delivery Bot, please use the /broadcast command directly in the Delivery Bot.)'
     )
     start_time = time.time()
     total_users, k = await db.total_users_bots_count()
