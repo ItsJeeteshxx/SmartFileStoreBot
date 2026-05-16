@@ -298,8 +298,10 @@ async def status(bot, query):
     # Send a quick response to clear spinning wheel while computing speed
     await query.answer()
     
-    users_count, bots_count = await db.total_users_bots_count()
+    users_count = await db.col.count_documents({})
+    bots_count = await db.bot.count_documents({})
     total_channels = await db.total_channels()
+    banned_count = await db.col.count_documents({"ban_status.is_banned": True})
     
     # Calculate real-time speed in one second
     old_net = psutil.net_io_counters()
@@ -328,7 +330,7 @@ async def status(bot, query):
         'users_count': users_count,
         'bots_count': bots_count,
         'total_channels': total_channels,
-        'banned_users': len(temp.BANNED_USERS),
+        'banned_users': banned_count,
         'current_forwards': temp.forwardings,
         'live_forward': live_fwd,
         'batch_forward': batch_fwd,

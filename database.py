@@ -401,7 +401,7 @@ class Database:
     
     async def total_users_bots_count(self):
         bcount = await self.bot.count_documents({})
-        count = await self.col.count_documents({"name": {"$exists": True}})
+        count = await self.col.count_documents({})
         return count, bcount
 
     async def total_channels(self):
