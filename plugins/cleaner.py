@@ -230,13 +230,17 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
 
     if deep_clean:
         cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
-        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1"]
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
+                "-write_xing", "1", "-id3v2_version", "3"]
     elif in_ext == out_ext and not force_reencode:
         cmd += ["-c:a", "copy"]
         if out_ext in (".mp4", ".mkv", ".webm"):
-            cmd += ["-c:v", "copy"]
+            cmd += ["-c:v", "copy", "-movflags", "+faststart"]
     else:
-        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1"]
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1",
+                "-write_xing", "1", "-id3v2_version", "3"]
+        if out_ext in (".mp4", ".mkv", ".webm"):
+            cmd += ["-movflags", "+faststart"]
 
     # Preserve all existing metadata from input (title, artist, album, cover, etc.)
     # Individual -metadata flags below will override specific fields
@@ -703,7 +707,26 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 is_audio = bool(msg.audio or msg.voice)
                 is_video = bool(msg.video or (msg.document and 'video' in (getattr(msg.document, 'mime_type', '') or '')))
                 is_photo = bool(msg.photo)
-                use_ff   = conv_vid if is_video else (not is_photo)
+
+                # SKIP photos entirely — cleaner is for audio/video only
+                # Photos are forwarded as-is without any processing
+                if is_photo:
+                    done += 1
+                    curr_num += 1
+                    try: os.remove(dl_path)
+                    except: pass
+                    await _cl_update_job(job_id, {
+                        "files_done": done, "current_msg_id": active_mid + 1,
+                        "curr_num_checkpoint": curr_num, "last_progress_ts": time.time(),
+                    })
+                    next_start = active_mid + 1
+                    if next_start <= eid:
+                        _next_task = asyncio.create_task(_next_media(next_start, curr_num))
+                    else:
+                        _next_task = None
+                    continue
+
+                use_ff = conv_vid if is_video else True
 
                 # Ad Inject Only: skip full FFmpeg cleaning (re-encode/normalize/metadata)
                 # Only the ad-injection FFmpeg pass is needed — saves 10-15 min per file on VPS
