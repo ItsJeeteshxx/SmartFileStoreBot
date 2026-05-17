@@ -24,7 +24,12 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-# ── 1.  Owner checks ──────────────────────────────────────────────────────────
+import time as _time
+
+# ── Cache (30s TTL) to avoid DB hit on every button click ─────────────────────
+_owner_cache: dict[int, tuple[bool, float]] = {}   # uid → (result, expires_at)
+_feature_cache: dict[str, tuple[bool, float]] = {}  # feature → (result, expires_at)
+_CACHE_TTL = 30  # seconds
 
 def is_owner(user_id: int) -> bool:
     """Primary owner check (sync — reads from env/Config)."""
@@ -32,11 +37,17 @@ def is_owner(user_id: int) -> bool:
 
 
 async def is_any_owner(user_id: int) -> bool:
-    """Returns True for primary owners AND co-owners stored in DB."""
+    """Returns True for primary owners AND co-owners stored in DB. Cached 30s."""
     if is_owner(user_id):
         return True
+    now = _time.monotonic()
+    cached = _owner_cache.get(user_id)
+    if cached and cached[1] > now:
+        return cached[0]
     from database import db
-    return await db.is_co_owner(user_id)
+    result = await db.is_co_owner(user_id)
+    _owner_cache[user_id] = (result, now + _CACHE_TTL)
+    return result
 
 
 # Pyrogram filter that allows both primary and co-owners
@@ -68,11 +79,17 @@ _DISABLED_MSG = (
 
 
 async def is_feature_enabled(feature: str) -> bool:
-    """Returns True if the feature is enabled (not disabled by owner)."""
+    """Returns True if the feature is enabled. Cached 30s to avoid per-click DB hits."""
+    now = _time.monotonic()
+    cached = _feature_cache.get(feature)
+    if cached and cached[1] > now:
+        return cached[0]
     from database import db
     doc = await db.stats.find_one({'_id': 'disabled_features'})
     disabled = set(doc.get('features', [])) if doc else set()
-    return feature not in disabled
+    result = feature not in disabled
+    _feature_cache[feature] = (result, now + _CACHE_TTL)
+    return result
 
 
 async def get_disabled_features() -> set:
@@ -96,6 +113,8 @@ async def set_feature_disabled(feature: str, disabled: bool):
             {'_id': 'disabled_features'},
             {'$pull': {'features': feature}},
         )
+    # Invalidate cache immediately after change
+    _feature_cache.pop(feature, None)
 
 
 def require_feature(feature: str):

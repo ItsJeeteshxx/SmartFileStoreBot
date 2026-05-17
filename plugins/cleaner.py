@@ -1317,6 +1317,10 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 async def _cl_callbacks(bot, update: CallbackQuery):
     from plugins.owner_utils import is_feature_enabled, is_any_owner, FEATURE_LABELS
     uid = update.from_user.id
+
+    # ⚡ Answer IMMEDIATELY — removes Telegram's spinning loader on the button
+    await update.answer()
+
     if not await is_any_owner(uid) and not await is_feature_enabled("cleaner"):
         return await update.answer(f"🔒 {FEATURE_LABELS['cleaner']} is temporarily disabled by admin.", show_alert=True)
     data   = update.data.split("#")
