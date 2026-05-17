@@ -1588,6 +1588,11 @@ async def get_banners():
                     "title": b.get("title", ""),
                     "subtitle": b.get("subtitle", ""),
                     "badge": b.get("badge", ""),
+                    "button_text": b.get("button_text", ""),
+                    "button_link": b.get("target_link", ""),
+                    "button_position": b.get("button_position", "left"),
+                    "button_bg": b.get("button_bg", "#000000"),
+                    "button_color": b.get("button_color", "#ffffff"),
                 })
         except Exception as e:
             logger.warning(f"Manual banners error: {e}")
@@ -1682,7 +1687,11 @@ async def get_admin_banners(telegram_id: str):
                 "id": str(doc["_id"]),
                 "image_url": doc.get("image_url", ""),
                 "target_link": doc.get("target_link", ""),
-                "order": doc.get("order", 0)
+                "order": doc.get("order", 0),
+                "button_text": doc.get("button_text", ""),
+                "button_position": doc.get("button_position", "left"),
+                "button_bg": doc.get("button_bg", "#000000"),
+                "button_color": doc.get("button_color", "#ffffff"),
             })
         return {"success": True, "data": banners}
     except Exception as e:
@@ -1695,6 +1704,10 @@ class BannerUpdate(BaseModel):
     image_url: str
     target_link: str
     order: int
+    button_text: Optional[str] = None
+    button_position: Optional[str] = None
+    button_bg: Optional[str] = None
+    button_color: Optional[str] = None
 
 @api_router.post("/admin/banner")
 async def save_admin_banner(data: BannerUpdate):
@@ -1708,7 +1721,11 @@ async def save_admin_banner(data: BannerUpdate):
         doc = {
             "image_url": data.image_url,
             "target_link": data.target_link,
-            "order": data.order
+            "order": data.order,
+            "button_text": data.button_text,
+            "button_position": data.button_position,
+            "button_bg": data.button_bg,
+            "button_color": data.button_color,
         }
         if data.id and data.id != "new":
             await arya_db.db.mini_app_banners.update_one({"_id": ObjectId(data.id)}, {"$set": doc})
