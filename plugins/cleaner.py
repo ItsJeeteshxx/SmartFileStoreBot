@@ -549,7 +549,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 # Ad Inject Only Logic: Skip file download completely if it's not scheduled for an ad
                 ad_inject_only = job.get("ad_inject_only", False)
-                if ad_inject_only and curr_num not in _ad_schedule:
+                if ad_inject_only and exp_curr not in _ad_schedule:
                     return m, None, m_obj, m.id, lbl, None
 
                 orig_fn = getattr(m_obj, 'file_name', '') or ''
@@ -1243,8 +1243,13 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         job = await _cl_get_job(job_id)
         if job and job.get("status") not in ("failed", "stopped", "paused"):
             await _cl_update_job(job_id, {"status": "completed", "error": ""})
-            # FIX #2: Completion notification — uses local _bot var, always works
-            if _bot:
+            # Completion notification — use _bot, fallback to main bot client
+            _notify_bot = _bot
+            if not _notify_bot:
+                try:
+                    _notify_bot = _CLIENT.bot()
+                except: pass
+            if _notify_bot:
                 try:
                     import html
                     _safe_base = html.escape(str(base_name))
@@ -1262,7 +1267,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 for sn, at, ts in _ad_report
                             )
                         _ad_rep_txt = f"\n\n<b>🎵 Audio Ads Injected:</b> {len(_ad_report)}\n{_ad_lines}"
-                    await _bot.send_message(uid,
+                    await _notify_bot.send_message(uid,
                         f"<b>🎉 Cleaner Job Completed!</b>\n\n"
                         f"<b>🧹 Name:</b> {_safe_base}\n"
                         f"<b>📄 Files Processed:</b> {done}\n"
@@ -1271,6 +1276,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         f"<i>Engine: Stable Turbo v4 ⚡</i>")
                 except Exception as ex:
                     logger.error(f"[Cleaner {job_id}] completion notify failed: {ex}")
+
 
     # Run inside or outside semaphore
     if skip_sem:
