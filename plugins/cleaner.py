@@ -351,8 +351,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         local_cover = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cover_{job_id}.jpg"))
         if cov_fid and not os.path.exists(local_cover):
             try:
-                dl = await (_bot or client).download_media(cov_fid, file_name=local_cover)
-                if not dl or os.path.getsize(local_cover) < 1024: local_cover = None
+                coro = (_bot or client).download_media(cov_fid, file_name=local_cover)
+                if coro is not None:
+                    import asyncio
+                    dl = await asyncio.wait_for(coro, timeout=30)
+                    if not dl or os.path.getsize(local_cover) < 1024: local_cover = None
+                else: local_cover = None
             except: local_cover = None
         elif not cov_fid:
             local_cover = None
@@ -392,13 +396,18 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 # Always re-download to ensure fresh ad (never use stale cached file)
                 try:
                     if os.path.exists(_ap): os.remove(_ap)
-                    dlr = await _ad_dl_cli.download_media(_afid, file_name=_ap)
+                    coro = _ad_dl_cli.download_media(_afid, file_name=_ap)
+                    if coro is None: continue
+                    import asyncio
+                    dlr = await asyncio.wait_for(coro, timeout=30)
                     if not dlr or not os.path.exists(_ap): continue
+                except asyncio.TimeoutError:
+                    logger.error(f"[Cleaner {job_id}] Ad '{_akey}' download timed out! Invalid file ID or Telegram API hung.")
+                    continue
                 except Exception as e:
                     logger.warning(f"[Cleaner {job_id}] Failed to download ad '{_akey}': {e}")
                     continue
                 _ad_local[_akey] = _ap
-
             # Debug: Save which ads were successfully downloaded
             try:
                 await _cl_update_job(job_id, {"debug_ad_local_keys": list(_ad_local.keys())})
