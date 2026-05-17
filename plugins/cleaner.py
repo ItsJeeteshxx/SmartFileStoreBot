@@ -981,7 +981,23 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 _inj_out
                             ]
 
+                            # Notify user that it's doing heavy work so they don't think it's stuck
+                            _inj_prog_msg = None
+                            if _bot:
+                                try:
+                                    _inj_prog_msg = await _bot.send_message(
+                                        job.get("user_id"),
+                                        f"⏳ <b>Injecting Ad into File #{curr_num}...</b>\n"
+                                        f"<i>This requires heavy audio processing and may take 5-10 minutes. Please wait...</i>"
+                                    )
+                                except: pass
+
                             _inj_ok, _inj_err = await _ffmpeg_async(_ff_inj_one)
+
+                            if _inj_prog_msg:
+                                try: await _inj_prog_msg.delete()
+                                except: pass
+
                             if _inj_ok and os.path.exists(_inj_out) and os.path.getsize(_inj_out) > 1024:
                                 if os.path.exists(out_path):
                                     try: os.remove(out_path)
