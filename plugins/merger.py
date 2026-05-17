@@ -665,7 +665,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                 cmd_v += ["-map", "[finalv]", "-map", f"{audio_idx}:a"]
             else:
                 # Simple mode: only 2 inputs — cover (0) + audio (1)
-                cmd_v += ["-loop", "1", "-r", "1", "-i", os.path.abspath(eff_cover)]
+                cmd_v += ["-loop", "1", "-r", "1", "-t", f"{real_dur:.2f}", "-i", os.path.abspath(eff_cover)]
                 cmd_v += ["-i", tmp_audio]
                 cmd_v += [
                     "-filter_complex",
@@ -681,6 +681,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-tune", "stillimage",
+                "-profile:v", "main",
                 "-crf", "28",
                 "-maxrate", "800k",
                 "-bufsize", "1600k",
