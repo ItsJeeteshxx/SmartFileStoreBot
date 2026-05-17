@@ -984,28 +984,31 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                             _n_concat = 2 * _n_valid + 1
                             _fc_str = ";".join(_fc_parts) + ";" + "".join(_concat_inputs) + f"concat=n={_n_concat}:v=0:a=1[outa]"
-                            _ff_inj_one += ["-filter_complex", _fc_str, "-map", "[outa]"]
 
-                            # Cover art
+                            # Cover art: add as input BEFORE -filter_complex so index is correct
                             _has_cov = local_cover and os.path.exists(local_cover) and os.path.getsize(local_cover) > 1024
                             if _has_cov:
+                                _cov_input_idx = _ad_input_start_idx + _n_valid
+                                _ff_inj_one += ["-i", local_cover]
+
+                            # filter_complex + audio map (single -map [outa])
+                            _ff_inj_one += ["-filter_complex", _fc_str, "-map", "[outa]"]
+
+                            # Cover art map (only if cover was added as input above)
+                            if _has_cov:
                                 _ff_inj_one += [
-                                    "-i", local_cover,
-                                    "-map", f"{_ad_input_start_idx + _n_valid}:v:0",
+                                    "-map", f"{_cov_input_idx}:v:0",
                                     "-c:v", "mjpeg", "-id3v2_version", "3",
                                     "-disposition:v", "attached_pic",
                                     "-metadata:s:v", "title=Album cover",
                                     "-metadata:s:v", "comment=Cover (front)",
                                 ]
-                            else:
-                                _ff_inj_one += [
-                                    "-map", "0:v?",
-                                    "-c:v", "copy"
-                                ]
+                            # No-cover: [outa] maps audio only — no extra -map needed
 
                             _ff_inj_one += [
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
+                                "-write_xing", "1", "-id3v2_version", "3",
                                 _inj_out
                             ]
 
