@@ -923,26 +923,33 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _fc_parts = []
                             _concat_inputs = []
 
-                            # Split the main audio into N+1 segments
+                            # Define common format for all inputs to prevent concat mismatch
+                            _c_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=mono"
+
+                            # 1. Split the main audio into N+1 identical streams to prevent buffering deadlocks in older FFmpeg
+                            _main_splits = "".join([f"[main{i}]" for i in range(_n_valid + 1)])
+                            _fc_parts.append(f"[0:a]asplit={_n_valid + 1}{_main_splits}")
+
+                            # 2. Trim each split segment
                             _prev_pt = 0.0
                             for _si in range(_n_valid + 1):
                                 if _si < _n_valid:
                                     _end_pt = _split_pts[_si]
                                     _fc_parts.append(
-                                        f"[0:a]atrim={_prev_pt:.3f}:{_end_pt:.3f},asetpts=PTS-STARTPTS[seg{_si}]"
+                                        f"[main{_si}]atrim={_prev_pt:.3f}:{_end_pt:.3f},{_c_fmt},asetpts=PTS-STARTPTS[seg{_si}]"
                                     )
                                     _prev_pt = _end_pt
                                 else:
                                     _fc_parts.append(
-                                        f"[0:a]atrim={_prev_pt:.3f},asetpts=PTS-STARTPTS[seg{_si}]"
+                                        f"[main{_si}]atrim={_prev_pt:.3f},{_c_fmt},asetpts=PTS-STARTPTS[seg{_si}]"
                                     )
 
-                            # Build concat input list: seg0, ad1, seg1, ad2, ...
+                            # 3. Format ads and build concat input list: seg0, ad1, seg1, ad2, ...
                             for _si in range(_n_valid + 1):
                                 _concat_inputs.append(f"[seg{_si}]")
                                 if _si < _n_valid:
                                     _fc_parts.append(
-                                        f"[{_si + 1}:a]asetpts=PTS-STARTPTS[ad{_si}]"
+                                        f"[{_si + 1}:a]{_c_fmt},asetpts=PTS-STARTPTS[ad{_si}]"
                                     )
                                     _concat_inputs.append(f"[ad{_si}]")
 
@@ -964,9 +971,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 ]
                             else:
                                 _ff_inj_one += [
-                                    "-map", "0:v:0?",
-                                    "-c:v", "mjpeg", "-id3v2_version", "3",
-                                    "-disposition:v", "attached_pic"
+                                    "-map", "0:v?",
+                                    "-c:v", "copy"
                                 ]
 
                             _ff_inj_one += [
