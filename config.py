@@ -45,3 +45,9 @@ class temp(object):
     forwardings = 0
     BANNED_USERS = []
     IS_FRWD_CHAT = []
+    # Download directory for all temp files (cleaner, merger, etc.)
+    # Set at runtime by main.py; fallback to ./downloads if not set
+    import os as _os
+    DOWNLOAD_DIR = _os.path.abspath(
+        _os.environ.get("DOWNLOAD_DIR", _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "downloads"))
+    )
