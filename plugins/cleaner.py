@@ -399,6 +399,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     continue
                 _ad_local[_akey] = _ap
 
+            # Debug: Save which ads were successfully downloaded
+            try:
+                await _cl_update_job(job_id, {"debug_ad_local_keys": list(_ad_local.keys())})
+            except: pass
+
             if not _ad_local and inject_ads and ads_config:
                 if _bot:
                     try:
@@ -987,11 +992,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             else:
                                 logger.warning(f"[Cleaner {job_id}] One-shot ad inject failed serial={curr_num}: {_inj_err[:120]}")
                                 try:
+                                    await _cl_update_job(job_id, {"debug_inj_err": _inj_err[-500:]})
+                                except: pass
+                                try:
                                     if os.path.exists(_inj_out): os.remove(_inj_out)
                                 except: pass
 
                   except Exception as _ae:
                     logger.warning(f"[Cleaner {job_id}] Ad injection error serial={curr_num}: {_ae}")
+                    try:
+                        await _cl_update_job(job_id, {"debug_inj_err": str(_ae)})
+                    except: pass
 
 
 
