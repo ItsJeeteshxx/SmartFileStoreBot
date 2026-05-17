@@ -399,6 +399,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     continue
                 _ad_local[_akey] = _ap
 
+            if not _ad_local and inject_ads and ads_config:
+                if _bot:
+                    try:
+                        await _bot.send_message(uid, "⚠️ <b>Warning:</b> Could not download your saved Audio Ads (File IDs invalid or from another bot). Ad injection will be skipped for this job! Please re-upload your ads in <b>Settings -> Configure Ads</b>.")
+                    except: pass
+
             if _ad_local:
                 import random as _random
                 import math as _math
@@ -531,7 +537,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 # Ad Inject Only Logic: Skip file download completely if it's not scheduled for an ad
                 ad_inject_only = job.get("ad_inject_only", False)
-                if ad_inject_only and exp_curr not in _ad_schedule:
+                if ad_inject_only and curr_num not in _ad_schedule:
                     return m, None, m_obj, m.id, lbl, None
 
                 orig_fn = getattr(m_obj, 'file_name', '') or ''
