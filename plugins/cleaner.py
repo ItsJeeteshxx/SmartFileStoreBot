@@ -895,18 +895,16 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             for i in range(_n_inj)
                         ]
 
-                        # Build ffmpeg command: -i main_file, -i ad1, -i ad2, ...
                         _inj_out = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_inj_{job_id}_{active_mid}_out.mp3"))
                         _ff_inj_one = [
                             "ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
                             "-analyzeduration", "2M", "-probesize", "2M",
-                            "-i", out_path,  # input 0: main file
                         ]
+                        
                         _valid_ads = []
                         for _at in _inj_types:
                             _ap = _ad_local.get(_at)
                             if _ap and os.path.exists(_ap):
-                                _ff_inj_one += ["-i", _ap]  # inputs 1..N: ad files
                                 _valid_ads.append(_at)
 
                         if _valid_ads:
@@ -917,45 +915,45 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 for i in range(_n_valid)
                             ]
 
-                            # Build filter_complex: split main audio at each point,
-                            # interleave each segment with corresponding ad.
-                            # Segments: seg0 | ad1 | seg1 | ad2 | seg2 | ... | segN
+                            # 1. Add main file N+1 times as separate inputs to avoid ANY asplit buffering deadlocks
+                            for _ in range(_n_valid + 1):
+                                _ff_inj_one += ["-i", out_path]
+
+                            # 2. Add Ad files as inputs
+                            _ad_input_start_idx = _n_valid + 1
+                            for _at in _valid_ads:
+                                _ff_inj_one += ["-i", _ad_local.get(_at)]
+
                             _fc_parts = []
                             _concat_inputs = []
-
-                            # Define common format for all inputs to prevent concat mismatch
                             _c_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=mono"
 
-                            # 1. Split the main audio into N+1 identical streams to prevent buffering deadlocks in older FFmpeg
-                            _main_splits = "".join([f"[main{i}]" for i in range(_n_valid + 1)])
-                            _fc_parts.append(f"[0:a]asplit={_n_valid + 1}{_main_splits}")
-
-                            # 2. Trim each split segment
+                            # 3. Trim each main segment from its own independent input stream
                             _prev_pt = 0.0
                             for _si in range(_n_valid + 1):
                                 if _si < _n_valid:
                                     _end_pt = _split_pts[_si]
                                     _fc_parts.append(
-                                        f"[main{_si}]atrim={_prev_pt:.3f}:{_end_pt:.3f},{_c_fmt},asetpts=PTS-STARTPTS[seg{_si}]"
+                                        f"[{_si}:a]atrim={_prev_pt:.3f}:{_end_pt:.3f},{_c_fmt},asetpts=PTS-STARTPTS[seg{_si}]"
                                     )
                                     _prev_pt = _end_pt
                                 else:
                                     _fc_parts.append(
-                                        f"[main{_si}]atrim={_prev_pt:.3f},{_c_fmt},asetpts=PTS-STARTPTS[seg{_si}]"
+                                        f"[{_si}:a]atrim={_prev_pt:.3f},{_c_fmt},asetpts=PTS-STARTPTS[seg{_si}]"
                                     )
 
-                            # 3. Format ads and build concat input list: seg0, ad1, seg1, ad2, ...
+                            # 4. Format ads and build concat input list
                             for _si in range(_n_valid + 1):
                                 _concat_inputs.append(f"[seg{_si}]")
                                 if _si < _n_valid:
+                                    _ad_idx = _ad_input_start_idx + _si
                                     _fc_parts.append(
-                                        f"[{_si + 1}:a]{_c_fmt},asetpts=PTS-STARTPTS[ad{_si}]"
+                                        f"[{_ad_idx}:a]{_c_fmt},asetpts=PTS-STARTPTS[ad{_si}]"
                                     )
                                     _concat_inputs.append(f"[ad{_si}]")
 
-                            _n_concat = 2 * _n_valid + 1  # segs + ads
+                            _n_concat = 2 * _n_valid + 1
                             _fc_str = ";".join(_fc_parts) + ";" + "".join(_concat_inputs) + f"concat=n={_n_concat}:v=0:a=1[outa]"
-
                             _ff_inj_one += ["-filter_complex", _fc_str, "-map", "[outa]"]
 
                             # Cover art
@@ -963,7 +961,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             if _has_cov:
                                 _ff_inj_one += [
                                     "-i", local_cover,
-                                    "-map", f"{_n_valid + 1}:v:0",
+                                    "-map", f"{_ad_input_start_idx + _n_valid}:v:0",
                                     "-c:v", "mjpeg", "-id3v2_version", "3",
                                     "-disposition:v", "attached_pic",
                                     "-metadata:s:v", "title=Album cover",
