@@ -551,10 +551,22 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 # regardless of original label, so disable ep_label deduplication.
                 if lbl and lbl in _seen and not smart_rename: continue
 
-                # Ad Inject Only Logic: Skip file download completely if it's not scheduled for an ad
+                # Ad Inject Only Logic: Skip file download if not scheduled for an ad
+                # EXCEPTION: Group files (e.g. "Ep 1-50.mp3") MUST always be downloaded
+                # because they have their own proportional injection logic regardless of schedule
                 ad_inject_only = job.get("ad_inject_only", False)
                 if ad_inject_only and exp_curr not in _ad_schedule:
-                    return m, None, m_obj, m.id, lbl, None
+                    # Check if this is a group file — if so, don't skip it
+                    _fn_chk = getattr(m_obj, 'file_name', '') or getattr(m_obj, 'title', '') or ''
+                    _cp_chk = (getattr(m, 'caption', '') or '').strip()
+                    _grp_chk = __import__('re').search(
+                        r'(?:ep(?:isode)?s?|#)?\s*(\d+)\s*[-\u2013to]+\s*(\d+)',
+                        f"{_fn_chk} {_cp_chk}", __import__('re').IGNORECASE
+                    )
+                    _is_grp_file = bool(_grp_chk and int(_grp_chk.group(2)) > int(_grp_chk.group(1)))
+                    if not _is_grp_file:
+                        return m, None, m_obj, m.id, lbl, None
+                    # Group file — fall through to download for episode-based injection
 
                 orig_fn = getattr(m_obj, 'file_name', '') or ''
                 ext = (os.path.splitext(orig_fn)[1]
