@@ -446,20 +446,21 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     _candidates: list = []
                     _prem = [k for k in ("arya_premium_hi", "arya_premium_en") if k in _ad_local]
                     _chan = [k for k in ("channel_hi", "channel_en") if k in _ad_local]
-                    _bot  = [k for k in ("arya_bot_hi", "arya_bot_en") if k in _ad_local]
+                    _bot_ads = [k for k in ("arya_bot_hi", "arya_bot_en") if k in _ad_local]
                     # Interleave: premium-hi, channel-hi, bot-hi/en, premium-en, channel-en, premium-extra, channel-extra, bot-extra
                     _order = []
                     if len(_prem) >= 1: _order.append(_prem[0])          # premium hi
                     if len(_chan) >= 1: _order.append(_chan[0])           # channel hi
-                    if len(_bot)  >= 1: _order.append(_bot[0])           # bot hi
+                    if len(_bot_ads)  >= 1: _order.append(_bot_ads[0])   # bot hi
                     if len(_prem) >= 2: _order.append(_prem[1])          # premium en
                     if len(_chan) >= 2: _order.append(_chan[1])           # channel en
-                    if len(_bot)  >= 2: _order.append(_bot[1])           # bot en
-                    if len(_prem) >= 1: _order.append(_random.choice(_prem))  # premium extra
-                    if len(_chan) >= 1: _order.append(_random.choice(_chan))   # channel extra
+                    if len(_bot_ads)  >= 2: _order.append(_bot_ads[1])   # bot en
+                    if len(_prem) >= 1: _order.append(_random.choice(_prem))      # premium extra
+                    if len(_chan) >= 1: _order.append(_random.choice(_chan))       # channel extra
                     _pool = _order[:_n_target]  # cap to target count
-                    if not _pool and (_prem or _chan or _bot):             # fallback: at least 1
-                        _pool = [_random.choice((_prem or _chan or _bot)[0:1])]
+                    if not _pool and (_prem or _chan or _bot_ads):                 # fallback: at least 1
+                        _pool = [_random.choice((_prem or _chan or _bot_ads)[0:1])]
+
 
 
                     if not _pool: continue
