@@ -20,6 +20,7 @@ import subprocess
 import datetime
 import concurrent.futures as cf
 from database import db
+from config import temp
 from plugins.utils import extract_ep_label_robust
 from .test import CLIENT, start_clone_bot
 from pyrogram import Client, filters, ContinuePropagation
@@ -1757,6 +1758,9 @@ async def _create_cl_flow(bot, user_id):
     # Always load defaults before ads section (needed in both full and ad_inject_only modes)
     if ad_inject_only:
         df = await _cl_get_defaults(user_id)
+    # In full mode, df was already loaded above — but ensure it always exists here
+    if 'df' not in dir():
+        df = await _cl_get_defaults(user_id)
 
     # Audio Ad Injection — 4 types, individual skip, duration-aware
     r_ads = await _cl_ask(bot, user_id,
@@ -1778,11 +1782,15 @@ async def _create_cl_flow(bot, user_id):
     if "reset" in r_ads_text:
         # Wipe all saved ads from DB and show fresh edit flow
         await _cl_save_default(user_id, "audio_ads", {})
-        # Delete any stale cached temp ad files on disk
-        import glob as _glob
-        for _stale in _glob.glob(os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, "temp_ad_*.mp3"))):
-            try: os.remove(_stale)
-            except: pass
+        # Delete any stale cached temp ad files on disk (safe — check DOWNLOAD_DIR exists first)
+        try:
+            import glob as _glob
+            _dl_dir = getattr(temp, 'DOWNLOAD_DIR', None)
+            if _dl_dir:
+                for _stale in _glob.glob(os.path.abspath(os.path.join(_dl_dir, "temp_ad_*.mp3"))):
+                    try: os.remove(_stale)
+                    except: pass
+        except Exception: pass
         await bot.send_message(user_id,
             "🗑 <b>All saved ads cleared!</b>\n"
             "<i>Now upload your 4 new ad files below.</i>",
