@@ -42,7 +42,7 @@ def _is_owner(user_id: int) -> bool:
 async def _deny_if_not_owner(client, user_id: int):
     if _is_owner(user_id):
         return False
-    await client.send_message(user_id, "❌ Access denied. This panel is for owners only.")
+    await client.send_message(user_id, f"❌ Access denied. This panel is for owners only.\n\n(Your Telegram ID is: `{user_id}`)\nAdd this ID to your BOT_OWNER_ID in .env")
     return True
 
 
