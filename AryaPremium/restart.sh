@@ -4,11 +4,13 @@ pkill -9 -f main.py
 pkill -9 -f uvicorn
 
 echo "Pulling latest updates..."
-cd ~/bot/TryAryaForwardBot/AryaPremium
+# Assuming script is run from AryaPremium
 git pull --recurse-submodules origin main
+cd ..
+git pull origin main
 
 echo "Starting Delivery Bot in background..."
-screen -dmS delivery_bot bash -c 'cd ~/bot/TryAryaForwardBot && python3 main.py'
+screen -dmS delivery_bot bash -c 'cd ~/bot/TryAryaForwardBot && source venv/bin/activate && python3 main.py'
 
 echo "Starting Premium Ecosystem Bot in background..."
 screen -dmS arya_bot bash -c 'cd ~/bot/TryAryaForwardBot/AryaPremium && source venv/bin/activate && python3 main.py'
