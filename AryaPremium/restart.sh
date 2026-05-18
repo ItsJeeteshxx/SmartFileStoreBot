@@ -4,6 +4,9 @@ pkill -9 -f main.py
 pkill -9 -f uvicorn
 pkill -9 screen
 screen -wipe
+echo "Cleaning up corrupted session files..."
+rm -f ~/bot/TryAryaForwardBot/main_bot_session.session*
+rm -f ~/bot/TryAryaForwardBot/AryaPremium/mgmt_bot.session*
 
 echo "Pulling latest updates..."
 # Assuming script is run from AryaPremium
