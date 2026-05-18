@@ -504,24 +504,50 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         _msg_cache: dict[int, object] = {}
 
         async def _fill_cache(start: int):
-            """Fetch up to 100 messages. Retries once on timeout, then raises exception so job pauses."""
+            """Fetch up to 100 messages. Reconnects on ConnectionError, retries twice, then raises so job pauses."""
+            nonlocal client
             ids = list(range(start, min(start + 100, eid + 1)))
             if not ids: return
-            for attempt in range(2):
+            for attempt in range(3):
                 try:
+                    # Heal connection before every batch fetch
+                    if attempt > 0 or not getattr(client, 'is_connected', True):
+                        try:
+                            client = await _ensure_alive(client)
+                            await asyncio.sleep(2)
+                        except Exception as _re:
+                            logger.warning(f"[Cleaner {job_id}] reconnect attempt {attempt+1}: {_re}")
                     msgs = await asyncio.wait_for(
                         client.get_messages(from_ch, ids),
-                        timeout=90  # raised from 60
+                        timeout=90
                     )
                     if not isinstance(msgs, list): msgs = [msgs]
                     for m in msgs:
                         if m and not m.empty:
                             _msg_cache[m.id] = m
                     return
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Cleaner {job_id}] cache fill timeout attempt {attempt+1} at mid={start}")
+                    if attempt < 2: await asyncio.sleep(5)
+                    else: raise Exception(f"Failed to fetch batch starting at mid={start} — Timeout after 3 attempts")
                 except Exception as e:
-                    logger.warning(f"[Cleaner {job_id}] cache fill attempt {attempt+1} err: {e}")
-                    if attempt == 0: await asyncio.sleep(3)
-                    else: raise Exception(f"Failed to fetch batch starting at mid={start} — {type(e).__name__}: {e}")
+                    estr = str(e)
+                    is_conn = any(k in estr.lower() for k in (
+                        "not been started", "not connected", "disconnected",
+                        "connectionerror", "connection", "reset"
+                    ))
+                    logger.warning(f"[Cleaner {job_id}] cache fill attempt {attempt+1} err ({'conn' if is_conn else 'other'}): {e}")
+                    if is_conn:
+                        # Reconnect and retry
+                        try:
+                            client = await _ensure_alive(client)
+                        except Exception as _re2:
+                            logger.warning(f"[Cleaner {job_id}] reconnect failed: {_re2}")
+                        await asyncio.sleep(min(5 * (attempt + 1), 30))
+                    elif attempt < 2:
+                        await asyncio.sleep(3)
+                    else:
+                        raise Exception(f"Failed to fetch batch starting at mid={start} — {type(e).__name__}: {e}")
 
         # ── Next media: find message + download in background (TRUE PARALLEL PIPELINE) ─
         # ── Next media: find message + download ───────────────────────────
@@ -610,16 +636,41 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     try:
                         if os.path.exists(ipath): os.remove(ipath)
                     except: pass
+                    # On timeout: try to reconnect client before raising so resume can work
+                    try:
+                        client = await _ensure_alive(client)
+                    except Exception: pass
                     raise Exception(f"Download timed out (>{dl_timeout}s) for mid={m.id}")
 
                 except Exception as e:
                     err_upper = str(e).upper()
+                    estr_lower = str(e).lower()
                     try:
                         if os.path.exists(ipath): os.remove(ipath)
                     except: pass
                     if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
                         logger.warning(f"[Cleaner {job_id}] mid={m.id}: media reference expired ({e}) — skipping")
                         continue
+                    # Connection errors: reconnect and retry download once before raising
+                    is_conn_err = any(k in estr_lower for k in (
+                        "not been started", "not connected", "disconnected",
+                        "connectionerror", "connection reset", "connection refused"
+                    ))
+                    if is_conn_err:
+                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: connection error during download, reconnecting...")
+                        try:
+                            client = await _ensure_alive(client)
+                            await asyncio.sleep(3)
+                            # Retry download once with healed connection
+                            async with _cl_dl_sem:
+                                coro2 = client.download_media(m, file_name=ipath)
+                                if coro2 is not None:
+                                    dp2 = await asyncio.wait_for(coro2, timeout=dl_timeout)
+                                    if dp2 and os.path.exists(str(dp2)):
+                                        return m, str(dp2), m_obj, m.id, lbl, ext
+                        except Exception as _re:
+                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: reconnect-retry also failed: {_re}")
+                        # If retry also fails, still raise so job pauses cleanly
                     raise Exception(f"Download error at mid={m.id}: {type(e).__name__}: {e}")
 
             return None  # no more messages in range

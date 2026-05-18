@@ -1393,11 +1393,43 @@ async def _run_job(jid, uid, bot):
                     logger.warning("[MG %s] Chunk %d is completely empty after filtering, skipping chunk.", jid, chunk_num)
                     continue
 
+            # ── Pre-merge disk space check ─────────────────────────────────
+            try:
+                _chunk_size_bytes = sum(os.path.getsize(p) for p in chunk_files_sorted if os.path.exists(p))
+                _disk = shutil.disk_usage(wdir)
+                # Need at least 2× chunk size free (input + output overhead)
+                _min_free = max(_chunk_size_bytes * 2, 512 * 1024 * 1024)  # min 512MB
+                if _disk.free < _min_free:
+                    _free_gb = _disk.free / (1024**3)
+                    _need_gb = _min_free / (1024**3)
+                    err_msg = (f"No space left on device: only {_free_gb:.1f}GB free, "
+                               f"need ~{_need_gb:.1f}GB for chunk {chunk_num}. "
+                               f"Free up disk space and retry.")
+                    await _db_up(jid, status="error", error=err_msg)
+                    try:
+                        await bot.send_message(uid,
+                            f"❌ <b>Disk Full — Merge Aborted</b>\n\n"
+                            f"<b>Chunk {chunk_num}</b> needs ~{_need_gb:.1f} GB but only "
+                            f"{_free_gb:.1f} GB is free on the VPS.\n\n"
+                            f"<b>Fix:</b> Free up disk space (delete old temp files, "
+                            f"clear downloads/) then restart the merge job.")
+                    except: pass
+                    return
+            except Exception as _dsk_e:
+                logger.warning(f"[MG {jid}] disk check error: {_dsk_e}")
+
             # Chunk parts: apply speed chunk-by-chunk to save MASSIVE amounts of RAM
             ok, err = await _ffmpeg_merge(
                 chunk_files_sorted, part_path, None, mtype, None, speed, False, progress_cb=chunk_prog, is_chunk=True)
 
             if not ok:
+                # Detect disk-full errors and give clear message
+                _err_lower = err.lower()
+                if "no space left" in _err_lower or "enospc" in _err_lower:
+                    _disk2 = shutil.disk_usage(wdir)
+                    _free2 = _disk2.free / (1024**3)
+                    err = (f"No space left on device (only {_free2:.1f}GB free). "
+                           f"Free up disk space on VPS and retry. Original error: {err[:200]}")
                 await _db_up(jid, status="error", error=f"Chunk {chunk_num} merge failed: {err[:400]}")
                 # Show up to 1200 chars so the actual error is readable (banner already stripped)
                 await bot.send_message(uid,
