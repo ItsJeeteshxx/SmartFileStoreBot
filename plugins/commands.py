@@ -40,6 +40,7 @@ async def _main_buttons(user_id: int):
             InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
         ],
         [
+            InlineKeyboardButton('🔗 URL Bypass',   callback_data='ub#bypass'),
             InlineKeyboardButton('Aʙᴏᴜᴛ',          callback_data='about'),
         ],
     ]

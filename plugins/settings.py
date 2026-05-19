@@ -517,7 +517,7 @@ async def settings_query(bot, query):
      for b in userbots:
          active_mark = "✔️ " if b.get('active') else ""
          buttons.append([InlineKeyboardButton(f"{active_mark}{b['name']}", callback_data=f"settings#editbot_{b['id']}")])
-     if len(userbots) < 2:
+     if len(userbots) < 4:
          buttons.append([InlineKeyboardButton('Aᴅᴅ Usᴇʀʙᴏᴛ', callback_data="settings#adduserbot")])
          
      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#main")])
@@ -525,7 +525,7 @@ async def settings_query(bot, query):
      text = (
          "<b><u>👥 My Accounts</u></b>\n\n"
          f"<b>🤖 Bots:</b> {len(normal_bots)}/10\n"
-         f"<b>👤 Userbots:</b> {len(userbots)}/2\n\n"
+         f"<b>👤 Userbots:</b> {len(userbots)}/4\n\n"
          "<b>Tap an account to view details or set it active.\n"
          "✔️ = Currently active for that type.</b>"
      )

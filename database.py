@@ -491,8 +491,8 @@ class Database:
        is_bot = datas.get('is_bot', True)
        user_id = datas.get('user_id')
        
-       # Enforce account limits: 10 for Normal Bots, 2 for Userbots
-       limit = 10 if is_bot else 2
+       # Enforce account limits: 10 for Normal Bots, 4 for Userbots
+       limit = 10 if is_bot else 4
        count = await self.bot.count_documents({'user_id': user_id, 'is_bot': is_bot})
        
        is_owner = (await self.is_co_owner(user_id)) or (user_id in Config.OWNER_IDS)
