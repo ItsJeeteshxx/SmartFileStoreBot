@@ -17,11 +17,11 @@ BASE_IDLE_SEC = 15
 MIN_DELAY     = 8    # anti-spam: min seconds between links
 MAX_DELAY     = 18   # anti-spam: max seconds between links
 
-SHORTENER_RE = re.compile(
-    r'urlshortx\.io|shrinkme\.io|ouo\.io|short2url\.com|adf\.ly|'
-    r'linkvertise\.com|rekonise\.com|bc\.vc|za\.gl|exe\.io|'
-    r'gplinks\.in|tnshort\.com|linkshrink\.net|droplink\.co|'
-    r'techymedies\.com|modijiurl\.com|instantlinks\.in|earnl\.in',
+# Skip these domains — they are NOT shorteners
+SKIP_URL_RE = re.compile(
+    r't\.me|telegram\.me|telegra\.ph|youtube\.com|youtu\.be|'  
+    r'instagram\.com|facebook\.com|twitter\.com|x\.com|'         
+    r'google\.com|drive\.google|docs\.google',
     re.IGNORECASE
 )
 
@@ -64,25 +64,31 @@ async def _ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 3
 # Tracks current status message per user: user_id → (chat_id, msg_id)
 _status_msgs: dict = {}
 
+def _progress_bar(done: int, total: int, width: int = 12) -> str:
+    pct = done / total if total else 0
+    filled = round(width * pct)
+    bar = '▰' * filled + '▱' * (width - filled)
+    return f"{bar} {done}/{total} ({int(pct*100)}%)"
+
 async def _upd(bot, user_id: int, chat_id: int, text: str):
-    """Update status by deleting old message and sending fresh one."""
-    # Delete previous status message
+    """Edit status message; fallback to send-new if edit fails."""
     old = _status_msgs.get(user_id)
     if old:
         try:
-            await bot.delete_messages(old[0], old[1])
+            await bot.edit_message_text(
+                old[0], old[1], text,
+                parse_mode=PM, disable_web_page_preview=True
+            )
+            return  # edited successfully
         except Exception:
-            pass
-    # Send new status
+            pass  # fall through → send new
     try:
         sent = await bot.send_message(
-            chat_id, text, parse_mode=PM,
-            disable_web_page_preview=True
+            chat_id, text, parse_mode=PM, disable_web_page_preview=True
         )
         _status_msgs[user_id] = (chat_id, sent.id)
-        logger.debug(f"[Bypass] Status updated: chat={chat_id} msg={sent.id}")
     except Exception as e:
-        logger.warning(f"[Bypass] _upd send failed: {e}")
+        logger.warning(f"[Bypass] _upd failed: {e}")
 
 
 # ── Userbot loader ────────────────────────────────────────────────────────────
@@ -122,15 +128,19 @@ async def _load_ub(user_id: int, bot_id: str):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _get_links(message) -> list:
-    """ALL (label, url) shortener pairs from inline buttons in order."""
+    """ALL (label, url) non-Telegram button URLs in order — agentic: no domain whitelist."""
     out = []
     if not message.reply_markup:
         return out
     for row in getattr(message.reply_markup, 'inline_keyboard', []):
         for btn in row:
             url = getattr(btn, 'url', None) or ''
-            if url and SHORTENER_RE.search(url):
-                out.append(((btn.text or '').strip() or 'Link', url))
+            # Skip empty, non-http, and known non-shortener domains
+            if not url or not url.startswith('http'):
+                continue
+            if SKIP_URL_RE.search(url):
+                continue
+            out.append(((btn.text or '').strip() or 'Link', url))
     return out
 
 def _parse_bypassed(text: str) -> Optional[str]:
@@ -198,9 +208,10 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue):
         if user_id not in _sessions:
             break
 
+        bar = _progress_bar(done, total)
         await _upd(bot, user_id, chat_id,
-            f"<b>»  URL Bypass — Running</b>\n\n"
-            f"»  Progress: <code>{done}/{total}</code>\n"
+            f"<b>»  URL Bypass — Running</b>\n"
+            f"<code>{bar}</code>\n\n"
             f"»  Post: <code>{post_id}</code> | Link <code>{idx+1}/{total}</code>\n"
             f"»  Label: <code>{label[:35]}</code>\n"
             f"»  Step: Sending to bypass bot...\n\n"
@@ -242,9 +253,10 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue):
             await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             continue
 
+        bar = _progress_bar(done, total)
         await _upd(bot, user_id, chat_id,
-            f"<b>»  URL Bypass — Running</b>\n\n"
-            f"»  Progress: <code>{done}/{total}</code>\n"
+            f"<b>»  URL Bypass — Running</b>\n"
+            f"<code>{bar}</code>\n\n"
             f"»  Step: Sending /start to @{bot_uname}...\n\n"
             f"<i>Send /bypass_stop to cancel</i>"
         )
@@ -464,8 +476,11 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     if _is_cancel(r5.text) or '✅' not in r5.text:
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
-    # Remove keyboard and start job — _upd handles its own status tracking
-    await bot.send_message(chat_id,
+    # Small settle delay so Pyrogram's update queue clears
+    # then send status message and store its ID reliably
+    await asyncio.sleep(0.5)
+    status_msg = await bot.send_message(
+        chat_id,
         f"<b>»  URL Bypass — Starting</b>\n\n"
         f"»  Userbot: <b>{ub_name}</b>\n"
         f"»  Channel: <b>{channel_title}</b>\n"
@@ -473,15 +488,8 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
         f"⏳ Connecting userbot...",
         parse_mode=PM, reply_markup=ReplyKeyboardRemove()
     )
-    # Seed the status tracker so first _upd replaces this message
-    # Use get_chat_history to reliably find the message we just sent
-    try:
-        async for m in bot.get_chat_history(chat_id, limit=1):
-            _status_msgs[user_id] = (chat_id, m.id)
-            logger.info(f"[Bypass] Status seeded: msg={m.id}")
-            break
-    except Exception as e:
-        logger.warning(f"[Bypass] Could not seed status msg: {e}")
+    _status_msgs[user_id] = (chat_id, status_msg.id)
+    logger.info(f"[Bypass] Status seeded: msg={status_msg.id}")
 
     task = asyncio.create_task(
         _job_runner(bot, user_id, bot_id, ub_name,
