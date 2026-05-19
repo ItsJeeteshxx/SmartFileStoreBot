@@ -13,10 +13,13 @@ Flow:
   9. Shows live progress. Moves to next link automatically.
 """
 
+from __future__ import annotations
+
 import asyncio
 import re
 import time
 import logging
+from typing import Optional
 from pyrogram import Client, filters, ContinuePropagation
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from database import db
@@ -125,7 +128,7 @@ def _extract_shortener_links(message) -> list:
     return results
 
 
-def _extract_bypass_result(text: str) -> str | None:
+def _extract_bypass_result(text: str) -> Optional[str]:
     """
     Parse the bypass bot's reply to extract the final bypassed URL.
     """
