@@ -64,11 +64,11 @@ async def _ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 3
 # Tracks current status message per user: user_id → (chat_id, msg_id)
 _status_msgs: dict = {}
 
-def _progress_bar(done: int, total: int, width: int = 12) -> str:
+def _progress_bar(done: int, total: int, width: int = 10) -> str:
     pct = done / total if total else 0
     filled = round(width * pct)
-    bar = '▰' * filled + '▱' * (width - filled)
-    return f"{bar} {done}/{total} ({int(pct*100)}%)"
+    bar = '█' * filled + '░' * (width - filled)
+    return f"[{bar}] {done}/{total} ({int(pct*100)}%)"
 
 async def _upd(bot, user_id: int, chat_id: int, text: str):
     """Edit status message; fallback to send-new if edit fails."""
@@ -199,7 +199,7 @@ async def _scan(bot, user_id, chat_id, ub, channel_id, order, start_id, end_id) 
 
 
 # ── Core bypass loop ──────────────────────────────────────────────────────────
-async def _run_bypass(bot, user_id, chat_id, ub, queue):
+async def _run_bypass(bot, user_id, chat_id, ub, queue, ch_title='Channel'):
     total  = len(queue)
     done   = 0
     failed = []
@@ -210,12 +210,14 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue):
 
         bar = _progress_bar(done, total)
         await _upd(bot, user_id, chat_id,
-            f"<b>»  URL Bypass — Running</b>\n"
+            f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
             f"<code>{bar}</code>\n\n"
-            f"»  Post: <code>{post_id}</code> | Link <code>{idx+1}/{total}</code>\n"
-            f"»  Label: <code>{label[:35]}</code>\n"
-            f"»  Step: Sending to bypass bot...\n\n"
-            f"<i>Send /bypass_stop to cancel</i>"
+            f"<b>\u00bb  Pᴏsᴛ ID  :</b> <code>{post_id}</code>\n"
+            f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{idx+1} / {total}</code>\n"
+            f"<b>\u00bb  Lᴀʙᴇʟ  :</b> <code>{label[:35]}</code>\n"
+            f"<b>\u00bb  Cʜᴀɴɴᴇʟ:</b> {ch_title}\n"
+            f"<b>\u00bb  Sᴛᴇᴘ   :</b> Sending to bypass bot...\n\n"
+            f"<i>\u26d4 /stopbypass to cancel</i>"
         )
 
         try:
@@ -255,10 +257,12 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue):
 
         bar = _progress_bar(done, total)
         await _upd(bot, user_id, chat_id,
-            f"<b>»  URL Bypass — Running</b>\n"
+            f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
             f"<code>{bar}</code>\n\n"
-            f"»  Step: Sending /start to @{bot_uname}...\n\n"
-            f"<i>Send /bypass_stop to cancel</i>"
+            f"<b>\u00bb  Cʜᴀɴɴᴇʟ:</b> {ch_title}\n"
+            f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{done+1} / {total}</code>\n"
+            f"<b>\u00bb  Sᴛᴇᴘ   :</b> Sending /start to @{bot_uname}...\n\n"
+            f"<i>\u26d4 /stopbypass to cancel</i>"
         )
 
         try:
@@ -294,12 +298,13 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue):
             if got_file and idle >= adaptive: break
             if not got_file and waited > 90:  break
             await _upd(bot, user_id, chat_id,
-                f"<b>»  URL Bypass — Running</b>\n\n"
-                f"»  Progress: <code>{done}/{total}</code>\n"
-                f"»  Waiting for files from @{bot_uname}\n"
-                f"»  Files received: <code>{files}</code>\n"
-                f"»  Idle: <code>{int(idle)}s / {adaptive}s</code>\n\n"
-                f"<i>Send /bypass_stop to cancel</i>"
+                f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
+                f"<code>{_progress_bar(done, total)}</code>\n\n"
+                f"<b>\u00bb  Cʜᴀɴɴᴇʟ  :</b> {ch_title}\n"
+                f"<b>\u00bb  Lɪɴᴋ      :</b> <code>{done+1} / {total}</code>\n"
+                f"<b>\u00bb  Fɪʟᴇs     :</b> <code>{files}</code> received\n"
+                f"<b>\u00bb  Iᴅʟᴇ Tɪᴍᴇ :</b> <code>{int(idle)}s / {adaptive}s</code>\n\n"
+                f"<i>\u26d4 /stopbypass to cancel</i>"
             )
 
         done += 1
@@ -311,11 +316,15 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue):
     _status_msgs.pop(user_id, None)
     fail_txt = ''
     if failed:
-        lines = '\n'.join(f"  • {lb[:25]}: {rs[:40]}" for lb, rs in failed[:8])
-        fail_txt = f"\n\n<b>»  Failed ({len(failed)}):</b>\n{lines}"
+        lines = '\n'.join(f"  \u2022 {lb[:25]}: {rs[:40]}" for lb, rs in failed[:8])
+        fail_txt = f"\n\n<b>\u00bb  Fᴀɪʟᴇᴅ ({len(failed)}):</b>\n{lines}"
     await _upd(bot, user_id, chat_id,
-        f"<b>»  URL Bypass — Complete!</b>\n\n"
-        f"»  Total: <code>{total}</code> | Done: <code>{done}</code> | Failed: <code>{len(failed)}</code>"
+        f"\u2705 <b>URL Bʏᴘᴀss Cᴏᴍᴘʟᴇᴛᴇ!</b>\n"
+        f"<code>{_progress_bar(total, total)}</code>\n\n"
+        f"<b>\u00bb  Cʜᴀɴɴᴇʟ :</b> {ch_title}\n"
+        f"<b>\u00bb  Tᴏᴛᴀʟ   :</b> <code>{total}</code>\n"
+        f"<b>\u00bb  Dᴏɴᴇ    :</b> <code>{done}</code>\n"
+        f"<b>\u00bb  Fᴀɪʟᴇᴅ  :</b> <code>{len(failed)}</code>"
         f"{fail_txt}"
     )
 
@@ -551,7 +560,7 @@ async def _job_runner(bot, user_id, bot_id, ub_name,
             f"⚡ Starting bypass process...")
         await asyncio.sleep(2)
 
-        await _run_bypass(bot, user_id, chat_id, ub, queue)
+        await _run_bypass(bot, user_id, chat_id, ub, queue, ch_title=channel_title)
 
     except asyncio.CancelledError:
         _sessions.pop(user_id, None)
@@ -571,12 +580,15 @@ async def _job_runner(bot, user_id, bot_id, ub_name,
 
 
 # ── Stop ──────────────────────────────────────────────────────────────────────
-@Client.on_message(filters.private & filters.command('bypass_stop'))
+@Client.on_message(filters.private & filters.command(['stopbypass', 'bypass_stop']))
 async def bypass_stop_cmd(bot, message):
     uid  = message.from_user.id
     task = _sessions.pop(uid, None)
     if task:
         task.cancel()
-        await message.reply_text("<b>»  Bypass job stopping...</b>", parse_mode=PM)
+        await message.reply_text(
+            "\u26d4 <b>Bʏᴘᴀss Jᴏʙ Sᴛᴏᴘᴘɪɴɢ...</b>",
+            parse_mode=PM
+        )
     else:
-        await message.reply_text("No bypass job running.")
+        await message.reply_text("\u2139\ufe0f No bypass job is currently running.")
