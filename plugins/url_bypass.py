@@ -1,6 +1,6 @@
 """URL Bypass Agentic System - Arya Forward Bot"""
 from __future__ import annotations
-import asyncio, re, time, logging
+import asyncio, re, time, logging, random
 from typing import Optional
 from pyrogram import Client, filters, enums, ContinuePropagation
 from pyrogram.types import (
@@ -14,7 +14,9 @@ PM = enums.ParseMode.HTML
 
 BYPASS_BOT      = "Nick_Bypass_Bot"
 BASE_IDLE_SEC   = 15
-INTER_DELAY     = 5
+# Anti-spam: random delay range between each link (seconds)
+MIN_DELAY = 8
+MAX_DELAY = 18
 
 SHORTENER_RE = re.compile(
     r'urlshortx\.io|shrinkme\.io|ouo\.io|short2url\.com|adf\.ly|'
@@ -120,8 +122,8 @@ def _parse_start(url: str) -> tuple:
 async def _upd(msg, text: str):
     try:
         await msg.edit_text(text, parse_mode=PM, disable_web_page_preview=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[Bypass] _upd edit failed: {type(e).__name__}: {e}")
 
 def _resolve_channel(txt: str, fwd_chat=None):
     if fwd_chat:
@@ -500,39 +502,50 @@ async def _job_runner(bot, user_id, bot_id, ub_name,
                       order, scan_start, scan_end, status_msg):
     ub = None
     try:
+        logger.info(f"[Bypass] Loading userbot {bot_id}...")
         ub = await _load_ub(user_id, bot_id)
         if not ub:
             _sessions.pop(user_id, None)
             return await _upd(status_msg,
                 "<b>»  Failed to connect userbot!</b>\n\n"
-                "Session expired? Go to Settings → Accounts to re-add.")
+                "Session expired? Go to Settings \u2192 Accounts to re-add.")
 
+        logger.info(f"[Bypass] Userbot ready. Updating status message...")
         await _upd(status_msg,
-            f"<b>»  URL Bypass — Running</b>\n\n"
-            f"»  Userbot: <b>{ub_name}</b>\n"
-            f"»  Channel: <b>{channel_title}</b>\n\n"
-            f"✅ Connected! Joining channel...")
+            f"<b>»  URL Bypass \u2014 Running</b>\n\n"
+            f"\u00bb  Userbot: <b>{ub_name}</b>\n"
+            f"\u00bb  Channel: <b>{channel_title}</b>\n\n"
+            f"\u2705 Connected! Joining channel...")
 
+        logger.info(f"[Bypass] Joining channel {channel_id}...")
         try:
-            await ub.join_chat(channel_id)
+            await asyncio.wait_for(ub.join_chat(channel_id), timeout=20)
+            logger.info(f"[Bypass] Joined channel OK")
+        except asyncio.TimeoutError:
+            logger.warning(f"[Bypass] join_chat timed out — may already be a member, continuing")
         except Exception as e:
             s = str(e).lower()
-            if 'already' not in s and 'participant' not in s:
-                logger.warning(f"[Bypass] join warn: {e}")
+            if 'already' in s or 'participant' in s:
+                logger.info(f"[Bypass] Already in channel")
+            else:
+                logger.warning(f"[Bypass] join_chat warn: {e}")
 
+        await asyncio.sleep(2)
+        logger.info(f"[Bypass] Starting scan...")
         queue = await _scan(ub, channel_id, status_msg, order, scan_start, scan_end)
+        logger.info(f"[Bypass] Scan done. Found {len(queue)} links.")
 
         if not queue:
             _sessions.pop(user_id, None)
             return await _upd(status_msg,
                 f"<b>»  No Shortener Links Found!</b>\n\n"
-                f"Channel <b>{channel_title}</b> has no posts with shortener buttons.")
+                f"Channel <b>{channel_title}</b> has no posts with shortener link buttons.")
 
         await _upd(status_msg,
-            f"<b>»  URL Bypass — Queue Ready</b>\n\n"
-            f"»  Channel: <b>{channel_title}</b>\n"
-            f"»  Total links: <code>{len(queue)}</code>\n\n"
-            f"⚡ Starting bypass process...")
+            f"<b>»  URL Bypass \u2014 Queue Ready</b>\n\n"
+            f"\u00bb  Channel: <b>{channel_title}</b>\n"
+            f"\u00bb  Total links: <code>{len(queue)}</code>\n\n"
+            f"\u26a1 Starting bypass process...")
         await asyncio.sleep(2)
 
         await _run_bypass(bot, user_id, ub, status_msg, queue)
@@ -544,6 +557,13 @@ async def _job_runner(bot, user_id, bot_id, ub_name,
         _sessions.pop(user_id, None)
         logger.error(f"[Bypass] job error: {e}", exc_info=True)
         await _upd(status_msg, f"<b>»  Error:</b> <code>{str(e)[:200]}</code>")
+    finally:
+        if ub:
+            try:
+                await asyncio.wait_for(ub.stop(), timeout=10)
+                logger.info(f"[Bypass] Userbot stopped cleanly")
+            except Exception:
+                pass
 
 # ── Stop ──────────────────────────────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command('bypass_stop'))
