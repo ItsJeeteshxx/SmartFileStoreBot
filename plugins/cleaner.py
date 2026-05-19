@@ -557,6 +557,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         #   • NoneType coroutine bug → guard against it; SKIP
         #   • Network/Timeout/Auth/Flood error → RAISE so main loop pauses the job
         async def _next_media(start_mid: int, exp_curr: int):
+            nonlocal client
             mid = start_mid
             while mid <= eid:
                 if mid not in _msg_cache:
