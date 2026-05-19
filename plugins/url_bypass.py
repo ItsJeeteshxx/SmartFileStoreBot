@@ -130,17 +130,16 @@ async def _scan(ub, channel_id, status_msg, order: str, start_id: int, end_id: i
     try:
         async for msg in ub.get_chat_history(channel_id):
             mid = msg.id
-            # Range filter
-            if end_id   and mid > end_id:   continue
-            if start_id and mid < start_id: break if order == 'old_to_new' else None; continue
+            # Range filter: get_chat_history returns newest first (descending IDs)
+            if end_id and mid > end_id:
+                continue
+            if start_id and mid < start_id:
+                break  # IDs only go lower from here, no point continuing
 
             scanned += 1
             links = _get_links(msg)
             if links:
-                if order == 'old_to_new':
-                    all_links.insert(0, (msg.id, links))  # will reverse at end
-                else:
-                    all_links.append((msg.id, links))
+                all_links.append((msg.id, links))
 
             if scanned % 100 == 0:
                 await _upd(status_msg,
@@ -150,6 +149,7 @@ async def _scan(ub, channel_id, status_msg, order: str, start_id: int, end_id: i
     except Exception as e:
         logger.error(f"[Bypass] scan error: {e}")
 
+    # get_chat_history gives new→old; reverse for old→new
     if order == 'old_to_new':
         all_links.reverse()
 
