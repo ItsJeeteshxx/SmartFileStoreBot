@@ -61,17 +61,28 @@ async def _ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 3
         raise
 
 
-# ── Status updater — uses explicit bot + chat_id + msg_id ────────────────────
-async def _upd(bot, chat_id: int, msg_id: int, text: str):
-    """Edit status message using explicit bot.edit_message_text — no _client ref bugs."""
+# Tracks current status message per user: user_id → (chat_id, msg_id)
+_status_msgs: dict = {}
+
+async def _upd(bot, user_id: int, chat_id: int, text: str):
+    """Update status by deleting old message and sending fresh one."""
+    # Delete previous status message
+    old = _status_msgs.get(user_id)
+    if old:
+        try:
+            await bot.delete_messages(old[0], old[1])
+        except Exception:
+            pass
+    # Send new status
     try:
-        await bot.edit_message_text(
-            chat_id, msg_id, text,
-            parse_mode=PM,
+        sent = await bot.send_message(
+            chat_id, text, parse_mode=PM,
             disable_web_page_preview=True
         )
+        _status_msgs[user_id] = (chat_id, sent.id)
+        logger.debug(f"[Bypass] Status updated: chat={chat_id} msg={sent.id}")
     except Exception as e:
-        logger.warning(f"[Bypass] _upd failed: {type(e).__name__}: {e}")
+        logger.warning(f"[Bypass] _upd send failed: {e}")
 
 
 # ── Userbot loader ────────────────────────────────────────────────────────────
@@ -148,10 +159,10 @@ def _resolve_channel(txt: str, fwd_chat=None):
 
 
 # ── Channel scanner ───────────────────────────────────────────────────────────
-async def _scan(bot, chat_id, msg_id, ub, channel_id, order, start_id, end_id) -> list:
+async def _scan(bot, user_id, chat_id, ub, channel_id, order, start_id, end_id) -> list:
     all_links = []
     scanned   = 0
-    await _upd(bot, chat_id, msg_id, "<b>»  Scanning channel messages...</b>")
+    await _upd(bot, user_id, chat_id, "<b>»  Scanning channel messages...</b>")
     try:
         async for msg in ub.get_chat_history(channel_id):
             mid = msg.id
@@ -162,7 +173,7 @@ async def _scan(bot, chat_id, msg_id, ub, channel_id, order, start_id, end_id) -
             if links:
                 all_links.append((msg.id, links))
             if scanned % 100 == 0:
-                await _upd(bot, chat_id, msg_id,
+                await _upd(bot, user_id, chat_id,
                     f"<b>»  Scanning...</b>\n\n"
                     f"»  Scanned: <code>{scanned}</code> messages\n"
                     f"»  Posts with links: <code>{len(all_links)}</code>")
@@ -178,7 +189,7 @@ async def _scan(bot, chat_id, msg_id, ub, channel_id, order, start_id, end_id) -
 
 
 # ── Core bypass loop ──────────────────────────────────────────────────────────
-async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
+async def _run_bypass(bot, user_id, chat_id, ub, queue):
     total  = len(queue)
     done   = 0
     failed = []
@@ -187,7 +198,7 @@ async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
         if user_id not in _sessions:
             break
 
-        await _upd(bot, chat_id, msg_id,
+        await _upd(bot, user_id, chat_id,
             f"<b>»  URL Bypass — Running</b>\n\n"
             f"»  Progress: <code>{done}/{total}</code>\n"
             f"»  Post: <code>{post_id}</code> | Link <code>{idx+1}/{total}</code>\n"
@@ -203,7 +214,6 @@ async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
             await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             continue
 
-        # Wait for bypass bot reply (max 60s)
         bypassed = None
         t0 = time.time()
         for _ in range(60):
@@ -232,7 +242,7 @@ async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
             await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             continue
 
-        await _upd(bot, chat_id, msg_id,
+        await _upd(bot, user_id, chat_id,
             f"<b>»  URL Bypass — Running</b>\n\n"
             f"»  Progress: <code>{done}/{total}</code>\n"
             f"»  Step: Sending /start to @{bot_uname}...\n\n"
@@ -246,7 +256,6 @@ async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
             await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             continue
 
-        # Smart idle wait for file delivery
         wait_since = time.time()
         files = 0; last_file = time.time(); got_file = False
         adaptive = BASE_IDLE_SEC
@@ -272,7 +281,7 @@ async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
             waited = time.time() - wait_since
             if got_file and idle >= adaptive: break
             if not got_file and waited > 90:  break
-            await _upd(bot, chat_id, msg_id,
+            await _upd(bot, user_id, chat_id,
                 f"<b>»  URL Bypass — Running</b>\n\n"
                 f"»  Progress: <code>{done}/{total}</code>\n"
                 f"»  Waiting for files from @{bot_uname}\n"
@@ -283,15 +292,16 @@ async def _run_bypass(bot, chat_id, msg_id, user_id, ub, queue):
 
         done += 1
         delay = random.uniform(MIN_DELAY, MAX_DELAY)
-        logger.info(f"[Bypass] Done {done}/{total}. Waiting {delay:.1f}s before next...")
+        logger.info(f"[Bypass] Done {done}/{total}. Waiting {delay:.1f}s...")
         await asyncio.sleep(delay)
 
     _sessions.pop(user_id, None)
+    _status_msgs.pop(user_id, None)
     fail_txt = ''
     if failed:
         lines = '\n'.join(f"  • {lb[:25]}: {rs[:40]}" for lb, rs in failed[:8])
         fail_txt = f"\n\n<b>»  Failed ({len(failed)}):</b>\n{lines}"
-    await _upd(bot, chat_id, msg_id,
+    await _upd(bot, user_id, chat_id,
         f"<b>»  URL Bypass — Complete!</b>\n\n"
         f"»  Total: <code>{total}</code> | Done: <code>{done}</code> | Failed: <code>{len(failed)}</code>"
         f"{fail_txt}"
@@ -454,27 +464,29 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     if _is_cancel(r5.text) or '✅' not in r5.text:
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
-    # Send status message — capture chat_id + msg_id explicitly
-    status_msg = await bot.send_message(
-        chat_id,
+    # Remove keyboard and start job — _upd handles its own status tracking
+    await bot.send_message(chat_id,
         f"<b>»  URL Bypass — Starting</b>\n\n"
         f"»  Userbot: <b>{ub_name}</b>\n"
         f"»  Channel: <b>{channel_title}</b>\n"
         f"»  Order: {order_label}\n\n"
         f"⏳ Connecting userbot...",
-        parse_mode=PM,
-        reply_markup=ReplyKeyboardRemove()
+        parse_mode=PM, reply_markup=ReplyKeyboardRemove()
     )
-    # Save these explicitly — do NOT rely on msg._client in background task
-    s_chat_id = status_msg.chat.id
-    s_msg_id  = status_msg.id
-    logger.info(f"[Bypass] Status message sent: chat={s_chat_id} msg={s_msg_id}")
+    # Seed the status tracker so first _upd replaces this message
+    # Use get_chat_history to reliably find the message we just sent
+    try:
+        async for m in bot.get_chat_history(chat_id, limit=1):
+            _status_msgs[user_id] = (chat_id, m.id)
+            logger.info(f"[Bypass] Status seeded: msg={m.id}")
+            break
+    except Exception as e:
+        logger.warning(f"[Bypass] Could not seed status msg: {e}")
 
     task = asyncio.create_task(
         _job_runner(bot, user_id, bot_id, ub_name,
                     channel_id, channel_title,
-                    order, scan_start, scan_end,
-                    s_chat_id, s_msg_id)
+                    order, scan_start, scan_end, chat_id)
     )
     _sessions[user_id] = task
 
@@ -482,20 +494,19 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
 # ── Job runner ────────────────────────────────────────────────────────────────
 async def _job_runner(bot, user_id, bot_id, ub_name,
                       channel_id, channel_title,
-                      order, scan_start, scan_end,
-                      chat_id, msg_id):
+                      order, scan_start, scan_end, chat_id):
     ub = None
     try:
         logger.info(f"[Bypass] Loading userbot {bot_id}...")
         ub = await _load_ub(user_id, bot_id)
         if not ub:
             _sessions.pop(user_id, None)
-            return await _upd(bot, chat_id, msg_id,
+            return await _upd(bot, user_id, chat_id,
                 "<b>»  Failed to connect userbot!</b>\n\n"
                 "Session expired? Go to Settings → Accounts to re-add.")
 
         logger.info(f"[Bypass] Userbot ready. Updating status...")
-        await _upd(bot, chat_id, msg_id,
+        await _upd(bot, user_id, chat_id,
             f"<b>»  URL Bypass — Running</b>\n\n"
             f"»  Userbot: <b>{ub_name}</b>\n"
             f"»  Channel: <b>{channel_title}</b>\n\n"
@@ -506,7 +517,7 @@ async def _job_runner(bot, user_id, bot_id, ub_name,
             await asyncio.wait_for(ub.join_chat(channel_id), timeout=20)
             logger.info(f"[Bypass] Join OK")
         except asyncio.TimeoutError:
-            logger.warning(f"[Bypass] join_chat timeout — continuing anyway")
+            logger.warning(f"[Bypass] join_chat timeout — continuing")
         except Exception as e:
             s = str(e).lower()
             if 'already' in s or 'participant' in s:
@@ -516,32 +527,33 @@ async def _job_runner(bot, user_id, bot_id, ub_name,
 
         await asyncio.sleep(2)
         logger.info(f"[Bypass] Scanning...")
-        queue = await _scan(bot, chat_id, msg_id, ub, channel_id, order, scan_start, scan_end)
+        queue = await _scan(bot, user_id, chat_id, ub, channel_id, order, scan_start, scan_end)
         logger.info(f"[Bypass] Scan done — {len(queue)} links found")
 
         if not queue:
             _sessions.pop(user_id, None)
-            return await _upd(bot, chat_id, msg_id,
+            return await _upd(bot, user_id, chat_id,
                 f"<b>»  No Shortener Links Found!</b>\n\n"
                 f"Channel <b>{channel_title}</b> has no posts with shortener link buttons.")
 
-        await _upd(bot, chat_id, msg_id,
+        await _upd(bot, user_id, chat_id,
             f"<b>»  URL Bypass — Queue Ready</b>\n\n"
             f"»  Channel: <b>{channel_title}</b>\n"
             f"»  Total links: <code>{len(queue)}</code>\n\n"
             f"⚡ Starting bypass process...")
         await asyncio.sleep(2)
 
-        await _run_bypass(bot, chat_id, msg_id, user_id, ub, queue)
+        await _run_bypass(bot, user_id, chat_id, ub, queue)
 
     except asyncio.CancelledError:
         _sessions.pop(user_id, None)
-        await _upd(bot, chat_id, msg_id, "<b>»  Bypass job cancelled.</b>")
+        await _upd(bot, user_id, chat_id, "<b>»  Bypass job cancelled.</b>")
     except Exception as e:
         _sessions.pop(user_id, None)
         logger.error(f"[Bypass] job error: {e}", exc_info=True)
-        await _upd(bot, chat_id, msg_id, f"<b>»  Error:</b> <code>{str(e)[:200]}</code>")
+        await _upd(bot, user_id, chat_id, f"<b>»  Error:</b> <code>{str(e)[:200]}</code>")
     finally:
+        _status_msgs.pop(user_id, None)
         if ub:
             try:
                 await asyncio.wait_for(ub.stop(), timeout=10)
