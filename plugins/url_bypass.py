@@ -60,17 +60,36 @@ async def _ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 3
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 async def _load_ub(user_id: int, bot_id: str):
-    from plugins.test import start_clone_bot, CLIENT
+    """Start a fresh independent userbot for bypass (not shared cache — avoids hang)."""
+    from config import Config
     bots     = await db.get_bots(user_id)
     userbots = [b for b in bots if not b.get('is_bot', True)]
     target   = next((b for b in userbots if str(b.get('id','')) == str(bot_id)), None)
     if not target:
+        logger.error(f"[Bypass] Userbot {bot_id} not found in DB")
+        return None
+    session = target.get('session') or target.get('session_string')
+    if not session:
+        logger.error(f"[Bypass] No session string for userbot {bot_id}")
         return None
     try:
-        ub = CLIENT().client(target)
-        return await start_clone_bot(ub)
+        from pyrogram import Client as _Client
+        ub = _Client(
+            f"bypass_ub_{bot_id}",
+            api_id=Config.API_ID,
+            api_hash=Config.API_HASH,
+            session_string=session,
+            in_memory=True,
+            no_updates=False,
+        )
+        await asyncio.wait_for(ub.start(), timeout=30)
+        logger.info(f"[Bypass] Userbot {bot_id} connected")
+        return ub
+    except asyncio.TimeoutError:
+        logger.error(f"[Bypass] Userbot {bot_id} connect timed out")
+        return None
     except Exception as e:
-        logger.error(f"[Bypass] ub load fail: {e}")
+        logger.error(f"[Bypass] Userbot {bot_id} start failed: {e}")
         return None
 
 def _get_links(message) -> list:
