@@ -2250,7 +2250,7 @@ async def job_new_cb(bot, query):
     user_id = query.from_user.id
     from plugins.owner_utils import is_any_owner
     limits = await db.get_user_limits(user_id)
-    max_live = limits.get('max_live_jobs', 65)
+    max_live = limits.get('max_live_jobs', 45)
     if not await is_any_owner(user_id) and max_live != -1:
         existing = await _list_jobs(user_id)
         if len(existing) >= max_live:
@@ -2268,7 +2268,7 @@ async def newjob_cmd(bot, message):
     if not is_owner and not await is_feature_enabled("live_job"):
         return await message.reply_text(_DISABLED_MSG.format(feature=FEATURE_LABELS["live_job"]))
     limits = await db.get_user_limits(uid)
-    max_live = limits.get('max_live_jobs', 65)
+    max_live = limits.get('max_live_jobs', 45)
     if not is_owner and max_live != -1:
         existing = await _list_jobs(uid)
         if len(existing) >= max_live:
@@ -2286,6 +2286,8 @@ async def _ask_dest(bot, user_id: int, channels: list, step_label: str, optional
     from plugins.utils import ask_channel_picker
     
     extra = []
+    if optional:
+        extra.append("⏭ Sᴋɪᴘ")
     if undo_btn:
         extra.append("↩️ Uɴᴅᴏ")
         
@@ -2297,6 +2299,8 @@ async def _ask_dest(bot, user_id: int, channels: list, step_label: str, optional
     if isinstance(picked, str):
         if picked == "↩️ Uɴᴅᴏ":
             return None, None, "undo"
+        if picked == "⏭ Sᴋɪᴘ":
+            return None, None, False
             
     return picked['chat_id'], picked['title'], False
 

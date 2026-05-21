@@ -75,6 +75,49 @@ def _sc(text: str) -> str:
         "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
     ))
 
+def apply_custom_font(text: str, cv: int) -> str:
+    if cv == 1: return text
+    
+    rounded_map = {
+        'a': 'ᥲ', 'b': 'ᑲ', 'c': 'ᥴ', 'd': 'ძ', 'e': 'ᥱ',
+        'f': 'ᖴ', 'g': 'ɠ', 'h': 'ℎ', 'i': 'Ꭵ', 'j': '𝗃',
+        'k': 'ƙ', 'l': 'ᥣ', 'm': '꧑', 'n': 'ᥒ', 'o': '᥆',
+        'p': 'ρ', 'q': '𝗊', 'r': 'r', 's': '᥉', 't': '𝗍',
+        'u': 'ᥙ', 'v': '᥎', 'w': 'ᥕ', 'x': '᥊', 'y': 'ყ',
+        'z': '𝗓',
+        'A': 'ᥲ', 'B': 'ᑲ', 'C': 'ᥴ', 'D': 'ძ', 'E': 'ᥱ',
+        'F': 'ᖴ', 'G': 'ɠ', 'H': 'ℎ', 'I': 'Ꭵ', 'J': '𝗃',
+        'K': 'ƙ', 'L': 'ᥣ', 'M': '꧑', 'N': 'ᥒ', 'O': '᥆',
+        'P': 'ρ', 'Q': '𝗊', 'R': 'r', 'S': '᥉', 'T': '𝗍',
+        'U': 'ᥙ', 'V': '᥎', 'W': 'ᥕ', 'X': '᥊', 'Y': 'ყ',
+        'Z': '𝗓'
+    }
+
+    res = ""
+    in_tag = False
+    for c in text:
+        if c == '<':
+            in_tag = True
+            res += c
+        elif c == '>':
+            in_tag = False
+            res += c
+        elif in_tag:
+            res += c
+        else:
+            if cv == 2:
+                if 'a' <= c <= 'z':
+                    res += chr(0x1D5EE + ord(c) - ord('a'))
+                elif 'A' <= c <= 'Z':
+                    res += chr(0x1D5E4 + ord(c) - ord('A'))
+                else:
+                    res += c
+            elif cv == 3:
+                res += rounded_map.get(c, c)
+            else:
+                res += c
+    return res
+
 new_share_job = {}
 
 async def _create_share_flow(bot, user_id, force_live=False):
@@ -1128,18 +1171,47 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 return await safe_edit("<i>Process Cancelled.</i>")
             sj['duplicate_handling'] = "yes" if "yes" in (_m12.text or "").lower() else "no"
 
-            # Step 13: Post Format
+            # Step 13: Post Format (Final Report Format)
             _m13 = await _ask(bot, user_id,
-                "<b>❪ STEP 13: POST FORMAT ❫</b>\n\n"
-                "What layout should be used when sending the post to the channel?\n\n"
-                "• <b>Normal Batch:</b> (Story EPS 1-100)\n"
-                "• <b>Missing Episodes:</b> (Special missing episodes template with list)",
-                reply_markup=_RKM([["Normal Batch"], ["Missing Episodes Format"], ["⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+                "<b>❪ STEP 13: FINAL REPORT FORMAT ❫</b>\n\n"
+                "What layout and caption version should be used for the final post?\n\n"
+                "• <b>Version 1 (Default):</b> Standard English/Hindi text.\n"
+                "• <b>Version 2 (𝘼𝘳𝙮𝙖):</b> English only + Arya Premium Buy Link.\n"
+                "• <b>Version 3 (ᥲrყᥲ):</b> English only + Arya Premium Buy Link.\n"
+                "• <b>Missing Episodes:</b> Special missing episodes list format.",
+                reply_markup=_RKM([
+                    ["Version 1 (Default)"], 
+                    ["Version 2 (𝘼𝘳𝙮𝙖)", "Version 3 (ᥲrყᥲ)"], 
+                    ["Missing Episodes Format"], 
+                    ["⛔ Cancel"]
+                ], resize_keyboard=True, one_time_keyboard=True)
             )
             if _is_cancel(_m13):
                 await bot.send_message(user_id, "<i>Process Cancelled.</i>", reply_markup=_RKR())
                 return await safe_edit("<i>Process Cancelled.</i>")
-            sj['post_format'] = "missing" if "missing" in (_m13.text or "").lower() else "normal"
+            
+            ans = (_m13.text or "").strip()
+            if "Missing" in ans:
+                sj['post_format'] = "missing"
+                sj['caption_version'] = 1
+            elif "Version 2" in ans:
+                sj['post_format'] = "normal"
+                sj['caption_version'] = 2
+            elif "Version 3" in ans:
+                sj['post_format'] = "normal"
+                sj['caption_version'] = 3
+            else:
+                sj['post_format'] = "normal"
+                sj['caption_version'] = 1
+
+            if sj['caption_version'] in (2, 3):
+                _m_buy = await _ask(bot, user_id,
+                    "<b>❪ ARYA PREMIUM BUY LINK ❫</b>\n\n"
+                    "Enter the Arya Premium Buy Link for this story:\n"
+                    "<i>(This link will be embedded in the final caption)</i>",
+                    reply_markup=_RKR()
+                )
+                sj['premium_buy_link'] = (_m_buy.text or "").strip()
 
             # ── NOW rebuild buckets with the real batch_size from Step 9 ──
             # The initial bucket building used placeholder batch_size=20.
@@ -1277,6 +1349,9 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 eps_word = "EPS"
                 ep_range = f"{first_ep} - {last_ep}"
             
+            cv = sj.get('caption_version', 1)
+            buy_link = sj.get('premium_buy_link', '#')
+            
             if sj.get('post_format') == "missing":
                 ep_strs = []
                 for b_s, b_e, _ in _buckets_to_use:
@@ -1309,7 +1384,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 row = [c["btn"] for c in chunk[j:j + 2]]
                 keyboard.append(row)
             keyboard.append([
-                InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
+                InlineKeyboardButton(_sc("tutorial"), url=("https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5")),
                 InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
             ])
             for attempt in range(6):
@@ -1457,49 +1532,105 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             bot_link = f"<a href='https://t.me/{bot_usr}'>{p_name}</a>"
             story_sz = _sc(story)
 
-            if sj.get('is_completed'):
-                dm_header  = f"›› {_sc('Hey')} <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
-                ch_header  = f"›› {_sc('Hey Strangers')}\n\n"
+            cv = sj.get('caption_version', 1)
+            buy_link = sj.get('premium_buy_link', '#')
+            time_str = now.strftime('%I:%M %p, %d %b %Y')
 
-                en_body = (
-                    _sc("This ") + story_sz + _sc(" is completed by ") + bot_link +
-                    _sc(". I've tried to ensure accuracy and provided a final report with details. "
+            if sj.get('is_completed'):
+                if cv in (2, 3):
+                    dm_header  = f"›› Hey <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
+                    ch_header  = f"›› Hey Strangers\n\n"
+
+                    en_body = (
+                        f"This {story} is completed by {bot_link}. "
+                        "I've tried to ensure accuracy and provided a final report with details. "
                         "Missing episodes can occur naturally—nothing can be done. "
                         "If 10+ are missing, contact support. Unparsed files are safely mapped "
                         "inside buttons. Duplicates may appear if the source had identically "
                         "named files. I am not responsible for the content as these files are "
-                        "purely forwarded via Arya bot, strictly not scraped.")
-                )
+                        "purely forwarded via Arya bot, strictly not scraped."
+                    )
+                    
+                    en_body += f"\n\nCompleted at: {time_str}\n<a href='{buy_link}'>Buy Now on Arya Premium</a>"
+                    
+                    dm_header = apply_custom_font(dm_header, cv)
+                    ch_header = apply_custom_font(ch_header, cv)
+                    en_body = apply_custom_font(en_body, cv)
+                    hi_body = ""
+                else:
+                    dm_header  = f"›› {_sc('Hey')} <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
+                    ch_header  = f"›› {_sc('Hey Strangers')}\n\n"
 
-                hi_body = (
-                    f"यह {story_sz} {bot_link} द्वारा पूरी की गई है। मैंने सटीकता सुनिश्चित करने का "
-                    "प्रयास किया है और अंतिम रिपोर्ट संलग्न है। गायब एपिसोड स्वाभाविक हैं। "
-                    "अगर 10+ गायब हैं, तो सपोर्ट से संपर्क करें। अनपार्स फ़ाइलें सुरक्षित रूप से "
-                    "बटनों में मैप की गई हैं। डुप्लिकेट फ़ाइलें स्रोत की वजह से हो सकती हैं। मैं "
-                    "सामग्री के लिए जिम्मेदार नहीं हूँ क्योंकि ये फ़ाइलें आर्या बॉट के माध्यम से "
-                    "अग्रेषित हैं, बिल्कुल स्क्रैप नहीं की गई हैं।"
-                )
+                    en_body = (
+                        _sc("This ") + story_sz + _sc(" is completed by ") + bot_link +
+                        _sc(". I've tried to ensure accuracy and provided a final report with details. "
+                            "Missing episodes can occur naturally—nothing can be done. "
+                            "If 10+ are missing, contact support. Unparsed files are safely mapped "
+                            "inside buttons. Duplicates may appear if the source had identically "
+                            "named files. I am not responsible for the content as these files are "
+                            "purely forwarded via Arya bot, strictly not scraped.")
+                    )
 
-                dm_cap = (
-                    f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n"
-                    "<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
-                )
-                ch_cap = (
-                    f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
-                )
+                    hi_body = (
+                        f"यह {story_sz} {bot_link} द्वारा पूरी की गई है। मैंने सटीकता सुनिश्चित करने का "
+                        "प्रयास किया है और अंतिम रिपोर्ट संलग्न है। गायब एपिसोड स्वाभाविक हैं। "
+                        "अगर 10+ गायब हैं, तो सपोर्ट से संपर्क करें। अनपार्स फ़ाइलें सुरक्षित रूप से "
+                        "बटनों में मैप की गई हैं। डुप्लिकेट फ़ाइलें स्रोत की वजह से हो सकती हैं। मैं "
+                        "सामग्री के लिए जिम्मेदार नहीं हूँ क्योंकि ये फ़ाइलें आर्या बॉट के माध्यम से "
+                        "अग्रेषित हैं, बिल्कुल स्क्रैप नहीं की गई हैं।"
+                    )
+                    hi_body += f"\n\nCompleted at: {time_str}"
+
+                if hi_body:
+                    dm_cap = (
+                        f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n"
+                        "<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
+                    )
+                    ch_cap = (
+                        f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
+                    )
+                else:
+                    dm_cap = (
+                        f"<blockquote expandable>{dm_header}{en_body}\n\n"
+                        "<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
+                    )
+                    ch_cap = (
+                        f"<blockquote expandable>{ch_header}{en_body}</blockquote>"
+                    )
 
             else:
-                dm_header  = f"›› {_sc('Hey')} <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
-                ch_header  = f"›› {_sc('Hey Strangers')}\n\n"
-                
-                en_body = _sc("All currently available files have been posted here. "
-                           "New episodes will be added as they arrive. Enjoy and stay tuned!")
-                           
-                hi_body = ("वर्तमान में उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
-                           "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!")
+                if cv in (2, 3):
+                    dm_header  = f"›› Hey <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
+                    ch_header  = f"›› Hey Strangers\n\n"
+                    
+                    en_body = (
+                        "All currently available files have been posted here. "
+                        "New episodes will be added as they arrive. Enjoy and stay tuned!"
+                    )
+                    
+                    en_body += f"\n\nUpdated at: {time_str}\n<a href='{buy_link}'>Buy Now on Arya Premium</a>"
+                    
+                    dm_header = apply_custom_font(dm_header, cv)
+                    ch_header = apply_custom_font(ch_header, cv)
+                    en_body = apply_custom_font(en_body, cv)
+                    hi_body = ""
+                else:
+                    dm_header  = f"›› {_sc('Hey')} <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
+                    ch_header  = f"›› {_sc('Hey Strangers')}\n\n"
+                    
+                    en_body = _sc("All currently available files have been posted here. "
+                               "New episodes will be added as they arrive. Enjoy and stay tuned!")
+                               
+                    hi_body = ("वर्तमान में उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
+                               "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!")
+                    hi_body += f"\n\nUpdated at: {time_str}"
 
-                dm_cap = f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
-                ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
+                if hi_body:
+                    dm_cap = f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
+                    ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
+                else:
+                    dm_cap = f"<blockquote expandable>{dm_header}{en_body}\n\n<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
+                    ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>"
 
             # Send to admin DM — independent of channel
             try:
@@ -1550,6 +1681,11 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     "target_topic_id": sj.get('target_topic_id'),
                     "story": sj['story'],
                     "duplicate_handling": sj.get('duplicate_handling', 'no'),
+                    "caption_version": sj.get('caption_version', 1),
+                    "premium_buy_link": sj.get('premium_buy_link', '#'),
+                    "post_format": sj.get('post_format', 'normal'),
+                    "shortener": sj.get('shortener'),
+                    "font": sj.get('font'),
                     "threshold": sj['live_threshold'],
                     "batch_size": sj.get('batch_size', 10),
                     "buttons_per_post": sj.get('buttons_per_post', 10),

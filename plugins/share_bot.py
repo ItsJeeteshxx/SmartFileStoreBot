@@ -484,16 +484,16 @@ async def _process_start(client, message):
             txt = format_msg(del_tpl, message.from_user).replace("{time}", del_str)
         else:
             txt = (
-                f"<i>‣  Important: {total} file(s) delivered! Due to copyright, all messages "
-                f"will auto-delete after {del_str}. "
+                f"<b>‣ Iᴍᴘᴏʀᴛᴀɴᴛ:</b> <code>{total}</code> <b>ꜰɪʟᴇ(ꜱ) ᴅᴇʟɪᴠᴇʀᴇᴅ!</b>\n\n"
+                f"<i>⚠️ Due to copyright, all messages will auto-delete after <b>{del_str}</b>. "
                 f"To re-access, simply click the same link button again.{fail_note}</i>\n\n"
-                f"<blockquote>💡 <b>Tip:</b> If any files are <b>missing</b> or you need a <b>specific episode</b>, "
-                f"tap <b>S. Chat</b> below. For <b>bot issues</b> or <b>technical problems</b>, "
-                f"use the <b>Arya Help</b> button.</blockquote>"
+                f"<blockquote>💡 <b>Tɪᴘ:</b> If any files are missing or you need a specific episode, "
+                f"tap <b>S. Cʜᴀᴛ</b> below. For bot issues or technical problems, "
+                f"use the <b>Aʀʏᴀ Hᴇʟᴘ</b> button.</blockquote>"
             )
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🆘 Arya Help", url="https://t.me/AryaHelpTG"),
-            InlineKeyboardButton("💬 S. Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
+            InlineKeyboardButton("Aʀʏᴀ Hᴇʟᴘ", url="https://t.me/AryaHelpTG"),
+            InlineKeyboardButton("S. Cʜᴀᴛ", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         notice = await message.reply_text(txt, reply_markup=kb_help)
         asyncio.create_task(
@@ -503,15 +503,15 @@ async def _process_start(client, message):
         suc_tpl = (await db.get_share_bot_text(bot_id, "success_msg") if bot_id else "") or \
                   await db.get_share_text("success_msg", "")
         txt = (format_msg(suc_tpl, message.from_user) if suc_tpl
-               else f"<i>‣  Important: {total} file(s) delivered! Due to copyright, all messages "
-                    f"will auto-delete after 3 hours. "
+               else f"<b>‣ Iᴍᴘᴏʀᴛᴀɴᴛ:</b> <code>{total}</code> <b>ꜰɪʟᴇ(ꜱ) ᴅᴇʟɪᴠᴇʀᴇᴅ!</b>\n\n"
+                    f"<i>⚠️ Due to copyright, all messages will auto-delete after <b>3 hours</b>. "
                     f"To re-access, simply click the same link button again.{fail_note}</i>\n\n"
-                    f"<blockquote>💡 <b>Tip:</b> If any files are <b>missing</b> or you need a <b>specific episode</b>, "
-                    f"tap <b>S. Chat</b> below. For <b>bot issues</b> or <b>technical problems</b>, "
-                    f"use the <b>Arya Help</b> button.</blockquote>")
+                    f"<blockquote>💡 <b>Tɪᴘ:</b> If any files are missing or you need a specific episode, "
+                    f"tap <b>S. Cʜᴀᴛ</b> below. For bot issues or technical problems, "
+                    f"use the <b>Aʀʏᴀ Hᴇʟᴘ</b> button.</blockquote>")
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🆘 Arya Help", url="https://t.me/AryaHelpTG"),
-            InlineKeyboardButton("💬 S. Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
+            InlineKeyboardButton("Aʀʏᴀ Hᴇʟᴘ", url="https://t.me/AryaHelpTG"),
+            InlineKeyboardButton("S. Cʜᴀᴛ", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         await message.reply_text(txt, reply_markup=kb_help)
 
@@ -526,33 +526,55 @@ async def _process_start(client, message):
     
     b_name = client.me.first_name if getattr(client, "me", None) else "this bot"
 
+    pref = await db.get_share_bot_text(bot_id, "donation_lang") if bot_id else "both"
+
+    if pref != "off":
+        en_txt = (
+            f"<blockquote expandable>"
+            f"Thank you for using our service! Your files have been successfully delivered. "
+            f"These links are permanent and never expire — you can simply tap the same button anytime "
+            f"to re-access your files instantly.\n\n"
+            f"If you enjoy our platform and want us to keep delivering amazing stories, "
+            f"please consider supporting us with a small donation. Every contribution helps us maintain "
+            f"our servers and expand our library."
+            f"</blockquote>"
+        )
+        hi_txt = (
+            f"<blockquote expandable>"
+            f"हमारी सेवा का उपयोग करने के लिए आपका धन्यवाद! आपकी फाइलें सुगमता से डिलीवर हो गई हैं। "
+            f"ये लिंक कभी expire नहीं होते — आप भविष्य में कभी भी उसी बटन पर क्लिक करके अपनी फाइलें "
+            f"दोबारा प्राप्त कर सकते हैं।\n\n"
+            f"अगर आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर उत्कृष्ट कहानियाँ "
+            f"लाते रहें, तो कृपया हमें donation देकर support करें। आपका सहयोग हमारे सर्वर "
+            f"और सेवाओं को बेहतर बनाने में अत्यंत सहायक है।"
+            f"</blockquote>"
+        )
+        
+        if pref == "en":
+            don_body = en_txt
+        elif pref == "hi":
+            don_body = hi_txt
+        else:
+            don_body = en_txt + hi_txt
+    else:
+        don_body = ""
+
     thank_txt = (
         f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n\n"
         f"<b>‣ {total} file(s) sent successfully!</b>\n"
         f"<b>‣</b> Total delivered by {b_name}: <b>{grand_total:,}</b> files\n\n"
-        f"<blockquote expandable>"
-        f"Thank you for using our service! Your files have been successfully delivered. "
-        f"These links are permanent and never expire — you can simply tap the same button anytime "
-        f"to re-access your files instantly.\n\n"
-        f"If you enjoy our platform and want us to keep delivering amazing stories, "
-        f"please consider supporting us with a small donation. Every contribution helps us maintain "
-        f"our servers and expand our library."
-        f"</blockquote>"
-        f"<blockquote expandable>"
-        f"हमारी सेवा का उपयोग करने के लिए आपका धन्यवाद! आपकी फाइलें सुगमता से डिलीवर हो गई हैं। "
-        f"ये लिंक कभी expire नहीं होते — आप भविष्य में कभी भी उसी बटन पर क्लिक करके अपनी फाइलें "
-        f"दोबारा प्राप्त कर सकते हैं।\n\n"
-        f"अगर आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर उत्कृष्ट कहानियाँ "
-        f"लाते रहें, तो कृपया हमें donation देकर support करें। आपका सहयोग हमारे सर्वर "
-        f"और सेवाओं को बेहतर बनाने में अत्यंत सहायक है।"
-        f"</blockquote>"
+        f"{don_body}"
     )
-    donate_btn = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("💳 " + _sc("Support via UPI"), callback_data="sbd#donate"),
-            InlineKeyboardButton("💎 " + _sc("Razorpay"), callback_data="sbd#razorpay")
-        ]
-    ])
+    
+    if pref != "off":
+        donate_btn = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(_sc("Support via UPI"), callback_data="sbd#donate"),
+                InlineKeyboardButton(_sc("Razorpay"), callback_data="sbd#razorpay")
+            ]
+        ])
+    else:
+        donate_btn = None
     try:
         await message.reply_text(thank_txt, reply_markup=donate_btn)
     except Exception as _te:
@@ -756,25 +778,25 @@ async def _process_delivery_button(client, query):
     elif cmd == "donate":
         await query.answer()
         sup_text = (
-            f"<b>💖 " + _sc("support arya bot") + "</b>\n\n"
+            f"<blockquote>💖 <b>" + _sc("support arya bot") + "</b>\n\n"
             f"<i>Your support keeps our servers running and allows us to deliver uninterrupted, high-quality content.</i>\n\n"
             f"<b>💳 " + _sc("direct upi details:") + "</b>\n"
             f"<b>‣  " + _sc("upi id:") + "</b>  <code>heyjeetx@naviaxis</code>\n"
             f"<b>‣  " + _sc("name:") + "</b>  Jeetesh Meena\n\n"
-            f"<b>" + _sc("please choose an amount below to generate a direct payment qr code!") + "</b>"
+            f"<b>" + _sc("please choose an amount below to generate a direct payment qr code!") + "</b></blockquote>"
         )
         buttons = [
             [
-                InlineKeyboardButton("💸 ₹50", callback_data="sbd#pay_upi#50"),
-                InlineKeyboardButton("💸 ₹100", callback_data="sbd#pay_upi#100"),
-                InlineKeyboardButton("💸 ₹200", callback_data="sbd#pay_upi#200")
+                InlineKeyboardButton("₹50", callback_data="sbd#pay_upi#50"),
+                InlineKeyboardButton("₹100", callback_data="sbd#pay_upi#100"),
+                InlineKeyboardButton("₹200", callback_data="sbd#pay_upi#200")
             ],
             [
-                InlineKeyboardButton("💸 ₹500", callback_data="sbd#pay_upi#500"),
-                InlineKeyboardButton("📝 " + _sc("custom amount"), callback_data="sbd#pay_upi#custom")
+                InlineKeyboardButton("₹500", callback_data="sbd#pay_upi#500"),
+                InlineKeyboardButton(_sc("custom amount"), callback_data="sbd#pay_upi#custom")
             ],
             [
-                InlineKeyboardButton("💎 " + _sc("pay via razorpay"), callback_data="sbd#razorpay")
+                InlineKeyboardButton(_sc("pay via razorpay"), callback_data="sbd#razorpay")
             ]
         ]
         try:
@@ -812,7 +834,7 @@ async def _process_delivery_button(client, query):
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_uri}"
         
         buttons = [
-            [InlineKeyboardButton("💎 " + _sc("pay via razorpay instead"), callback_data="sbd#razorpay")]
+            [InlineKeyboardButton(_sc("pay via razorpay instead"), callback_data="sbd#razorpay")]
         ]
         
         try:
@@ -827,23 +849,23 @@ async def _process_delivery_button(client, query):
         rz_key = Config.RAZORPAY_KEY
         # Show amount selection panel
         rz_txt = (
-            f"<b>💎 " + _sc("support via razorpay") + "</b>\n\n"
+            f"<blockquote><b>" + _sc("support via razorpay") + "</b>\n\n"
             f"<i>Cards, Net Banking, UPI, Wallets — all accepted!\n"
             f"International payments also supported.</i>\n\n"
-            f"<b>" + _sc("select an amount to generate your payment link:") + "</b>"
+            f"<b>" + _sc("select an amount to generate your payment link:") + "</b></blockquote>"
         )
         rz_btns = [
             [
-                InlineKeyboardButton("💎 ₹49",  callback_data="sbd#pay_rzp#49"),
-                InlineKeyboardButton("💎 ₹99",  callback_data="sbd#pay_rzp#99"),
-                InlineKeyboardButton("💎 ₹199", callback_data="sbd#pay_rzp#199"),
+                InlineKeyboardButton("₹49",  callback_data="sbd#pay_rzp#49"),
+                InlineKeyboardButton("₹99",  callback_data="sbd#pay_rzp#99"),
+                InlineKeyboardButton("₹199", callback_data="sbd#pay_rzp#199"),
             ],
             [
-                InlineKeyboardButton("💎 ₹499", callback_data="sbd#pay_rzp#499"),
-                InlineKeyboardButton("💎 ₹999", callback_data="sbd#pay_rzp#999"),
-                InlineKeyboardButton("📝 " + _sc("custom"), callback_data="sbd#pay_rzp#custom"),
+                InlineKeyboardButton("₹499", callback_data="sbd#pay_rzp#499"),
+                InlineKeyboardButton("₹999", callback_data="sbd#pay_rzp#999"),
+                InlineKeyboardButton(_sc("custom"), callback_data="sbd#pay_rzp#custom"),
             ],
-            [InlineKeyboardButton("💳 " + _sc("upi instead"), callback_data="sbd#donate")],
+            [InlineKeyboardButton(_sc("upi instead"), callback_data="sbd#donate")],
         ]
         try:
             await client.send_message(query.from_user.id, rz_txt, reply_markup=InlineKeyboardMarkup(rz_btns))
@@ -924,15 +946,14 @@ async def _process_delivery_button(client, query):
             link_id  = data["id"]
 
             link_txt = (
-                f"<b>💎 " + _sc("your razorpay payment link") + "</b>\n\n"
-                f"<b>" + _sc("amount:") + "</b>  <code>₹{amount}</code>\n"
-                f"<b>" + _sc("link id:") + "</b>  <code>{link_id}</code>\n\n"
-                f"<b>🔗 <a href='{pay_url}'>Tap here to pay ₹{amount}</a></b>\n\n"
+                f"<blockquote><b>" + _sc("your razorpay payment link") + "</b>\n\n"
+                f"<b>‣ " + _sc("amount:") + "</b>  <code>₹{amount}</code>\n"
+                f"<b>‣ " + _sc("link id:") + "</b>  <code>{link_id}</code>\n\n"
                 f"<i>✅ Cards, Net Banking, UPI, Wallets accepted.\n"
-                f"This link is valid for 24 hours and is unique to you.</i>"
+                f"This link is valid for 24 hours and is unique to you.</i></blockquote>"
             )
             btn = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"💎 Pay ₹{amount}", url=pay_url)
+                InlineKeyboardButton(f"Pay ₹{amount}", url=pay_url)
             ]])
             await gen_msg.delete()
             await client.send_message(uid, link_txt, reply_markup=btn)

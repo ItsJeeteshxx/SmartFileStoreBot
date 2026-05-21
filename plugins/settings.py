@@ -355,7 +355,7 @@ async def owners_cb(bot, query):
             "<b><u>👑 Owner / Admin Control Panel</u></b>\n\n"
             f"<b>Primary Owners:</b> {len(primary)}  |  <b>Co-Owners:</b> {len(co)}\n\n"
             f"<b>Global User Limits:</b>\n"
-            f"  Live Jobs: <code>{limits.get('max_live_jobs', 65)}</code>  "
+            f"  Live Jobs: <code>{limits.get('max_live_jobs', 45)}</code>  "
             f"Multi Jobs: <code>{limits.get('max_multi_jobs', 2)}</code>\n"
             f"  Merge Jobs: <code>{limits.get('max_merge_jobs', 1)}</code>  "
             f"Accounts: <code>{limits.get('max_accounts', 2)}</code>\n\n"
@@ -982,6 +982,7 @@ async def settings_query(bot, query):
               InlineKeyboardButton('Dᴇʟᴇᴛᴇ Msɢ',      callback_data=f"settings#sb_set_delete_{b_id}"),
               InlineKeyboardButton('Sᴜᴄᴄᴇss Msɢ',    callback_data=f"settings#sb_set_success_{b_id}"),
           ],
+          [InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}")],
           [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_set_caption_{b_id}")],
           [InlineKeyboardButton('Aᴜᴛᴏ-Dᴇʟᴇᴛᴇ', callback_data=f"settings#sb_set_autodel_{b_id}"),
            InlineKeyboardButton('Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',  callback_data=f"settings#sb_fsub_{b_id}")],
@@ -1001,6 +1002,32 @@ async def settings_query(bot, query):
           "<i>All settings below are specific to this bot.</i>",
           reply_markup=InlineKeyboardMarkup(buttons)
       )
+
+  elif type.startswith("sb_donation_"):
+      b_id = type.split("sb_donation_")[1]
+      pref = await db.get_share_bot_text(b_id, "donation_lang") or "both"
+      
+      def _mark(val): return "✅ " if pref == val else ""
+      
+      buttons = [
+          [InlineKeyboardButton(f"{_mark('both')}Both (En + Hi)", callback_data=f"settings#sb_set_don_{b_id}_both")],
+          [InlineKeyboardButton(f"{_mark('en')}English Only", callback_data=f"settings#sb_set_don_{b_id}_en"),
+           InlineKeyboardButton(f"{_mark('hi')}Hindi Only", callback_data=f"settings#sb_set_don_{b_id}_hi")],
+          [InlineKeyboardButton(f"{_mark('off')}Turn OFF", callback_data=f"settings#sb_set_don_{b_id}_off")],
+          [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      await query.message.edit_text(
+          "<b>💖 Dᴏɴᴀᴛɪᴏɴ Mᴇssᴀɢᴇ Sᴇᴛᴛɪɴɢs</b>\n\nChoose the language format for the post-delivery donation message, or turn it off entirely.",
+          reply_markup=InlineKeyboardMarkup(buttons)
+      )
+
+  elif type.startswith("sb_set_don_"):
+      parts = type.split("_")
+      b_id = parts[3]
+      val = parts[4]
+      await db.set_share_bot_text(b_id, "donation_lang", val)
+      query.data = f"settings#sb_donation_{b_id}"
+      return await settings_query(bot, query)
 
   elif type.startswith("sb_wa_"):
       b_id = type.split("sb_wa_")[1]

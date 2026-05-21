@@ -331,13 +331,14 @@ async def market_callback(client, query):
             await _safe_answer(query)
             page = int(cmd.replace("fb_panel_", ""))
             items_pp = 8
-            total = await db.db.premium_feedback.count_documents({})
+            filter_query = {"text": {"$not": {"$regex": "^\\[REQUEST\\]", "$options": "i"}}}
+            total = await db.db.premium_feedback.count_documents(filter_query)
             total_pages = max(1, (total + items_pp - 1) // items_pp)
             if page >= total_pages: page = total_pages - 1
             if page < 0: page = 0
-            fbs = await db.db.premium_feedback.find({}).sort("created_at", -1).skip(page * items_pp).limit(items_pp).to_list(length=items_pp)
-            open_c = await db.db.premium_feedback.count_documents({"status": "open"})
-            solved_c = await db.db.premium_feedback.count_documents({"status": "solved"})
+            fbs = await db.db.premium_feedback.find(filter_query).sort("created_at", -1).skip(page * items_pp).limit(items_pp).to_list(length=items_pp)
+            open_c = await db.db.premium_feedback.count_documents(dict(filter_query, status="open"))
+            solved_c = await db.db.premium_feedback.count_documents(dict(filter_query, status="solved"))
             kb = []
             for fb in fbs:
                 fb_id = str(fb['_id'])
@@ -1703,12 +1704,23 @@ async def _fb_reply_flow(client, user_id, fb_id: str, target_uid: int):
     # Determine which seller bot client belongs to this feedback
     bot_id = fb.get("bot_id")
     seller_cli = None
-    if bot_id:
-        try:
-            from plugins.userbot.market_seller import market_clients
+    try:
+        from plugins.userbot.market_seller import market_clients
+        if bot_id and str(bot_id) in market_clients:
             seller_cli = market_clients.get(str(bot_id))
-        except Exception:
-            pass
+        else:
+            # Try resolving from user's bot_ids
+            user_doc = await db.db.users.find_one({"id": int(target_uid)})
+            if user_doc and user_doc.get("bot_ids"):
+                for bid in user_doc["bot_ids"]:
+                    if str(bid) in market_clients:
+                        seller_cli = market_clients[str(bid)]
+                        break
+        # Fallback to first available seller client
+        if not seller_cli and market_clients:
+            seller_cli = list(market_clients.values())[0]
+    except Exception as e:
+        logger.error(f"Failed to find seller bot for {target_uid} in _fb_reply_flow: {e}")
 
     if not seller_cli:
         # Can't reach user without the seller bot — warn admin

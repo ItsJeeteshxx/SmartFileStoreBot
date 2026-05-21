@@ -836,17 +836,30 @@ async def submit_support(
         from AryaPremium.config import Config
         import aiohttp
         
-        admin_txt = (
-            f"<b>ðŸ“¨ New Feedback from Mini App</b>\n"
-            f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
-            f"<b>ðŸ‘¤ User:</b> {first_name}\n"
-            f"<b>ðŸ”— Username:</b> @{username}\n"
-            f"<b>ðŸ†” User ID:</b> <code>{telegram_id}</code>\n"
-            f"<b>ðŸ’¬ Type:</b> {type.title()}\n"
-            f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
-            f"<b>Message:</b>\n"
-            f"<blockquote>{message[:800]}</blockquote>"
-        )
+        if type == "request":
+            admin_txt = (
+                f"<b>📝 New Story Request from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>👤 User:</b> {first_name}\n"
+                f"<b>🔗 Username:</b> @{username}\n"
+                f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
+                f"<b>💬 Type:</b> Story Request\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Details:</b>\n"
+                f"<blockquote>{message[:800]}</blockquote>"
+            )
+        else:
+            admin_txt = (
+                f"<b>📨 New Feedback from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>👤 User:</b> {first_name}\n"
+                f"<b>🔗 Username:</b> @{username}\n"
+                f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
+                f"<b>💬 Type:</b> {type.title()}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Message:</b>\n"
+                f"<blockquote>{message[:800]}</blockquote>"
+            )
         
         token = Config.MGMT_BOT_TOKEN
         if token and Config.OWNER_IDS:
@@ -903,7 +916,10 @@ async def get_my_requests(telegram_id: str):
     
     try:
         user_id = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        cursor = arya_db.db.premium_feedback.find({"user_id": user_id}).sort("created_at", -1)
+        cursor = arya_db.db.premium_feedback.find({
+            "user_id": user_id,
+            "text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}
+        }).sort("created_at", -1)
         
         requests = []
         async for doc in cursor:
@@ -1332,7 +1348,10 @@ async def get_admin_support(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        cursor = arya_db.db.premium_feedback.find({"status": {"$ne": "resolved"}}).sort("created_at", -1).limit(100)
+        cursor = arya_db.db.premium_feedback.find({
+            "status": {"$ne": "resolved"},
+            "text": {"$not": {"$regex": "^\\[REQUEST\\]", "$options": "i"}}
+        }).sort("created_at", -1).limit(100)
         tickets = []
         async for doc in cursor:
             tickets.append({
@@ -1419,9 +1438,31 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
         )
         # Optionally notify user
         if data.reply_text:
-            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            token = None
+            try:
+                user_doc = await arya_db.db.users.find_one({"id": int(doc["user_id"])})
+                if user_doc and user_doc.get("bot_ids"):
+                    for bid in user_doc["bot_ids"]:
+                        bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                        if bot_doc and bot_doc.get("token"):
+                            token = bot_doc["token"]
+                            break
+            except Exception as e:
+                logger.error(f"Failed to resolve seller bot token: {e}")
+            
+            if not token:
+                try:
+                    bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
+                    if bot_doc:
+                        token = bot_doc["token"]
+                except Exception:
+                    pass
+            
+            if not token:
+                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            
             if token and doc.get("user_id"):
-                status_emoji = {"open": "ðŸŸ¡", "in_progress": "ðŸ”µ", "completed": "âœ…", "rejected": "âŒ"}.get(data.status, "ðŸ“¢")
+                status_emoji = {"open": "🟡", "in_progress": "🔵", "completed": "✅", "rejected": "❌"}.get(data.status, "📢")
                 try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
@@ -1460,8 +1501,30 @@ async def reply_support(data: SupportReply):
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
-        # Determine which bot token to use (management bot preferred)
-        token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+        # Determine which bot token to use (seller bot preferred, fallback to config)
+        token = None
+        try:
+            user_doc = await arya_db.db.users.find_one({"id": int(ticket["user_id"])})
+            if user_doc and user_doc.get("bot_ids"):
+                for bid in user_doc["bot_ids"]:
+                    bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                    if bot_doc and bot_doc.get("token"):
+                        token = bot_doc["token"]
+                        break
+        except Exception as e:
+            logger.error(f"Failed to resolve seller bot token: {e}")
+            
+        if not token:
+            try:
+                bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
+                if bot_doc:
+                    token = bot_doc["token"]
+            except Exception:
+                pass
+
+        if not token:
+            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+
         if token:
             async with aiohttp.ClientSession() as session:
                 chat_id = ticket["user_id"]
@@ -1761,6 +1824,27 @@ async def get_admin_buyers(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
+        # Auto-expire pending/processing bot checkouts and orders older than 7 minutes
+        from datetime import timedelta
+        expiry_threshold = datetime.now(timezone.utc) - timedelta(minutes=7)
+        try:
+            await arya_db.db.premium_checkout.update_many(
+                {
+                    "status": {"$in": ["pending_gateway", "pending"]},
+                    "created_at": {"$lt": expiry_threshold}
+                },
+                {"$set": {"status": "failed"}}
+            )
+            await arya_db.db.orders.update_many(
+                {
+                    "status": "pending",
+                    "created_at": {"$lt": expiry_threshold}
+                },
+                {"$set": {"status": "failed"}}
+            )
+        except Exception as e:
+            logger.error(f"Failed to auto-expire checkouts: {e}")
+
         # Fetch all recent checkouts (Bot) and orders (MiniApp) and merge by User
         buyers_map = {}
         
@@ -1796,8 +1880,16 @@ async def get_admin_buyers(telegram_id: str):
                 }
             
             story_id = c.get("story_id")
-            story = await arya_db.db.premium_stories.find_one({"_id": story_id}) if story_id else None
-            sname = story.get("story_name_en", "Deleted Story") if story else "Deleted Story"
+            story = None
+            if story_id:
+                try:
+                    from bson.objectid import ObjectId
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(story_id))})
+                except Exception:
+                    pass
+                if not story:
+                    story = await arya_db.db.premium_stories.find_one({"story_id": str(story_id)})
+            sname = story.get("story_name_en", str(story_id)) if story else (str(story_id) if story_id else "Deleted Story")
             amt = c.get("amount", 0)
             try: amt = float(amt)
             except: amt = 0
@@ -1853,11 +1945,18 @@ async def get_admin_buyers(telegram_id: str):
                 
             story_names = []
             for sid in story_ids:
-                story = await arya_db.db.premium_stories.find_one({"story_id": sid}, {"story_name_en": 1})
+                story = None
+                try:
+                    from bson.objectid import ObjectId
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))}, {"story_name_en": 1})
+                except Exception:
+                    pass
+                if not story:
+                    story = await arya_db.db.premium_stories.find_one({"story_id": str(sid)}, {"story_name_en": 1})
                 if story:
-                    story_names.append(story.get("story_name_en", sid))
+                    story_names.append(story.get("story_name_en", str(sid)))
                 else:
-                    story_names.append(sid)
+                    story_names.append(str(sid))
             
             date_str = doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))

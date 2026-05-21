@@ -157,6 +157,22 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             await db.save_share_link(uuid_str, mids, job["source"], protect=protect, access_hash=None)
             url = f"https://t.me/{bot_usr}?start={uuid_str}"
             
+            shortener = job.get("shortener")
+            if shortener:
+                try:
+                    import aiohttp
+                    s_apis = await db.get_shortener_apis()
+                    api_key = s_apis.get(shortener)
+                    if api_key:
+                        s_url = f"https://{shortener}.com/api?api={api_key}&url={url}"
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(s_url) as resp:
+                                data = await resp.json()
+                                if data.get("status") == "success":
+                                    url = data["shortenedUrl"]
+                except Exception as e:
+                    logger.error(f"Error shortening url in live batch: {e}")
+            
             raw_buttons.append({
                 "text": _sc(btn_text),
                 "url": url,
@@ -189,15 +205,34 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             v_ends   = [b["ep_end"] for b in block if str(b["ep_end"]).isdigit()]
             first_ep = min(v_starts) if v_starts else "?"
             last_ep  = max(v_ends) if v_ends else "?"
-            txt = f"{_bold_sans(job['story'])} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
+            from plugins.utils import to_custom_font
+            font_style = job.get('font', 'Default')
+            cv = job.get('caption_version', 1)
+            buy_link = job.get('premium_buy_link', '#')
+            
+            if font_style == "Default":
+                story_text = _bold_sans(job['story'])
+                eps_word = "𝗘𝗣𝗦"
+                ep_range = f"{first_ep} - {last_ep}"
+            elif font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+                story_text = to_custom_font(job['story'], font_style)
+                eps_word = to_custom_font("EPS", font_style)
+                ep_range = to_custom_font(f"{first_ep} - {last_ep}", font_style)
+            else:
+                story_text = font_style
+                eps_word = "EPS"
+                ep_range = f"{first_ep} - {last_ep}"
+
+            txt = f"{story_text} {eps_word} {ep_range}"
             
             keyboard = []
             for j in range(0, len(block), 2):
                 row = [InlineKeyboardButton(c["text"], url=c["url"]) for c in block[j:j+2]]
                 keyboard.append(row)
                 
+            tutorial_link = "https://t.me/StoriesLinkopningguide/21" if job.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
             keyboard.append([
-                InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
+                InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
                 InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
             ])
             
