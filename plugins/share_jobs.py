@@ -30,10 +30,12 @@ def to_custom_font(text: str, style: str) -> str:
         elif style == "𝑨𝒍𝒕𝒂𝒊𝒓":
             if 'a' <= c <= 'z': res += chr(0x1D482 + ord(c) - ord('a'))
             elif 'A' <= c <= 'Z': res += chr(0x1D468 + ord(c) - ord('A'))
+            elif '0' <= c <= '9': res += chr(0x1D7CE + ord(c) - ord('0'))
             else: res += c
         elif style == "𝐋𝐔𝐃":
             if 'a' <= c <= 'z': res += chr(0x1D41A + ord(c) - ord('a'))
             elif 'A' <= c <= 'Z': res += chr(0x1D400 + ord(c) - ord('A'))
+            elif '0' <= c <= '9': res += chr(0x1D7EC + ord(c) - ord('0'))
             else: res += c
         else:
             res += c
@@ -1215,7 +1217,11 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 if api_key:
                     try:
                         import aiohttp
-                        async with aiohttp.ClientSession() as session:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "application/json, text/plain, */*"
+                        }
+                        async with aiohttp.ClientSession(headers=headers) as session:
                             domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.com"
                             api_url = f"https://{domain}/api?api={api_key}&url={url}"
                             async with session.get(api_url, timeout=10) as resp:
@@ -1226,14 +1232,6 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                         logger.error(f"Error shortening url: {e}")
                         
             btn_text = str(b_s) if (b_s == b_e or batch_size == 1) else f"{b_s}–{b_e}"
-            font_style = sj.get('font', 'Default')
-            if font_style != "Default":
-                if font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
-                    prefix = to_custom_font(sj['story'], font_style)
-                else:
-                    prefix = font_style
-                btn_text = f"{prefix} {btn_text}"
-
             raw_buttons.append({
                 "btn":      InlineKeyboardButton(_sc(btn_text), url=url),
                 "ep_start": b_s,
@@ -1263,12 +1261,31 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     else:
                         res += c
                 return res
+
+            font_style = sj.get('font', 'Default')
+            if font_style == "Default":
+                story_text = _bold_sans(story)
+                eps_word = "𝗘𝗣𝗦"
+                ep_range = f"{first_ep} - {last_ep}"
+            elif font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+                story_text = to_custom_font(story, font_style)
+                eps_word = to_custom_font("EPS", font_style)
+                ep_range = to_custom_font(f"{first_ep} - {last_ep}", font_style)
+            else:
+                # Custom prefix entered by user
+                story_text = font_style
+                eps_word = "EPS"
+                ep_range = f"{first_ep} - {last_ep}"
             
             if sj.get('post_format') == "missing":
                 ep_strs = []
                 for b_s, b_e, _ in _buckets_to_use:
                     if b_s == "Extra": continue
-                    ep_strs.append(f"• {b_s}" if b_s == b_e else f"• {b_s}-{b_e}")
+                    if font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+                        lbl = to_custom_font(str(b_s), font_style) if b_s == b_e else f"{to_custom_font(str(b_s), font_style)}-{to_custom_font(str(b_e), font_style)}"
+                    else:
+                        lbl = f"{b_s}" if b_s == b_e else f"{b_s}-{b_e}"
+                    ep_strs.append(f"• {lbl}")
                 
                 # Split roughly to line wrap nicely
                 formatted_eps = ""
@@ -1278,14 +1295,14 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 formatted_eps = formatted_eps.strip()
 
                 txt = (
-                    f"👉🏻 {_bold_sans(story)} (English) •\n"
-                    f"<blockquote expandable>{_bold_sans(story)} Missing Episode\n"
+                    f"👉🏻 {story_text} (English) •\n"
+                    f"<blockquote expandable>{story_text} Missing Episode\n"
                     f"{formatted_eps}</blockquote>\n"
                     f"<blockquote expandable>Note :\n"
                     f"Comment Below 👇 I'll Add Missing Episodes As Soon As Possible</blockquote>"
                 )
             else:
-                txt = f"{_bold_sans(story)} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
+                txt = f"{story_text} {eps_word} {ep_range}"
 
             keyboard = []
             for j in range(0, len(chunk), 2):
