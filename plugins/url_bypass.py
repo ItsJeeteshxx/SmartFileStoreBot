@@ -8,6 +8,7 @@ from pyrogram.types import (
     KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
 from database import db
+from plugins.owner_utils import require_feature
 
 logger = logging.getLogger(__name__)
 PM = enums.ParseMode.HTML
@@ -331,6 +332,7 @@ async def _run_bypass(bot, user_id, chat_id, ub, queue, ch_title='Channel'):
 
 # ── Entry points ──────────────────────────────────────────────────────────────
 @Client.on_callback_query(filters.regex(r'^ub#bypass$'))
+@require_feature("url_bypass")
 async def bypass_cb(bot, query):
     await query.answer()
     user_id = query.from_user.id
@@ -340,6 +342,7 @@ async def bypass_cb(bot, query):
     await _bypass_flow(bot, user_id, chat_id)
 
 @Client.on_message(filters.private & filters.command('bypass'))
+@require_feature("url_bypass")
 async def bypass_cmd(bot, message):
     await _bypass_flow(bot, message.from_user.id, message.chat.id)
 

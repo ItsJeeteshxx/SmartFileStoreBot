@@ -70,6 +70,8 @@ FEATURE_LABELS = {
     "merger":      "Mᴇʀɢᴇʀ",
     "cleaner":     "Cʟᴇᴀɴᴇʀ",
     "batch_links": "Bᴀᴛᴄʜ Lɪɴᴋs",
+    "url_bypass":  "Uʀʟ Bʏᴘᴀss",
+    "normal_fwd":  "Nᴏʀᴍᴀʟ Fᴏʀᴡᴀʀᴅ",
 }
 
 _DISABLED_MSG = (

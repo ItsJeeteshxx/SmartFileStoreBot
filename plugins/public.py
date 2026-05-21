@@ -10,6 +10,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.errors.exceptions.not_acceptable_406 import ChannelPrivate as PrivateChat
 from pyrogram.errors.exceptions.bad_request_400 import ChannelInvalid, ChatAdminRequired, UsernameInvalid, UsernameNotModified, ChannelPrivate
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from plugins.owner_utils import require_feature
  
 #===================Run Function===================#
 @Client.on_message(filters.private & filters.command("sysmode"))
@@ -50,6 +51,7 @@ async def sysmode_cmd(bot, message):
 #===================Run Function===================#
 
 @Client.on_message(filters.private & filters.command(["fwd", "forward"]))
+@require_feature("normal_fwd")
 async def run(bot, message):
     buttons = []
     btn_data = {}
