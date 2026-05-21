@@ -1222,7 +1222,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                             "Accept": "application/json, text/plain, */*"
                         }
                         async with aiohttp.ClientSession(headers=headers) as session:
-                            domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.com"
+                            domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.io"
                             api_url = f"https://{domain}/api?api={api_key}&url={url}"
                             async with session.get(api_url, timeout=10) as resp:
                                 data = await resp.json()
