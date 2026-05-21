@@ -734,8 +734,14 @@ class Database:
     async def get_global_user_limits(self) -> dict:
         """Returns global defaults applied to non-owner users."""
         doc = await self.stats.find_one({'_id': 'global_user_limits'})
-        return doc or {'max_live_jobs': 3, 'max_multi_jobs': 2,
-                       'max_merge_jobs': 1, 'max_accounts': 5}
+        defaults = {'max_live_jobs': 65, 'max_multi_jobs': 2,
+                    'max_merge_jobs': 1, 'max_accounts': 5}
+        if not doc:
+            return defaults
+        res = {**defaults, **doc}
+        if res.get('max_live_jobs', 0) <= 45:
+            res['max_live_jobs'] = 65
+        return res
 
     async def set_global_user_limits(self, **kwargs):
         await self.stats.update_one(
@@ -764,6 +770,17 @@ class Database:
         await self.col.update_one(
             {'_id': user_id},
             {'$unset': {'limits': ''}}
+        )
+
+    async def get_shortener_apis(self) -> dict:
+        doc = await self.db.config.find_one({"_id": "shortener_apis"})
+        return doc or {"_id": "shortener_apis", "arolinks": "", "urlshortx": ""}
+
+    async def update_shortener_apis(self, key: str, val: str):
+        await self.db.config.update_one(
+            {"_id": "shortener_apis"},
+            {"$set": {key: val}},
+            upsert=True
         )
 
 

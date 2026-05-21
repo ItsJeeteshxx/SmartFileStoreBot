@@ -532,7 +532,15 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
         # Audio concatenation with different formats (mp3 + m4a) must be re-encoded to prevent truncation.
         # We enforce re-encode if it's an audio merge with multiple files, or if make_video is True.
         # Video merges (mtype == "video") with make_video == False can safely use lossless concat demuxer.
-        needs_reencode = bool(atempo) or make_video or (mtype == "audio" and len(file_list) > 1 and is_chunk)
+        # We also enforce re-encode if any of the audio files has a different extension (e.g. m4a, ogg, wav, flac).
+        target_ext = ".mp3" if mtype == "audio" else ".mp4"
+        has_different_format = any(not p.lower().endswith(target_ext) for p in file_list)
+        needs_reencode = (
+            bool(atempo) or 
+            make_video or 
+            (mtype == "audio" and has_different_format) or
+            (mtype == "audio" and len(file_list) > 1 and is_chunk)
+        )
 
 
         if not needs_reencode:
@@ -752,9 +760,23 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             for p in file_list:
                 cmd2 += ["-i", os.path.abspath(p)]
             n = len(file_list)
-            fc = "".join(f"[{i}:a]" for i in range(n)) + f"concat=n={n}:v=0:a=1[a1]"
-            if atempo:
-                fc += f";[a1]{atempo}[a2]"
+            
+            # Normalize each input audio stream to 48000Hz and stereo before concatenation
+            if n == 1:
+                fc = f"[0:a]aformat=sample_rates=48000:channel_layouts=stereo[a1]"
+                if atempo:
+                    fc += f";[a1]{atempo}[a2]"
+            else:
+                fc_parts = []
+                for i in range(n):
+                    fc_parts.append(f"[{i}:a]aformat=sample_rates=48000:channel_layouts=stereo[a_norm{i}]")
+                
+                concat_inputs = "".join(f"[a_norm{i}]" for i in range(n))
+                fc_parts.append(f"{concat_inputs}concat=n={n}:v=0:a=1[a1]")
+                
+                fc = ";".join(fc_parts)
+                if atempo:
+                    fc += f";[a1]{atempo}[a2]"
             map_lbl = "[a2]" if atempo else "[a1]"
 
             if cover and os.path.exists(cover):
@@ -875,15 +897,19 @@ async def _run_job(jid, uid, bot):
             return
         # ──────────────────────────────────────────────────────────────────────
 
-        start_id   = job["start_id"]
-        end_id     = job["end_id"]
-        out_name   = job.get("output_name", "merged")
-        metadata   = job.get("metadata", {}) or {}
-        dest_chats = job.get("dest_chats", [])
-        mtype      = job.get("merge_type", "audio")
-        speed      = float(job.get("speed", 1.0))
-        make_video = bool(job.get("make_video", False))
-        upload_to_yt = bool(job.get("upload_to_yt", False))
+        start_id   = job.get("start_id")
+        end_id     = job.get("end_id")
+        out_name   = job.get("output_name") or "merged"
+        metadata   = job.get("metadata") or {}
+        dest_chats = job.get("dest_chats") or []
+        mtype      = job.get("merge_type") or "audio"
+        try:
+            speed_val = job.get("speed")
+            speed = float(speed_val) if speed_val is not None else 1.0
+        except (TypeError, ValueError):
+            speed = 1.0
+        make_video = bool(job.get("make_video"))
+        upload_to_yt = bool(job.get("upload_to_yt"))
 
         await _db_up(jid, status="queued", error="", created_at=time.time())
 
@@ -1726,7 +1752,10 @@ async def _run_job(jid, uid, bot):
                 # We do NOT extract numbers from filenames (that caused "Episode 3" everywhere).
                 # Instead, we assign episode numbers sequentially: start_epi, start_epi+1, ...
                 yt_timestamps = ""
-                seq_epi = int(start_epi) if start_epi is not None else 1
+                try:
+                    seq_epi = int(start_epi) if (start_epi is not None and str(start_epi).strip().isdigit()) else 1
+                except (ValueError, TypeError):
+                    seq_epi = 1
                 total_epi_count = seq_epi  # track last for description
 
                 for tc, original_name, _ in log_entries:
@@ -1754,7 +1783,8 @@ async def _run_job(jid, uid, bot):
                     title=title,
                     description=desc,
                     privacy_status="private",
-                    thumbnail_path=yt_thumb_custom
+                    thumbnail_path=yt_thumb_custom,
+                    channel_id=job.get("yt_channel_id")
                 )
                 
                 if success:
@@ -2032,9 +2062,11 @@ async def mg_cb(bot, query):
             log_entries = job.get("log_entries", [])
             start_epi = job.get("yt_start_epi")
             title = job.get("yt_title") or job.get("output_name") or "Untitled"
-            # Rebuild timestamps sequentially
             yt_timestamps = ""
-            seq_epi = int(start_epi) if start_epi is not None else 1
+            try:
+                seq_epi = int(start_epi) if (start_epi is not None and str(start_epi).strip().isdigit()) else 1
+            except (ValueError, TypeError):
+                seq_epi = 1
             total_epi_count = seq_epi
             for tc, orig_name, _ in log_entries:
                 yt_timestamps += f"{tc} Episode {seq_epi}\n"
@@ -2061,7 +2093,8 @@ async def mg_cb(bot, query):
                 success, msg2 = await update_youtube_video(
                     video_id=job["yt_video_id"],
                     title=title[:100],
-                    description=new_desc[:5000]
+                    description=new_desc[:5000],
+                    channel_id=job.get("yt_channel_id")
                 )
                 if success:
                     await bot.send_message(uid, f"<b>✅ YouTube video updated!</b>\n{msg2}")
@@ -2164,6 +2197,13 @@ async def mg_cb(bot, query):
 async def _create_flow(bot, uid, mtype="audio"):
     icon = "🎵" if mtype == "audio" else "🎬"
     label = "Audio" if mtype == "audio" else "Video"
+
+    upload_to_yt = False
+    yt_channel_id = None
+    yt_channel_title = None
+    yt_title = None
+    yt_thumb_path = None
+    yt_start_epi = None
 
     try:
         # Step 1: Account
@@ -2486,42 +2526,86 @@ async def _create_flow(bot, uid, mtype="audio"):
                     except: pass
 
             # Step 6f: YouTube Upload?
-            msg = await _mg_ask(bot, uid,
-                "<b>Step 6f/9:</b> Auto-Upload to <b>YouTube (Private)</b> after rendering?\n\n"
-                "<i>(Requires /ytauth setup first)</i>\n\n"
-                "Send <code>yes</code> or <code>skip</code>.")
-            if "yes" in (msg.text or "").lower():
-                upload_to_yt = True
-
-                # Step 6g: YouTube Title
+            from plugins.youtube import get_all_youtube_channels
+            yt_channels = await get_all_youtube_channels()
+            if not yt_channels:
+                await bot.send_message(uid,
+                    "<b>Step 6f/9:</b> Auto-Upload to <b>YouTube (Private)</b> after rendering?\n\n"
+                    "⚠️ <i>No authorized YouTube channels found. Run /ytauth first to connect a channel. Skipping YouTube upload.</i>")
+                await asyncio.sleep(1.5)
+            else:
+                buttons_markup = []
+                for ch in yt_channels:
+                    buttons_markup.append([KeyboardButton(f"🎥 {ch.get('title', 'Unknown')}")])
+                buttons_markup.append([KeyboardButton("⏭ Skip (No YouTube Upload)")])
+                buttons_markup.append([KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
+                
                 msg = await _mg_ask(bot, uid,
-                    "<b>Step 6g/9:</b> Enter specific <b>YouTube Title</b>:\n\n"
-                    "Send <code>skip</code> to use bot default.")
-                yt_title = msg.text.strip() if msg.text.lower() != "skip" else None
-
-                # Step 6h: YouTube Thumbnail
-                msg = await _mg_ask(bot, uid,
-                    "<b>Step 6h/9:</b> Send custom <b>YouTube Thumbnail</b> image:\n\n"
-                    "Send <code>skip</code> for none.")
-                tmp_tdir = os.path.abspath(f"merge_tmp/_ythumb_{uid}")
-                os.makedirs(tmp_tdir, exist_ok=True)
-                if msg.photo:
-                    try:
-                        yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
-                        yt_thumb_path = os.path.abspath(yt_thumb_path)
-                    except: pass
-                elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
-                    try:
-                        yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
-                        yt_thumb_path = os.path.abspath(yt_thumb_path)
-                    except: pass
-
-                # Step 6i: Starting Episode
-                msg = await _mg_ask(bot, uid,
-                    "<b>Step 6i/9:</b> Enter <b>Starting Episode Number</b> for Timestamps (e.g. 1 or 201).\n\n"
-                    "Send <code>skip</code> to assume 1.")
-                if msg.text.lower() != "skip" and msg.text.strip().isdigit():
-                    yt_start_epi = int(msg.text.strip())
+                    "<b>Step 6f/9:</b> Choose a <b>YouTube Channel</b> to auto-upload the merged video:\n\n"
+                    "Select one of your authorized channels below, or skip.",
+                    reply_markup=ReplyKeyboardMarkup(buttons_markup, resize_keyboard=True, one_time_keyboard=True)
+                )
+                
+                reply_txt = (msg.text or "").strip()
+                if any(x in reply_txt.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                
+                if "skip" in reply_txt.lower() or "⏭" in reply_txt:
+                    upload_to_yt = False
+                else:
+                    matched_ch = None
+                    cleaned_reply = reply_txt.replace("🎥", "").strip().lower()
+                    for ch in yt_channels:
+                        title_clean = ch.get('title', '').strip().lower()
+                        if title_clean == cleaned_reply or cleaned_reply in title_clean or title_clean in cleaned_reply:
+                            matched_ch = ch
+                            break
+                    
+                    if not matched_ch:
+                        if len(yt_channels) == 1:
+                            matched_ch = yt_channels[0]
+                        else:
+                            await bot.send_message(uid, "⚠️ Invalid option selected. Skipping YouTube upload.", reply_markup=ReplyKeyboardRemove())
+                            upload_to_yt = False
+                            
+                    if matched_ch:
+                        upload_to_yt = True
+                        yt_channel_id = matched_ch["_id"]
+                        yt_channel_title = matched_ch.get("title", "Unknown")
+                        
+                        # Step 6g: YouTube Title
+                        msg = await _mg_ask(bot, uid,
+                            "<b>Step 6g/9:</b> Enter specific <b>YouTube Title</b>:\n\n"
+                            "Send <code>skip</code> to use bot default.",
+                            reply_markup=ReplyKeyboardRemove())
+                        yt_title = msg.text.strip() if msg.text.lower() != "skip" else None
+        
+                        # Step 6h: YouTube Thumbnail
+                        msg = await _mg_ask(bot, uid,
+                            "<b>Step 6h/9:</b> Send custom <b>YouTube Thumbnail</b> image:\n\n"
+                            "Send <code>skip</code> for none.")
+                        tmp_tdir = os.path.abspath(f"merge_tmp/_ythumb_{uid}")
+                        os.makedirs(tmp_tdir, exist_ok=True)
+                        if msg.photo:
+                            try:
+                                yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
+                                yt_thumb_path = os.path.abspath(yt_thumb_path)
+                            except: pass
+                        elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
+                            try:
+                                yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
+                                yt_thumb_path = os.path.abspath(yt_thumb_path)
+                            except: pass
+        
+                        # Step 6i: Starting Episode
+                        msg = await _mg_ask(bot, uid,
+                            "<b>Step 6i/9:</b> Enter <b>Starting Episode Number</b> for Timestamps (e.g. 1 or 201).\n\n"
+                            "Send <code>skip</code> to assume 1.")
+                        raw_epi = msg.text.strip() if msg.text else ""
+                        if raw_epi.lower() != "skip" and raw_epi.isdigit():
+                            yt_start_epi = int(raw_epi)
+                        else:
+                            yt_start_epi = 1
 
         # Step 7: Confirm
         dest_preview = "DM only"
@@ -2533,6 +2617,7 @@ async def _create_flow(bot, uid, mtype="audio"):
         vc_label = ("✅ Separate 1080p image" if (video_cover_path and video_cover_path != cover_path)
                     else ("✅ Same as audio cover" if make_video and cover_path else "❌"))
 
+        yt_conf_str = f"✅ Private ({yt_channel_title})" if upload_to_yt else "❌"
         msg = await _mg_ask(bot, uid,
             f"<b>Step 7: Confirm {label} Merge</b>\n\n"
             f"<b>Source:</b> <code>{from_chat}</code>\n"
@@ -2545,7 +2630,7 @@ async def _create_flow(bot, uid, mtype="audio"):
             f"<b>Make MP4 Video:</b> {'✅' if make_video else '❌'}\n"
             f"<b>Video Image:</b> {vc_label}\n"
             f"<b>Outro Image:</b> {'✅' if outro_cover_path else '❌'}\n"
-            f"<b>Upload to YT:</b> {'✅ Private' if upload_to_yt else '❌'}\n"
+            f"<b>Upload to YT:</b> {yt_conf_str}\n"
             + (f"<b>YT Title:</b> {yt_title[:20]+'...' if len(yt_title)>20 else yt_title}\n" if yt_title else "")
             + (f"<b>YT Thumb:</b> {'✅' if yt_thumb_path else '❌'}\n" if upload_to_yt else "")
             + f"<b>Dest:</b> {dest_preview}\n"
@@ -2602,7 +2687,7 @@ async def _create_flow(bot, uid, mtype="audio"):
             "has_outro_cover": True if outro_cover_path == "4auto" else bool(outro_cover_path),
             "use_4auto_outros": outro_cover_path == "4auto",
             "speed": speed, "make_video": make_video,
-            "upload_to_yt": upload_to_yt, "yt_title": yt_title,
+            "upload_to_yt": upload_to_yt, "yt_channel_id": yt_channel_id, "yt_title": yt_title,
             "has_yt_thumb": bool(yt_thumb_path), "yt_start_epi": yt_start_epi,
             "name": out_name, "status": "downloading" if should_run_locally else "queued", "downloaded": 0,
             "total_dl_bytes": 0, "error": "", "created_at": time.time(),

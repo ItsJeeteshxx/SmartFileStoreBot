@@ -944,31 +944,25 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     _inj_types: list = []
 
                     if _is_group:
-                        # Proportional ads for group file:
-                        # Same formula as schedule builder — scale linearly vs 100 eps
                         _grp_ep_cnt = _grp_end - _grp_start + 1
-                        _grp_n_target = max(1, round(_grp_ep_cnt / 100 * 8))
-
-                        _g_prem = [k for k in ("arya_premium_hi", "arya_premium_en") if k in _ad_local]
-                        _g_chan = [k for k in ("channel_hi", "channel_en") if k in _ad_local]
-                        _g_bot  = [k for k in ("arya_bot_hi", "arya_bot_en") if k in _ad_local]
-                        _g_order = []
-                        if len(_g_prem) >= 1: _g_order.append(_g_prem[0])
-                        if len(_g_chan)  >= 1: _g_order.append(_g_chan[0])
-                        if len(_g_bot)   >= 1: _g_order.append(_g_bot[0])
-                        if len(_g_prem) >= 2: _g_order.append(_g_prem[1])
-                        if len(_g_chan)  >= 2: _g_order.append(_g_chan[1])
-                        if len(_g_bot)   >= 2: _g_order.append(_g_bot[1])
-                        if len(_g_prem) >= 1: _g_order.append(_rnd_inj.choice(_g_prem))
-                        if len(_g_chan)  >= 1: _g_order.append(_rnd_inj.choice(_g_chan))
-                        _grp_pool = _g_order[:_grp_n_target]
-                        if not _grp_pool and (_g_prem or _g_chan or _g_bot):
-                            _grp_pool = [(_g_prem or _g_chan or _g_bot)[0]]
-
-                        _rnd_inj.shuffle(_grp_pool)
-                        _inj_types = _grp_pool
-                        logger.info(f"[Cleaner {job_id}] Group file ep {_grp_start}-{_grp_end} "
-                                    f"({_grp_ep_cnt} eps) → {len(_inj_types)} ads (target={_grp_n_target})")
+                        if _grp_ep_cnt >= 20:
+                            # Large group file (e.g. 1-100): always inject multiple ads proportionally
+                            _grp_n_target = max(1, round(_grp_ep_cnt / 100 * 8))
+                            ad_keys = list(_ad_local.keys())
+                            ad_keys.sort()  # stable order for rotation
+                            # Rotate starting index with curr_num, cycling through all keys
+                            _inj_types = [ad_keys[(curr_num + i) % len(ad_keys)] for i in range(_grp_n_target)]
+                            logger.info(f"[Cleaner {job_id}] Large group file ep {_grp_start}-{_grp_end} "
+                                        f"({_grp_ep_cnt} eps) → {len(_inj_types)} ads (target={_grp_n_target}) via rotation: {_inj_types}")
+                        else:
+                            # Small group file (e.g. 10 episodes): respect global schedule of the job!
+                            if _ad_schedule and curr_num in _ad_schedule:
+                                _inj_types = [_ad_schedule[curr_num]]
+                                logger.info(f"[Cleaner {job_id}] Small group file ep {_grp_start}-{_grp_end} "
+                                            f"({_grp_ep_cnt} eps) | serial={curr_num} is scheduled -> inject {_inj_types}")
+                            else:
+                                logger.info(f"[Cleaner {job_id}] Small group file ep {_grp_start}-{_grp_end} "
+                                            f"({_grp_ep_cnt} eps) | serial={curr_num} is NOT scheduled -> skip ad injection")
                     elif _ad_schedule and curr_num in _ad_schedule:
                         # Single-ep file scheduled for injection
                         _inj_types = [_ad_schedule[curr_num]]

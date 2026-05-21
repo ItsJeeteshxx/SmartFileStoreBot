@@ -1901,6 +1901,7 @@ async def job_list_cb(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^job#rename#'))
 async def job_rename_cb(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     job_id = query.data.split("#", 2)[2]
     await query.message.delete()
@@ -1916,6 +1917,7 @@ async def job_rename_cb(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^job#info#'))
 async def job_info_cb(bot, query):
+    await query.answer()
     job_id = query.data.split("#", 2)[2]
     job = await _get_job(job_id)
     if not job:
@@ -1980,6 +1982,7 @@ async def job_info_cb(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^job#settings#'))
 async def job_settings_cb(bot, query):
+    await query.answer()
     job_id = query.data.split("#", 2)[2]
     job = await _get_job(job_id)
     if not job:
@@ -2008,6 +2011,7 @@ async def job_settings_cb(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^job#togglededupl#'))
 async def job_toggle_dedupl_cb(bot, query):
+    await query.answer()
     job_id = query.data.split("#", 2)[2]
     job = await _get_job(job_id)
     if not job: return
@@ -2099,6 +2103,7 @@ async def job_del_cb(bot, query):
 @Client.on_callback_query(filters.regex(r'^job#limits#'))
 async def job_limits_cb(bot, query):
     """Edit size/duration/notification limits for an existing live job."""
+    await query.answer()
     job_id  = query.data.split("#", 2)[2]
     user_id = query.from_user.id
     job = await _get_job(job_id)
@@ -2243,6 +2248,14 @@ async def job_limits_cb(bot, query):
 @Client.on_callback_query(filters.regex(r'^job#new$'))
 async def job_new_cb(bot, query):
     user_id = query.from_user.id
+    from plugins.owner_utils import is_any_owner
+    limits = await db.get_user_limits(user_id)
+    max_live = limits.get('max_live_jobs', 65)
+    if not await is_any_owner(user_id) and max_live != -1:
+        existing = await _list_jobs(user_id)
+        if len(existing) >= max_live:
+            return await query.answer(f"❌ Limit Exceeded: Max {max_live} Live Jobs allowed.", show_alert=True)
+    await query.answer()
     await query.message.delete()
     await _create_job_flow(bot, user_id)
 
@@ -2251,8 +2264,19 @@ async def job_new_cb(bot, query):
 async def newjob_cmd(bot, message):
     from plugins.owner_utils import is_feature_enabled, is_any_owner, FEATURE_LABELS, _DISABLED_MSG
     uid = message.from_user.id
-    if not await is_any_owner(uid) and not await is_feature_enabled("live_job"):
+    is_owner = await is_any_owner(uid)
+    if not is_owner and not await is_feature_enabled("live_job"):
         return await message.reply_text(_DISABLED_MSG.format(feature=FEATURE_LABELS["live_job"]))
+    limits = await db.get_user_limits(uid)
+    max_live = limits.get('max_live_jobs', 65)
+    if not is_owner and max_live != -1:
+        existing = await _list_jobs(uid)
+        if len(existing) >= max_live:
+            return await message.reply_text(
+                f"❌ <b>Limit Exceeded</b>\n\n"
+                f"You have reached your limit of <b>{max_live}</b> active Live Jobs.\n"
+                f"Please delete an existing job before creating a new one."
+            )
     await _create_job_flow(bot, message.from_user.id)
 
 
@@ -2733,6 +2757,7 @@ async def _create_job_flow(bot, user_id: int):
 
 @Client.on_callback_query(filters.regex(r'^job#src#'))
 async def job_src_cb(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     job_id = query.data.split('#')[2]
     await query.message.delete()

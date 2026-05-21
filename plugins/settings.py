@@ -355,7 +355,7 @@ async def owners_cb(bot, query):
             "<b><u>👑 Owner / Admin Control Panel</u></b>\n\n"
             f"<b>Primary Owners:</b> {len(primary)}  |  <b>Co-Owners:</b> {len(co)}\n\n"
             f"<b>Global User Limits:</b>\n"
-            f"  Live Jobs: <code>{limits.get('max_live_jobs', 3)}</code>  "
+            f"  Live Jobs: <code>{limits.get('max_live_jobs', 65)}</code>  "
             f"Multi Jobs: <code>{limits.get('max_multi_jobs', 2)}</code>\n"
             f"  Merge Jobs: <code>{limits.get('max_merge_jobs', 1)}</code>  "
             f"Accounts: <code>{limits.get('max_accounts', 2)}</code>\n\n"
@@ -410,7 +410,7 @@ async def owners_cb(bot, query):
         limits = await db.get_global_user_limits()
         ask = await bot.send_message(uid, 
             "<b>⚙️ Set Global User Limits</b>\n\n"
-            f"Current: Live={limits.get('max_live_jobs',3)} Multi={limits.get('max_multi_jobs',2)} Merge={limits.get('max_merge_jobs',1)} Accounts={limits.get('max_accounts',2)}\n\n"
+            f"Current: Live={limits.get('max_live_jobs',65)} Multi={limits.get('max_multi_jobs',2)} Merge={limits.get('max_merge_jobs',1)} Accounts={limits.get('max_accounts',2)}\n\n"
             "Send in format: <code>live=5 multi=3 merge=2 accounts=4</code>\n"
             "Use -1 for unlimited.\n/cancel to abort.")
         try:
@@ -530,6 +530,47 @@ async def settings_query(bot, query):
          "✔️ = Currently active for that type.</b>"
      )
      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+     
+  elif type=="shorteners":
+     apis = await db.get_shortener_apis()
+     aro = apis.get("arolinks", "")
+     shx = apis.get("urlshortx", "")
+     text = (
+         "<b><u>🔗 URL Shortener APIs</u></b>\n\n"
+         f"<b>1. AroLinks:</b> {'✅ Set' if aro else '❌ Not Set'}\n"
+         f"<b>2. UrlShortX:</b> {'✅ Set' if shx else '❌ Not Set'}\n\n"
+         "<i>Configure your API keys here so they can be used while generating Batch Links.</i>"
+     )
+     buttons = [
+         [InlineKeyboardButton("AroLinks", callback_data="settings#set_arolinks"),
+          InlineKeyboardButton("UrlShortX", callback_data="settings#set_urlshortx")],
+         [InlineKeyboardButton("🗑 Clear AroLinks", callback_data="settings#clear_arolinks"),
+          InlineKeyboardButton("🗑 Clear UrlShortX", callback_data="settings#clear_urlshortx")],
+         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#main")]
+     ]
+     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+  elif type.startswith("set_arolinks") or type.startswith("set_urlshortx"):
+     await query.message.delete()
+     key = "arolinks" if "arolinks" in type else "urlshortx"
+     ask = await bot.send_message(user_id, f"<b>Enter your API Key for {key}:</b>\n\nSend <code>/cancel</code> to abort.")
+     try:
+         resp = await _ask(bot, user_id, timeout=120)
+         if getattr(resp, "text", None) and "/cancel" in resp.text:
+             await resp.delete()
+             return await ask.edit_text("<i>Process Cancelled!</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#shorteners")]]))
+         await db.update_shortener_apis(key, resp.text.strip())
+         await resp.delete()
+         await ask.edit_text(f"✅ {key} API Key saved successfully!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#shorteners")]]))
+     except Exception:
+         await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#shorteners")]]))
+
+  elif type.startswith("clear_arolinks") or type.startswith("clear_urlshortx"):
+     key = "arolinks" if "arolinks" in type else "urlshortx"
+     await db.update_shortener_apis(key, "")
+     query.data = "settings#shorteners"
+     return await settings_query(bot, query)
+
      
   elif type=="main_menu_img":
      await query.message.delete()
@@ -2515,6 +2556,9 @@ async def main_buttons(user_id=None):
            ],[
            InlineKeyboardButton('EN/हि',
                         callback_data='settings#lang'),
+           InlineKeyboardButton('🔗 Sʜᴏʀᴛᴇɴᴇʀs',
+                        callback_data='settings#shorteners')
+           ],[
            InlineKeyboardButton('👑 Oᴡɴᴇʀ Pᴀɴᴇʟ',
                         callback_data='settings#owners')
            ],[

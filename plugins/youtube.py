@@ -61,64 +61,188 @@ def get_youtube_auth_url():
         return None, str(e)
 
 
-def save_youtube_credentials(flow, code):
+async def save_youtube_credentials(flow, code):
     try:
-        flow.fetch_token(code=code)
+        import json
+        import time
+        from database import db
+        # Run blocking OAuth fetch in executor
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: flow.fetch_token(code=code))
         creds = flow.credentials
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
-        return True, "Successfully authorized and saved token!"
+        
+        # Build temp service to query channel details
+        youtube = _yt_build('youtube', 'v3', credentials=creds)
+        channels_resp = await loop.run_in_executor(
+            None,
+            lambda: youtube.channels().list(part="snippet", mine=True).execute()
+        )
+        items = channels_resp.get("items", [])
+        if not items:
+            return False, "Could not retrieve YouTube channel info."
+        
+        channel_id = items[0]["id"]
+        channel_title = items[0]["snippet"]["title"]
+        token_data = json.loads(creds.to_json())
+        
+        await db.db.youtube_tokens.replace_one(
+            {"_id": channel_id},
+            {
+                "_id": channel_id,
+                "title": channel_title,
+                "token_data": token_data,
+                "created_at": time.time()
+            },
+            upsert=True
+        )
+        return True, f"Successfully authorized and saved channel: **{channel_title}**"
     except Exception as e:
         logger.error(f"[ytauth] save_youtube_credentials error: {e}")
         return False, str(e)
 
 
-def get_authenticated_service():
+async def _migrate_legacy_token():
+    if not os.path.exists(TOKEN_FILE):
+        return
+    logger.info("[youtube] Found legacy token file. Migrating to database...")
+    try:
+        import json
+        import time
+        from database import db
+        creds = _Credentials.from_authorized_user_file(TOKEN_FILE, YOUTUBE_SCOPES)
+        loop = asyncio.get_event_loop()
+        youtube = _yt_build('youtube', 'v3', credentials=creds)
+        channels_resp = await loop.run_in_executor(
+            None,
+            lambda: youtube.channels().list(part="snippet", mine=True).execute()
+        )
+        items = channels_resp.get("items", [])
+        if items:
+            channel_id = items[0]["id"]
+            channel_title = items[0]["snippet"]["title"]
+            token_data = json.loads(creds.to_json())
+            
+            await db.db.youtube_tokens.replace_one(
+                {"_id": channel_id},
+                {
+                    "_id": channel_id,
+                    "title": channel_title,
+                    "token_data": token_data,
+                    "created_at": time.time()
+                },
+                upsert=True
+            )
+            logger.info(f"[youtube] Successfully migrated legacy token for channel: {channel_title}")
+        os.remove(TOKEN_FILE)
+    except Exception as e:
+        logger.error(f"[youtube] Failed to migrate legacy token: {e}")
+
+
+async def get_authenticated_service(channel_id=None):
     ok, _ = _check_libs()
     if not ok:
         return None
     try:
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            creds = _Credentials.from_authorized_user_file(TOKEN_FILE, YOUTUBE_SCOPES)
+        import json
+        from database import db
+        # Check if collection is empty to run migration
+        if not await db.db.youtube_tokens.find_one({}):
+            await _migrate_legacy_token()
+            
+        doc = None
+        if channel_id:
+            doc = await db.db.youtube_tokens.find_one({"_id": channel_id})
+        else:
+            doc = await db.db.youtube_tokens.find_one({})
+            
+        if not doc:
+            return None
+            
+        ch_id = doc["_id"]
+        token_data = doc["token_data"]
+        
+        creds = _Credentials.from_authorized_user_info(token_data, YOUTUBE_SCOPES)
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
-                    creds.refresh(_Request())
-                    with open(TOKEN_FILE, 'w') as token:
-                        token.write(creds.to_json())
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, lambda: creds.refresh(_Request()))
+                    token_data_updated = json.loads(creds.to_json())
+                    await db.db.youtube_tokens.update_one(
+                        {"_id": ch_id},
+                        {"$set": {"token_data": token_data_updated}}
+                    )
                 except Exception as refresh_err:
                     err_str = str(refresh_err).lower()
-                    # Stale token with wrong scopes — delete it and force re-auth
-                    if "invalid_scope" in err_str or "invalid_grant" in err_str or "bad request" in err_str:
-                        logger.warning(f"[ytauth] Stale/invalid token detected ({refresh_err}). Deleting token file — re-auth required.")
-                        try:
-                            os.remove(TOKEN_FILE)
-                        except Exception:
-                            pass
+                    if any(k in err_str for k in ("invalid_scope", "invalid_grant", "bad request")):
+                        logger.warning(f"[ytauth] Stale/invalid token for {ch_id} ({refresh_err}). Deleting from DB.")
+                        await db.db.youtube_tokens.delete_one({"_id": ch_id})
                     return None
             else:
                 return None
         return _yt_build('youtube', 'v3', credentials=creds)
     except Exception as e:
-        err_str = str(e).lower()
-        if "invalid_scope" in err_str or "invalid_grant" in err_str or "bad request" in err_str:
-            logger.warning(f"[ytauth] Stale/invalid token detected ({e}). Deleting token — re-auth required.")
-            try:
-                os.remove(TOKEN_FILE)
-            except Exception:
-                pass
-        else:
-            logger.error(f"[ytauth] get_authenticated_service error: {e}")
+        logger.error(f"[ytauth] get_authenticated_service error: {e}")
         return None
+
+
+async def get_all_youtube_channels() -> list:
+    from database import db
+    try:
+        if not await db.db.youtube_tokens.find_one({}):
+            await _migrate_legacy_token()
+        return await db.db.youtube_tokens.find({}).to_list(length=None)
+    except Exception as e:
+        logger.error(f"[ytauth] get_all_youtube_channels error: {e}")
+        return []
+
+
+async def delete_youtube_channel(channel_id: str) -> bool:
+    from database import db
+    try:
+        res = await db.db.youtube_tokens.delete_one({"_id": channel_id})
+        return res.deleted_count > 0
+    except Exception as e:
+        logger.error(f"[ytauth] delete_youtube_channel error: {e}")
+        return False
+
+
+async def get_service_for_video(video_id: str):
+    """Find which authorized YouTube channel owns or has access to the given video."""
+    channels = await get_all_youtube_channels()
+    if not channels:
+        return None, "No YouTube channels are currently authorized."
+        
+    loop = asyncio.get_event_loop()
+    for ch in channels:
+        ch_id = ch["_id"]
+        svc = await get_authenticated_service(channel_id=ch_id)
+        if not svc:
+            continue
+        try:
+            curr_resp = await loop.run_in_executor(
+                None,
+                lambda: svc.videos().list(part="snippet", id=video_id).execute()
+            )
+            items = curr_resp.get("items", [])
+            if items:
+                return svc, ch_id
+        except Exception:
+            pass
+            
+    # Fallback to the default service
+    default_svc = await get_authenticated_service()
+    if default_svc:
+        return default_svc, None
+    return None, "No authorized channel can access this video."
 
 
 async def upload_video_to_youtube(video_path, title, description="", tags=None,
                                    category_id="22", privacy_status="private",
-                                   thumbnail_path=None):
+                                   thumbnail_path=None, channel_id=None):
     try:
         import asyncio
-        youtube = get_authenticated_service()
+        youtube = await get_authenticated_service(channel_id)
         if not youtube:
             return False, "YouTube is not authorized. Please run /ytauth first."
 
@@ -135,7 +259,6 @@ async def upload_video_to_youtube(video_path, title, description="", tags=None,
             }
         }
 
-        # Use 10MB chunks for resumable upload — chunksize=-1 (single-shot) fails for large files
         media = _MediaFileUpload(video_path, mimetype='video/mp4', chunksize=10 * 1024 * 1024, resumable=True)
         request = youtube.videos().insert(
             part=",".join(body.keys()),
@@ -161,20 +284,24 @@ async def upload_video_to_youtube(video_path, title, description="", tags=None,
         return False, str(e)
 
 
-async def update_youtube_video(video_id: str, title: str, description: str = "") -> tuple:
+async def update_youtube_video(video_id: str, title: str, description: str = "", channel_id: str = None) -> tuple:
     """Update the title and description of an existing YouTube video."""
     try:
         import asyncio
-        youtube = get_authenticated_service()
+        if channel_id:
+            youtube = await get_authenticated_service(channel_id)
+        else:
+            youtube, _ = await get_service_for_video(video_id)
+            
         if not youtube:
-            return False, "YouTube is not authorized. Please run /ytauth first."
+            return False, "YouTube channel is not authorized or video not found."
 
         body = {
             'id': video_id,
             'snippet': {
                 'title': title,
                 'description': description,
-                'categoryId': '22'  # People & Blogs
+                'categoryId': '22'
             }
         }
 
@@ -191,78 +318,131 @@ async def update_youtube_video(video_id: str, title: str, description: str = "")
 # ── /ytauth command ───────────────────────────────────────────────────────────
 _flows_cache = {}
 
+async def _send_or_edit_channel_list(bot, msg, user_id, edit=True):
+    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    channels = await get_all_youtube_channels()
+    
+    if not channels:
+        text = (
+            "🎥 **YouTube Channels Manager**\n\n"
+            "❌ No YouTube channels authorized yet.\n"
+            "You must authorize at least one channel to use the auto-upload feature in Merger."
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add Channel", callback_data="yt_add")]
+        ])
+    else:
+        text = "🎥 **YouTube Channels Manager**\n\n**Authorized Channels:**\n"
+        buttons = []
+        for ch in channels:
+            ch_id = ch["_id"]
+            title = ch.get("title", "Unknown Channel")
+            text += f"• **{title}** (ID: `{ch_id}`)\n"
+            buttons.append([InlineKeyboardButton(f"🗑 Delete {title[:20]}", callback_data=f"yt_del#{ch_id}")])
+            
+        buttons.append([InlineKeyboardButton("➕ Add Another Channel", callback_data="yt_add")])
+        markup = InlineKeyboardMarkup(buttons)
+        
+    if edit:
+        try:
+            await msg.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
+        except Exception:
+            pass
+    else:
+        await msg.reply(text, reply_markup=markup, disable_web_page_preview=True)
+
+
 @Client.on_message(filters.command("ytauth") & filters.private)
 async def yt_auth_cmd(bot, message):
-    # Owner-only guard
     try:
         from config import Config
         owner_ids = Config.BOT_OWNER_ID
         if owner_ids and message.from_user.id not in owner_ids:
             return await message.reply("⛔ This command is only available to the bot owner.")
     except Exception:
-        pass  # If config unavailable, allow anyway
+        pass
 
     user_id = message.from_user.id
 
-    # ── Handle code submission: /ytauth <code> ────────────────────────────
     if len(message.command) > 1:
         code = message.text.split(None, 1)[1].strip()
         if code.lower() == "reset":
+            from database import db
+            await db.db.youtube_tokens.delete_many({})
             try:
                 os.remove(TOKEN_FILE)
-                _flows_cache.pop(user_id, None)
             except Exception:
                 pass
-            return await message.reply("♻️ YouTube token cleared. Send /ytauth to re-authorize.")
+            _flows_cache.pop(user_id, None)
+            return await message.reply("♻️ All YouTube tokens cleared. Send /ytauth to re-authorize.")
+            
         if user_id not in _flows_cache:
             return await message.reply(
                 "⚠️ No auth flow found.\n\n"
-                "Please send /ytauth (without a code) first to get the authorization link, "
-                "then paste your code."
+                "Please click **Add Channel** first to get the authorization link."
             )
         m = await message.reply("⏳ Verifying code...")
-        success, res = save_youtube_credentials(_flows_cache[user_id], code)
+        success, res = await save_youtube_credentials(_flows_cache[user_id], code)
         _flows_cache.pop(user_id, None)
         if success:
             await m.edit(
                 "✅ **YouTube Authentication Successful!**\n\n"
-                "The bot can now upload videos directly to your channel.\n"
-                "Run `/ytauth reset` to revoke access if needed."
+                f"{res}\n"
+                "The bot can now upload videos directly to your channel."
             )
+            await _send_or_edit_channel_list(bot, message, user_id, edit=False)
         else:
             await m.edit(f"❌ **Failed:** `{res}`")
         return
 
-    # ── Check if Google libs are available ───────────────────────────────
     ok, libs_err = _check_libs()
     if not ok:
         return await message.reply(libs_err)
 
-    # ── Already have a valid token? ───────────────────────────────────────
-    svc = get_authenticated_service()
-    if svc:
-        return await message.reply(
-            "✅ **YouTube API is already authorized.**\n\n"
-            "You can start uploading videos via the Merger.\n"
-            "Run `/ytauth reset` to re-authorize with a different account."
+    await _send_or_edit_channel_list(bot, message, user_id, edit=False)
+
+
+@Client.on_callback_query(filters.regex(r"^yt_(list|add|del#.*)$"))
+async def yt_callback_handler(bot, query):
+    try:
+        from config import Config
+        owner_ids = Config.BOT_OWNER_ID
+        if owner_ids and query.from_user.id not in owner_ids:
+            return await query.answer("⛔ Authorized users only.", show_alert=True)
+    except Exception:
+        pass
+
+    user_id = query.from_user.id
+    action = query.data
+
+    if action == "yt_list":
+        await query.answer()
+        await _send_or_edit_channel_list(bot, query.message, user_id, edit=True)
+    elif action == "yt_add":
+        await query.answer("Starting authorization flow...")
+        url, flow_or_err = get_youtube_auth_url()
+        if not url:
+            return await query.message.edit_text(f"❌ **Setup Error:**\n\n{flow_or_err}")
+
+        _flows_cache[user_id] = flow_or_err
+        await query.message.edit_text(
+            "**🔗 YouTube Authentication Required**\n\n"
+            f"**Step 1:** [Click here to authorize]({url})\n"
+            "**Step 2:** Log in with your YouTube channel account and grant permission.\n"
+            "**Step 3:** Copy the authorization code shown by Google.\n"
+            "**Step 4:** Send it back here:\n"
+            "`/ytauth YOUR_CODE_HERE`\n\n"
+            "⚠️ The code expires in a few minutes — act quickly!",
+            disable_web_page_preview=True
         )
-
-    # ── Start auth flow ───────────────────────────────────────────────────
-    url, flow_or_err = get_youtube_auth_url()
-    if not url:
-        return await message.reply(f"❌ **Setup Error:**\n\n{flow_or_err}")
-
-    _flows_cache[user_id] = flow_or_err
-    await message.reply(
-        "**🔗 YouTube Authentication Required**\n\n"
-        "**Step 1:** [Click here to authorize]({url})\n"
-        "**Step 2:** Log in with your YouTube channel account and grant permission.\n"
-        "**Step 3:** Copy the authorization code shown by Google.\n"
-        "**Step 4:** Send it back here:\n"
-        "`/ytauth YOUR_CODE_HERE`\n\n"
-        "⚠️ The code expires in a few minutes — act quickly!".format(url=url),
-        disable_web_page_preview=True
-    )
+    elif action.startswith("yt_del#"):
+        channel_id = action.split("#", 1)[1]
+        deleted = await delete_youtube_channel(channel_id)
+        if deleted:
+            await query.answer("Channel removed successfully!", show_alert=True)
+        else:
+            await query.answer("Failed to remove channel.", show_alert=True)
+        await _send_or_edit_channel_list(bot, query.message, user_id, edit=True)
 
 
 # ── /ytedit command ───────────────────────────────────────────────────────────
@@ -270,9 +450,6 @@ _ytedit_waiter: dict = {}
 
 @Client.on_message(filters.command("ytedit") & filters.private)
 async def yt_edit_cmd(bot, message):
-    """Edit the title and description of any YouTube video by URL or ID.
-    Usage: /ytedit  — then follow the prompts.
-    """
     try:
         from config import Config
         owner_ids = Config.BOT_OWNER_ID
@@ -285,17 +462,9 @@ async def yt_edit_cmd(bot, message):
     if not ok:
         return await message.reply(libs_err)
 
-    svc = get_authenticated_service()
-    if not svc:
-        return await message.reply(
-            "❌ YouTube is not authorized.\n\n"
-            "Please run /ytauth first to connect your YouTube account."
-        )
-
     uid = message.from_user.id
     loop = asyncio.get_event_loop()
 
-    # ── Step 1: ask for video URL or ID ─────────────────────────────────────
     ask1 = await message.reply(
         "✏️ **Edit YouTube Video**\n\n"
         "Send the **YouTube video URL or Video ID** of the video you want to edit.\n"
@@ -313,7 +482,6 @@ async def yt_edit_cmd(bot, message):
         _ytedit_waiter.pop(uid, None)
 
     raw = (resp1.text or "").strip()
-    # Extract video ID from various URL formats
     vid_id = None
     import re
     patterns = [
@@ -330,7 +498,6 @@ async def yt_edit_cmd(bot, message):
     if not vid_id:
         return await resp1.reply("❌ Could not extract a valid YouTube video ID. Please try again with /ytedit.")
 
-    # ── Step 2: ask for the new title ───────────────────────────────────────
     ask2 = await resp1.reply(
         f"✅ Video ID detected: `{vid_id}`\n\n"
         "Now send the **new title** for this video (max 100 characters).\n"
@@ -349,7 +516,6 @@ async def yt_edit_cmd(bot, message):
     new_title = (resp2.text or "").strip()
     skip_title = new_title.lower() == "/skip"
 
-    # ── Step 3: ask for custom description or use auto ──────────────────────
     ask3 = await resp2.reply(
         "📝 Send the **new description** for this video.\n"
         "_Send /auto to use the standard bot description (with timestamps)._\n"
@@ -369,8 +535,11 @@ async def yt_edit_cmd(bot, message):
     skip_desc = new_desc_raw.lower() == "/skip"
     use_auto = new_desc_raw.lower() == "/auto"
 
-    # ── Fetch current snippet if skipping anything ──────────────────────────
     proc_msg = await resp3.reply("⏳ Fetching current video details from YouTube…")
+    svc, target_channel_id = await get_service_for_video(vid_id)
+    if not svc:
+        return await proc_msg.edit_text(f"❌ {target_channel_id}")
+
     try:
         curr_resp = await loop.run_in_executor(
             None,
@@ -384,7 +553,6 @@ async def yt_edit_cmd(bot, message):
         return await proc_msg.edit_text(f"❌ Could not fetch video: `{e}`")
 
     title_to_use = curr_snippet.get("title", "") if skip_title else new_title[:100]
-
     if skip_desc:
         desc_to_use = curr_snippet.get("description", "")
     elif use_auto:
@@ -402,7 +570,6 @@ async def yt_edit_cmd(bot, message):
     else:
         desc_to_use = new_desc_raw
 
-    # ── Apply the update ─────────────────────────────────────────────────────
     await proc_msg.edit_text("⏳ Updating video on YouTube…")
     try:
         update_body = {
@@ -431,7 +598,6 @@ async def yt_edit_cmd(bot, message):
 
 @Client.on_message(filters.private, group=-15)
 async def _ytedit_input_router(bot, message):
-    """Route replies from /ytedit flow."""
     uid = message.from_user.id if message.from_user else None
     if uid and uid in _ytedit_waiter:
         fut = _ytedit_waiter.pop(uid)
