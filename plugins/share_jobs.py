@@ -19,6 +19,26 @@ from plugins.test import CLIENT
 logger = logging.getLogger(__name__)
 _CLIENT = CLIENT()
 
+def to_custom_font(text: str, style: str) -> str:
+    if style == "Default": return text
+    res = ""
+    for c in text:
+        if style == "𝑅𝑒𝑔𝑢𝑙𝑢𝑠":
+            if 'a' <= c <= 'z': res += chr(0x1D44E + ord(c) - ord('a'))
+            elif 'A' <= c <= 'Z': res += chr(0x1D434 + ord(c) - ord('A'))
+            else: res += c
+        elif style == "𝑨𝒍𝒕𝒂𝒊𝒓":
+            if 'a' <= c <= 'z': res += chr(0x1D482 + ord(c) - ord('a'))
+            elif 'A' <= c <= 'Z': res += chr(0x1D468 + ord(c) - ord('A'))
+            else: res += c
+        elif style == "𝐋𝐔𝐃":
+            if 'a' <= c <= 'z': res += chr(0x1D41A + ord(c) - ord('a'))
+            elif 'A' <= c <= 'Z': res += chr(0x1D400 + ord(c) - ord('A'))
+            else: res += c
+        else:
+            res += c
+    return res
+
 # ── Self-contained Future-based ask() — avoids cross-module routing conflicts ──
 _sj_waiting: dict[int, asyncio.Future] = {}
 
@@ -1031,6 +1051,55 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             sj['buttons_per_post'] = int(_raw10) if _raw10.isdigit() and int(_raw10) > 0 else 10
             buttons_per_post = sj['buttons_per_post']
 
+            # Step 10.1: Link Shortener
+            shortener_apis = await db.get_shortener_apis()
+            s_kb = [["Skip (Direct Link)"]]
+            if shortener_apis.get("arolinks"):
+                s_kb.append(["AroLinks"])
+            if shortener_apis.get("urlshortx"):
+                s_kb.append(["UrlShortX"])
+            
+            _m10_1 = await _ask(bot, user_id,
+                "<b>❪ STEP 10.1: LINK SHORTENER ❫</b>\n\n"
+                "Choose a link shortener to shorten the episode links, or select Skip for direct Telegram links:\n\n"
+                "<i>(Note: APIs can be managed in /settings -> Shorteners)</i>",
+                reply_markup=_RKM(s_kb + [["⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+            )
+            if _is_cancel(_m10_1):
+                await bot.send_message(user_id, "<i>Process Cancelled.</i>", reply_markup=_RKR())
+                return await safe_edit("<i>Process Cancelled.</i>")
+            
+            short_choice = (_m10_1.text or "").strip()
+            if "arolinks" in short_choice.lower():
+                sj['shortener'] = "arolinks"
+            elif "urlshortx" in short_choice.lower():
+                sj['shortener'] = "urlshortx"
+            else:
+                sj['shortener'] = None
+
+            # Step 10.2: Font Style
+            f_kb = [["Default"], ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓"], ["𝐋𝐔𝐃", "Custom"]]
+            _m10_2 = await _ask(bot, user_id,
+                "<b>❪ STEP 10.2: FONT STYLE ❫</b>\n\n"
+                "Choose a font style for the button text (e.g. Story Name 1-10):\n\n"
+                "• <b>Default:</b> Standard text (no translation)\n"
+                "• <b>𝑅𝑒𝑔𝑢𝑙𝑢𝑠:</b> Regulus serif font\n"
+                "• <b>𝑨𝒍𝒕𝒂𝒊𝒓:</b> Altair bold serif italic font\n"
+                "• <b>𝐋𝐔𝐃:</b> Sans-serif bold font\n"
+                "• <b>Custom:</b> Enter your own prefix (e.g. '𝔐𝔶 𝔖𝔱𝔬𝔯𝔶')",
+                reply_markup=_RKM(f_kb + [["⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+            )
+            if _is_cancel(_m10_2):
+                await bot.send_message(user_id, "<i>Process Cancelled.</i>", reply_markup=_RKR())
+                return await safe_edit("<i>Process Cancelled.</i>")
+            
+            font_choice = (_m10_2.text or "").strip()
+            if font_choice == "Custom":
+                _m_cfont = await _ask(bot, user_id, "<b>Enter your custom prefix:</b>\n\nExample: <code>𝔐𝔶 𝔖𝔱𝔬𝔯𝔶</code>", reply_markup=_RKR())
+                sj['font'] = (_m_cfont.text or "").strip()
+            else:
+                sj['font'] = font_choice
+
             # Step 11: Live monitoring (only for non-force-live)
             if not sj.get('live_threshold'):
                 _m11 = await _ask(bot, user_id,
@@ -1137,7 +1206,34 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 protect=protect, access_hash=db_access_hash
             )
             url = f"https://t.me/{bot_usr}?start={uuid_str}"
+
+            # --- APPLY SHORTENER ---
+            short_choice = sj.get('shortener')
+            if short_choice:
+                apis = await db.get_shortener_apis()
+                api_key = apis.get("arolinks") if short_choice == "arolinks" else apis.get("urlshortx")
+                if api_key:
+                    try:
+                        import aiohttp
+                        async with aiohttp.ClientSession() as session:
+                            domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.com"
+                            api_url = f"https://{domain}/api?api={api_key}&url={url}"
+                            async with session.get(api_url, timeout=10) as resp:
+                                data = await resp.json()
+                                if data.get("status") == "success" and "shortenedUrl" in data:
+                                    url = data["shortenedUrl"]
+                    except Exception as e:
+                        logger.error(f"Error shortening url: {e}")
+                        
             btn_text = str(b_s) if (b_s == b_e or batch_size == 1) else f"{b_s}–{b_e}"
+            font_style = sj.get('font', 'Default')
+            if font_style != "Default":
+                if font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+                    prefix = to_custom_font(sj['story'], font_style)
+                else:
+                    prefix = font_style
+                btn_text = f"{prefix} {btn_text}"
+
             raw_buttons.append({
                 "btn":      InlineKeyboardButton(_sc(btn_text), url=url),
                 "ep_start": b_s,
