@@ -1568,7 +1568,7 @@ async def _show_story_profile(client, user_id, story, lang):
 
         
 
-    demo_btn = "👀 डेमो फ़ाइलें देखें" if lang == "hi" else "👀 View Demo Files"
+    demo_btn = "डेमो फ़ाइलें देखें" if lang == "hi" else "View Demo Files"
 
     kb = [
 
