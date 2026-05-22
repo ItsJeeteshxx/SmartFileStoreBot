@@ -423,7 +423,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
         end_id      = int(job.get("end_id") or 0)
         current     = int(job.get("current_id") or job.get("start_id") or 1)
-
+        processed_ids = job.get("processed_ids") or []
         await _mj_update(job_id, status="running", error="")
         logger.info(f"[MultiJob {job_id}] Started. current={current} end={end_id}")
 
