@@ -870,24 +870,7 @@ async def _run_job(job_id: str, user_id: int):
                 except Exception:
                     await _update_job(job_id, prog_msg_created=True)
 
-            def get_natural_sort_key(msg):
-                import re
-                media_obj = getattr(msg, msg.media.value if msg.media else '', None) if msg.media else None
-                filename = getattr(media_obj, 'file_name', '') if media_obj else ''
-                caption = msg.caption or getattr(msg.text, 'html', str(msg.text)) if msg.text else ''
-                
-                search_txt = f"{filename} {caption}".lower()
-                
-                # Heuristic 1: Explicit markers (Ep, Part, Chapter)
-                m1 = re.search(r'(?:ep|episode|part|ch|chapter|e)\s*[-_:]?\s*0*(\d+)', search_txt)
-                if m1: return (0, int(m1.group(1)), msg.id)
-                
-                # Heuristic 2: Trailing numerics isolated in filename
-                m2 = re.findall(r'(?<!\d)0*(\d+)(?!\d)', str(filename))
-                if m2: return (1, int(m2[-1]), msg.id)
-                
-                # Fallback
-                return (2, msg.id, msg.id)
+            from plugins.utils import get_natural_sort_key
 
             job_last_prog_update = time.time()
             consecutive_empty = 0
