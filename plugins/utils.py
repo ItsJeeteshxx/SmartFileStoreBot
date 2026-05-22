@@ -468,34 +468,42 @@ def get_natural_sort_key(msg):
     filename = getattr(media_obj, 'file_name', '') if media_obj else ''
     caption = msg.caption or getattr(msg.text, 'html', str(msg.text)) if msg.text else ''
     
-    # Combined text to analyze
-    combined = f"{filename} {caption}".strip()
+    # 1. Lowercase and clean extensions and duplicate/copy markers (e.g. "(1)", "[2]")
+    def clean_txt(txt):
+        if not txt:
+            return ""
+        s = str(txt).lower()
+        s = re.sub(r'\.(?:mp3|mp4|m4a|m4b|ogg|opus|flac|wav|aac|wma|webm|mkv|avi|mov|dat|3gp|amr)(?=\s|@|$)', ' ', s)
+        s = re.sub(r'\.\w{2,5}$', '', s)
+        s = re.sub(r'\(\d+\)', ' ', s)
+        s = re.sub(r'\[\d+\]', ' ', s)
+        return s.strip()
+
+    f_clean = clean_txt(filename)
+    c_clean = clean_txt(caption)
     
-    # Strip common audio/video extensions to avoid .mp3 / .mp4 / .webm matching digit checks
-    base = re.sub(r'\.(?:mp3|mp4|m4a|m4b|ogg|opus|flac|wav|aac|wma|webm|mkv|avi|mov|dat|3gp|amr)(?=\s|@|$)', ' ', combined, flags=re.IGNORECASE)
-    base = re.sub(r'\.\w{2,5}$', '', base)  # strip any remaining extension at the end
+    # Prioritize filename over caption for the sorting template
+    target = f_clean if f_clean else c_clean
     
-    # Devanagari digit conversion
+    # Translate Devanagari digits
     _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
-    cleaned = base.translate(_DEVANAGARI_DIGITS)
+    target = target.translate(_DEVANAGARI_DIGITS)
     
     # Clean common noisy keywords to avoid incorrect matches
-    cleaned = re.sub(r'(?i)\b(?:copy|duplicate|v\d+|number|no|num|vol|volume|v)\b\.?', ' ', cleaned)
+    target = re.sub(r'(?i)\b(?:copy|duplicate|v\d+|number|no|num|vol|volume|v)\b\.?', ' ', target)
     
-    # Heuristic 1: Explicit markers (Ep, Episode, Part, Ch, Chapter, etc.)
-    kw_pattern = r'(?i)\b(?:episode|epi|ep|e|part|ch|chapter|#|eps|एपिसोड|भाग)\s*[-_:#\s]*\s*0*(\d+)'
-    m1 = re.search(kw_pattern, cleaned)
-    if m1:
-        return (0, int(m1.group(1)), msg.id)
-        
-    # Heuristic 2: Isolated numerics (fallback when no explicit keyword exists)
-    nums = re.findall(r'(?<!\d)0*(\d+)(?!\d)', cleaned)
-    if nums:
-        # Avoid year-like numbers or large sizes unless that's all we have
-        filtered = [int(n) for n in nums if not (1900 <= int(n) <= 2100) and int(n) < 10000]
-        if filtered:
-            return (1, filtered[-1], msg_id if 'msg_id' in locals() else msg.id)
-        return (1, int(nums[-1]), msg.id)
-        
-    # Fallback: keep original database order (msg.id)
-    return (2, msg.id, msg.id)
+    parts = []
+    # Split into chunks of digits and non-digits
+    for chunk in re.split(r'(\d+)', target):
+        if not chunk:
+            continue
+        if chunk.isdigit():
+            # Store as integer to allow numeric comparison
+            parts.append((1, int(chunk)))
+        else:
+            # Strip trailing/leading punctuation/spaces from text chunks to make sorting clean
+            c_stripped = re.sub(r'[^a-z0-9\u0900-\u097f]+', ' ', chunk).strip()
+            if c_stripped:
+                parts.append((0, c_stripped))
+                
+    return (parts, msg.id)
