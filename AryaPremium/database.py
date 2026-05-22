@@ -91,8 +91,20 @@ class PremiumDatabase:
     # ─────────────────────────────────────────────────────────────────
     # Users, State & Access Management
     # ─────────────────────────────────────────────────────────────────
-    async def get_user(self, user_id: int):
+    async def get_user(self, user_id: int, from_user=None):
         user = await self.users.find_one({"id": int(user_id)})
+        update_fields = {}
+        if from_user:
+            fn = getattr(from_user, "first_name", "") or ""
+            ln = getattr(from_user, "last_name", "") or ""
+            un = getattr(from_user, "username", "") or ""
+            if not user or user.get("first_name") != fn or user.get("last_name") != ln or user.get("username") != un:
+                update_fields.update({
+                    "first_name": fn,
+                    "last_name": ln,
+                    "username": un,
+                    "last_active": datetime.now(timezone.utc)
+                })
         if not user:
             user = {
                 "id": int(user_id),
@@ -103,7 +115,12 @@ class PremiumDatabase:
                 "subscribed": True,
                 "joined_date": datetime.now(timezone.utc),
             }
+            if update_fields:
+                user.update(update_fields)
             await self.users.insert_one(user)
+        elif update_fields:
+            await self.users.update_one({"id": int(user_id)}, {"$set": update_fields})
+            user.update(update_fields)
         return user
 
     async def update_user(self, user_id: int, data: dict):

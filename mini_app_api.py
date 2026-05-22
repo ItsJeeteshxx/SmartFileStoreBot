@@ -1864,15 +1864,37 @@ async def get_admin_buyers(telegram_id: str):
             
             if uid not in buyers_map:
                 u = user_cache.get(uid)
-                if not u: continue
-                _ufn = (u.get("first_name") or "").strip()
-                _uln = (u.get("last_name") or "").strip()
-                _ufull = " ".join(filter(None, [_ufn, _uln])) or u.get("username", "") or "User"
+                if u:
+                    _ufn = (u.get("first_name") or "").strip()
+                    _uln = (u.get("last_name") or "").strip()
+                    _ufull = " ".join(filter(None, [_ufn, _uln])) or u.get("username", "") or "User"
+                    _uname = u.get("username", "Unknown")
+                    _photo = u.get("photo_url", "")
+                else:
+                    _uname = c.get("username") or "Unknown"
+                    _ufull = _uname if _uname != "Unknown" else f"User {uid}"
+                    _photo = ""
+                    try:
+                        asyncio.create_task(arya_db.db.users.update_one(
+                            {"id": int(uid)},
+                            {"$setOnInsert": {
+                                "id": int(uid),
+                                "username": _uname,
+                                "first_name": _uname,
+                                "joined_date": datetime.now(timezone.utc),
+                                "purchases": [],
+                                "language": "en"
+                            }},
+                            upsert=True
+                        ))
+                    except:
+                        pass
+                
                 buyers_map[uid] = {
                     "user_id": uid,
-                    "username": u.get("username", "Unknown"),
+                    "username": _uname,
                     "first_name": _ufull,
-                    "photo_url": u.get("photo_url", ""),
+                    "photo_url": _photo,
                     "payments": [],
                     "total_amt": 0,
                     "date": c.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at", "")),
@@ -1921,15 +1943,37 @@ async def get_admin_buyers(telegram_id: str):
             
             if uid not in buyers_map:
                 u = user_cache.get(uid)
-                if not u: continue
-                _ofn = (u.get("first_name") or doc.get("first_name") or "").strip()
-                _oln = (u.get("last_name") or "").strip()
-                _ofull = " ".join(filter(None, [_ofn, _oln])) or u.get("username", doc.get("username", "")) or "User"
+                if u:
+                    _ofn = (u.get("first_name") or doc.get("first_name") or "").strip()
+                    _oln = (u.get("last_name") or "").strip()
+                    _ofull = " ".join(filter(None, [_ofn, _oln])) or u.get("username", doc.get("username", "")) or "User"
+                    _uname = u.get("username", doc.get("username", "Unknown"))
+                    _photo = u.get("photo_url", "")
+                else:
+                    _uname = doc.get("username") or "Unknown"
+                    _ofull = _uname if _uname != "Unknown" else f"User {uid}"
+                    _photo = ""
+                    try:
+                        asyncio.create_task(arya_db.db.users.update_one(
+                            {"id": int(uid)},
+                            {"$setOnInsert": {
+                                "id": int(uid),
+                                "username": _uname,
+                                "first_name": _uname,
+                                "joined_date": datetime.now(timezone.utc),
+                                "purchases": [],
+                                "language": "en"
+                            }},
+                            upsert=True
+                        ))
+                    except:
+                        pass
+                
                 buyers_map[uid] = {
                     "user_id": uid,
-                    "username": u.get("username", doc.get("username", "Unknown")) if u else doc.get("username", "Unknown"),
+                    "username": _uname,
                     "first_name": _ofull,
-                    "photo_url": u.get("photo_url", ""),
+                    "photo_url": _photo,
                     "payments": [],
                     "total_amt": 0,
                     "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", "")),
