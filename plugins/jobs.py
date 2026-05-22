@@ -2737,6 +2737,41 @@ async def _create_job_flow(bot, user_id: int):
 
     skip_dupelicates = "yes" in (dupe_r.text or "").lower() or "✅" in (dupe_r.text or "")
 
+    # ── Step 9/9: Smart Order ─────────────────────────────
+    while True:
+        smart_r = await _ask(bot, user_id,
+            "<b>Step 9/9 — Smart Order?</b>\n\n"
+            "Should the bot automatically buffer and sort messages naturally (e.g. Ep 1, Ep 2, Part 1, Part 2) to correct any out-of-order uploads?\n\n"
+            "<blockquote expandable>"
+            "• <b>ON</b> — Sorts episodes/parts before forwarding\n"
+            "• <b>OFF</b> — Forwards in raw chronological order\n"
+            "</blockquote>",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("✅ YES (Enable Smart Order)")],
+                 [KeyboardButton("❌ NO (Disable Smart Order)")],
+                 [UNDO_BTN, CANCEL_BTN]],
+                resize_keyboard=True, one_time_keyboard=True
+            ))
+
+        if _cancel(smart_r.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        if _undo(smart_r.text):
+            # redo skip duplicates
+            dupe_r2 = await _ask(bot, user_id,
+                "<b>↩️ Redo — Step 8/8: Skip Duplicates?</b>\n\n"
+                "ON or OFF?",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("✅ YES (Skip duplicates)")],
+                     [KeyboardButton("❌ NO (Allow duplicates)")], [CANCEL_BTN]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if _cancel(dupe_r2.text):
+                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            skip_dupelicates = "yes" in (dupe_r2.text or "").lower() or "✅" in (dupe_r2.text or "")
+            continue
+        break
+
+    smart_order = "yes" in (smart_r.text or "").lower() or "✅" in (smart_r.text or "")
+
     # ── Save & Start ──────────────────────────────────────────────
     job_id = f"{user_id}-{int(time.time())}"
     job = {
@@ -2767,6 +2802,7 @@ async def _create_job_flow(bot, user_id: int):
         "forwarded":          0,
         "last_seen_id":       0,
         "skip_duplicates":    skip_dupelicates,
+        "smart_order":        smart_order,
         "seen_file_ids":      [],
         "seen_file_names":    [],
     }
@@ -2785,6 +2821,7 @@ async def _create_job_flow(bot, user_id: int):
     if max_duration_s:
         size_lbl += f"\n<b>Max duration:</b> {max_duration_s}s"
     dupe_lbl = "\n<b>Skip Dupes:</b> ✅ ON" if skip_dupelicates else "\n<b>Skip Dupes:</b> ❌ OFF"
+    smart_lbl_msg = "\n<b>Smart Order:</b> ✅ ON" if smart_order else "\n<b>Smart Order:</b> ❌ OFF"
 
     kind = "Bot" if is_bot else "Userbot"
     await bot.send_message(
@@ -2793,11 +2830,12 @@ async def _create_job_flow(bot, user_id: int):
         f"🟢 <b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}"
         f"{dest2_lbl}\n"
         f"<b>Account:</b> {kind}: {sel_acc.get('name','?')}\n"
-        f"{batch_lbl}{size_lbl}{dupe_lbl}\n"
+        f"{batch_lbl}{size_lbl}{dupe_lbl}{smart_lbl_msg}\n"
         f"<b>Job ID:</b> <code>{job_id[-6:]}</code>\n\n"
         f"<i>Running in the background. Use /jobs to manage.</i>",
         reply_markup=ReplyKeyboardRemove()
     )
+
 
 @Client.on_callback_query(filters.regex(r'^job#src#'))
 async def job_src_cb(bot, query):

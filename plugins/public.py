@@ -264,8 +264,22 @@ async def run(bot, message):
 
     reverse_order = True if "New to Old" in order_msg.text or "Nᴇᴡ ᴛᴏ Oʟᴅ" in order_msg.text else False
 
-    # ── Smart Order toggle removed ──────────────────────────────────────────
-    smart_order = False
+    # ── Smart Order Toggle ──────────────────────────────────────────────────
+    smart_btn = ReplyKeyboardMarkup([
+        [KeyboardButton("🧠 Yᴇs, Sᴍᴀʀᴛ Oʀᴅᴇʀ (Sᴏʀᴛ Eᴘɪsᴏᴅᴇs)"), KeyboardButton("⚡ Nᴏ, Rᴀᴡ Oʀᴅᴇʀ")]
+    ], resize_keyboard=True, one_time_keyboard=True)
+    smart_msg = await bot.ask(
+        message.chat.id,
+        "<b>🧠 Enable Smart Order?</b>\n\n"
+        "Should the bot automatically buffer and sort messages naturally (e.g. Ep 1, Ep 2, Part 1, Part 2) to correct any out-of-order uploads?\n\n"
+        "• <b>Yes, Smart:</b> Sorts episodes/parts before forwarding\n"
+        "• <b>No, Raw:</b> Forwards in raw chronological order\n",
+        reply_markup=smart_btn
+    )
+    if smart_msg.text.startswith('/'):
+        await message.reply(await t(user_id, 'CANCEL'), reply_markup=ReplyKeyboardRemove())
+        return
+    smart_order = "Yes" in smart_msg.text or "Yᴇs" in smart_msg.text or "🧠" in smart_msg.text
 
 
     # ── Direct Native Forward toggle ──────────────────────────────────────────
@@ -376,6 +390,7 @@ async def run(bot, message):
         f"<b>│</b> ⊸ <b>Caption:</b> {caption_m}\n"
         f"<b>│</b> ⊸ <b>Transfer:</b> {dl_mode}\n"
         f"<b>│</b> ⊸ <b>Filters:</b> {filter_str}\n"
+        f"<b>│</b> ⊸ <b>Smart Order:</b> {smart_lbl}\n"
         f"<b>└──────────────────────────────────</b>\n\n"
         f"<b>┌──────❮ 💡 𝐑𝐞𝐦𝐢𝐧𝐝𝐞𝐫𝐬 ❯───────────</b>\n"
         f"{hints_block}"

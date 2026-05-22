@@ -1590,6 +1590,50 @@ async def _create_mj_flow(bot, user_id: int):
             try: start_id = int(rtext)
             except Exception: pass
 
+    # ── Step 6/6: Smart Order ─────────────────────────────
+    while True:
+        smart_r = await _mj_ask(bot, user_id,
+            "<b>Step 6/6 — Smart Order?</b>\n\n"
+            "Should the bot automatically buffer and sort messages naturally (e.g. Ep 1, Ep 2, Part 1, Part 2) to correct any out-of-order uploads?\n\n"
+            "<blockquote expandable>"
+            "• <b>ON</b> — Sorts episodes/parts before forwarding\n"
+            "• <b>OFF</b> — Forwards in raw chronological order\n"
+            "</blockquote>",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("✅ YES (Enable Smart Order)")],
+                 [KeyboardButton("❌ NO (Disable Smart Order)")],
+                 [UNDO_BTN, CANCEL_BTN]],
+                resize_keyboard=True, one_time_keyboard=True
+            ))
+
+        if _cancel(smart_r.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        if _undo(smart_r.text):
+            # redo message range
+            range_r2 = await _mj_ask(bot, user_id,
+                "<b>↩️ Redo — Step 5/6: Message Range</b>\n\nWhich messages should be copied?",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("ALL")], [CANCEL_BTN]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if _cancel(range_r2.text):
+                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            start_id = from_thread if from_thread else 1
+            end_id = 0
+            rtext = range_r2.text.strip().lower()
+            if rtext != "all":
+                if ":" in rtext:
+                    parts = rtext.split(":", 1)
+                    try: start_id = int(parts[0].strip())
+                    except Exception: pass
+                    try: end_id   = int(parts[1].strip())
+                    except Exception: pass
+                else:
+                    try: start_id = int(rtext)
+                    except Exception: pass
+            continue
+        break
+
+    smart_order = "yes" in (smart_r.text or "").lower() or "✅" in (smart_r.text or "")
 
     # ── Save & Start ──────────────────────────────────────────────
     job_id = f"mj-{user_id}-{int(time.time())}"
@@ -1618,7 +1662,7 @@ async def _create_mj_flow(bot, user_id: int):
         "forwarded":      0,
         "consecutive_empty": 0,
         "error":          "",
-        "smart_order":    True,
+        "smart_order":    smart_order,
     }
     await _mj_save(job)
     
@@ -1628,6 +1672,7 @@ async def _create_mj_flow(bot, user_id: int):
     end_lbl   = f"to ID <code>{end_id}</code>" if end_id else "all messages"
     thread_lbl = f" → Topic <code>{to_thread}</code>" if to_thread else ""
     kind = "Bot" if is_bot else "Userbot"
+    smart_lbl_msg = "✅ ON" if smart_order else "❌ OFF"
     
     run_msg = "<i>Running in background.\nUse /multijob to manage.</i>" if should_run_locally else f"<i>Queued for worker: <b>{target_node}</b>.\nUse /multijob to manage.</i>"
 
@@ -1637,6 +1682,7 @@ async def _create_mj_flow(bot, user_id: int):
         f"<b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}\n"
         f"<b>Account:</b> {kind}: {sel_acc.get('name','?')}\n"
         f"<b>Range:</b> From ID <code>{start_id}</code> · {end_lbl}\n"
+        f"<b>Smart Order:</b> {smart_lbl_msg}\n"
         f"<b>Job ID:</b> <code>{job_id[-6:]}</code>\n\n"
         f"{run_msg}",
         reply_markup=ReplyKeyboardRemove()
