@@ -565,24 +565,38 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 dm_msgs.sort(key=lambda m: m.id)
                 logger.info(f"[MultiJob {job_id}] DM batch: {len(dm_msgs)} msgs collected. Smart order is disabled; processing in raw order.")
 
-            for msg in dm_msgs:
+            for idx, msg in enumerate(dm_msgs):
                 await pause_ev.wait()
                 fresh2 = await _mj_get(job_id)
                 if not fresh2 or fresh2.get("status") in ("stopped",):
                     return
+
+                if job.get("smart_order", True):
+                    checkpoint_id = min(m.id for m in dm_msgs[idx:])
+                else:
+                    checkpoint_id = msg.id
+
                 if not _passes_filters(msg, disabled_types):
-                    current = msg.id + 1
+                    if job.get("smart_order", True):
+                        checkpoint_id = min(m.id for m in dm_msgs[idx+1:]) if idx+1 < len(dm_msgs) else (max(m.id for m in dm_msgs) + 1)
+                    else:
+                        checkpoint_id = msg.id + 1
+                    current = checkpoint_id
                     await _mj_update(job_id, current_id=current)
                     continue
                 _remove_links = 'links' in disabled_types
 
                 # CHECKPOINT: record we're AT this message before forwarding
-                await _mj_update(job_id, current_id=msg.id)
+                await _mj_update(job_id, current_id=checkpoint_id)
 
                 client = await _mj_ensure_client_alive(client)
                 success = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
-                current = msg.id + 1
+                if job.get("smart_order", True):
+                    checkpoint_id = min(m.id for m in dm_msgs[idx+1:]) if idx+1 < len(dm_msgs) else (max(m.id for m in dm_msgs) + 1)
+                else:
+                    checkpoint_id = msg.id + 1
+                current = checkpoint_id
                 await _mj_update(job_id, current_id=current)
                 if success:
                     await _mj_inc(job_id, 1)
@@ -808,25 +822,29 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 
             # Forward each valid message
-            for msg in valid:
+            for idx, msg in enumerate(valid):
                 await pause_ev.wait()
 
                 fresh2 = await _mj_get(job_id)
                 if not fresh2 or fresh2.get("status") in ("stopped",):
                     return
 
+                if job.get("smart_order", True):
+                    checkpoint_id = min(m.id for m in valid[idx:])
+                else:
+                    checkpoint_id = msg.id
+
                 if not _passes_filters(msg, disabled_types):
-                    current = msg.id + 1
+                    if job.get("smart_order", True):
+                        checkpoint_id = min(m.id for m in valid[idx+1:]) if idx+1 < len(valid) else (batch_end + 1)
+                    else:
+                        checkpoint_id = msg.id + 1
+                    current = checkpoint_id
                     await _mj_update(job_id, current_id=current)
                     continue
 
                 # ── CHECKPOINT before forwarding ──────────────────────────────────
-                # Write current_id = msg.id BEFORE attempting the forward.
-                # If the bot crashes or the connection dies mid-forward, the DB
-                # still points AT this message so restart will retry it — not skip it.
-                # old code wrote msg.id+1 AFTER forward; if forward failed and the
-                # job then crashed, the cursor was already past the failed message.
-                await _mj_update(job_id, current_id=msg.id)
+                await _mj_update(job_id, current_id=checkpoint_id)
                 # ─────────────────────────────────────────────────────────────────
 
                 # Heal client connection before forward
@@ -837,10 +855,11 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
 
                 # Advance cursor past this message in all cases.
-                # If success=False it means _mj_forward exhausted its 4 retries
-                # (permanently skippable content — protected/restricted/wrong type).
-                # We still advance so the job doesn't stall on unforwardable content.
-                current = msg.id + 1
+                if job.get("smart_order", True):
+                    checkpoint_id = min(m.id for m in valid[idx+1:]) if idx+1 < len(valid) else (batch_end + 1)
+                else:
+                    checkpoint_id = msg.id + 1
+                current = checkpoint_id
                 await _mj_update(job_id, current_id=current)
                 if success:
                     await _mj_inc(job_id, 1)
@@ -851,7 +870,10 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
             # Advance cursor — guard against valid being empty after topic-filter
             if valid:
-                current = valid[-1].id + 1
+                if job.get("smart_order", True):
+                    current = batch_end + 1
+                else:
+                    current = valid[-1].id + 1
             else:
                 current += BATCH_SIZE  # skip the batch that had no topic-matching msgs
             await _mj_update(job_id, current_id=current)

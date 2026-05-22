@@ -338,15 +338,22 @@ def extract_ep_label_robust(fname: str) -> dict:
     fname = fname.translate(_DEVANAGARI_DIGITS)
 
     # ── 1. Strip extension & metadata markers ────────────────────────────────
-    # Strip extensions from ANYWHERE in the combined string (title @@@  filename @@@ caption).
-    # The caller combines them with @@@ so .mp3, .mp4, .m4a etc. appear in the middle,
-    # not just at the end. Without this, '3' in 'mp3' or '4' in 'mp4' gets mistakenly
-    # extracted as the episode number.
-    base = re.sub(r'\.(?:mp3|mp4|m4a|m4b|ogg|opus|flac|wav|aac|wma|webm|mkv|avi|mov|dat|3gp|amr)(?=\s|@|$)', ' ', fname, flags=re.IGNORECASE)
-    base = re.sub(r'\.\w{2,5}$', '', base)  # also strip any remaining extension at end
-    base = re.sub(r'(?i)\b(?:copy|duplicate|v\d+)\b', '', base)
-    base = re.sub(r'(?i)\(\s*(?:copy|duplicate|\d+)\s*\)\s*$', '', base)
-    b_norm = base.strip()
+    # Split by ' @@@ ' separator to process title and filename parts separately.
+    # This ensures that trailing duplicate/copy tags (e.g. " (1)" or " [2]") are properly
+    # stripped using the "$" anchor of the regex, even if they are present in both
+    # the title and the filename fields.
+    parts = [p.strip() for p in fname.split('@@@')]
+    clean_parts = []
+    for p in parts:
+        # Strip extensions
+        base = re.sub(r'\.(?:mp3|mp4|m4a|m4b|ogg|opus|flac|wav|aac|wma|webm|mkv|avi|mov|dat|3gp|amr)(?=\s|$)', ' ', p, flags=re.IGNORECASE)
+        base = re.sub(r'\.\w{2,5}$', '', base)  # also strip any remaining extension at end
+        # Strip copy/duplicate indicators
+        base = re.sub(r'(?i)\b(?:copy|duplicate|v\d+)\b', '', base)
+        base = re.sub(r'(?i)\(\s*(?:copy|duplicate|\d+)\s*\)\s*$', '', base)
+        base = re.sub(r'(?i)\[\s*(?:copy|duplicate|\d+)\s*\]\s*$', '', base)
+        clean_parts.append(base.strip())
+    b_norm = " @@@ ".join(clean_parts).strip()
 
 
 
@@ -365,7 +372,7 @@ def extract_ep_label_robust(fname: str) -> dict:
 
     # ── 4. Clean trailing lone `_digits` only if no range present ────────────
     if not re.search(r'\d+-\d+\s*$', b_norm):
-        b_norm = re.sub(r'(?<!\d)_\d+\s*$', '', b_norm)
+        b_norm = re.sub(r'(?<![_\d])_\d+\s*$', '', b_norm)
 
     # Strip spaces around dashes for cleaner matching
     b_norm = re.sub(r'\s*-\s*', '-', b_norm)

@@ -438,7 +438,7 @@ def _build_atempo_chain(speed):
         filters.append(f"atempo={rem:.6f}")
     return ",".join(filters) if filters else ""
 
-async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=None, speed=1.0, make_video=False, video_cover=None, outro_cover=None, total_duration=None, progress_cb=None, is_chunk=False):
+async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=None, speed=1.0, make_video=False, video_cover=None, outro_cover=None, total_duration=None, progress_cb=None, is_chunk=False, video_bg=None):
     """Merge file_list → output_path. Tries lossless copy first, falls back to re-encode.
     make_video: If True and cover is present, creates an MP4 video out of the merged audio and cover image.
     speed: 1.0 = normal, 2.5 = 2.5x faster.
@@ -525,9 +525,9 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
         atempo = _build_atempo_chain(speed) if abs(speed - 1.0) > 0.001 else ""
         eff_cover = video_cover or cover
-        if make_video and not (eff_cover and os.path.exists(eff_cover)):
+        if make_video and not ((eff_cover and os.path.exists(eff_cover)) or (video_bg and os.path.exists(video_bg))):
             make_video = False
-            logger.warning("[FFmpeg] make_video was True but no valid cover found. Falling back to audio merge.")
+            logger.warning("[FFmpeg] make_video was True but no valid cover or video background found. Falling back to audio merge.")
 
         # Audio concatenation with different formats (mp3 + m4a) must be re-encoded to prevent truncation.
         # We enforce re-encode if it's an audio merge with multiple files, or if make_video is True.
@@ -575,7 +575,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
         # ══════════════════════════════════════════════════════════════════════
         eff_cover = video_cover or cover
 
-        if make_video and eff_cover and os.path.exists(eff_cover) and mtype == "audio":
+        if make_video and mtype == "audio" and ((eff_cover and os.path.exists(eff_cover)) or (video_bg and os.path.exists(video_bg))):
             # ─── Step A: Merge audio parts → single tmp_audio.m4a ──────────────
             # Use concat DEMUXER (not filter_complex) — streams files sequentially,
             # O(1) RAM regardless of how many parts there are. Parts are uniform
@@ -615,7 +615,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             if real_dur <= 0:
                 real_dur = total_duration / max(speed, 0.1) if total_duration else 3600 * 5
 
-            # ─── Step B: Build video from cover + single audio ──────────────────
+            # ─── Step B: Build video from cover/video_bg + single audio ──────────────────
             # Determine valid outros
             if isinstance(outro_cover, list):
                 valid_outros = [o for o in outro_cover if isinstance(o, str) and os.path.exists(o)]
@@ -624,86 +624,130 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             else:
                 valid_outros = []
 
-            # Step B: encode video — 1fps still-image + merged audio
-            # Key optimisations for large files / YouTube:
-            #   • -r 1           → 1 fps; cover never changes, no need for 25 fps
-            #   • veryfast       → 4-5× faster encode vs superfast, similar quality
-            #   • -crf 23        → decent quality without huge bitrate
-            #   • -maxrate/-bufsize → prevent VBR spikes that confuse YouTube
-            #   • -pix_fmt yuv420p → required by YouTube for H.264
-            #   • -map 0:v -map 1:a  → explicit mappings so audio is NEVER dropped
-            #   • -c:a aac -b:a 192k → re-encode from tmp AAC (safer than "copy")
-            #   • -movflags +faststart → moov atom at front for streaming / YT
-            #   • -shortest       → stop when audio ends (not when static image loop ends)
-            #   • -fflags +genpts → regenerate timestamps cleanly
+            if video_bg and os.path.exists(video_bg):
+                cmd_v = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                         "-threads", FFMPEG_THREADS,
+                         "-stream_loop", "-1", "-i", os.path.abspath(video_bg)]
+                if valid_outros and len(valid_outros) >= 4:
+                    outro_positions = [
+                        max(0.0, real_dur * 0.25),
+                        max(0.0, real_dur * 0.50),
+                        max(0.0, real_dur * 0.75),
+                        max(0.0, real_dur * 0.95 - 5),
+                    ]
+                    for op in valid_outros[:4]:
+                        cmd_v += ["-loop", "1", "-r", "1", "-t", "5",
+                                  "-i", os.path.abspath(op)]
+                    cmd_v += ["-i", tmp_audio]
+                    audio_idx = 5
 
-            cmd_v = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
-                     "-threads", FFMPEG_THREADS]
+                    fc_parts = [
+                        f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[base]"
+                    ]
+                    prev = "[base]"
+                    for i, pos in enumerate(outro_positions):
+                        end_t = pos + 5.0
+                        out_lbl = f"[ov{i}]" if i < 3 else "[finalv]"
+                        fc_parts.append(
+                            f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[os{i}];"
+                            f"{prev}[os{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_lbl}"
+                        )
+                        prev = out_lbl
+                    cmd_v += ["-filter_complex", ";".join(fc_parts)]
+                    cmd_v += ["-map", "[finalv]", "-map", f"{audio_idx}:a"]
+                else:
+                    cmd_v += ["-i", tmp_audio]
+                    cmd_v += [
+                        "-filter_complex",
+                        "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[v1]",
+                    ]
+                    cmd_v += ["-map", "[v1]", "-map", "1:a"]
 
-            if valid_outros and len(valid_outros) >= 4:
-                outro_positions = [
-                    max(0.0, real_dur * 0.25),
-                    max(0.0, real_dur * 0.50),
-                    max(0.0, real_dur * 0.75),
-                    max(0.0, real_dur * 0.95 - 5),
-                ]
-                cmd_v += ["-loop", "1", "-r", "1", "-t", f"{real_dur:.2f}",
-                          "-i", os.path.abspath(eff_cover)]
-                for op in valid_outros[:4]:
-                    cmd_v += ["-loop", "1", "-r", "1", "-t", "5",
-                              "-i", os.path.abspath(op)]
-                cmd_v += ["-i", tmp_audio]
-                audio_idx = 5
-
-                fc_parts = [
-                    f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                    f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[base]"
-                ]
-                prev = "[base]"
-                for i, pos in enumerate(outro_positions):
-                    end_t = pos + 5.0
-                    out_lbl = f"[ov{i}]" if i < 3 else "[finalv]"
-                    fc_parts.append(
-                        f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[os{i}];"
-                        f"{prev}[os{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_lbl}"
-                    )
-                    prev = out_lbl
-                cmd_v += ["-filter_complex", ";".join(fc_parts)]
-                cmd_v += ["-map", "[finalv]", "-map", f"{audio_idx}:a"]
-            else:
-                # Simple mode: only 2 inputs — cover (0) + audio (1)
-                cmd_v += ["-loop", "1", "-r", "1", "-t", f"{real_dur:.2f}", "-i", os.path.abspath(eff_cover)]
-                cmd_v += ["-i", tmp_audio]
                 cmd_v += [
-                    "-filter_complex",
-                    "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[v1]",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-profile:v", "main",
+                    "-crf", "24",
+                    "-maxrate", "3000k",
+                    "-bufsize", "6000k",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "48000",
+                    "-ac", "2",
+                    "-movflags", "+faststart",
+                    "-fflags", "+genpts",
+                    "-avoid_negative_ts", "make_zero",
+                    "-shortest",
+                    "-max_muxing_queue_size", "9999",
                 ]
-                cmd_v += ["-map", "[v1]", "-map", "1:a"]
+            else:
+                cmd_v = ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+                         "-threads", FFMPEG_THREADS]
+                if valid_outros and len(valid_outros) >= 4:
+                    outro_positions = [
+                        max(0.0, real_dur * 0.25),
+                        max(0.0, real_dur * 0.50),
+                        max(0.0, real_dur * 0.75),
+                        max(0.0, real_dur * 0.95 - 5),
+                    ]
+                    cmd_v += ["-loop", "1", "-r", "1", "-t", f"{real_dur:.2f}",
+                              "-i", os.path.abspath(eff_cover)]
+                    for op in valid_outros[:4]:
+                        cmd_v += ["-loop", "1", "-r", "1", "-t", "5",
+                                  "-i", os.path.abspath(op)]
+                    cmd_v += ["-i", tmp_audio]
+                    audio_idx = 5
 
-            # Common video encoding options — optimised for YouTube + VPS CPU
-            # ultrafast preset uses ~35% less CPU than veryfast for still-image video.
-            # CRF 28 (vs 23) is still visually transparent for a static cover image.
-            cmd_v += [
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-tune", "stillimage",
-                "-profile:v", "main",
-                "-crf", "28",
-                "-maxrate", "800k",
-                "-bufsize", "1600k",
-                "-pix_fmt", "yuv420p",             # mandatory for YouTube H.264
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-ar", "48000",
-                "-ac", "2",
-                "-movflags", "+faststart",
-                "-fflags", "+genpts",
-                "-avoid_negative_ts", "make_zero",
-                "-shortest",                       # stop at audio end
-                "-max_muxing_queue_size", "9999",
-            ]
+                    fc_parts = [
+                        f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[base]"
+                    ]
+                    prev = "[base]"
+                    for i, pos in enumerate(outro_positions):
+                        end_t = pos + 5.0
+                        out_lbl = f"[ov{i}]" if i < 3 else "[finalv]"
+                        fc_parts.append(
+                            f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[os{i}];"
+                            f"{prev}[os{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_lbl}"
+                        )
+                        prev = out_lbl
+                    cmd_v += ["-filter_complex", ";".join(fc_parts)]
+                    cmd_v += ["-map", "[finalv]", "-map", f"{audio_idx}:a"]
+                else:
+                    cmd_v += ["-loop", "1", "-r", "1", "-t", f"{real_dur:.2f}", "-i", os.path.abspath(eff_cover)]
+                    cmd_v += ["-i", tmp_audio]
+                    cmd_v += [
+                        "-filter_complex",
+                        "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=24[v1]",
+                    ]
+                    cmd_v += ["-map", "[v1]", "-map", "1:a"]
+
+                cmd_v += [
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-tune", "stillimage",
+                    "-profile:v", "main",
+                    "-crf", "28",
+                    "-maxrate", "800k",
+                    "-bufsize", "1600k",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "48000",
+                    "-ac", "2",
+                    "-movflags", "+faststart",
+                    "-fflags", "+genpts",
+                    "-avoid_negative_ts", "make_zero",
+                    "-shortest",
+                    "-max_muxing_queue_size", "9999",
+                ]
+
             if metadata:
                 for k, v in (metadata or {}).items():
                     if v: cmd_v += ["-metadata", f"{k}={v}"]
@@ -1036,6 +1080,13 @@ async def _run_job(jid, uid, bot):
             _vcp = os.path.abspath(os.path.join(wdir, "video_cover.jpg"))
             if os.path.exists(_vcp):
                 video_cover = _vcp
+
+        # Video background
+        video_bg = None
+        if job.get("has_video_bg"):
+            _vbg = os.path.abspath(os.path.join(wdir, "video_bg.mp4"))
+            if os.path.exists(_vbg):
+                video_bg = _vbg
 
         # Outro image (video padding)
         outro_cover = None
@@ -1522,7 +1573,8 @@ async def _run_job(jid, uid, bot):
         # Speed already applied in Phase 2, so enforce 1.0x here
         ok, err = await _ffmpeg_merge(
             part_files_sorted, out_path, metadata, mtype,
-            cover, 1.0, make_video, effective_cover_for_video, outro_cover, cumulative_secs, progress_cb=final_prog)
+            cover, 1.0, make_video, effective_cover_for_video, outro_cover, cumulative_secs,
+            progress_cb=final_prog, video_bg=video_bg)
 
         if not ok:
             await _db_up(jid, status="error", error=err[:500])
@@ -2465,46 +2517,226 @@ async def _create_flow(bot, uid, mtype="audio"):
             except: pass
         if cover_path: cover_path = os.path.abspath(cover_path)
 
-        # Step 6c: Make Video?
+        # Step 6c: YouTube Upload / Make Video Flow
         make_video = False
         upload_to_yt = False
+        yt_channel_id = None
+        yt_channel_title = None
         yt_title = None
         yt_thumb_path = None
         yt_start_epi = None
         video_cover_path = None
+        video_bg_path = None
+        video_bg_type = None
         outro_cover_path = None
+
         if mtype == "audio":
-            msg = await _mg_ask(bot, uid,
-                "<b>Step 6c/9:</b> Create an <b>MP4 Video</b> (audio + 1080p image)?\n\n"
-                "Send <code>yes</code> to build a video file, or <code>skip</code> for MP3 only.")
-            if "yes" in (msg.text or "").lower():
-                make_video = True
-                
-                # Step 6d: Video Cover Image (separate from MP3 cover)
+            # Check YouTube channels first
+            from plugins.youtube import get_all_youtube_channels
+            yt_channels = await get_all_youtube_channels()
+            
+            # 1. Ask YouTube Upload first
+            if not yt_channels:
+                # No channel authorized, ask if they want to make video for Telegram
                 msg = await _mg_ask(bot, uid,
-                    "<b>Step 6d/9:</b> Send the <b>1080p image</b> to use as the video background.\n\n"
-                    "<i>(This is separate from the MP3 cover art — send a high-resolution image)</i>\n\n"
-                    "Send <code>skip</code> to use the same image as MP3 cover.")
-                tmp_vdir = os.path.abspath(f"merge_tmp/_vcover_{uid}")
-                os.makedirs(tmp_vdir, exist_ok=True)
+                    "<b>Step 6c/9:</b> Create an <b>MP4 Video</b> for Telegram?\n\n"
+                    "⚠️ <i>No authorized YouTube channels found. Run /ytauth first to connect a channel.</i>",
+                    reply_markup=ReplyKeyboardMarkup([
+                        ["🖼 Yes (Image Background)"],
+                        ["🎥 Yes (30s Video Background)"],
+                        ["⏭ Skip (MP3 only)"],
+                        ["⛔ Cᴀɴᴄᴇʟ"]
+                    ], resize_keyboard=True, one_time_keyboard=True))
+                
+                reply_txt = (msg.text or "").strip().lower()
+                if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                
+                if "image background" in reply_txt:
+                    make_video = True
+                    video_bg_type = "image"
+                elif "video background" in reply_txt:
+                    make_video = True
+                    video_bg_type = "video"
+                else:
+                    make_video = False
+            else:
+                # Ask YouTube Channel to upload
+                buttons_markup = []
+                for ch in yt_channels:
+                    buttons_markup.append([KeyboardButton(f"🎥 {ch.get('title', 'Unknown')}")])
+                buttons_markup.append([KeyboardButton("⏭ Skip (No YouTube Upload)")])
+                buttons_markup.append([KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
+                
+                msg = await _mg_ask(bot, uid,
+                    "<b>Step 6c/9:</b> Choose a <b>YouTube Channel</b> to auto-upload the merged video:\n\n"
+                    "Select one of your authorized channels below, or skip to keep it on Telegram.",
+                    reply_markup=ReplyKeyboardMarkup(buttons_markup, resize_keyboard=True, one_time_keyboard=True)
+                )
+                
+                reply_txt = (msg.text or "").strip()
+                if any(x in reply_txt.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                
+                if "skip" in reply_txt.lower() or "⏭" in reply_txt:
+                    upload_to_yt = False
+                    # Since they skipped YouTube, ask if they want MP4 video for Telegram
+                    msg = await _mg_ask(bot, uid,
+                        "<b>Step 6d/9:</b> Create an <b>MP4 Video</b> for Telegram?\n\n"
+                        "Choose the type of background or skip to get MP3 only.",
+                        reply_markup=ReplyKeyboardMarkup([
+                            ["🖼 Yes (Image Background)"],
+                            ["🎥 Yes (30s Video Background)"],
+                            ["⏭ Skip (MP3 only)"],
+                            ["⛔ Cᴀɴᴄᴇʟ"]
+                        ], resize_keyboard=True, one_time_keyboard=True))
+                    
+                    reply_txt = (msg.text or "").strip().lower()
+                    if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                        return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                    
+                    if "image background" in reply_txt:
+                        make_video = True
+                        video_bg_type = "image"
+                    elif "video background" in reply_txt:
+                        make_video = True
+                        video_bg_type = "video"
+                    else:
+                        make_video = False
+                else:
+                    matched_ch = None
+                    cleaned_reply = reply_txt.replace("🎥", "").strip().lower()
+                    for ch in yt_channels:
+                        title_clean = ch.get('title', '').strip().lower()
+                        if title_clean == cleaned_reply or cleaned_reply in title_clean or title_clean in cleaned_reply:
+                            matched_ch = ch
+                            break
+                    
+                    if not matched_ch:
+                        if len(yt_channels) == 1:
+                            matched_ch = yt_channels[0]
+                        else:
+                            await bot.send_message(uid, "⚠️ Invalid option selected. Skipping YouTube upload.", reply_markup=ReplyKeyboardRemove())
+                            upload_to_yt = False
+                            
+                    if matched_ch:
+                        upload_to_yt = True
+                        make_video = True
+                        yt_channel_id = matched_ch["_id"]
+                        yt_channel_title = matched_ch.get("title", "Unknown")
+                        
+                        # Since they are uploading to YouTube, video is required. Ask background type:
+                        msg = await _mg_ask(bot, uid,
+                            f"<b>Step 6d/9:</b> Choose background type for YouTube video:\n\n"
+                            f"Uploading to YouTube: <b>{yt_channel_title}</b>",
+                            reply_markup=ReplyKeyboardMarkup([
+                                ["🖼 Image Background"],
+                                ["🎥 30s Video Background"],
+                                ["⛔ Cᴀɴᴄᴇʟ"]
+                            ], resize_keyboard=True, one_time_keyboard=True))
+                        
+                        reply_txt = (msg.text or "").strip().lower()
+                        if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                            return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                        
+                        if "video background" in reply_txt:
+                            video_bg_type = "video"
+                        else:
+                            video_bg_type = "image"
+
+            # 2. Collect image or video background based on selection
+            if make_video:
+                if video_bg_type == "video":
+                    # Request 30s background video
+                    msg = await _mg_ask(bot, uid,
+                        "<b>Step 6e/9:</b> Send the <b>30s video file</b> to use as the repeating background.\n\n"
+                        "<i>(The video will loop continuously during the audio duration)</i>\n\n"
+                        "Send a valid video/document file.",
+                        reply_markup=ReplyKeyboardRemove())
+                    
+                    tmp_vdir = os.path.abspath(f"merge_tmp/_vbg_{uid}")
+                    os.makedirs(tmp_vdir, exist_ok=True)
+                    if msg.video:
+                        try:
+                            video_bg_path = await bot.download_media(msg, file_name=os.path.join(tmp_vdir, "video_bg.mp4"))
+                            video_bg_path = os.path.abspath(video_bg_path)
+                        except: pass
+                    elif msg.document and msg.document.mime_type and 'video' in msg.document.mime_type:
+                        try:
+                            video_bg_path = await bot.download_media(msg, file_name=os.path.join(tmp_vdir, "video_bg.mp4"))
+                            video_bg_path = os.path.abspath(video_bg_path)
+                        except: pass
+                    
+                    if not video_bg_path:
+                        # Fallback to image if video not sent or failed
+                        await bot.send_message(uid, "⚠️ Background video not received. Falling back to default image background.")
+                        video_bg_type = "image"
+                
+                if video_bg_type == "image":
+                    # Request 1080p video cover image
+                    msg = await _mg_ask(bot, uid,
+                        "<b>Step 6e/9:</b> Send the <b>1080p image</b> to use as the video background.\n\n"
+                        "<i>(This is separate from the MP3 cover art — send a high-resolution image)</i>\n\n"
+                        "Send <code>skip</code> to use the same image as MP3 cover.",
+                        reply_markup=ReplyKeyboardRemove())
+                    
+                    tmp_vdir = os.path.abspath(f"merge_tmp/_vcover_{uid}")
+                    os.makedirs(tmp_vdir, exist_ok=True)
+                    if msg.photo:
+                        try:
+                            video_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_vdir, "video_cover.jpg"))
+                            video_cover_path = os.path.abspath(video_cover_path)
+                        except: pass
+                    elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
+                        try:
+                            video_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_vdir, "video_cover.jpg"))
+                            video_cover_path = os.path.abspath(video_cover_path)
+                        except: pass
+                    
+                    # Fall back to audio cover if no video cover sent
+                    if not video_cover_path:
+                        video_cover_path = cover_path
+
+            # 3. YouTube specific metadata if upload enabled
+            if upload_to_yt:
+                # YouTube Title
+                msg = await _mg_ask(bot, uid,
+                    "<b>Step 6f/9:</b> Enter specific <b>YouTube Title</b>:\n\n"
+                    "Send <code>skip</code> to use bot default.",
+                    reply_markup=ReplyKeyboardRemove())
+                yt_title = msg.text.strip() if msg.text and msg.text.lower() != "skip" else None
+
+                # YouTube Thumbnail
+                msg = await _mg_ask(bot, uid,
+                    "<b>Step 6g/9:</b> Send custom <b>YouTube Thumbnail</b> image:\n\n"
+                    "Send <code>skip</code> for none.")
+                tmp_tdir = os.path.abspath(f"merge_tmp/_ythumb_{uid}")
+                os.makedirs(tmp_tdir, exist_ok=True)
                 if msg.photo:
                     try:
-                        video_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_vdir, "video_cover.jpg"))
-                        video_cover_path = os.path.abspath(video_cover_path)
+                        yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
+                        yt_thumb_path = os.path.abspath(yt_thumb_path)
                     except: pass
                 elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
                     try:
-                        video_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_vdir, "video_cover.jpg"))
-                        video_cover_path = os.path.abspath(video_cover_path)
+                        yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
+                        yt_thumb_path = os.path.abspath(yt_thumb_path)
                     except: pass
-                # Fall back to audio cover if no video cover sent
-                if not video_cover_path:
-                    video_cover_path = cover_path
+
+                # Starting Episode
+                msg = await _mg_ask(bot, uid,
+                    "<b>Step 6h/9:</b> Enter <b>Starting Episode Number</b> for Timestamps (e.g. 1 or 201).\n\n"
+                    "Send <code>skip</code> to assume 1.")
+                raw_epi = msg.text.strip() if msg.text else ""
+                if raw_epi.lower() != "skip" and raw_epi.isdigit():
+                    yt_start_epi = int(raw_epi)
+                else:
+                    yt_start_epi = 1
 
         if mtype == "video" or make_video:
             # Outro Image
             msg = await _mg_ask(bot, uid,
-                "<b>Step 6e/9:</b> Send the <b>Outro Image</b> to show at the end of the video for 5 seconds.\n\n"
+                "<b>Step 6i/9:</b> Send the <b>Outro Image</b> to show at the end of the video for 5 seconds.\n\n"
                 "Send <code>4auto</code> to use the 4 default outro images (appears 4 times during the video).\n"
                 "Send <code>skip</code> to skip the outro.",
                 reply_markup=ReplyKeyboardMarkup([["4auto"], ["skip"], ["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True))
@@ -2525,88 +2757,6 @@ async def _create_flow(bot, uid, mtype="audio"):
                         outro_cover_path = os.path.abspath(outro_cover_path)
                     except: pass
 
-            # Step 6f: YouTube Upload?
-            from plugins.youtube import get_all_youtube_channels
-            yt_channels = await get_all_youtube_channels()
-            if not yt_channels:
-                await bot.send_message(uid,
-                    "<b>Step 6f/9:</b> Auto-Upload to <b>YouTube (Private)</b> after rendering?\n\n"
-                    "⚠️ <i>No authorized YouTube channels found. Run /ytauth first to connect a channel. Skipping YouTube upload.</i>")
-                await asyncio.sleep(1.5)
-            else:
-                buttons_markup = []
-                for ch in yt_channels:
-                    buttons_markup.append([KeyboardButton(f"🎥 {ch.get('title', 'Unknown')}")])
-                buttons_markup.append([KeyboardButton("⏭ Skip (No YouTube Upload)")])
-                buttons_markup.append([KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
-                
-                msg = await _mg_ask(bot, uid,
-                    "<b>Step 6f/9:</b> Choose a <b>YouTube Channel</b> to auto-upload the merged video:\n\n"
-                    "Select one of your authorized channels below, or skip.",
-                    reply_markup=ReplyKeyboardMarkup(buttons_markup, resize_keyboard=True, one_time_keyboard=True)
-                )
-                
-                reply_txt = (msg.text or "").strip()
-                if any(x in reply_txt.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
-                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                
-                if "skip" in reply_txt.lower() or "⏭" in reply_txt:
-                    upload_to_yt = False
-                else:
-                    matched_ch = None
-                    cleaned_reply = reply_txt.replace("🎥", "").strip().lower()
-                    for ch in yt_channels:
-                        title_clean = ch.get('title', '').strip().lower()
-                        if title_clean == cleaned_reply or cleaned_reply in title_clean or title_clean in cleaned_reply:
-                            matched_ch = ch
-                            break
-                    
-                    if not matched_ch:
-                        if len(yt_channels) == 1:
-                            matched_ch = yt_channels[0]
-                        else:
-                            await bot.send_message(uid, "⚠️ Invalid option selected. Skipping YouTube upload.", reply_markup=ReplyKeyboardRemove())
-                            upload_to_yt = False
-                            
-                    if matched_ch:
-                        upload_to_yt = True
-                        yt_channel_id = matched_ch["_id"]
-                        yt_channel_title = matched_ch.get("title", "Unknown")
-                        
-                        # Step 6g: YouTube Title
-                        msg = await _mg_ask(bot, uid,
-                            "<b>Step 6g/9:</b> Enter specific <b>YouTube Title</b>:\n\n"
-                            "Send <code>skip</code> to use bot default.",
-                            reply_markup=ReplyKeyboardRemove())
-                        yt_title = msg.text.strip() if msg.text.lower() != "skip" else None
-        
-                        # Step 6h: YouTube Thumbnail
-                        msg = await _mg_ask(bot, uid,
-                            "<b>Step 6h/9:</b> Send custom <b>YouTube Thumbnail</b> image:\n\n"
-                            "Send <code>skip</code> for none.")
-                        tmp_tdir = os.path.abspath(f"merge_tmp/_ythumb_{uid}")
-                        os.makedirs(tmp_tdir, exist_ok=True)
-                        if msg.photo:
-                            try:
-                                yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
-                                yt_thumb_path = os.path.abspath(yt_thumb_path)
-                            except: pass
-                        elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
-                            try:
-                                yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
-                                yt_thumb_path = os.path.abspath(yt_thumb_path)
-                            except: pass
-        
-                        # Step 6i: Starting Episode
-                        msg = await _mg_ask(bot, uid,
-                            "<b>Step 6i/9:</b> Enter <b>Starting Episode Number</b> for Timestamps (e.g. 1 or 201).\n\n"
-                            "Send <code>skip</code> to assume 1.")
-                        raw_epi = msg.text.strip() if msg.text else ""
-                        if raw_epi.lower() != "skip" and raw_epi.isdigit():
-                            yt_start_epi = int(raw_epi)
-                        else:
-                            yt_start_epi = 1
-
         # Step 7: Confirm
         dest_preview = "DM only"
         if dest_chats:
@@ -2614,8 +2764,14 @@ async def _create_flow(bot, uid, mtype="audio"):
             dest_preview = ", ".join(names)
 
         meta_pre = "\n".join(f"  {k}: {v}" for k,v in list(metadata.items())[:5] if v) if metadata else ""
-        vc_label = ("✅ Separate 1080p image" if (video_cover_path and video_cover_path != cover_path)
-                    else ("✅ Same as audio cover" if make_video and cover_path else "❌"))
+        if make_video:
+            if video_bg_type == "video":
+                bg_label = "✅ Repeating Video"
+            else:
+                bg_label = ("✅ Separate 1080p image" if (video_cover_path and video_cover_path != cover_path)
+                            else ("✅ Same as audio cover" if cover_path else "❌"))
+        else:
+            bg_label = "❌"
 
         yt_conf_str = f"✅ Private ({yt_channel_title})" if upload_to_yt else "❌"
         msg = await _mg_ask(bot, uid,
@@ -2628,7 +2784,7 @@ async def _create_flow(bot, uid, mtype="audio"):
             f"<b>Total Duration:</b> {dur_str} (Final: {fin_dur_str})\n"
             f"<b>Audio Cover:</b> {'✅' if cover_path else '❌'}\n"
             f"<b>Make MP4 Video:</b> {'✅' if make_video else '❌'}\n"
-            f"<b>Video Image:</b> {vc_label}\n"
+            f"<b>Video Background:</b> {bg_label}\n"
             f"<b>Outro Image:</b> {'✅' if outro_cover_path else '❌'}\n"
             f"<b>Upload to YT:</b> {yt_conf_str}\n"
             + (f"<b>YT Title:</b> {yt_title[:20]+'...' if len(yt_title)>20 else yt_title}\n" if yt_title else "")
@@ -2641,7 +2797,7 @@ async def _create_flow(bot, uid, mtype="audio"):
                 resize_keyboard=True, one_time_keyboard=True))
 
         if not msg.text or (getattr(msg, 'text', None) and any(x in msg.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔'])):
-            for td in (tmp_dir, f"merge_tmp/_vcover_{uid}", f"merge_tmp/_ocover_{uid}", f"merge_tmp/_ythumb_{uid}"):
+            for td in (tmp_dir, f"merge_tmp/_vcover_{uid}", f"merge_tmp/_ocover_{uid}", f"merge_tmp/_ythumb_{uid}", f"merge_tmp/_vbg_{uid}"):
                 try: shutil.rmtree(os.path.abspath(td), ignore_errors=True)
                 except: pass
             return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
@@ -2660,6 +2816,12 @@ async def _create_flow(bot, uid, mtype="audio"):
         if video_cover_path and os.path.exists(str(video_cover_path)):
             shutil.copy2(str(video_cover_path), os.path.join(real_dir, "video_cover.jpg"))
             has_video_cover = True
+
+        # Copy video background
+        has_video_bg = False
+        if video_bg_path and os.path.exists(str(video_bg_path)):
+            shutil.copy2(str(video_bg_path), os.path.join(real_dir, "video_bg.mp4"))
+            has_video_bg = True
         
         if outro_cover_path == "4auto":
             pass
@@ -2670,7 +2832,7 @@ async def _create_flow(bot, uid, mtype="audio"):
             shutil.copy2(str(yt_thumb_path), os.path.join(real_dir, "yt_thumb.jpg"))
         
         # Clean up temp dirs
-        for td in (tmp_dir, f"merge_tmp/_vcover_{uid}", f"merge_tmp/_ocover_{uid}", f"merge_tmp/_ythumb_{uid}"):
+        for td in (tmp_dir, f"merge_tmp/_vcover_{uid}", f"merge_tmp/_ocover_{uid}", f"merge_tmp/_ythumb_{uid}", f"merge_tmp/_vbg_{uid}"):
             try: shutil.rmtree(os.path.abspath(td), ignore_errors=True)
             except: pass
 
@@ -2684,6 +2846,7 @@ async def _create_flow(bot, uid, mtype="audio"):
             "current_id": sid, "output_name": out_name, "merge_type": mtype,
             "metadata": metadata, "dest_chats": dest_chats, "replace_target": replace_target,
             "has_cover": bool(cover_path), "has_video_cover": has_video_cover,
+            "has_video_bg": has_video_bg, "video_bg_type": video_bg_type if make_video else None,
             "has_outro_cover": True if outro_cover_path == "4auto" else bool(outro_cover_path),
             "use_4auto_outros": outro_cover_path == "4auto",
             "speed": speed, "make_video": make_video,
