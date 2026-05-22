@@ -492,18 +492,25 @@ def get_natural_sort_key(msg):
     # Clean common noisy keywords to avoid incorrect matches
     target = re.sub(r'(?i)\b(?:copy|duplicate|v\d+|number|no|num|vol|volume|v)\b\.?', ' ', target)
     
-    parts = []
-    # Split into chunks of digits and non-digits
-    for chunk in re.split(r'(\d+)', target):
-        if not chunk:
-            continue
-        if chunk.isdigit():
-            # Store as integer to allow numeric comparison
-            parts.append((1, int(chunk)))
-        else:
-            # Strip trailing/leading punctuation/spaces from text chunks to make sorting clean
-            c_stripped = re.sub(r'[^a-z0-9\u0900-\u097f]+', ' ', chunk).strip()
-            if c_stripped:
-                parts.append((0, c_stripped))
-                
-    return (parts, msg.id)
+    # Heuristic 1: Explicit markers (Ep, Episode, Part, Ch, Chapter, etc.)
+    kw_pattern = r'(?i)\b(?:episode|epi|ep|e|part|ch|chapter|#|eps|एपिसोड|भाग)\s*[-_:#\s]*\s*0*(\d+)'
+    m1 = re.search(kw_pattern, target)
+    if m1:
+        return (0, int(m1.group(1)), msg.id)
+        
+    # Heuristic 2: Starts with a number (e.g. "103", "1301_MVS")
+    m2 = re.match(r'^\s*0*(\d+)', target)
+    if m2:
+        return (0, int(m2.group(1)), msg.id)
+        
+    # Heuristic 3: Isolated numerics
+    nums = re.findall(r'(?<!\d)0*(\d+)(?!\d)', target)
+    if nums:
+        # Avoid year-like numbers or large sizes unless that's all we have
+        filtered = [int(n) for n in nums if not (1900 <= int(n) <= 2100) and int(n) < 10000]
+        if filtered:
+            return (0, filtered[-1], msg.id)
+        return (0, int(nums[-1]), msg.id)
+        
+    # Fallback: keep original database order (msg.id)
+    return (1, msg.id, msg.id)
