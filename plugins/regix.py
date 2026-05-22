@@ -217,38 +217,27 @@ async def pub_(bot, message):
               if not sort_buffer: return
               
               if smart_order:
-                  import re
+                  from plugins.utils import get_natural_sort_key
                   def _smart_sort_key(item):
-                      msg = item[0]
-                      media_obj = getattr(msg, msg.media.value if msg.media else '', None) if msg.media else None
-                      filename = getattr(media_obj, 'file_name', '') if media_obj else ''
-                      caption = msg.caption or getattr(msg.text, 'html', str(msg.text)) if msg.text else ''
-                      
-                      search_txt = f"{filename} {caption}".lower()
-                      
-                      # Heuristic 1: Explicit markers (Ep, Part, Chapter)
-                      m1 = re.search(r'(?:ep|episode|part|ch|chapter|e)\s*[-_:]?\s*0*(\d+)', search_txt)
-                      if m1: return (0, int(m1.group(1)), msg.id)
-                      
-                      # Heuristic 2: Trailing numerics isolated in filename
-                      m2 = re.findall(r'(?<!\d)0*(\d+)(?!\d)', str(filename))
-                      if m2: return (1, int(m2[-1]), msg.id)
-                      
-                      # Fallback
-                      return (2, msg.id, msg.id)
-                      
+                      return get_natural_sort_key(item[0])
                   sort_buffer.sort(key=_smart_sort_key)
               
               for message, forward_tag, new_caption, new_text, is_text_replaced, protect, download_mode, sleep in sort_buffer:
                   sts.add('fetched')
                   if forward_tag:
-                     MSG.append(message.id)
-                     notcompleted = len(MSG)
-                     if notcompleted >= 100:
-                        await forward(client, MSG, m, sts, protect)
-                        sts.add('total_files', notcompleted)
-                        await asyncio.sleep(10)
-                        MSG.clear()
+                      if smart_order:
+                          await forward(client, [message.id], m, sts, protect)
+                          sts.add('total_files', 1)
+                          if sleep > 0:
+                              await asyncio.sleep(sleep)
+                      else:
+                          MSG.append(message.id)
+                          notcompleted = len(MSG)
+                          if notcompleted >= 100:
+                             await forward(client, MSG, m, sts, protect)
+                             sts.add('total_files', notcompleted)
+                             await asyncio.sleep(10)
+                             MSG.clear()
                   else:
                       # DIRECT SEQUENTIAL SEND — bypass the concurrent pipeline entirely
                       # This is the ONLY way to guarantee ordering for copy_message.
