@@ -558,12 +558,39 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 logger.warning(f"[MultiJob {job_id}] DM collect error: {e}")
 
             if job.get("smart_order", True):
+                processed_ids = job.get("processed_ids") or []
+                dm_msgs = [m for m in dm_msgs if m.id not in processed_ids and m.id >= current]
                 from plugins.utils import get_natural_sort_key
                 dm_msgs.sort(key=get_natural_sort_key)
                 logger.info(f"[MultiJob {job_id}] DM batch: {len(dm_msgs)} msgs collected and sorted naturally.")
             else:
+                dm_msgs = [m for m in dm_msgs if m.id >= current]
                 dm_msgs.sort(key=lambda m: m.id)
                 logger.info(f"[MultiJob {job_id}] DM batch: {len(dm_msgs)} msgs collected. Smart order is disabled; processing in raw order.")
+
+            processed_ids = job.get("processed_ids") or []
+            all_ids = [m.id for m in dm_msgs]
+
+            async def mark_msg_processed(msg_id, is_checkpoint=False):
+                nonlocal processed_ids, current
+                upd = {}
+                if job.get("smart_order", True):
+                    remaining_ids = [mid for mid in all_ids if mid not in processed_ids]
+                    if is_checkpoint:
+                        current = min(remaining_ids) if remaining_ids else (end_id or msg_id)
+                    else:
+                        if msg_id not in processed_ids:
+                            processed_ids.append(msg_id)
+                        remaining_ids = [mid for mid in all_ids if mid not in processed_ids]
+                        current = min(remaining_ids) if remaining_ids else (end_id + 1 if end_id > 0 else msg_id + 1)
+                        upd["processed_ids"] = processed_ids
+                else:
+                    if is_checkpoint:
+                        current = msg_id
+                    else:
+                        current = msg_id + 1
+                upd["current_id"] = current
+                await _mj_update(job_id, **upd)
 
             for idx, msg in enumerate(dm_msgs):
                 await pause_ev.wait()
@@ -571,33 +598,19 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 if not fresh2 or fresh2.get("status") in ("stopped",):
                     return
 
-                if job.get("smart_order", True):
-                    checkpoint_id = min(m.id for m in dm_msgs[idx:])
-                else:
-                    checkpoint_id = msg.id
-
                 if not _passes_filters(msg, disabled_types):
-                    if job.get("smart_order", True):
-                        checkpoint_id = min(m.id for m in dm_msgs[idx+1:]) if idx+1 < len(dm_msgs) else (max(m.id for m in dm_msgs) + 1)
-                    else:
-                        checkpoint_id = msg.id + 1
-                    current = checkpoint_id
-                    await _mj_update(job_id, current_id=current)
+                    await mark_msg_processed(msg.id)
                     continue
                 _remove_links = 'links' in disabled_types
 
                 # CHECKPOINT: record we're AT this message before forwarding
-                await _mj_update(job_id, current_id=checkpoint_id)
+                await mark_msg_processed(msg.id, is_checkpoint=True)
 
                 client = await _mj_ensure_client_alive(client)
                 success = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
-                if job.get("smart_order", True):
-                    checkpoint_id = min(m.id for m in dm_msgs[idx+1:]) if idx+1 < len(dm_msgs) else (max(m.id for m in dm_msgs) + 1)
-                else:
-                    checkpoint_id = msg.id + 1
-                current = checkpoint_id
-                await _mj_update(job_id, current_id=current)
+                
+                await mark_msg_processed(msg.id)
                 if success:
                     await _mj_inc(job_id, 1)
                 else:
@@ -615,7 +628,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
                 await asyncio.sleep(sleep_secs)
 
-            await _mj_update(job_id, status="done", current_id=current)
+            await _mj_update(job_id, status="done", current_id=current, processed_ids=[])
             fj = await _mj_get(job_id)
             _fwd = fj.get("forwarded", 0) if fj else len(dm_msgs)
             if client and mj_prog_msg_id:
@@ -758,6 +771,9 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
             valid = [m for m in msgs if m and not m.empty]
             if job.get("smart_order", True):
+                valid = [m for m in valid if m.id not in processed_ids]
+            
+            if job.get("smart_order", True):
                 from plugins.utils import get_natural_sort_key
                 valid.sort(key=get_natural_sort_key)
             else:
@@ -777,7 +793,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             if not valid:
                 consecutive_empty += 1
                 if consecutive_empty >= 200:  # 200 * 200 IDs = 40,000 gaps before giving up
-                    await _mj_update(job_id, status="done", current_id=current)
+                    await _mj_update(job_id, status="done", current_id=current, processed_ids=[])
                     logger.info(f"[MultiJob {job_id}] Done — no more messages after {current}")
                     # Finalize destination progress bar
                     if client and mj_prog_msg_id:
@@ -809,7 +825,8 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                             pass
                     break
                 current += BATCH_SIZE
-                await _mj_update(job_id, current_id=current, consecutive_empty=consecutive_empty)
+                processed_ids = []
+                await _mj_update(job_id, current_id=current, consecutive_empty=consecutive_empty, processed_ids=[])
                 await asyncio.sleep(2)
                 continue
 
@@ -821,6 +838,29 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 from_thread = int(from_thread)
                 valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 
+            all_ids = [m.id for m in valid]
+
+            async def mark_msg_processed(msg_id, is_checkpoint=False):
+                nonlocal processed_ids, current
+                upd = {}
+                if job.get("smart_order", True):
+                    remaining_ids = [mid for mid in all_ids if mid not in processed_ids]
+                    if is_checkpoint:
+                        current = min(remaining_ids) if remaining_ids else (batch_end or msg_id)
+                    else:
+                        if msg_id not in processed_ids:
+                            processed_ids.append(msg_id)
+                        remaining_ids = [mid for mid in all_ids if mid not in processed_ids]
+                        current = min(remaining_ids) if remaining_ids else (batch_end + 1)
+                        upd["processed_ids"] = processed_ids
+                else:
+                    if is_checkpoint:
+                        current = msg_id
+                    else:
+                        current = msg_id + 1
+                upd["current_id"] = current
+                await _mj_update(job_id, **upd)
+
             # Forward each valid message
             for idx, msg in enumerate(valid):
                 await pause_ev.wait()
@@ -829,22 +869,12 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 if not fresh2 or fresh2.get("status") in ("stopped",):
                     return
 
-                if job.get("smart_order", True):
-                    checkpoint_id = min(m.id for m in valid[idx:])
-                else:
-                    checkpoint_id = msg.id
-
                 if not _passes_filters(msg, disabled_types):
-                    if job.get("smart_order", True):
-                        checkpoint_id = min(m.id for m in valid[idx+1:]) if idx+1 < len(valid) else (batch_end + 1)
-                    else:
-                        checkpoint_id = msg.id + 1
-                    current = checkpoint_id
-                    await _mj_update(job_id, current_id=current)
+                    await mark_msg_processed(msg.id)
                     continue
 
                 # ── CHECKPOINT before forwarding ──────────────────────────────────
-                await _mj_update(job_id, current_id=checkpoint_id)
+                await mark_msg_processed(msg.id, is_checkpoint=True)
                 # ─────────────────────────────────────────────────────────────────
 
                 # Heal client connection before forward
@@ -855,12 +885,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
 
                 # Advance cursor past this message in all cases.
-                if job.get("smart_order", True):
-                    checkpoint_id = min(m.id for m in valid[idx+1:]) if idx+1 < len(valid) else (batch_end + 1)
-                else:
-                    checkpoint_id = msg.id + 1
-                current = checkpoint_id
-                await _mj_update(job_id, current_id=current)
+                await mark_msg_processed(msg.id)
                 if success:
                     await _mj_inc(job_id, 1)
                 else:
@@ -872,11 +897,13 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             if valid:
                 if job.get("smart_order", True):
                     current = batch_end + 1
+                    processed_ids = []
                 else:
                     current = valid[-1].id + 1
             else:
                 current += BATCH_SIZE  # skip the batch that had no topic-matching msgs
-            await _mj_update(job_id, current_id=current)
+                processed_ids = []
+            await _mj_update(job_id, current_id=current, processed_ids=processed_ids)
 
             #  Update destination progress bar (every 10s) 
             now_mj = time.time()

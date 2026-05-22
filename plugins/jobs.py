@@ -898,10 +898,32 @@ async def _run_job(job_id: str, user_id: int):
                     logger.warning(f"[Job {job_id}] DM history collect error: {e}")
 
                 if job.get("smart_order", True):
+                    processed_ids = job.get("processed_ids") or []
+                    dm_all = [m for m in dm_all if m.id not in processed_ids and m.id >= batch_cursor]
                     dm_all.sort(key=get_natural_sort_key)
                 else:
+                    dm_all = [m for m in dm_all if m.id >= batch_cursor]
                     dm_all.sort(key=lambda m: m.id)  # raw chronological order
                 logger.info(f"[Job {job_id}] DM batch: {len(dm_all)} messages to forward (smart_order={job.get('smart_order', True)})")
+
+                processed_ids = job.get("processed_ids") or []
+                all_ids = [m.id for m in dm_all]
+
+                async def mark_msg_processed(msg_id, extra_upd=None):
+                    nonlocal processed_ids
+                    upd = {}
+                    if extra_upd:
+                        upd.update(extra_upd)
+                    if job.get("smart_order", True):
+                        if msg_id not in processed_ids:
+                            processed_ids.append(msg_id)
+                        remaining_ids = [mid for mid in all_ids if mid not in processed_ids]
+                        new_cursor = min(remaining_ids) if remaining_ids else batch_end
+                        upd["processed_ids"] = processed_ids
+                        upd["batch_cursor"] = new_cursor
+                    else:
+                        upd["batch_cursor"] = msg_id + 1
+                    await _update_job(job_id, **upd)
 
                 for msg in dm_all:
                     fresh = await _get_job(job_id)
@@ -919,10 +941,10 @@ async def _run_job(job_id: str, user_id: int):
                     replacements   = configs.get('replacements', {})
 
                     if not _passes_filters(msg, disabled_types):
-                        await _update_job(job_id, batch_cursor=msg.id + 1)
+                        await mark_msg_processed(msg.id)
                         continue
                     if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
-                        await _update_job(job_id, batch_cursor=msg.id + 1)
+                        await mark_msg_processed(msg.id)
                         continue
 
                     skip_dupes = fresh.get("skip_duplicates", False)
@@ -942,7 +964,7 @@ async def _run_job(job_id: str, user_id: int):
                         _ep_hit = bool(_ep_nums and _ep_nums & _dest_ep_cache.get(job_id, set()))
                         if _ep_hit or (uniq_id and uniq_id in _s_ids) or (_fn_key_dm and _fn_key_dm in _s_nms):
                             logger.debug(f"[Job {job_id}] DM Batch: skip dup ep={_ep_nums} id={uniq_id} fn={_fn_key_dm}")
-                            await _update_job(job_id, batch_cursor=msg.id + 1)
+                            await mark_msg_processed(msg.id)
                             continue
 
                     try:
@@ -959,7 +981,7 @@ async def _run_job(job_id: str, user_id: int):
                         logger.debug(f"[Job {job_id}] DM batch fwd error {msg.id}: {e}")
                         success = False
 
-                    upd = {"batch_cursor": msg.id + 1}
+                    upd = {}
                     if success:
                         if uniq_id:
                             seen = fresh.get("seen_file_ids") or []
@@ -978,8 +1000,7 @@ async def _run_job(job_id: str, user_id: int):
                             _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums)
                             upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
 
-
-                    await _update_job(job_id, **upd)
+                    await mark_msg_processed(msg.id, upd)
 
 
                     now_mj = time.time()
@@ -998,7 +1019,7 @@ async def _run_job(job_id: str, user_id: int):
 
                 # DM batch done — mark complete and fall through to live phase
                 await _update_job(job_id, batch_done=True, batch_cursor=batch_end,
-                                  last_seen_id=max(last_seen, batch_end))
+                                  last_seen_id=max(last_seen, batch_end), processed_ids=[])
                 last_seen = max(last_seen, batch_end)
                 logger.info(f"[Job {job_id}] DM batch complete ({len(dm_all)} msgs).")
                 try:
@@ -1015,6 +1036,8 @@ async def _run_job(job_id: str, user_id: int):
             # ── CHANNEL/GROUP BATCH (original get_messages path) ─────────────────
              all_batch_msgs = []
              temp_cursor = batch_cursor
+             processed_ids = job.get("processed_ids") or []
+
              while temp_cursor <= batch_end:
                  fresh = await _get_job(job_id)
                  if not fresh or fresh.get("status") != "running":
@@ -1083,6 +1106,8 @@ async def _run_job(job_id: str, user_id: int):
                      continue
 
                  valid = [m for m in msgs if m and not m.empty and not m.service]
+                 if job.get("smart_order", True):
+                     valid = [m for m in valid if m.id not in processed_ids]
                  
                  # Cross-chat filter: verify every message belongs to the expected source chat.
                  filtered = []
@@ -1113,6 +1138,24 @@ async def _run_job(job_id: str, user_id: int):
                  logger.info(f"[Job {job_id}] Channel batch: {len(all_batch_msgs)} messages collected. Smart order is disabled; processing in raw order.")
 
              # Process sorted messages
+             all_ids = [m.id for m in all_batch_msgs]
+
+             async def mark_msg_processed(msg_id, extra_upd=None):
+                 nonlocal processed_ids
+                 upd = {}
+                 if extra_upd:
+                     upd.update(extra_upd)
+                 if job.get("smart_order", True):
+                     if msg_id not in processed_ids:
+                         processed_ids.append(msg_id)
+                     remaining_ids = [mid for mid in all_ids if mid not in processed_ids]
+                     new_cursor = min(remaining_ids) if remaining_ids else batch_end
+                     upd["processed_ids"] = processed_ids
+                     upd["batch_cursor"] = new_cursor
+                 else:
+                     upd["batch_cursor"] = msg_id + 1
+                 await _update_job(job_id, **upd)
+
              for msg in all_batch_msgs:
                  # Re-check stop between every message
                  fresh2 = await _get_job(job_id)
@@ -1130,11 +1173,11 @@ async def _run_job(job_id: str, user_id: int):
                  replacements   = configs.get('replacements', {})
 
                  if not _passes_filters(msg, disabled_types):
-                     await _update_job(job_id, batch_cursor=msg.id + 1)
+                     await mark_msg_processed(msg.id)
                      continue
                  if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
                      logger.debug(f"[Job {job_id}] Batch: skipping msg {msg.id} (size/duration limit)")
-                     await _update_job(job_id, batch_cursor=msg.id + 1)
+                     await mark_msg_processed(msg.id)
                      continue
 
                  skip_dupes = fresh2.get("skip_duplicates", False)
@@ -1157,7 +1200,7 @@ async def _run_job(job_id: str, user_id: int):
                      _ep_hit_b = bool(_ep_nums_b and _ep_nums_b & _dest_ep_cache.get(job_id, set()))
                      if _ep_hit_b or (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
                          logger.debug(f"[Job {job_id}] Batch: skip dup ep={_ep_nums_b} id={uniq_id} fn={_fn_key}")
-                         await _update_job(job_id, batch_cursor=msg.id + 1)
+                         await mark_msg_processed(msg.id)
                          continue
 
                  try:
@@ -1174,7 +1217,7 @@ async def _run_job(job_id: str, user_id: int):
                      logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
                      success = False
 
-                 upd = {"batch_cursor": msg.id + 1}
+                 upd = {}
                  if success:
                      if uniq_id:
                          seen_ids = fresh2.get("seen_file_ids") or []
@@ -1193,7 +1236,7 @@ async def _run_job(job_id: str, user_id: int):
                          _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums_b)
                          upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
 
-                 await _update_job(job_id, **upd)
+                 await mark_msg_processed(msg.id, upd)
 
                  now_mj = time.time()
                  if (now_mj - job_last_prog_update) >= 10:
@@ -1210,11 +1253,11 @@ async def _run_job(job_id: str, user_id: int):
                  await asyncio.sleep(sleep_secs)
 
              batch_cursor = temp_cursor
-             await _update_job(job_id, batch_cursor=batch_cursor)
+             await _update_job(job_id, batch_cursor=batch_cursor, processed_ids=[])
 
             # Batch complete — mark done, advance last_seen past the batch
             await _update_job(job_id, batch_done=True, batch_cursor=batch_end,
-                              last_seen_id=max(last_seen, batch_end))
+                              last_seen_id=max(last_seen, batch_end), processed_ids=[])
             last_seen = max(last_seen, batch_end)
             logger.info(f"[Job {job_id}] Batch phase complete. Switching to live mode.")
             
