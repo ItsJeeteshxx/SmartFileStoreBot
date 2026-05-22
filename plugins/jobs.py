@@ -870,6 +870,25 @@ async def _run_job(job_id: str, user_id: int):
                 except Exception:
                     await _update_job(job_id, prog_msg_created=True)
 
+            def get_natural_sort_key(msg):
+                import re
+                media_obj = getattr(msg, msg.media.value if msg.media else '', None) if msg.media else None
+                filename = getattr(media_obj, 'file_name', '') if media_obj else ''
+                caption = msg.caption or getattr(msg.text, 'html', str(msg.text)) if msg.text else ''
+                
+                search_txt = f"{filename} {caption}".lower()
+                
+                # Heuristic 1: Explicit markers (Ep, Part, Chapter)
+                m1 = re.search(r'(?:ep|episode|part|ch|chapter|e)\s*[-_:]?\s*0*(\d+)', search_txt)
+                if m1: return (0, int(m1.group(1)), msg.id)
+                
+                # Heuristic 2: Trailing numerics isolated in filename
+                m2 = re.findall(r'(?<!\d)0*(\d+)(?!\d)', str(filename))
+                if m2: return (1, int(m2[-1]), msg.id)
+                
+                # Fallback
+                return (2, msg.id, msg.id)
+
             job_last_prog_update = time.time()
             consecutive_empty = 0
             _channel_invalid_strikes = 0  # abort after 3 consecutive CHANNEL_INVALID heals
@@ -895,8 +914,11 @@ async def _run_job(job_id: str, user_id: int):
                 except Exception as e:
                     logger.warning(f"[Job {job_id}] DM history collect error: {e}")
 
-                dm_all.sort(key=lambda m: m.id)  # chronological order
-                logger.info(f"[Job {job_id}] DM batch: {len(dm_all)} messages to forward")
+                if job.get("smart_order", True):
+                    dm_all.sort(key=get_natural_sort_key)
+                else:
+                    dm_all.sort(key=lambda m: m.id)  # raw chronological order
+                logger.info(f"[Job {job_id}] DM batch: {len(dm_all)} messages to forward (smart_order={job.get('smart_order', True)})")
 
                 for msg in dm_all:
                     fresh = await _get_job(job_id)
@@ -1008,201 +1030,204 @@ async def _run_job(job_id: str, user_id: int):
 
             else:
             # ── CHANNEL/GROUP BATCH (original get_messages path) ─────────────────
-             while batch_cursor <= batch_end:
-                fresh = await _get_job(job_id)
-                if not fresh or fresh.get("status") != "running":
-                    return
+             all_batch_msgs = []
+             temp_cursor = batch_cursor
+             while temp_cursor <= batch_end:
+                 fresh = await _get_job(job_id)
+                 if not fresh or fresh.get("status") != "running":
+                     return
 
-                disabled_types = await db.get_filters(user_id)
-                configs        = await db.get_configs(user_id)
-                filters_dict   = configs.get('filters', {})
-                remove_caption = filters_dict.get('rm_caption', False)
-                remove_links   = 'links' in disabled_types
-                cap_tpl        = configs.get('caption')
-                forward_tag    = configs.get('forward_tag', False)
-                sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                 disabled_types = await db.get_filters(user_id)
+                 configs        = await db.get_configs(user_id)
+                 filters_dict   = configs.get('filters', {})
+                 remove_caption = filters_dict.get('rm_caption', False)
+                 remove_links   = 'links' in disabled_types
+                 cap_tpl        = configs.get('caption')
+                 forward_tag    = configs.get('forward_tag', False)
+                 sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
 
-                replacements   = configs.get('replacements', {})
+                 replacements   = configs.get('replacements', {})
 
-                chunk_end = min(batch_cursor + BATCH_CHUNK - 1, batch_end)
-                batch_ids = list(range(batch_cursor, chunk_end + 1))
+                 chunk_end = min(temp_cursor + BATCH_CHUNK - 1, batch_end)
+                 batch_ids = list(range(temp_cursor, chunk_end + 1))
 
-                # ── Fetch: for userbot + DM/username source, get_messages() uses
-                # messages.GetMessages WITHOUT a peer → fetches from global inbox
-                # (i.e. wrong chat). Always use get_chat_history for DM sources.
-                try:
-                    if not is_bot and is_dm_source:
-                        # Userbot + DM/bot source → paginate via get_chat_history
-                        batch_msgs = []
-                        async for m in client.get_chat_history(from_chat, limit=BATCH_CHUNK, offset_id=batch_cursor):
-                            if m.id < (int(job.get('batch_start_id') or 1)):
-                                break
-                            batch_msgs.append(m)
-                        # get_chat_history returns newest→oldest; reverse to chronological
-                        msgs = list(reversed(batch_msgs))
-                        if not isinstance(msgs, list): msgs = [msgs]
-                    else:
-                        msgs = await client.get_messages(from_chat, batch_ids)
-                        if not isinstance(msgs, list): msgs = [msgs]
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value + 2)
-                    continue
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    err_fetch = str(e).upper()
-                    if "CHANNEL_INVALID" in err_fetch or "PEER_ID_INVALID" in err_fetch:
-                        _channel_invalid_strikes += 1
-                        logger.error(
-                            f"[Job {job_id}] FATAL Peer error in batch ({_channel_invalid_strikes}/3): {e}. "
-                            f"{'Trying to heal...' if _channel_invalid_strikes < 3 else 'Giving up — source channel is permanently inaccessible.'}"
-                        )
-                        if _channel_invalid_strikes >= 3:
-                            err_msg = (
-                                f"⚠️ <b>Job Stopped — Source Channel Inaccessible</b>\n\n"
-                                f"The source channel could not be accessed after 3 attempts.\n"
-                                f"<b>Error:</b> <code>CHANNEL_INVALID</code>\n"
-                                f"<b>Channel ID:</b> <code>{from_chat}</code>\n\n"
-                                f"<i>Possible causes: the bot was removed, the channel was deleted, "
-                                f"or the channel ID is incorrect. Please reconfigure the job.</i>"
-                            )
-                            await _update_job(job_id, status="error", error="CHANNEL_INVALID — source permanently inaccessible")
-                            try: await BOT_INSTANCE.send_message(user_id, err_msg)
-                            except Exception: pass
-                            return
-                        try: await safe_resolve_peer(client, from_chat, bot=BOT_INSTANCE)
-                        except: pass
-                        await asyncio.sleep(5)
-                        continue
+                 try:
+                     if not is_bot and is_dm_source:
+                         # Userbot + DM/bot source → paginate via get_chat_history
+                         batch_msgs = []
+                         async for m in client.get_chat_history(from_chat, limit=BATCH_CHUNK, offset_id=temp_cursor):
+                             if m.id < (int(job.get('batch_start_id') or 1)):
+                                 break
+                             batch_msgs.append(m)
+                         msgs = list(reversed(batch_msgs))
+                         if not isinstance(msgs, list): msgs = [msgs]
+                     else:
+                         msgs = await client.get_messages(from_chat, batch_ids)
+                         if not isinstance(msgs, list): msgs = [msgs]
+                 except FloodWait as fw:
+                     await asyncio.sleep(fw.value + 2)
+                     continue
+                 except asyncio.CancelledError:
+                     raise
+                 except Exception as e:
+                     err_fetch = str(e).upper()
+                     if "CHANNEL_INVALID" in err_fetch or "PEER_ID_INVALID" in err_fetch:
+                         _channel_invalid_strikes += 1
+                         logger.error(
+                             f"[Job {job_id}] FATAL Peer error in batch ({_channel_invalid_strikes}/3): {e}. "
+                             f"{'Trying to heal...' if _channel_invalid_strikes < 3 else 'Giving up — source channel is permanently inaccessible.'}"
+                         )
+                         if _channel_invalid_strikes >= 3:
+                             err_msg = (
+                                 f"⚠️ <b>Job Stopped — Source Channel Inaccessible</b>\n\n"
+                                 f"The source channel could not be accessed after 3 attempts.\n"
+                                 f"<b>Error:</b> <code>CHANNEL_INVALID</code>\n"
+                                 f"<b>Channel ID:</b> <code>{from_chat}</code>\n\n"
+                                 f"<i>Possible causes: the bot was removed, the channel was deleted, "
+                                 f"or the channel ID is incorrect. Please reconfigure the job.</i>"
+                             )
+                             await _update_job(job_id, status="error", error="CHANNEL_INVALID — source permanently inaccessible")
+                             try: await BOT_INSTANCE.send_message(user_id, err_msg)
+                             except Exception: pass
+                             return
+                         try: await safe_resolve_peer(client, from_chat, bot=BOT_INSTANCE)
+                         except: pass
+                         await asyncio.sleep(5)
+                         continue
 
+                     logger.warning(f"[Job {job_id}] Batch fetch error: {e}")
+                     temp_cursor = chunk_end + 1
+                     continue
 
-                    logger.warning(f"[Job {job_id}] Batch fetch error: {e}")
-                    batch_cursor += BATCH_CHUNK
-                    await _update_job(job_id, batch_cursor=batch_cursor)
-                    continue
+                 valid = [m for m in msgs if m and not m.empty and not m.service]
+                 
+                 # Cross-chat filter: verify every message belongs to the expected source chat.
+                 filtered = []
+                 for m in valid:
+                     if isinstance(from_chat, int):
+                         if m.chat and m.chat.id == from_chat:
+                             filtered.append(m)
+                     else:
+                         filtered.append(m)
+                 valid = filtered
+                 
+                 # Filter by source topic if configured
+                 from_thread = job.get("from_thread")
+                 if from_thread:
+                     from_thread = int(from_thread)
+                     valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 
-                valid = [m for m in msgs if m and not m.empty and not m.service]
-                valid.sort(key=lambda m: m.id)
-                
-                # Cross-chat filter: verify every message belongs to the expected source chat.
-                # For negative IDs (channels/groups): check m.chat.id == from_chat
-                # For positive IDs (user/bot DMs): also check m.chat.id matches — this prevents
-                # the bot's global inbox messages from leaking in when get_messages is misused.
-                filtered = []
-                for m in valid:
-                    if isinstance(from_chat, int):
-                        if m.chat is None:
-                            continue
-                        if m.chat.id != from_chat:
-                            continue
-                    # String usernames: accept (Pyrogram resolves the peer correctly)
-                    filtered.append(m)
-                valid = filtered
+                 all_batch_msgs.extend(valid)
+                 temp_cursor = chunk_end + 1
+                 await asyncio.sleep(0.05)
 
-                
-                if not valid:
-                    consecutive_empty += 1
-                    if consecutive_empty >= 200:  # 200 * 200 IDs = 40,000 IDs gap before giving up
-                        logger.info(f"[Job {job_id}] Done — no more messages after {batch_cursor}")
-                        break
-                else:
-                    consecutive_empty = 0
+             # Sort batch messages based on smart_order setting
+             if job.get("smart_order", True):
+                 all_batch_msgs.sort(key=get_natural_sort_key)
+                 logger.info(f"[Job {job_id}] Channel batch: {len(all_batch_msgs)} messages collected and sorted naturally.")
+             else:
+                 all_batch_msgs.sort(key=lambda m: m.id)
+                 logger.info(f"[Job {job_id}] Channel batch: {len(all_batch_msgs)} messages collected. Smart order is disabled; processing in raw order.")
 
-                # Filter by source topic if configured
-                from_thread = job.get("from_thread")
-                if from_thread:
-                    from_thread = int(from_thread)
-                    valid = [m for m in valid if _msg_in_topic(m, from_thread)]
+             # Process sorted messages
+             for msg in all_batch_msgs:
+                 # Re-check stop between every message
+                 fresh2 = await _get_job(job_id)
+                 if not fresh2 or fresh2.get("status") != "running":
+                     return
 
-                for msg in valid:
-                    # Re-check stop between every message
-                    fresh2 = await _get_job(job_id)
-                    if not fresh2 or fresh2.get("status") != "running":
-                        return
+                 disabled_types = await db.get_filters(user_id)
+                 configs        = await db.get_configs(user_id)
+                 filters_dict   = configs.get('filters', {})
+                 remove_caption = filters_dict.get('rm_caption', False)
+                 remove_links   = 'links' in disabled_types
+                 cap_tpl        = configs.get('caption')
+                 forward_tag    = configs.get('forward_tag', False)
+                 sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                 replacements   = configs.get('replacements', {})
 
-                    if not _passes_filters(msg, disabled_types):
-                        await _update_job(job_id, batch_cursor=msg.id + 1)
-                        continue
-                    if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
-                        logger.debug(f"[Job {job_id}] Batch: skipping msg {msg.id} (size/duration limit)")
-                        await _update_job(job_id, batch_cursor=msg.id + 1)
-                        continue
+                 if not _passes_filters(msg, disabled_types):
+                     await _update_job(job_id, batch_cursor=msg.id + 1)
+                     continue
+                 if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
+                     logger.debug(f"[Job {job_id}] Batch: skipping msg {msg.id} (size/duration limit)")
+                     await _update_job(job_id, batch_cursor=msg.id + 1)
+                     continue
 
-                    skip_dupes = fresh2.get("skip_duplicates", False)
-                    uniq_id = _get_unique_id(msg) if skip_dupes else None
-                    _fn_key = None
-                    if getattr(msg, 'media', None):
-                        _m_attr = getattr(msg.media, 'value', str(msg.media))
-                        _m_obj = getattr(msg, _m_attr, None)
-                        if _m_obj:
-                            _fn_raw = getattr(_m_obj, 'file_name', None)
-                            if not _fn_raw and isinstance(_m_obj, list) and _m_obj:
-                                _fn_raw = getattr(_m_obj[-1], 'file_name', None)
-                            if _fn_raw:
-                                _fn_key = _fn_raw.strip().lower()
-                    _ep_nums_b = _extract_ep_nums_from_msg(msg)
+                 skip_dupes = fresh2.get("skip_duplicates", False)
+                 uniq_id = _get_unique_id(msg) if skip_dupes else None
+                 _fn_key = None
+                 if getattr(msg, 'media', None):
+                     _m_attr = getattr(msg.media, 'value', str(msg.media))
+                     _m_obj = getattr(msg, _m_attr, None)
+                     if _m_obj:
+                         _fn_raw = getattr(_m_obj, 'file_name', None)
+                         if not _fn_raw and isinstance(_m_obj, list) and _m_obj:
+                             _fn_raw = getattr(_m_obj[-1], 'file_name', None)
+                         if _fn_raw:
+                             _fn_key = _fn_raw.strip().lower()
+                 _ep_nums_b = _extract_ep_nums_from_msg(msg)
 
-                    if skip_dupes:
-                        seen_ids = fresh2.get("seen_file_ids") or []
-                        seen_names = fresh2.get("seen_file_names") or []
-                        _ep_hit_b = bool(_ep_nums_b and _ep_nums_b & _dest_ep_cache.get(job_id, set()))
-                        if _ep_hit_b or (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
-                            logger.debug(f"[Job {job_id}] Batch: skip dup ep={_ep_nums_b} id={uniq_id} fn={_fn_key}")
-                            await _update_job(job_id, batch_cursor=msg.id + 1)
-                            continue
+                 if skip_dupes:
+                     seen_ids = fresh2.get("seen_file_ids") or []
+                     seen_names = fresh2.get("seen_file_names") or []
+                     _ep_hit_b = bool(_ep_nums_b and _ep_nums_b & _dest_ep_cache.get(job_id, set()))
+                     if _ep_hit_b or (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
+                         logger.debug(f"[Job {job_id}] Batch: skip dup ep={_ep_nums_b} id={uniq_id} fn={_fn_key}")
+                         await _update_job(job_id, batch_cursor=msg.id + 1)
+                         continue
 
-                    try:
-                        success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                               to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                        if success:
-                            await _inc_forwarded(job_id, 1, forward_type='batch')
-                    except FloodWait as fw:
-                        await asyncio.sleep(fw.value + 1)
-                        success = False
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
-                        success = False
+                 try:
+                     success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                                            to_thread, to_chat_2, to_thread_2, replacements, remove_links)
+                     if success:
+                         await _inc_forwarded(job_id, 1, forward_type='batch')
+                 except FloodWait as fw:
+                     await asyncio.sleep(fw.value + 1)
+                     success = False
+                 except asyncio.CancelledError:
+                     raise
+                 except Exception as e:
+                     logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
+                     success = False
 
-                    upd = {"batch_cursor": msg.id + 1}
-                    if success:
-                        if uniq_id:
-                            seen_ids = fresh2.get("seen_file_ids") or []
-                            if uniq_id not in seen_ids:
-                                seen_ids.append(uniq_id)
-                                if len(seen_ids) > 5000: seen_ids.pop(0)
-                            upd["seen_file_ids"] = seen_ids
-                        if _fn_key:
-                            seen_names = fresh2.get("seen_file_names") or []
-                            if _fn_key not in seen_names:
-                                seen_names.append(_fn_key)
-                                if len(seen_names) > 5000: seen_names.pop(0)
-                            upd["seen_file_names"] = seen_names
-                            _live_seen_names.setdefault(job_id, set()).add(_fn_key)
-                        if _ep_nums_b:
-                            _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums_b)
-                            upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
+                 upd = {"batch_cursor": msg.id + 1}
+                 if success:
+                     if uniq_id:
+                         seen_ids = fresh2.get("seen_file_ids") or []
+                         if uniq_id not in seen_ids:
+                             seen_ids.append(uniq_id)
+                             if len(seen_ids) > 5000: seen_ids.pop(0)
+                         upd["seen_file_ids"] = seen_ids
+                     if _fn_key:
+                         seen_names = fresh2.get("seen_file_names") or []
+                         if _fn_key not in seen_names:
+                             seen_names.append(_fn_key)
+                             if len(seen_names) > 5000: seen_names.pop(0)
+                         upd["seen_file_names"] = seen_names
+                         _live_seen_names.setdefault(job_id, set()).add(_fn_key)
+                     if _ep_nums_b:
+                         _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums_b)
+                         upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
 
-                    await _update_job(job_id, **upd)
+                 await _update_job(job_id, **upd)
 
+                 now_mj = time.time()
+                 if (now_mj - job_last_prog_update) >= 10:
+                     job_last_prog_update = now_mj
+                     try:
+                         prog_id = (await _get_job(job_id)).get("prog_msg_id")
+                         if prog_id:
+                             fresh_j = await _get_job(job_id)
+                             _fwd = fresh_j.get("forwarded", 0) if fresh_j else 0
+                             from pyrogram.enums import ParseMode
+                             await client.edit_message_text(to_chat, prog_id, get_prog_text(_fwd, "running"), parse_mode=ParseMode.HTML)
+                     except Exception: pass
 
-                    now_mj = time.time()
-                    if (now_mj - job_last_prog_update) >= 10:
-                        job_last_prog_update = now_mj
-                        try:
-                            prog_id = (await _get_job(job_id)).get("prog_msg_id")
-                            if prog_id:
-                                fresh_j = await _get_job(job_id)
-                                _fwd = fresh_j.get("forwarded", 0) if fresh_j else 0
-                                from pyrogram.enums import ParseMode
-                                await client.edit_message_text(to_chat, prog_id, get_prog_text(_fwd, "running"), parse_mode=ParseMode.HTML)
-                        except Exception: pass
+                 await asyncio.sleep(sleep_secs)
 
-                    await asyncio.sleep(sleep_secs)
-
-                batch_cursor = chunk_end + 1
-                await _update_job(job_id, batch_cursor=batch_cursor)
+             batch_cursor = temp_cursor
+             await _update_job(job_id, batch_cursor=batch_cursor)
 
             # Batch complete — mark done, advance last_seen past the batch
             await _update_job(job_id, batch_done=True, batch_cursor=batch_end,
@@ -1998,12 +2023,14 @@ async def job_settings_cb(bot, query):
     )
 
     skip_lbl = "✅ ON" if job.get("skip_duplicates") else "❌ OFF"
+    smart_lbl = "🧠 ON" if job.get("smart_order", True) else "⚡ OFF (raw)"
     
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("✍️ Eᴅɪᴛ Nᴀᴍᴇ", callback_data=f"job#rename#{job_id}")],
         [InlineKeyboardButton("🔄 Sᴏᴜʀᴄᴇ Cʜᴀɴɢᴇ Wɪᴢᴀʀᴅ", callback_data=f"job#src#{job_id}")],
         [InlineKeyboardButton("📏 Sɪᴢᴇ / Dᴜʀᴀᴛɪᴏɴ Lɪᴍɪᴛs", callback_data=f"job#limits#{job_id}")],
         [InlineKeyboardButton(f"📄 Sᴋɪᴘ Dᴜᴘʟɪᴄᴀᴛᴇs: {skip_lbl}", callback_data=f"job#togglededupl#{job_id}")],
+        [InlineKeyboardButton(f"🧠 Sᴍᴀʀᴛ Oʀᴅᴇʀ: {smart_lbl}", callback_data=f"job#togglesmart#{job_id}")],
         [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="job#list")]
     ])
     await query.message.edit_text(text, reply_markup=btns)
@@ -2017,6 +2044,19 @@ async def job_toggle_dedupl_cb(bot, query):
     if not job: return
     new_val = not job.get("skip_duplicates", False)
     await _update_job(job_id, skip_duplicates=new_val)
+    # Refresh settings directly
+    query.data = f"job#settings#{job_id}"
+    await job_settings_cb(bot, query)
+
+
+@Client.on_callback_query(filters.regex(r'^job#togglesmart#'))
+async def job_toggle_smart_cb(bot, query):
+    await query.answer()
+    job_id = query.data.split("#", 2)[2]
+    job = await _get_job(job_id)
+    if not job: return
+    new_val = not job.get("smart_order", True)
+    await _update_job(job_id, smart_order=new_val)
     # Refresh settings directly
     query.data = f"job#settings#{job_id}"
     await job_settings_cb(bot, query)

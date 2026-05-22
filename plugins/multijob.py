@@ -557,8 +557,13 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             except Exception as e:
                 logger.warning(f"[MultiJob {job_id}] DM collect error: {e}")
 
-            dm_msgs.sort(key=lambda m: m.id)
-            logger.info(f"[MultiJob {job_id}] DM batch: {len(dm_msgs)} msgs to forward")
+            if job.get("smart_order", True):
+                from plugins.utils import get_natural_sort_key
+                dm_msgs.sort(key=get_natural_sort_key)
+                logger.info(f"[MultiJob {job_id}] DM batch: {len(dm_msgs)} msgs collected and sorted naturally.")
+            else:
+                dm_msgs.sort(key=lambda m: m.id)
+                logger.info(f"[MultiJob {job_id}] DM batch: {len(dm_msgs)} msgs collected. Smart order is disabled; processing in raw order.")
 
             for msg in dm_msgs:
                 await pause_ev.wait()
@@ -738,7 +743,11 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 continue
 
             valid = [m for m in msgs if m and not m.empty]
-            valid.sort(key=lambda m: m.id)
+            if job.get("smart_order", True):
+                from plugins.utils import get_natural_sort_key
+                valid.sort(key=get_natural_sort_key)
+            else:
+                valid.sort(key=lambda m: m.id)
             
             # Cross-chat filter: verify messages belong to the expected source chat.
             # Apply to ALL integer IDs to prevent the global inbox from leaking in.
@@ -1135,6 +1144,9 @@ async def mj_info_cb(bot, query):
         tp2 = f" [Thread {t2}]" if t2 else ""
         dest2_lbl = f"\n<b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
 
+    smart_val = job.get("smart_order", True)
+    smart_lbl = "🧠 ON" if smart_val else "⚡ OFF (raw)"
+
     text = (
         f"<b>Multi Job Info</b>\n\n"
         f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
@@ -1146,14 +1158,30 @@ async def mj_info_cb(bot, query):
         f"<b>Fetched messages:</b> {fetched}\n"
         f"<b>Forwarded:</b> {job.get('forwarded', 0)}\n"
         f"<b>Current ID progress:</b> {job.get('current_id', '?')} / {job.get('end_id', 0) or '∞'}\n"
+        f"<b>Smart Order:</b> {'Enabled' if smart_val else 'Disabled (raw chronological)'}\n"
         f"<b>Created:</b> {created}\n"
     )
     if job.get("error"):
         text += f"\n<b>Error:</b>\n<blockquote><code>{job['error']}</code></blockquote>"
 
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
-        InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="mj#list")
-    ]]))
+    kb = [
+        [InlineKeyboardButton(f"🧠 Sᴍᴀʀᴛ Oʀᴅᴇʀ: {smart_lbl}", callback_data=f"mj#togglesmart#{job_id}")],
+        [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="mj#list")]
+    ]
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+@Client.on_callback_query(filters.regex(r'^mj#togglesmart#'))
+async def mj_toggle_smart_cb(bot, query):
+    await query.answer()
+    job_id = query.data.split("#", 2)[2]
+    job = await _mj_get(job_id)
+    if not job: return
+    new_val = not job.get("smart_order", True)
+    await _mj_update(job_id, smart_order=new_val)
+    # Refresh info directly
+    query.data = f"mj#info#{job_id}"
+    await mj_info_cb(bot, query)
 
 
 @Client.on_callback_query(filters.regex(r'^mj#pause#'))
@@ -1590,6 +1618,7 @@ async def _create_mj_flow(bot, user_id: int):
         "forwarded":      0,
         "consecutive_empty": 0,
         "error":          "",
+        "smart_order":    True,
     }
     await _mj_save(job)
     
