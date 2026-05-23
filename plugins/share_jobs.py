@@ -109,7 +109,7 @@ def apply_custom_font(text: str, cv: int) -> str:
                 if 'a' <= c <= 'z':
                     res += chr(0x1D5EE + ord(c) - ord('a'))
                 elif 'A' <= c <= 'Z':
-                    res += chr(0x1D5E4 + ord(c) - ord('A'))
+                    res += chr(0x1D5D4 + ord(c) - ord('A'))
                 else:
                     res += c
             elif cv == 3:
@@ -1551,7 +1551,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                         "purely forwarded via Arya bot, strictly not scraped."
                     )
                     
-                    en_body += f"\n\nCompleted at: {time_str}\n<a href='{buy_link}'>Buy Now on Arya Premium</a>"
+                    en_body += f"\n\nCompleted at: {time_str}"
                     
                     dm_header = apply_custom_font(dm_header, cv)
                     ch_header = apply_custom_font(ch_header, cv)
@@ -1608,7 +1608,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                         "New episodes will be added as they arrive. Enjoy and stay tuned!"
                     )
                     
-                    en_body += f"\n\nUpdated at: {time_str}\n<a href='{buy_link}'>Buy Now on Arya Premium</a>"
+                    en_body += f"\n\nUpdated at: {time_str}"
                     
                     dm_header = apply_custom_font(dm_header, cv)
                     ch_header = apply_custom_font(ch_header, cv)
@@ -1632,12 +1632,25 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     dm_cap = f"<blockquote expandable>{dm_header}{en_body}\n\n<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
                     ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>"
 
+            report_markup = None
+            if cv in (2, 3):
+                report_buttons = []
+                btn1_text = apply_custom_font("Buy on AP's Mini App", cv)
+                report_buttons.append(InlineKeyboardButton(btn1_text, url=buy_link))
+                
+                if cv == 2:
+                    btn2_text = apply_custom_font("Pocket FM English", cv)
+                    report_buttons.append(InlineKeyboardButton(btn2_text, url="https://t.me/PocketFMEnglishSL"))
+                
+                report_markup = InlineKeyboardMarkup([report_buttons])
+
             # Send to admin DM — independent of channel
             try:
                 await bot.send_document(
                     user_id, report_bytes,
                     caption=dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
-                    file_name=report_bytes.name
+                    file_name=report_bytes.name,
+                    reply_markup=report_markup
                 )
             except Exception as dm_err:
                 logger.error(f"[Report] DM send failed: {dm_err}", exc_info=True)
@@ -1658,7 +1671,8 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     sj['target'], report_bytes,
                     caption=ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name,
-                    reply_to_message_id=sj.get('target_topic_id')
+                    reply_to_message_id=sj.get('target_topic_id'),
+                    reply_markup=report_markup
                 )
             except Exception as ch_err:
                 logger.error(f"[Report] Channel send failed: {ch_err}", exc_info=True)
