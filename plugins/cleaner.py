@@ -231,14 +231,14 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
     if deep_clean:
         cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
-                "-write_xing", "1", "-id3v2_version", "3"]
+                "-write_xing", "0", "-id3v2_version", "3"]
     elif in_ext == out_ext and not force_reencode:
         cmd += ["-c:a", "copy"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-c:v", "copy", "-movflags", "+faststart"]
     else:
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1",
-                "-write_xing", "1", "-id3v2_version", "3"]
+                "-write_xing", "0", "-id3v2_version", "3"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-movflags", "+faststart"]
 
@@ -1066,7 +1066,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _ff_inj_one += [
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
-                                "-write_xing", "1", "-id3v2_version", "3",
+                                "-write_xing", "0", "-id3v2_version", "3",
                                 _inj_out
                             ]
 
@@ -1092,6 +1092,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     try: os.remove(out_path)
                                     except: pass
                                 out_path = _inj_out
+                                out_ext = ".mp3"
+                                clean_file = f"{clean_file_name_only}{out_ext}"
                                 for _si, _at in enumerate(_valid_ads):
                                     _ad_report.append((curr_num, _at, f"{int(_split_pts[_si]//60)}m{int(_split_pts[_si]%60)}s"))
                                 logger.info(f"[Cleaner {job_id}] One-shot injected {_n_valid} ads into serial={curr_num}")
