@@ -917,6 +917,7 @@ async def _run_job(jid, uid, bot):
         _mg_paused[jid] = ev
 
     client = None
+    client_name = None
     wdir = f"merge_tmp/{jid}"
     os.makedirs(wdir, exist_ok=True)
     _sem_acquired = False  # Track semaphore for release in finally
@@ -926,6 +927,7 @@ async def _run_job(jid, uid, bot):
         if not acc:
             await _db_up(jid, status="error", error="Account not found"); return
         client = await start_clone_bot(_CLIENT.client(acc))
+        client_name = client.name if client else None
 
         from_chat  = job["from_chat"]
         
@@ -1894,6 +1896,11 @@ async def _run_job(jid, uid, bot):
         _mg_paused.pop(jid, None)
         if _sem_acquired:
             try: _mg_semaphore.release()
+            except Exception: pass
+        if client_name:
+            try:
+                from plugins.test import release_client
+                await release_client(client_name)
             except Exception: pass
         try:
             if os.path.exists(wdir):

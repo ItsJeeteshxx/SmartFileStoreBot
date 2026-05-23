@@ -61,6 +61,14 @@ def get_youtube_auth_url():
         return None, str(e)
 
 
+def _run_in_executor_safe(creds, func, *args, **kwargs):
+    """Builds a thread-safe service object and executes the function with it."""
+    import httplib2
+    http = httplib2.Http()
+    youtube = _yt_build('youtube', 'v3', http=http, credentials=creds)
+    return func(youtube, *args, **kwargs)
+
+
 async def save_youtube_credentials(flow, code):
     try:
         import json
@@ -71,11 +79,15 @@ async def save_youtube_credentials(flow, code):
         await loop.run_in_executor(None, lambda: flow.fetch_token(code=code))
         creds = flow.credentials
         
-        # Build temp service to query channel details
-        youtube = _yt_build('youtube', 'v3', credentials=creds)
+        # Build temp service to query channel details in executor
+        def _get_channel_info(youtube):
+            return youtube.channels().list(part="snippet", mine=True).execute()
+            
         channels_resp = await loop.run_in_executor(
             None,
-            lambda: youtube.channels().list(part="snippet", mine=True).execute()
+            _run_in_executor_safe,
+            creds,
+            _get_channel_info
         )
         items = channels_resp.get("items", [])
         if not items:
@@ -111,10 +123,15 @@ async def _migrate_legacy_token():
         from database import db
         creds = _Credentials.from_authorized_user_file(TOKEN_FILE, YOUTUBE_SCOPES)
         loop = asyncio.get_event_loop()
-        youtube = _yt_build('youtube', 'v3', credentials=creds)
+        
+        def _get_channel_info(youtube):
+            return youtube.channels().list(part="snippet", mine=True).execute()
+            
         channels_resp = await loop.run_in_executor(
             None,
-            lambda: youtube.channels().list(part="snippet", mine=True).execute()
+            _run_in_executor_safe,
+            creds,
+            _get_channel_info
         )
         items = channels_resp.get("items", [])
         if items:
@@ -138,7 +155,7 @@ async def _migrate_legacy_token():
         logger.error(f"[youtube] Failed to migrate legacy token: {e}")
 
 
-async def get_authenticated_service(channel_id=None):
+async def get_credentials(channel_id=None):
     ok, _ = _check_libs()
     if not ok:
         return None
@@ -180,10 +197,18 @@ async def get_authenticated_service(channel_id=None):
                     return None
             else:
                 return None
-        return _yt_build('youtube', 'v3', credentials=creds)
+        return creds
     except Exception as e:
-        logger.error(f"[ytauth] get_authenticated_service error: {e}")
+        logger.error(f"[ytauth] get_credentials error: {e}")
         return None
+
+
+async def get_authenticated_service(channel_id=None):
+    """Fallback function for backward compatibility on main thread."""
+    creds = await get_credentials(channel_id)
+    if not creds:
+        return None
+    return _yt_build('youtube', 'v3', credentials=creds)
 
 
 async def get_all_youtube_channels() -> list:
@@ -208,7 +233,7 @@ async def delete_youtube_channel(channel_id: str) -> bool:
 
 
 async def get_service_for_video(video_id: str):
-    """Find which authorized YouTube channel owns or has access to the given video."""
+    """Find which authorized YouTube channel credentials own or have access to the given video."""
     channels = await get_all_youtube_channels()
     if not channels:
         return None, "No YouTube channels are currently authorized."
@@ -216,24 +241,28 @@ async def get_service_for_video(video_id: str):
     loop = asyncio.get_event_loop()
     for ch in channels:
         ch_id = ch["_id"]
-        svc = await get_authenticated_service(channel_id=ch_id)
-        if not svc:
+        creds = await get_credentials(channel_id=ch_id)
+        if not creds:
             continue
         try:
-            curr_resp = await loop.run_in_executor(
+            def _check_video_access(youtube):
+                return youtube.videos().list(part="snippet", id=video_id).execute().get("items", [])
+                
+            items = await loop.run_in_executor(
                 None,
-                lambda: svc.videos().list(part="snippet", id=video_id).execute()
+                _run_in_executor_safe,
+                creds,
+                _check_video_access
             )
-            items = curr_resp.get("items", [])
             if items:
-                return svc, ch_id
+                return creds, ch_id
         except Exception:
             pass
             
-    # Fallback to the default service
-    default_svc = await get_authenticated_service()
-    if default_svc:
-        return default_svc, None
+    # Fallback to the default credentials
+    default_creds = await get_credentials()
+    if default_creds:
+        return default_creds, None
     return None, "No authorized channel can access this video."
 
 
@@ -242,42 +271,44 @@ async def upload_video_to_youtube(video_path, title, description="", tags=None,
                                    thumbnail_path=None, channel_id=None):
     try:
         import asyncio
-        youtube = await get_authenticated_service(channel_id)
-        if not youtube:
+        creds = await get_credentials(channel_id)
+        if not creds:
             return False, "YouTube is not authorized. Please run /ytauth first."
 
-        body = {
-            'snippet': {
-                'title': title,
-                'description': description,
-                'tags': tags or ["Auto-Forward-Bot"],
-                'categoryId': category_id
-            },
-            'status': {
-                'privacyStatus': privacy_status,
-                'selfDeclaredMadeForKids': False,
+        def _upload_task(youtube):
+            body = {
+                'snippet': {
+                    'title': title,
+                    'description': description,
+                    'tags': tags or ["Auto-Forward-Bot"],
+                    'categoryId': category_id
+                },
+                'status': {
+                    'privacyStatus': privacy_status,
+                    'selfDeclaredMadeForKids': False,
+                }
             }
-        }
 
-        media = _MediaFileUpload(video_path, mimetype='video/mp4', chunksize=10 * 1024 * 1024, resumable=True)
-        request = youtube.videos().insert(
-            part=",".join(body.keys()),
-            body=body,
-            media_body=media
-        )
+            media = _MediaFileUpload(video_path, mimetype='video/mp4', chunksize=10 * 1024 * 1024, resumable=True)
+            request = youtube.videos().insert(
+                part=",".join(body.keys()),
+                body=body,
+                media_body=media
+            )
+            response = request.execute()
+            video_id = response['id']
+
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                try:
+                    thumb_media = _MediaFileUpload(thumbnail_path, mimetype='image/jpeg')
+                    thumb_req = youtube.thumbnails().set(videoId=video_id, media_body=thumb_media)
+                    thumb_req.execute()
+                except Exception as e:
+                    logger.warning(f"[ytauth] Thumbnail upload failed: {e}")
+            return video_id
 
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, request.execute)
-        video_id = response['id']
-
-        if thumbnail_path and os.path.exists(thumbnail_path):
-            try:
-                thumb_media = _MediaFileUpload(thumbnail_path, mimetype='image/jpeg')
-                thumb_req = youtube.thumbnails().set(videoId=video_id, media_body=thumb_media)
-                await loop.run_in_executor(None, thumb_req.execute)
-            except Exception as e:
-                logger.warning(f"[ytauth] Thumbnail upload failed: {e}")
-
+        video_id = await loop.run_in_executor(None, _run_in_executor_safe, creds, _upload_task)
         return True, f"https://youtu.be/{video_id}"
     except Exception as e:
         logger.error(f"[ytauth] upload_video_to_youtube error: {e}")
@@ -289,26 +320,28 @@ async def update_youtube_video(video_id: str, title: str, description: str = "",
     try:
         import asyncio
         if channel_id:
-            youtube = await get_authenticated_service(channel_id)
+            creds = await get_credentials(channel_id)
         else:
-            youtube, _ = await get_service_for_video(video_id)
+            creds, _ = await get_service_for_video(video_id)
             
-        if not youtube:
+        if not creds:
             return False, "YouTube channel is not authorized or video not found."
 
-        body = {
-            'id': video_id,
-            'snippet': {
-                'title': title,
-                'description': description,
-                'categoryId': '22'
+        def _update_task(youtube):
+            body = {
+                'id': video_id,
+                'snippet': {
+                    'title': title,
+                    'description': description,
+                    'categoryId': '22'
+                }
             }
-        }
+            request = youtube.videos().update(part="snippet", body=body)
+            response = request.execute()
+            return response.get('id', video_id)
 
         loop = asyncio.get_event_loop()
-        request = youtube.videos().update(part="snippet", body=body)
-        response = await loop.run_in_executor(None, request.execute)
-        updated_id = response.get('id', video_id)
+        updated_id = await loop.run_in_executor(None, _run_in_executor_safe, creds, _update_task)
         return True, f"Updated: https://youtu.be/{updated_id}"
     except Exception as e:
         logger.error(f"[ytauth] update_youtube_video error: {e}")
@@ -536,14 +569,19 @@ async def yt_edit_cmd(bot, message):
     use_auto = new_desc_raw.lower() == "/auto"
 
     proc_msg = await resp3.reply("⏳ Fetching current video details from YouTube…")
-    svc, target_channel_id = await get_service_for_video(vid_id)
-    if not svc:
+    creds, target_channel_id = await get_service_for_video(vid_id)
+    if not creds:
         return await proc_msg.edit_text(f"❌ {target_channel_id}")
 
     try:
+        def _get_video_details(youtube):
+            return youtube.videos().list(part="snippet", id=vid_id).execute()
+            
         curr_resp = await loop.run_in_executor(
             None,
-            lambda: svc.videos().list(part="snippet", id=vid_id).execute()
+            _run_in_executor_safe,
+            creds,
+            _get_video_details
         )
         items = curr_resp.get("items", [])
         if not items:
@@ -572,19 +610,24 @@ async def yt_edit_cmd(bot, message):
 
     await proc_msg.edit_text("⏳ Updating video on YouTube…")
     try:
-        update_body = {
-            'id': vid_id,
-            'snippet': {
-                'title': title_to_use,
-                'description': desc_to_use,
-                'categoryId': curr_snippet.get('categoryId', '22'),
-                'tags': curr_snippet.get('tags', []),
-                'defaultLanguage': curr_snippet.get('defaultLanguage', 'en'),
+        def _update_video_details(youtube):
+            update_body = {
+                'id': vid_id,
+                'snippet': {
+                    'title': title_to_use,
+                    'description': desc_to_use,
+                    'categoryId': curr_snippet.get('categoryId', '22'),
+                    'tags': curr_snippet.get('tags', []),
+                    'defaultLanguage': curr_snippet.get('defaultLanguage', 'en'),
+                }
             }
-        }
+            return youtube.videos().update(part="snippet", body=update_body).execute()
+
         upd_resp = await loop.run_in_executor(
             None,
-            lambda: svc.videos().update(part="snippet", body=update_body).execute()
+            _run_in_executor_safe,
+            creds,
+            _update_video_details
         )
         updated_id = upd_resp.get('id', vid_id)
         await proc_msg.edit_text(
