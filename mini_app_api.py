@@ -53,7 +53,7 @@ api_router = APIRouter()
 import aiohttp
 import io
 import hashlib
-from fastapi.responses import Response, HTMLResponse
+from fastapi.responses import Response
 from PIL import Image
 
 # In-memory LRU cache for image bytes (simple dict to prevent memory leaks if it gets too large)
@@ -3387,81 +3387,6 @@ async def log_to_telegram(text: str):
             )
     except Exception as e:
         logger.error(f"Failed to send Telegram log: {e}")
-
-@api_router.get("/admin/auth/setup-email", response_class=HTMLResponse)
-async def setup_admin_email_form():
-    """Serves a simple HTML form to register admin email via browser."""
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Arya Admin — Email Setup</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:system-ui,sans-serif;background:#09090b;color:#f4f4f5;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
-    .card{background:#18181b;border:1px solid #27272a;border-radius:20px;padding:32px 28px;width:100%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,0.6)}
-    h1{font-size:20px;font-weight:800;margin-bottom:6px}
-    .sub{font-size:13px;color:#71717a;margin-bottom:28px}
-    label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#71717a;margin-bottom:6px}
-    input{width:100%;padding:11px 14px;background:#09090b;border:1px solid #27272a;border-radius:10px;color:#f4f4f5;font-size:14px;outline:none;margin-bottom:16px}
-    input:focus{border-color:#52525b}
-    button{width:100%;padding:13px;background:#f4f4f5;color:#09090b;font-weight:700;font-size:14px;border:none;border-radius:10px;cursor:pointer;margin-top:4px}
-    button:hover{opacity:0.9}
-    .msg{margin-top:18px;padding:12px 14px;border-radius:10px;font-size:13px;display:none}
-    .msg.ok{background:#14532d;border:1px solid #166534;color:#86efac}
-    .msg.err{background:#450a0a;border:1px solid #7f1d1d;color:#fca5a5}
-    .note{font-size:11px;color:#52525b;margin-top:16px;line-height:1.6}
-  </style>
-</head>
-<body>
-<div class="card">
-  <h1>🔧 Admin Email Setup</h1>
-  <p class="sub">Register your email as Admin without needing a session</p>
-  <form id="f">
-    <label>Your Telegram ID</label>
-    <input type="number" id="tid" placeholder="e.g. 5123283499" required/>
-    <label>Admin Email Address</label>
-    <input type="email" id="em" placeholder="sus.jetx@gmail.com" required/>
-    <button type="submit" id="btn">Register Email →</button>
-  </form>
-  <div class="msg" id="msg"></div>
-  <p class="note">⚠️ Only Bot Owner Telegram IDs are allowed. After registering, go to <strong>/admin</strong> and login with the email.</p>
-</div>
-<script>
-document.getElementById('f').onsubmit = async(e) => {
-  e.preventDefault();
-  const btn = document.getElementById('btn');
-  const msg = document.getElementById('msg');
-  btn.textContent = 'Registering...';
-  btn.disabled = true;
-  msg.style.display = 'none';
-  const fd = new FormData();
-  fd.append('telegram_id', document.getElementById('tid').value);
-  fd.append('email', document.getElementById('em').value);
-  try {
-    const r = await fetch('/api/admin/auth/setup-email', {method:'POST', body:fd});
-    const d = await r.json();
-    if(r.ok && d.success){
-      msg.className = 'msg ok';
-      msg.textContent = '✅ ' + d.message;
-    } else {
-      msg.className = 'msg err';
-      msg.textContent = '❌ ' + (d.detail || 'Error occurred');
-    }
-  } catch(err) {
-    msg.className = 'msg err';
-    msg.textContent = '❌ Network error. Check VPS is running.';
-  }
-  msg.style.display = 'block';
-  btn.textContent = 'Register Email →';
-  btn.disabled = false;
-};
-</script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
 
 @api_router.post("/admin/auth/setup-email")
 async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)):
