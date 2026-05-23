@@ -3388,6 +3388,49 @@ async def log_to_telegram(text: str):
     except Exception as e:
         logger.error(f"Failed to send Telegram log: {e}")
 
+@api_router.post("/admin/auth/setup-email")
+async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)):
+    """One-time setup: Allows Telegram OWNER_IDS to register admin email in DB without needing a session.
+    This bypasses the chicken-and-egg problem of needing email to login but needing login to set email.
+    """
+    from AryaPremium.config import Config
+    try:
+        uid = int(telegram_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid telegram_id")
+    if uid not in Config.OWNER_IDS:
+        raise HTTPException(status_code=403, detail="Not authorized — only bot owners can use this endpoint")
+
+    email_clean = email.strip().lower()
+    if "@" not in email_clean or "." not in email_clean:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    # Read existing owner_emails from DB
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    existing = cfg.get("owner_emails", "")
+    existing_set = set(e.strip().lower() for e in existing.replace(",", " ").split() if e.strip())
+    existing_set.add(email_clean)
+    new_emails_str = ",".join(sorted(existing_set))
+
+    await db.db.mini_app_config.update_one(
+        {"_key": "feature_toggles"},
+        {"$set": {"owner_emails": new_emails_str}},
+        upsert=True
+    )
+    logger.info(f"Owner {telegram_id} registered admin email: {email_clean}")
+    await log_to_telegram(
+        f"<b>🔧 Admin Email Registered</b>\n"
+        f"By Telegram ID: <code>{telegram_id}</code>\n"
+        f"Email: <code>{email_clean}</code>\n"
+        f"All admin emails: <code>{new_emails_str}</code>"
+    )
+    return {"success": True, "message": f"Email {email_clean} registered as admin. You can now login.", "all_emails": new_emails_str}
+
+
 @api_router.post("/admin/auth/send-otp")
 async def send_admin_otp(email: str = Form(...)):
     """Generates a 6-digit verification code, stores it, sends via SMTP or posts to Telegram log."""
@@ -3414,10 +3457,10 @@ async def send_admin_otp(email: str = Form(...)):
                     
     if not allowed_emails:
         logger.warning("No OWNER_EMAILS configured in system. Admin email login is blocked.")
-        raise HTTPException(status_code=403, detail="Admin email addresses not configured in system.")
+        raise HTTPException(status_code=403, detail="Admin email not configured. Use /api/admin/auth/setup-email with your Telegram ID to register first.")
         
     if email_clean not in allowed_emails:
-        raise HTTPException(status_code=403, detail="Email not authorized as Admin")
+        raise HTTPException(status_code=403, detail=f"Email not authorized as Admin. Use setup-email endpoint to register, or check OWNER_EMAILS env variable.")
         
     otp = "".join(secrets.choice("0123456789") for _ in range(6))
     expiry = datetime.now(timezone.utc).timestamp() + 300 # 5 minutes
@@ -3444,6 +3487,7 @@ async def send_admin_otp(email: str = Form(...)):
     await log_to_telegram(log_msg)
     
     return {"success": True, "message": "OTP sent successfully", "fallback_sent": not email_sent}
+
 
 @api_router.post("/admin/auth/verify-otp")
 async def verify_admin_otp(request: Request, email: str = Form(...), otp: str = Form(...)):
