@@ -3,7 +3,7 @@ import uuid
 import logging
 import asyncio
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter, HTTPException, Form, File, UploadFile, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -293,6 +293,8 @@ async def create_payment_link(payload: dict):
     telegram_id = payload.get("telegram_id")
     story_ids   = payload.get("story_ids", [])
     username    = payload.get("username", "")
+    promo_code  = payload.get("promo_code", "")
+    is_int      = payload.get("is_international", False)
 
     if not telegram_id or not story_ids:
         raise HTTPException(status_code=400, detail="Missing telegram_id or story_ids")
@@ -313,7 +315,38 @@ async def create_payment_link(payload: dict):
     if not valid_stories:
         raise HTTPException(status_code=400, detail="Invalid stories requested")
 
-    total_price = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    # Fetch settings
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    # 1. Promo Code Discount
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        active_promos = cfg.get("promo_codes", [])
+        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
+        if promo_match:
+            ptype = promo_match.get("type", "percentage")
+            pval = float(promo_match.get("value", 0))
+            if ptype == "percentage":
+                discount = round((subtotal * pval) / 100.0, 2)
+            elif ptype == "flat":
+                discount = min(pval, subtotal)
+                
+    # 2. Platform Fee
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    # 3. Razorpay Fee
+    razorpay_fee = 0.0
+    if cfg.get("razorpay_fee_enabled", True):
+        rzp_rate = 3.54 if is_int else float(cfg.get("razorpay_fee_percent", 2.36))
+        chargeable_amount = max(0.0, subtotal - discount + platform_fee)
+        razorpay_fee = round((chargeable_amount * rzp_rate) / 100.0, 2)
+        
+    total_price = max(0.0, subtotal - discount + platform_fee + razorpay_fee)
     if total_price <= 0:
         raise HTTPException(status_code=400, detail="Invalid price")
 
@@ -351,6 +384,11 @@ async def create_payment_link(payload: dict):
             "username":    username or "Unknown",
             "story_ids":   story_ids,
             "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "subtotal":    subtotal,
+            "discount":    discount,
+            "promo_code":  pcode_clean if discount > 0 else None,
+            "platform_fee": platform_fee,
+            "razorpay_fee": razorpay_fee,
             "total":       total_price,
             "status":      "pending",
             "source":      "razorpay_link",
@@ -420,9 +458,10 @@ def _make_order_id(tg_id: str) -> str:
 @api_router.post("/create-order")
 async def create_razorpay_order(payload: dict):
     """Create Razorpay order. Returns order_id + key for frontend SDK modal."""
-    story_ids = payload.get("story_ids", [])
-    tg_id     = payload.get("telegram_id") or 0
-    is_int    = payload.get("is_international", False)
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    is_int     = payload.get("is_international", False)
+    promo_code = payload.get("promo_code", "")
 
     if not story_ids:
         raise HTTPException(400, "Cart is empty")
@@ -443,9 +482,40 @@ async def create_razorpay_order(payload: dict):
     if not valid_stories:
         raise HTTPException(400, "No valid stories")
 
-    total_price = sum(float(s.get("price", 0) or 0) for s in valid_stories)
-    if is_int:
-        total_price += round(total_price * 0.0354)  # Add 3.54% international fee
+    # Fetch settings
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    # 1. Promo Code Discount
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        active_promos = cfg.get("promo_codes", [])
+        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
+        if promo_match:
+            ptype = promo_match.get("type", "percentage")
+            pval = float(promo_match.get("value", 0))
+            if ptype == "percentage":
+                discount = round((subtotal * pval) / 100.0, 2)
+            elif ptype == "flat":
+                discount = min(pval, subtotal)
+                
+    # 2. Platform Fee
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    # 3. Razorpay Fee
+    razorpay_fee = 0.0
+    if cfg.get("razorpay_fee_enabled", True):
+        rzp_rate = 3.54 if is_int else float(cfg.get("razorpay_fee_percent", 2.36))
+        chargeable_amount = max(0.0, subtotal - discount + platform_fee)
+        razorpay_fee = round((chargeable_amount * rzp_rate) / 100.0, 2)
+        
+    total_price = max(0.0, subtotal - discount + platform_fee + razorpay_fee)
+    if total_price <= 0:
+        raise HTTPException(400, "Invalid total amount (must be greater than 0)")
         
     total_paise = int(total_price * 100)
     receipt     = _make_order_id(tg_id)
@@ -492,7 +562,7 @@ async def create_razorpay_order(payload: dict):
 async def verify_payment(payload: dict):
     """
     Verify Razorpay HMAC signature after successful payment.
-    Called automatically by the frontend handler â€” no user action needed.
+    Called automatically by the frontend handler — no user action needed.
     """
     rzp_order_id   = payload.get("razorpay_order_id", "")
     rzp_payment_id = payload.get("razorpay_payment_id", "")
@@ -500,6 +570,8 @@ async def verify_payment(payload: dict):
     story_ids      = payload.get("story_ids", [])
     tg_id          = payload.get("telegram_id") or 0
     username       = payload.get("username", "")
+    promo_code     = payload.get("promo_code", "")
+    is_int         = payload.get("is_international", False)
 
     if not all([rzp_order_id, rzp_payment_id, rzp_signature]):
         raise HTTPException(400, "Missing payment verification fields")
@@ -513,9 +585,9 @@ async def verify_payment(payload: dict):
 
     if not hmac.compare_digest(expected, rzp_signature):
         logger.warning(f"Invalid Razorpay signature for {rzp_payment_id}")
-        raise HTTPException(400, "Payment verification failed â€” invalid signature")
+        raise HTTPException(400, "Payment verification failed — invalid signature")
 
-    # Signature OK â€” store order + unlock content
+    # Signature OK — store order + unlock content
     arya_db = app.state.db
     from bson.objectid import ObjectId
     valid_stories = []
@@ -526,8 +598,39 @@ async def verify_payment(payload: dict):
                 valid_stories.append(doc)
         except Exception:
             pass
-            
-    total   = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+
+    # Fetch settings
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    # 1. Promo Code Discount
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        active_promos = cfg.get("promo_codes", [])
+        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
+        if promo_match:
+            ptype = promo_match.get("type", "percentage")
+            pval = float(promo_match.get("value", 0))
+            if ptype == "percentage":
+                discount = round((subtotal * pval) / 100.0, 2)
+            elif ptype == "flat":
+                discount = min(pval, subtotal)
+                
+    # 2. Platform Fee
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    # 3. Razorpay Fee
+    razorpay_fee = 0.0
+    if cfg.get("razorpay_fee_enabled", True):
+        rzp_rate = 3.54 if is_int else float(cfg.get("razorpay_fee_percent", 2.36))
+        chargeable_amount = max(0.0, subtotal - discount + platform_fee)
+        razorpay_fee = round((chargeable_amount * rzp_rate) / 100.0, 2)
+        
+    total = max(0.0, subtotal - discount + platform_fee + razorpay_fee)
     oid     = _make_order_id(str(tg_id))
 
     tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
@@ -538,6 +641,11 @@ async def verify_payment(payload: dict):
         "username":            username,
         "story_ids":           story_ids,
         "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "subtotal":            subtotal,
+        "discount":            discount,
+        "promo_code":          pcode_clean if discount > 0 else None,
+        "platform_fee":        platform_fee,
+        "razorpay_fee":        razorpay_fee,
         "total":               total,
         "status":              "paid",
         "source":              "razorpay_miniapp",
@@ -672,6 +780,24 @@ async def create_oxapay_order(payload: dict):
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
 
     total_inr = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    promo_code = payload.get("promo_code", "")
+
+    # Fetch settings for promo codes
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        active_promos = cfg.get("promo_codes", [])
+        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
+        if promo_match:
+            ptype = promo_match.get("type", "percentage")
+            pval = float(promo_match.get("value", 0))
+            if ptype == "percentage":
+                discount = round((total_inr * pval) / 100.0, 2)
+            elif ptype == "flat":
+                discount = min(pval, total_inr)
+
+    total_inr = max(0.0, total_inr - discount)
     # OxaPay expects USD. Minimum $0.50.
     total_usd = max(0.5, round(total_inr / 85.0, 2))
     oid = _make_order_id(str(tg_id))
@@ -1208,6 +1334,42 @@ async def save_admin_story(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error saving story: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/admin/stories/adjust-prices")
+async def adjust_all_story_prices(payload: dict):
+    """Adjusts the price of all premium stories by a given positive or negative offset."""
+    from AryaPremium.config import Config
+    try:
+        telegram_id = str(payload.get("telegram_id", ""))
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if user_id_int not in Config.OWNER_IDS:
+            raise HTTPException(status_code=403, detail="Not authorized as Admin")
+        
+        amount = payload.get("amount")
+        if amount is None:
+            raise HTTPException(status_code=400, detail="amount parameter is required")
+        try:
+            amount = int(amount)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="amount must be a valid integer")
+        
+        arya_db = app.state.db
+        result = await arya_db.stories.update_many(
+            {},
+            {"$inc": {"price": amount}}
+        )
+        logger.info(f"Admin {telegram_id} adjusted all story prices by {amount}. Modified {result.modified_count} documents.")
+        return {
+            "success": True, 
+            "message": f"Successfully updated story prices by {amount}", 
+            "modified_count": result.modified_count
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error bulk adjusting prices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3024,6 +3186,11 @@ async def get_admin_settings(telegram_id: str):
             "data": {
                 "mini_app_enabled": cfg.get("mini_app_enabled", True),
                 "tnc_enabled": cfg.get("tnc_enabled", True),
+                "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
+                "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
+                "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
+                "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
+                "promo_codes": cfg.get("promo_codes", []),
             }
         }
     except HTTPException:
@@ -3034,7 +3201,7 @@ async def get_admin_settings(telegram_id: str):
 
 @api_router.post("/admin/settings")
 async def update_admin_settings(payload: dict):
-    """Update feature toggle settings. Accepts mini_app_enabled and/or tnc_enabled."""
+    """Update feature toggle settings."""
     from AryaPremium.config import Config
     try:
         telegram_id = str(payload.get("telegram_id", ""))
@@ -3047,6 +3214,28 @@ async def update_admin_settings(payload: dict):
             update_fields["mini_app_enabled"] = bool(payload["mini_app_enabled"])
         if "tnc_enabled" in payload:
             update_fields["tnc_enabled"] = bool(payload["tnc_enabled"])
+        if "razorpay_fee_percent" in payload:
+            update_fields["razorpay_fee_percent"] = float(payload["razorpay_fee_percent"])
+        if "razorpay_fee_enabled" in payload:
+            update_fields["razorpay_fee_enabled"] = bool(payload["razorpay_fee_enabled"])
+        if "platform_fee_amount" in payload:
+            update_fields["platform_fee_amount"] = float(payload["platform_fee_amount"])
+        if "platform_fee_enabled" in payload:
+            update_fields["platform_fee_enabled"] = bool(payload["platform_fee_enabled"])
+        if "promo_codes" in payload:
+            raw_codes = payload["promo_codes"]
+            promo_codes = []
+            if isinstance(raw_codes, list):
+                for pc in raw_codes:
+                    if isinstance(pc, dict) and "code" in pc:
+                        promo_codes.append({
+                            "code": str(pc["code"]).strip().upper(),
+                            "type": str(pc.get("type", "percentage")),
+                            "value": float(pc.get("value", 0)),
+                            "active": bool(pc.get("active", True))
+                        })
+            update_fields["promo_codes"] = promo_codes
+
         if not update_fields:
             raise HTTPException(status_code=400, detail="No valid fields to update")
         await arya_db.db.mini_app_config.update_one(
@@ -3072,20 +3261,31 @@ async def get_public_settings():
             "success": True,
             "mini_app_enabled": cfg.get("mini_app_enabled", True),
             "tnc_enabled": cfg.get("tnc_enabled", True),
+            "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
+            "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
+            "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
+            "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
+            "promo_codes": cfg.get("promo_codes", []),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
-        return {"success": True, "mini_app_enabled": True, "tnc_enabled": True}
+        return {
+            "success": True,
+            "mini_app_enabled": True,
+            "tnc_enabled": True,
+            "razorpay_fee_percent": 2.36,
+            "razorpay_fee_enabled": True,
+            "platform_fee_amount": 5.0,
+            "platform_fee_enabled": True,
+            "promo_codes": []
+        }
 
 
 @api_router.get("/analytics/enterprise-dashboard")
 async def enterprise_dashboard(
     telegram_id: str,
     days: int = 30,
-    country: Optional[str] = None,
-    city: Optional[str] = None,
-    story_id: Optional[str] = None,
-    device: Optional[str] = None,
+    query: Optional[str] = None,
     telegram_only: bool = False,
     premium_only: bool = False,
     new_users: bool = False,
@@ -3100,14 +3300,331 @@ async def enterprise_dashboard(
         raise HTTPException(status_code=403, detail="Not authorized")
     arya_db = app.state.db
     flt = filters_from_query(
-        days, country, city, story_id, device,
-        telegram_only, premium_only, new_users, returning_users,
+        days=days,
+        query=query,
+        telegram_only=telegram_only,
+        premium_only=premium_only,
+        new_users=new_users,
+        returning_users=returning_users,
     )
     return await build_enterprise_dashboard(arya_db, flt)
 
+# ─────────────────────────────────────────────────────────────────
+# ADMIN STANDALONE AUTHENTICATION & SESSIONS
+# ─────────────────────────────────────────────────────────────────
+import smtplib
+import secrets
+from email.mime.text import MIMEText
+from email.header import Header
+
+async def send_smtp_email(to_email: str, subject: str, text_content: str) -> bool:
+    """Sends an email notification via SMTP config defined in feature toggles or environment variables."""
+    db = getattr(app.state, "db", None)
+    cfg = {}
+    if db:
+        try:
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        except Exception:
+            pass
+            
+    smtp_host = cfg.get("smtp_host") or os.environ.get("SMTP_HOST") or "smtp.gmail.com"
+    smtp_port_str = cfg.get("smtp_port") or os.environ.get("SMTP_PORT") or "587"
+    smtp_user = cfg.get("smtp_user") or os.environ.get("SMTP_USER")
+    smtp_pass = cfg.get("smtp_pass") or os.environ.get("SMTP_PASSWORD")
+    smtp_sender = cfg.get("smtp_sender") or os.environ.get("SMTP_SENDER") or smtp_user
+    
+    if not smtp_user or not smtp_pass:
+        logger.warning("SMTP credentials not configured. Cannot send email.")
+        return False
+        
+    try:
+        smtp_port = int(smtp_port_str)
+    except ValueError:
+        smtp_port = 587
+        
+    try:
+        msg = MIMEText(text_content, 'plain', 'utf-8')
+        msg['Subject'] = Header(subject, 'utf-8')
+        msg['From'] = smtp_sender
+        msg['To'] = to_email
+        
+        def _send():
+            if smtp_port == 465:
+                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10)
+            else:
+                server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_sender, [to_email], msg.as_string())
+            server.quit()
+            
+        await asyncio.to_thread(_send)
+        logger.info(f"OTP email sent successfully to {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email via SMTP: {e}")
+        return False
+
+async def log_to_telegram(text: str):
+    """Sends active security log updates to the Telegram channels."""
+    from AryaPremium.config import Config
+    token = getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN")
+    channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    if not token or not channel_id:
+        return
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": channel_id,
+                    "text": text,
+                    "parse_mode": "HTML"
+                }
+            )
+    except Exception as e:
+        logger.error(f"Failed to send Telegram log: {e}")
+
+@api_router.post("/admin/auth/send-otp")
+async def send_admin_otp(email: str = Form(...)):
+    """Generates a 6-digit verification code, stores it, sends via SMTP or posts to Telegram log."""
+    email_clean = email.strip().lower()
+    from AryaPremium.config import Config
+    owner_emails_str = os.environ.get("OWNER_EMAILS", "")
+    
+    db = getattr(app.state, "db", None)
+    cfg = {}
+    if db:
+        try:
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        except Exception:
+            pass
+            
+    db_emails_str = cfg.get("owner_emails", "")
+    
+    allowed_emails = set()
+    for s in [owner_emails_str, db_emails_str]:
+        if s:
+            for email_part in s.replace(",", " ").split():
+                if email_part.strip():
+                    allowed_emails.add(email_part.strip().lower())
+                    
+    if not allowed_emails:
+        logger.warning("No OWNER_EMAILS configured in system. Admin email login is blocked.")
+        raise HTTPException(status_code=403, detail="Admin email addresses not configured in system.")
+        
+    if email_clean not in allowed_emails:
+        raise HTTPException(status_code=403, detail="Email not authorized as Admin")
+        
+    otp = "".join(secrets.choice("0123456789") for _ in range(6))
+    expiry = datetime.now(timezone.utc).timestamp() + 300 # 5 minutes
+    
+    if db:
+        await db.db.admin_otps.update_one(
+            {"email": email_clean},
+            {"$set": {"otp": otp, "expires_at": expiry, "verified": False}},
+            upsert=True
+        )
+        
+    email_sent = await send_smtp_email(
+        to_email=email_clean,
+        subject="Arya Premium Console — 2FA OTP Code",
+        text_content=f"Your Arya Premium Admin Console login verification code is: {otp}\n\nThis OTP is valid for 5 minutes. Do not share it with anyone."
+    )
+    
+    log_msg = (
+        f"<b>🔐 Admin OTP Request</b>\n"
+        f"Email: <code>{email_clean}</code>\n"
+        f"OTP: <code>{otp}</code>\n"
+        f"Status: {'Sent via SMTP' if email_sent else 'SMTP Config Missing/Failed — Code logged as fallback'}"
+    )
+    await log_to_telegram(log_msg)
+    
+    return {"success": True, "message": "OTP sent successfully", "fallback_sent": not email_sent}
+
+@api_router.post("/admin/auth/verify-otp")
+async def verify_admin_otp(request: Request, email: str = Form(...), otp: str = Form(...)):
+    """Verifies OTP and generates a secure session valid for up to 10 days."""
+    email_clean = email.strip().lower()
+    otp_clean = otp.strip()
+    
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database connection not available")
+        
+    otp_doc = await db.db.admin_otps.find_one({"email": email_clean})
+    if not otp_doc:
+        raise HTTPException(status_code=400, detail="OTP not requested or invalid")
+        
+    current_time = datetime.now(timezone.utc).timestamp()
+    if otp_doc["expires_at"] < current_time:
+        raise HTTPException(status_code=400, detail="OTP has expired")
+        
+    if otp_doc["otp"] != otp_clean:
+        raise HTTPException(status_code=400, detail="Invalid OTP code")
+        
+    await db.db.admin_otps.delete_one({"email": email_clean})
+    
+    session_token = secrets.token_hex(32)
+    created_at = datetime.now(timezone.utc)
+    expires_at = created_at + timedelta(days=10)
+    
+    ip_addr = request.headers.get("X-Forwarded-For") or request.client.host
+    if ip_addr and "," in ip_addr:
+        ip_addr = ip_addr.split(",")[0].strip()
+        
+    user_agent = request.headers.get("User-Agent") or "Unknown Browser"
+    
+    session_doc = {
+        "session_token": session_token,
+        "email": email_clean,
+        "ip": ip_addr,
+        "user_agent": user_agent,
+        "created_at": created_at,
+        "expires_at": expires_at,
+        "active": True
+    }
+    
+    await db.db.admin_sessions.insert_one(session_doc)
+    
+    await log_to_telegram(
+        f"<b>✅ Admin Logged In</b>\n"
+        f"Email: <code>{email_clean}</code>\n"
+        f"IP: <code>{ip_addr}</code>\n"
+        f"User Agent: <code>{user_agent}</code>"
+    )
+    
+    return {
+        "success": True,
+        "session_token": session_token,
+        "expires_at": expires_at.isoformat(),
+        "email": email_clean
+    }
+
+@api_router.get("/admin/auth/sessions")
+async def get_admin_sessions(request: Request):
+    """Lists all active device sessions for the authenticated administrator."""
+    session_token = request.headers.get("X-Admin-Session")
+    db = getattr(app.state, "db", None)
+    if not session_token or not db:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    current_session = await db.db.admin_sessions.find_one({
+        "session_token": session_token,
+        "active": True,
+        "expires_at": {"$gt": datetime.now(timezone.utc)}
+    })
+    if not current_session:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    sessions_cursor = db.db.admin_sessions.find({
+        "email": current_session["email"],
+        "active": True,
+        "expires_at": {"$gt": datetime.now(timezone.utc)}
+    })
+    
+    sessions_list = await sessions_cursor.to_list(length=None)
+    
+    result = []
+    for s in sessions_list:
+        is_curr = s["session_token"] == session_token
+        masked_token = s["session_token"][:6] + "..." + s["session_token"][-6:]
+        result.append({
+            "token_id": s["session_token"],
+            "masked_token": masked_token,
+            "ip": s.get("ip") or "Unknown",
+            "user_agent": s.get("user_agent") or "Unknown",
+            "created_at": s["created_at"].isoformat() if isinstance(s["created_at"], datetime) else str(s["created_at"]),
+            "expires_at": s["expires_at"].isoformat() if isinstance(s["expires_at"], datetime) else str(s["expires_at"]),
+            "is_current": is_curr
+        })
+        
+    return {"success": True, "sessions": result}
+
+@api_router.post("/admin/auth/revoke-session")
+async def revoke_admin_session(request: Request, token_to_revoke: str = Form(...)):
+    """Terminates a specific device session."""
+    session_token = request.headers.get("X-Admin-Session")
+    db = getattr(app.state, "db", None)
+    if not session_token or not db:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    current_session = await db.db.admin_sessions.find_one({
+        "session_token": session_token,
+        "active": True,
+        "expires_at": {"$gt": datetime.now(timezone.utc)}
+    })
+    if not current_session:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    await db.db.admin_sessions.update_one(
+        {"session_token": token_to_revoke, "email": current_session["email"]},
+        {"$set": {"active": False}}
+    )
+    
+    return {"success": True, "message": "Session revoked"}
+
+@api_router.post("/admin/auth/logout")
+async def admin_logout(request: Request):
+    """Expires and revokes the active session token."""
+    session_token = request.headers.get("X-Admin-Session")
+    db = getattr(app.state, "db", None)
+    if session_token and db:
+        await db.db.admin_sessions.update_one(
+            {"session_token": session_token},
+            {"$set": {"active": False}}
+        )
+    return {"success": True, "message": "Logged out"}
+
+@app.middleware("http")
+async def admin_auth_middleware(request: Request, call_next):
+    """Intercepts and guards all administrative and analytics endpoints."""
+    path = request.url.path
+    is_admin_path = ("/admin/" in path) or ("/analytics/" in path)
+    is_auth_endpoint = "/admin/auth/" in path
+    
+    if is_admin_path and not is_auth_endpoint:
+        session_token = request.headers.get("X-Admin-Session")
+        db = getattr(app.state, "db", None)
+        
+        authenticated = False
+        if session_token and db:
+            session = await db.db.admin_sessions.find_one({
+                "session_token": session_token,
+                "active": True,
+                "expires_at": {"$gt": datetime.now(timezone.utc)}
+            })
+            if session:
+                authenticated = True
+                
+        # Telegram ID validation fallback for Mini App query checks
+        if not authenticated:
+            telegram_id = request.query_params.get("telegram_id")
+            if telegram_id:
+                from AryaPremium.config import Config
+                try:
+                    uid = int(telegram_id)
+                except ValueError:
+                    uid = telegram_id
+                if uid in Config.OWNER_IDS:
+                    authenticated = True
+                    
+        if not authenticated:
+            return Response(
+                content='{"detail":"Unauthorized: Admin session required"}',
+                status_code=401,
+                media_type="application/json"
+            )
+            
+    response = await call_next(request)
+    return response
 
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
+
 
 
 @app.websocket("/api/ws/analytics")

@@ -86,10 +86,7 @@ def _map_pin_coords(country: str, region: str, city: str, mlat: Any, mlng: Any) 
 @dataclass
 class AnalyticsFilters:
     days: int = 30
-    country: Optional[str] = None
-    city: Optional[str] = None
-    story_id: Optional[str] = None
-    device: Optional[str] = None
+    query: Optional[str] = None
     telegram_only: bool = False
     premium_only: bool = False
     new_users: bool = False
@@ -101,21 +98,20 @@ class AnalyticsFilters:
             {"timestamp": {"$gte": since}},
             {"user_id": {"$gt": 0}},
         ]
-        if self.country:
-            parts.append({"country": {"$regex": self.country, "$options": "i"}})
-        if self.city:
-            parts.append({"city": {"$regex": self.city, "$options": "i"}})
-        if self.story_id:
-            parts.append(
-                {
-                    "$or": [
-                        {"data.story_id": self.story_id},
-                        {"story_id": self.story_id},
-                    ]
-                }
-            )
-        if self.device:
-            parts.append({"device": {"$regex": self.device, "$options": "i"}})
+        if self.query:
+            q = self.query.strip()
+            parts.append({
+                "$or": [
+                    {"country": {"$regex": q, "$options": "i"}},
+                    {"city": {"$regex": q, "$options": "i"}},
+                    {"device": {"$regex": q, "$options": "i"}},
+                    {"browser": {"$regex": q, "$options": "i"}},
+                    {"story_id": {"$regex": q, "$options": "i"}},
+                    {"data.story_id": {"$regex": q, "$options": "i"}},
+                    {"page": {"$regex": q, "$options": "i"}},
+                    {"data.page": {"$regex": q, "$options": "i"}},
+                ]
+            })
         if self.telegram_only:
             parts.append({"browser": "Telegram"})
         if len(parts) == 1:
@@ -714,10 +710,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
             "retention_returning_in_window": returning_count,
         },
         "filters_echo": {
-            "country": flt.country,
-            "city": flt.city,
-            "story_id": flt.story_id,
-            "device": flt.device,
+            "query": flt.query,
             "telegram_only": flt.telegram_only,
             "premium_only": flt.premium_only,
             "new_users": flt.new_users,
@@ -728,10 +721,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
 
 def filters_from_query(
     days: int = 30,
-    country: Optional[str] = None,
-    city: Optional[str] = None,
-    story_id: Optional[str] = None,
-    device: Optional[str] = None,
+    query: Optional[str] = None,
     telegram_only: bool = False,
     premium_only: bool = False,
     new_users: bool = False,
@@ -739,10 +729,7 @@ def filters_from_query(
 ) -> AnalyticsFilters:
     return AnalyticsFilters(
         days=days,
-        country=country or None,
-        city=city or None,
-        story_id=story_id or None,
-        device=device or None,
+        query=query or None,
         telegram_only=telegram_only,
         premium_only=premium_only,
         new_users=new_users,
