@@ -315,11 +315,16 @@ async def _lb_run_job(job_id: str):
 
     try:
         while True:
-            ev = _lb_paused.get(job_id)
-            if ev and not ev.is_set():
-                await ev.wait()
-                
-            job = await _lb_get_job(job_id)
+            try:
+                ev = _lb_paused.get(job_id)
+                if ev and not ev.is_set():
+                    await ev.wait()
+                job = await _lb_get_job(job_id)
+            except Exception as loop_pre_err:
+                logger.error(f"[LiveBatch {job_id}] Database query/wait error before loop: {loop_pre_err}")
+                await asyncio.sleep(20)
+                continue
+
             if not job or job.get("status") in ("stopped", "failed"):
                 break
                 
@@ -824,6 +829,15 @@ async def _lb_callbacks(bot, update: CallbackQuery):
     elif action == "force":
         jid = data[2]
         await _lb_update_job(jid, {"force_flush": True})
+        
+        job = await _lb_get_job(jid)
+        if job and job.get("status") not in ("stopped", "failed"):
+            if jid not in _lb_paused:
+                _lb_paused[jid] = asyncio.Event()
+            _lb_paused[jid].set()
+            if jid not in _lb_tasks or _lb_tasks[jid].done():
+                _lb_tasks[jid] = asyncio.create_task(_lb_run_job(jid))
+
         update.data = f"lb#view#{jid}"
         await update.answer("🚀 Triggered forced buffer flush!", show_alert=False)
         return await _lb_callbacks(bot, update)
