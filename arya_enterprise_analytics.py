@@ -193,6 +193,15 @@ def _live_row_summary(doc: dict) -> str:
     return t.replace("_", " ").title() if t else "Event"
 
 
+async def _safe_agg(coll, pipeline: list, default: list | dict | None = None):
+    try:
+        cur = coll.aggregate(pipeline)
+        return await cur.to_list(length=None)
+    except Exception as e:
+        logger.warning("aggregate failed: %s", e)
+        return default if default is not None else []
+
+
 def visitor_id_expression() -> dict[str, Any]:
     """
     Returns the MongoDB aggregation expression to compute visitor_id following this priority:
