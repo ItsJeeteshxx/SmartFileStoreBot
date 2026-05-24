@@ -96,7 +96,14 @@ class AnalyticsFilters:
         since = datetime.now(timezone.utc) - timedelta(days=max(1, min(self.days, 365)))
         parts: list[dict[str, Any]] = [
             {"timestamp": {"$gte": since}},
-            {"user_id": {"$gt": 0}},
+            {
+                "data.client_user_agent": {
+                    "$not": {
+                        "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
+                        "$options": "i"
+                    }
+                }
+            }
         ]
         if self.query:
             q = self.query.strip()
@@ -203,18 +210,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     else:
         since = m["timestamp"]["$gte"]
 
-    bot_filter = {
-        "data.client_user_agent": {
-            "$not": {
-                "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
-                "$options": "i"
-            }
-        }
-    }
-    if "$and" in m:
-        m["$and"].append(bot_filter)
-    else:
-        m = {"$and": [m, bot_filter]}
+    # m already includes the timestamp filter and the bot_filter
 
     arya_db = db
     analytics = arya_db.db.mini_app_analytics
@@ -367,7 +363,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
 
     story_since = since
     se_match: dict[str, Any] = {"ts": {"$gte": story_since}}
-    if flt.story_id:
+    if getattr(flt, "story_id", None):
         se_match["story_id"] = flt.story_id
 
     async def top_field(field: str, limit: int = 8):

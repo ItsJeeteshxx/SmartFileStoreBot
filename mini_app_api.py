@@ -1185,13 +1185,13 @@ async def get_admin_stats(telegram_id: str):
                 "$group": {
                     "_id": "$visitor_id"
                 }
-            },
-            {
-                "$count": "total"
             }
         ]
-        visitor_res = await arya_db.db.mini_app_analytics.aggregate(visitor_pipeline).to_list(length=1)
-        miniapp_users_count = visitor_res[0]["total"] if visitor_res else 0
+        visitor_docs = await arya_db.db.mini_app_analytics.aggregate(visitor_pipeline).to_list(length=100000)
+        visitor_ids = [d["_id"] for d in visitor_docs] if visitor_docs else []
+        miniapp_users_count = len(visitor_ids)
+        anonymous_count = len([vid for vid in visitor_ids if vid.startswith("ip_")])
+        total_users_count = bot_users_count + anonymous_count
         
         # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})
@@ -1279,7 +1279,7 @@ async def get_admin_stats(telegram_id: str):
         return {
             "success": True,
             "data": {
-                "total_users": bot_users_count + miniapp_users_count,
+                "total_users": total_users_count,
                 "bot_users": bot_users_count,
                 "miniapp_users": miniapp_users_count,
                 "total_stories": total_stories,
