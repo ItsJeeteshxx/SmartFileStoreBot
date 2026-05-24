@@ -3088,6 +3088,37 @@ def _live_event_summary(event_type: str, ed: dict, doc: dict) -> str:
     return (event_type or "event").replace("_", " ").strip().title()
 
 
+# Event deduplication cache: dict mapping signature -> timestamp
+_dedup_cache: dict[str, float] = {}
+
+def _is_duplicate_event(visitor_id: str, event_type: str, ed: dict) -> bool:
+    """
+    Returns True if an identical event from the same visitor was logged in the last 4 seconds.
+    Supports deduplicating rapid/duplicate clicks, reloads, page_views, and heartbeats.
+    """
+    import time as _time
+    page = str(ed.get("page") or "").strip()
+    story_id = str(ed.get("story_id") or "").strip()
+    query = str(ed.get("query") or "").strip()
+    chapter_id = str(ed.get("chapter_id") or "").strip()
+    
+    sig = f"{visitor_id}:{event_type}:{page}:{story_id}:{query}:{chapter_id}"
+    now = _time.time()
+    
+    # Clean up stale entries to prevent memory leak
+    if len(_dedup_cache) > 10000:
+        stale = [k for k, ts in _dedup_cache.items() if (now - ts) > 10]
+        for k in stale:
+            _dedup_cache.pop(k, None)
+            
+    last_seen = _dedup_cache.get(sig)
+    if last_seen and (now - last_seen) < 4.0:
+        return True
+        
+    _dedup_cache[sig] = now
+    return False
+
+
 @api_router.post("/track")
 async def track_event(data: TrackEvent, request: Request):
     """Track a mini-app event with full IP geolocation + device info."""
@@ -3113,8 +3144,23 @@ async def track_event(data: TrackEvent, request: Request):
 
         # Extract client IP (Cloudflare / Vercel / Fly / X-Forwarded-For)
         ip = _client_ip_from_request(request)
-        ua  = request.headers.get("user-agent", "")
         ref = request.headers.get("referer") or ed.get("referrer")
+        
+        sess_id = ed.get("session_id")
+        fp_id = ed.get("fingerprint_id")
+        
+        visitor_id = ""
+        if isinstance(user_id_int, int) and user_id_int > 0:
+            visitor_id = f"user_{user_id_int}"
+        elif sess_id:
+            visitor_id = f"sess_{sess_id}"
+        elif fp_id:
+            visitor_id = f"fp_{fp_id}"
+        else:
+            visitor_id = f"ip_{ip or 'unknown'}"
+            
+        if _is_duplicate_event(visitor_id, data.event_type, ed):
+            return {"success": True}
 
         # â”€â”€ Register / Update User in db.users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         user_data = ed.get("user_data")
@@ -3136,10 +3182,42 @@ async def track_event(data: TrackEvent, request: Request):
                 upsert=True
             )
 
-        # â”€â”€ Parse UA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Parse UA & Standardize ────────────────────────────────
         ua_info = _parse_ua(ua)
+        device_type = ed.get("client_device_type")
+        browser = ed.get("client_browser")
+        os_name = ed.get("client_os")
+        
+        if not device_type or device_type not in ("mobile", "tablet", "desktop"):
+            device_type = ua_info["device_type"]
+        if not browser or browser in ("Unknown", "Other", ""):
+            browser = ua_info["browser"]
+        if not os_name or os_name in ("Unknown", "Other", ""):
+            os_name = ua_info["os"]
+            
+        if browser:
+            b_low = browser.lower()
+            if "telegram" in b_low: browser = "Telegram"
+            elif "whatsapp" in b_low: browser = "WhatsApp"
+            elif "instagram" in b_low: browser = "Instagram"
+            elif "facebook" in b_low or "fban" in b_low or "fbav" in b_low: browser = "Facebook"
+            elif "chrome" in b_low: browser = "Chrome"
+            elif "safari" in b_low: browser = "Safari"
+            elif "firefox" in b_low: browser = "Firefox"
+            elif "edge" in b_low or "edg" in b_low: browser = "Edge"
+            elif "opera" in b_low or "opr" in b_low: browser = "Opera"
+            else: browser = browser.title()
+            
+        if os_name:
+            o_low = os_name.lower()
+            if "windows" in o_low: os_name = "Windows"
+            elif "mac" in o_low or "macos" in o_low: os_name = "macOS"
+            elif "android" in o_low: os_name = "Android"
+            elif "ios" in o_low or "iphone" in o_low or "ipad" in o_low: os_name = "iOS"
+            elif "linux" in o_low: os_name = "Linux"
+            else: os_name = os_name.title()
 
-        # â”€â”€ Referrer source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Referrer source ────────────────────────────────────
         def _ref_source(r, u):
             if not r:
                 if "telegram" in u.lower(): return "Telegram"
@@ -3153,7 +3231,7 @@ async def track_event(data: TrackEvent, request: Request):
             return "Web"
         referrer_source = _ref_source(ref, ua)
 
-        # â”€â”€ Geolocation (async â€” don't block if slow) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Geolocation (async — don't block if slow) ─────────
         try:
             geo = await asyncio.wait_for(_get_geo(ip), timeout=5)
         except asyncio.TimeoutError:
@@ -3166,13 +3244,12 @@ async def track_event(data: TrackEvent, request: Request):
         v_region = request.headers.get("x-vercel-ip-country-region")
         v_country = request.headers.get("x-vercel-ip-country")
         
-        if v_city and v_city != "Unknown":
+        if v_city and _norm_geo_token(v_city):
             geo["city"] = urllib.parse.unquote(v_city) if "%" in v_city else v_city
             geo_source = "vercel_edge"
-        if v_region and v_region != "Unknown":
+        if v_region and _norm_geo_token(v_region):
             geo["region"] = urllib.parse.unquote(v_region) if "%" in v_region else v_region
-        if v_country and v_country != "Unknown":
-            # Optional: Map ISO code back to name if needed, but often Vercel sends ISO (e.g. IN)
+        if v_country and _norm_geo_token(v_country):
             geo["country"] = v_country
 
         map_lat = geo.get("latitude")
@@ -3198,9 +3275,9 @@ async def track_event(data: TrackEvent, request: Request):
             "city":     geo["city"],
             "region":   geo["region"],
             "geo_source": geo_source,
-            "device":   ua_info["device_type"],
-            "browser":  ua_info["browser"],
-            "os":       ua_info["os"],
+            "device":   device_type,
+            "browser":  browser,
+            "os":       os_name,
             "referrer": referrer_source,
             "timestamp": datetime.now(timezone.utc),
         }
@@ -3213,15 +3290,49 @@ async def track_event(data: TrackEvent, request: Request):
             "connection_type", "telegram_premium", "telegram_lang", "story_id", "page", "genre",
             "scroll_depth", "duration_ms", "load_ms", "api_ms", "error_text", "network_type",
             "chapter_id", "episode_id", "click_target", "element", "button_id", "utm_source", "utm_campaign",
+            "session_id", "fingerprint_id",
         ):
             if k in ed and ed[k] is not None:
                 doc[k] = ed[k]
         if isinstance(ed.get("nav_path"), list):
             doc["nav_path"] = ed["nav_path"]
 
+        if data.event_type == "session_duration":
+            if sess_id:
+                await arya_db.db.mini_app_analytics.update_one(
+                    {"session_id": sess_id, "type": "session_duration"},
+                    {
+                        "$set": {
+                            "data.duration": ed.get("duration", 0),
+                            "duration_ms": ed.get("duration_ms", ed.get("duration", 0) * 1000),
+                            "timestamp": datetime.now(timezone.utc)
+                        },
+                        "$setOnInsert": {
+                            "user_id": user_id_int,
+                            "ip": ip,
+                            "country": geo["country"],
+                            "city": geo["city"],
+                            "region": geo["region"],
+                            "geo_source": geo_source,
+                            "device": device_type,
+                            "browser": browser,
+                            "os": os_name,
+                            "referrer": referrer_source,
+                            "fingerprint_id": fp_id
+                        }
+                    },
+                    upsert=True
+                )
+                return {"success": True}
+
         ins = await arya_db.db.mini_app_analytics.insert_one(doc)
         try:
-            if data.event_type not in ("page_view", "view_story", "session_duration", "session_start", "heartbeat"):
+            allowed_broadcasts = (
+                "page_view", "view_story", "search", "login", "signup", 
+                "play_audio", "share", "premium_action",
+                "checkout_view", "checkout_pay_start", "checkout_success", "checkout_error"
+            )
+            if data.event_type in allowed_broadcasts:
                 from arya_enterprise_analytics import hub as _analytics_hub
                 asyncio.create_task(
                     _analytics_hub.broadcast(
@@ -3237,8 +3348,8 @@ async def track_event(data: TrackEvent, request: Request):
                             "geo_source": geo_source,
                             "lat": doc.get("map_lat"),
                             "lng": doc.get("map_lng"),
-                            "device": ua_info["device_type"],
-                            "browser": ua_info["browser"],
+                            "device": device_type,
+                            "browser": browser,
                             "story_id": doc.get("story_id"),
                             "page": doc.get("page"),
                             "ts": doc["timestamp"].isoformat(),
@@ -3573,6 +3684,7 @@ async def get_public_settings():
 @api_router.get("/analytics/enterprise-dashboard")
 async def enterprise_dashboard(
     telegram_id: str,
+    response: Response,
     days: int = 30,
     query: Optional[str] = None,
     telegram_only: bool = False,
@@ -3584,6 +3696,10 @@ async def enterprise_dashboard(
     try:
         from AryaPremium.config import Config
         from arya_enterprise_analytics import build_enterprise_dashboard, filters_from_query
+
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
 
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):

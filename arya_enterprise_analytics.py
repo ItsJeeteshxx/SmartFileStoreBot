@@ -193,18 +193,67 @@ def _live_row_summary(doc: dict) -> str:
     return t.replace("_", " ").title() if t else "Event"
 
 
-async def _safe_agg(coll, pipeline: list, default: list | dict | None = None):
-    try:
-        cur = coll.aggregate(pipeline)
-        return await cur.to_list(length=None)
-    except Exception as e:
-        logger.warning("aggregate failed: %s", e)
-        return default if default is not None else []
+def visitor_id_expression() -> dict[str, Any]:
+    """
+    Returns the MongoDB aggregation expression to compute visitor_id following this priority:
+    1. telegram_user_id (if not None, not 0, not "0", not "null", not "undefined")
+    2. session_id (if not None, not "", not "null", not "undefined")
+    3. fingerprint_id (if not None, not "", not "null", not "undefined")
+    4. IP fallback
+    """
+    is_valid_user = {
+        "$and": [
+            {"$ne": ["$user_id", None]},
+            {"$ne": ["$user_id", 0]},
+            {"$ne": ["$user_id", "0"]},
+            {"$ne": ["$user_id", "null"]},
+            {"$ne": ["$user_id", "undefined"]}
+        ]
+    }
+    
+    is_valid_session = {
+        "$and": [
+            {"$ne": ["$session_id", None]},
+            {"$ne": ["$session_id", ""]},
+            {"$ne": ["$session_id", "null"]},
+            {"$ne": ["$session_id", "undefined"]}
+        ]
+    }
+
+    is_valid_fp = {
+        "$and": [
+            {"$ne": ["$fingerprint_id", None]},
+            {"$ne": ["$fingerprint_id", ""]},
+            {"$ne": ["$fingerprint_id", "null"]},
+            {"$ne": ["$fingerprint_id", "undefined"]}
+        ]
+    }
+
+    return {
+        "$cond": [
+            is_valid_user,
+            {"$concat": ["user_", {"$toString": "$user_id"}]},
+            {
+                "$cond": [
+                    is_valid_session,
+                    {"$concat": ["sess_", "$session_id"]},
+                    {
+                        "$cond": [
+                            is_valid_fp,
+                            {"$concat": ["fp_", "$fingerprint_id"]},
+                            {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
 
 
 async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any]:
     """Single payload for the Next.js enterprise analytics page."""
     m = flt.match_stage()
+    activity_m = {**m, "type": {"$nin": ["session_duration", "heartbeat", "console_error", "performance", "perf", "web_vitals"]}}
     if "$and" in m:
         since = m["$and"][0]["timestamp"]["$gte"]
     else:
@@ -223,19 +272,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     ret_pipeline = [
         {"$match": m},
         {"$project": {
-            "visitor_id": {
-                "$cond": [
-                    {"$and": [
-                        {"$ne": ["$user_id", None]},
-                        {"$ne": ["$user_id", 0]},
-                        {"$ne": ["$user_id", "0"]},
-                        {"$ne": ["$user_id", "null"]},
-                        {"$ne": ["$user_id", "undefined"]}
-                    ]},
-                    {"$concat": ["user_", {"$toString": "$user_id"}]},
-                    {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
-                ]
-            },
+            "visitor_id": visitor_id_expression(),
             "timestamp": 1
         }},
         {"$group": {"_id": "$visitor_id", "days": {"$addToSet": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp", "timezone": "Asia/Kolkata"}}}}},
@@ -269,23 +306,10 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$group": {"_id": None, "avg": {"$avg": "$data.duration"}, "n": {"$sum": 1}}},
     ]
 
-    # Unique visitors pipeline (distinct Telegram user_ids + unique IPs for anonymous)
     visitor_pipeline = [
         {"$match": m},
         {"$project": {
-            "visitor_id": {
-                "$cond": [
-                    {"$and": [
-                        {"$ne": ["$user_id", None]},
-                        {"$ne": ["$user_id", 0]},
-                        {"$ne": ["$user_id", "0"]},
-                        {"$ne": ["$user_id", "null"]},
-                        {"$ne": ["$user_id", "undefined"]}
-                    ]},
-                    {"$concat": ["user_", {"$toString": "$user_id"}]},
-                    {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
-                ]
-            }
+            "visitor_id": visitor_id_expression()
         }},
         {"$group": {"_id": "$visitor_id"}},
         {"$count": "c"}
@@ -317,7 +341,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         _safe_agg(analytics, ret_pipeline, []),
         orders.count_documents({"status": {"$in": ["paid", "delivered"]}}),
         _safe_agg(orders, rev_mini_pipeline, []),
-        analytics.count_documents(m),
+        analytics.count_documents(activity_m),
         _safe_agg(analytics, sess_pipeline, []),
     )
     total_users = int(total_users_row[0]["c"]) if total_users_row else 0
@@ -362,14 +386,26 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     }
 
     story_since = since
-    se_match: dict[str, Any] = {"ts": {"$gte": story_since}}
+    se_match = {
+        **m,
+        "type": "view_story",
+        "story_id": {"$exists": True, "$nin": [None, "", "Unknown"]}
+    }
     if getattr(flt, "story_id", None):
         se_match["story_id"] = flt.story_id
 
     async def top_field(field: str, limit: int = 8):
         p = [
-            {"$match": {**m, field: {"$exists": True, "$nin": [None, "", "Unknown"]}}},
-            {"$group": {"_id": f"${field}", "count": {"$sum": 1}}},
+            {"$match": {**activity_m, field: {"$exists": True, "$nin": [None, "", "Unknown", "unknown", "null", "undefined", "—"]}}},
+            # Group by visitor_id first to get unique users per field value
+            {"$group": {
+                "_id": {
+                    "visitor_id": visitor_id_expression(),
+                    "val": f"${field}"
+                }
+            }},
+            # Group by field value and count unique visitors
+            {"$group": {"_id": "$_id.val", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
             {"$limit": limit},
         ]
@@ -377,26 +413,80 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         return [{"name": r["_id"], "value": r["count"]} for r in rows]
 
     map_pipeline = [
-        {"$match": m},
-        {
-            "$group": {
-                "_id": {"c": "$country", "region": "$region", "city": "$city"},
-                "count": {"$sum": 1},
-                "mlat": {"$avg": "$map_lat"},
-                "mlng": {"$avg": "$map_lng"},
-            }
-        },
+        {"$match": activity_m},
+        {"$group": {
+            "_id": {
+                "visitor_id": visitor_id_expression(),
+                "c": "$country",
+                "region": "$region",
+                "city": "$city"
+            },
+            "lat": {"$avg": "$map_lat"},
+            "lng": {"$avg": "$map_lng"}
+        }},
+        {"$group": {
+            "_id": {
+                "c": {
+                    "$cond": [
+                        {"$in": ["$_id.c", [None, "", "Unknown", "unknown", "null", "undefined", "—"]]},
+                        "Unknown",
+                        "$_id.c"
+                    ]
+                },
+                "region": {
+                    "$cond": [
+                        {"$in": ["$_id.region", [None, "", "Unknown", "unknown", "null", "undefined", "—"]]},
+                        "",
+                        "$_id.region"
+                    ]
+                },
+                "city": {
+                    "$cond": [
+                        {"$in": ["$_id.city", [None, "", "Unknown", "unknown", "null", "undefined", "—"]]},
+                        "",
+                        "$_id.city"
+                    ]
+                }
+            },
+            "count": {"$sum": 1},
+            "mlat": {"$avg": "$lat"},
+            "mlng": {"$avg": "$lng"}
+        }},
         {"$sort": {"count": -1}},
         {"$limit": 60},
     ]
     hourly_pipeline = [
-        {"$match": m},
-        {"$group": {"_id": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}, "count": {"$sum": 1}}},
+        {"$match": activity_m},
+        {"$group": {
+            "_id": {
+                "h": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}},
+                "visitor_id": visitor_id_expression()
+            }
+        }},
+        {"$group": {"_id": "$_id.h", "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ]
     heatmap_pipeline = [
-        {"$match": m},
-        {"$group": {"_id": {"d": {"$dayOfWeek": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}, "h": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}}}, "count": {"$sum": 1}}},
+        {"$match": activity_m},
+        {"$group": {
+            "_id": {
+                "d": {"$dayOfWeek": {"date": "$timestamp", "timezone": "Asia/Kolkata"}},
+                "h": {"$hour": {"date": "$timestamp", "timezone": "Asia/Kolkata"}},
+                "visitor_id": visitor_id_expression()
+            }
+        }},
+        {"$group": {
+            "_id": {"d": "$_id.d", "h": "$_id.h"},
+            "count": {"$sum": 1}
+        }}
+    ]
+    twv_pipeline = [
+        {"$match": {**activity_m, "browser": "Telegram"}},
+        {"$project": {
+            "visitor_id": visitor_id_expression()
+        }},
+        {"$group": {"_id": "$visitor_id"}},
+        {"$count": "c"}
     ]
     top_viewed_pipeline = [
         {"$match": se_match},
@@ -405,7 +495,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$limit": 12},
     ]
     search_pipeline = [
-        {"$match": {**m, "type": "search"}},
+        {"$match": {**m, "type": "search", "data.query": {"$exists": True, "$nin": [None, "", "null"]}}},
         {"$group": {"_id": "$data.query", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
         {"$limit": 20},
@@ -413,11 +503,16 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     perf_match = {**m, "type": {"$in": ["performance", "perf", "web_vitals"]}}
     perf_avg_pipeline = [
         {"$match": perf_match},
-        {"$group": {"_id": None, "avg_load": {"$avg": "$data.load_ms"}, "avg_api": {"$avg": "$data.api_ms"}, "n": {"$sum": 1}}},
+        {"$group": {
+            "_id": None,
+            "avg_load": {"$avg": "$load_ms"},
+            "avg_api": {"$avg": "$api_ms"},
+            "n": {"$sum": 1}
+        }},
     ]
     slow_pages_pipeline = [
-        {"$match": {**m, "type": "performance", "data.page": {"$exists": True}}},
-        {"$group": {"_id": "$data.page", "avg": {"$avg": "$data.load_ms"}}},
+        {"$match": {**m, "type": "performance", "page": {"$exists": True, "$nin": [None, ""]}}},
+        {"$group": {"_id": "$page", "avg": {"$avg": "$load_ms"}}},
         {"$match": {"avg": {"$gte": 2500}}},
         {"$sort": {"avg": -1}},
         {"$limit": 8},
@@ -462,9 +557,10 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         countries,
         cities,
         states_top,
-        twv,
+        twv_rows,
         genres,
-        se_counts,
+        views_count,
+        purchase_count,
         top_searches,
         failed_search,
         perf_avg,
@@ -483,16 +579,17 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         _safe_agg(analytics, map_pipeline, []),
         _safe_agg(analytics, hourly_pipeline, []),
         _safe_agg(analytics, heatmap_pipeline, []),
-        _safe_agg(story_events, top_viewed_pipeline, []),
+        _safe_agg(analytics, top_viewed_pipeline, []),
         top_field("browser", 10),
         top_field("device", 8),
         top_field("os", 8),
         top_field("country", 15),
         top_field("city", 15),
         top_field("region", 12),
-        analytics.count_documents({**m, "browser": "Telegram"}),
+        _safe_agg(analytics, twv_pipeline, []),
         _safe_agg(stories, genre_pipeline, []),
-        _safe_agg(story_events, se_counts_pipeline, []),
+        analytics.count_documents({**m, "type": "view_story"}),
+        analytics.count_documents({**m, "type": "checkout_success"}),
         _safe_agg(analytics, search_pipeline, []),
         analytics.count_documents({**m, "type": "search_failed"}),
         _safe_agg(analytics, perf_avg_pipeline, []),
@@ -507,6 +604,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         analytics.count_documents({**m, "type": "open_app"}),
         analytics.count_documents({**m, "telegram_premium": True}),
     )
+
+    twv = twv_rows[0]["c"] if twv_rows else 0
 
     live_feed = []
     for doc in live_docs:
@@ -552,7 +651,13 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
             }
         )
 
-    hourly = [{"hour": r["_id"], "events": r["count"]} for r in hourly_raw]
+    hourly_map = {h: 0 for h in range(24)}
+    for r in hourly_raw:
+        h = r["_id"]
+        if h is not None and isinstance(h, int) and 0 <= h < 24:
+            hourly_map[h] = r["count"]
+    hourly = [{"hour": f"{h:02d}:00", "events": hourly_map[h]} for h in range(24)]
+
     heatmap = []
     for x in hm:
         if isinstance(x.get("_id"), dict):
@@ -583,9 +688,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         else []
     )
 
-    ev_map = {str(x["_id"]): x["c"] for x in se_counts}
-    views_n = ev_map.get("view", 0) + ev_map.get("open", 0)
-    purch_n = ev_map.get("purchase", 0)
+    views_n = int(views_count)
+    purch_n = int(purchase_count)
     completion_proxy = (purch_n / views_n * 100) if views_n else 0.0
 
     stories_section = {
@@ -637,8 +741,14 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$limit": 400},
     ]
     ref_pipeline = [
-        {"$match": {**m, "referrer": {"$exists": True, "$nin": [None, "", "Unknown"]}}},
-        {"$group": {"_id": "$referrer", "c": {"$sum": 1}}},
+        {"$match": {**activity_m, "referrer": {"$exists": True, "$nin": [None, "", "Unknown", "unknown", "null", "undefined", "—"]}}},
+        {"$group": {
+            "_id": {
+                "visitor_id": visitor_id_expression(),
+                "ref": "$referrer"
+            }
+        }},
+        {"$group": {"_id": "$_id.ref", "c": {"$sum": 1}}},
         {"$sort": {"c": -1}},
         {"$limit": 12},
     ]
