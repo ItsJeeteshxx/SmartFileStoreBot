@@ -595,7 +595,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         mini_opens_n,
         tg_premium_n,
     ) = await asyncio.gather(
-        analytics.find({**m, "type": {"$nin": ["page_view", "view_story", "session_duration", "session_start", "heartbeat"]}}).sort("timestamp", -1).limit(50).to_list(50),
+        analytics.find({**m}).sort("timestamp", -1).limit(500).to_list(500),
         _safe_agg(analytics, map_pipeline, []),
         _safe_agg(analytics, hourly_pipeline, []),
         _safe_agg(analytics, heatmap_pipeline, []),
