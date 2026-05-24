@@ -1,26 +1,41 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Request, Response
+from contextvars import ContextVar
+import asyncio
+import httpx
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+test_var: ContextVar[str] = ContextVar("test_var", default="default")
+
+async def test_client():
+    await asyncio.sleep(2)
+    async with httpx.AsyncClient() as client:
+        res = await client.get("http://localhost:8000/api/stories")
+        print(f"TEST RESULT: {res.status_code} - {res.text}", flush=True)
+        # Shutdown uvicorn server
+        import os
+        os._exit(0)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(test_client())
+    yield
+
+app = FastAPI(lifespan=lifespan)
 api_router = APIRouter()
+
+@app.middleware("http")
+async def test_middleware(request: Request, call_next):
+    test_var.set("middleware_value")
+    response = await call_next(request)
+    return response
 
 @api_router.get("/stories")
 def get_stories():
-    return {"hello": "world"}
+    val = test_var.get()
+    return {"value": val}
 
 app.include_router(api_router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn
-    import asyncio
-    import httpx
-
-    async def test():
-        await asyncio.sleep(2)
-        async with httpx.AsyncClient() as client:
-            res = await client.get("http://localhost:8000/api/stories")
-            print(f"TEST RESULT /api/stories: {res.status_code} - {res.text}")
-            res2 = await client.get("http://localhost:8000/stories")
-            print(f"TEST RESULT /stories: {res2.status_code} - {res2.text}")
-
-    asyncio.get_event_loop().create_task(test())
     uvicorn.run(app, host="0.0.0.0", port=8000)

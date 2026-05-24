@@ -221,15 +221,12 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$match": {"status": "paid"}},
         {"$group": {"_id": None, "t": {"$sum": {"$ifNull": ["$total_amount", {"$ifNull": ["$total", 0]}]}}}},
     ]
-    mini_users_total_pipeline = [
-        {"$match": {"user_id": {"$gt": 0}}},
-        {"$group": {"_id": "$user_id"}},
-        {"$count": "c"},
+    users_coll = arya_db.db.users
+    total_users_pipeline = [
+        {"$count": "c"}
     ]
-    new_mini_users_window_pipeline = [
-        {"$match": {"user_id": {"$gt": 0}}},
-        {"$group": {"_id": "$user_id", "first": {"$min": "$timestamp"}}},
-        {"$match": {"first": {"$gte": since}}},
+    new_users_window_pipeline = [
+        {"$match": {"joined_date": {"$gte": since}}},
         {"$count": "c"},
     ]
     premium_mini_pipeline = [
@@ -246,8 +243,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$group": {"_id": None, "avg": {"$avg": "$data.duration"}, "n": {"$sum": 1}}},
     ]
     (
-        mini_users_total_row,
-        new_mini_users_row,
+        total_users_row,
+        new_users_row,
         premium_mini_row,
         distinct_analytics_users,
         active_distinct_ids,
@@ -257,8 +254,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         total_events_n,
         sess,
     ) = await asyncio.gather(
-        _safe_agg(analytics, mini_users_total_pipeline, []),
-        _safe_agg(analytics, new_mini_users_window_pipeline, []),
+        _safe_agg(users_coll, total_users_pipeline, []),
+        _safe_agg(users_coll, new_users_window_pipeline, []),
         _safe_agg(analytics, premium_mini_pipeline, []),
         analytics.distinct("user_id", m),
         analytics.distinct("user_id", {"timestamp": {"$gte": active_cutoff}, "user_id": {"$gt": 0}}),
@@ -268,14 +265,19 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         analytics.count_documents(m),
         _safe_agg(analytics, sess_pipeline, []),
     )
-    total_users = int(mini_users_total_row[0]["c"]) if mini_users_total_row else 0
-    new_users_in_window = int(new_mini_users_row[0]["c"]) if new_mini_users_row else 0
+    total_users = int(total_users_row[0]["c"]) if total_users_row else 0
+    new_users_in_window = int(new_users_row[0]["c"]) if new_users_row else 0
     premium_users = int(premium_mini_row[0]["c"]) if premium_mini_row else 0
     n_distinct = len([x for x in distinct_analytics_users if x and (not isinstance(x, int) or x > 0)])
     active_now = len([x for x in active_distinct_ids if x])
     returning_count = ret[0]["c"] if ret else 0
 
-    mini_rev = float(rev_mini[0]["t"]) if rev_mini else 0.0
+    mini_rev = 0.0
+    if rev_mini and rev_mini[0].get("t") is not None:
+        try:
+            mini_rev = float(rev_mini[0]["t"])
+        except (ValueError, TypeError):
+            pass
     bot_rev = 0.0
     total_revenue = mini_rev
 
@@ -372,10 +374,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$limit": 1},
     ]
     growth_pipeline = [
-        {"$match": {"user_id": {"$gt": 0}}},
-        {"$group": {"_id": "$user_id", "first": {"$min": "$timestamp"}}},
-        {"$match": {"first": {"$gte": since}}},
-        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$first", "timezone": "Asia/Kolkata"}}, "n": {"$sum": 1}}},
+        {"$match": {"joined_date": {"$gte": since}}},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$joined_date", "timezone": "Asia/Kolkata"}}, "n": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ]
     j_pipeline = [
@@ -424,7 +424,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         mini_opens_n,
         tg_premium_n,
     ) = await asyncio.gather(
-        analytics.find(m).sort("timestamp", -1).limit(50).to_list(50),
+        analytics.find({**m, "type": {"$nin": ["page_view", "view_story", "session_duration", "session_start", "heartbeat"]}}).sort("timestamp", -1).limit(50).to_list(50),
         _safe_agg(analytics, map_pipeline, []),
         _safe_agg(analytics, hourly_pipeline, []),
         _safe_agg(analytics, heatmap_pipeline, []),
@@ -444,7 +444,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         _safe_agg(analytics, slow_pages_pipeline, []),
         analytics.count_documents({**m, "type": "console_error"}),
         _safe_agg(analytics, peak_pipeline, []),
-        _safe_agg(analytics, growth_pipeline, []),
+        _safe_agg(users_coll, growth_pipeline, []),
         _safe_agg(analytics, j_pipeline, []),
         analytics.count_documents({**m, "type": "rage_click"}),
         analytics.count_documents({**m, "type": "dead_click"}),
@@ -498,7 +498,13 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         )
 
     hourly = [{"hour": r["_id"], "events": r["count"]} for r in hourly_raw]
-    heatmap = [{"day": x["_id"]["d"] - 1, "hour": x["_id"]["h"], "count": x["count"]} for x in hm]
+    heatmap = []
+    for x in hm:
+        if isinstance(x.get("_id"), dict):
+            d = x["_id"].get("d")
+            h = x["_id"].get("h")
+            if d is not None and h is not None:
+                heatmap.append({"day": d - 1, "hour": h, "count": x["count"]})
     mobile = sum(d["value"] for d in devices if str(d["name"]).lower() in ("mobile", "tablet"))
     desktop = sum(d["value"] for d in devices if str(d["name"]).lower() == "desktop")
 

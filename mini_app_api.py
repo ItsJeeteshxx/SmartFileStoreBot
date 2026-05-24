@@ -12,19 +12,10 @@ from contextvars import ContextVar
 admin_authenticated_session: ContextVar[bool] = ContextVar("admin_authenticated_session", default=False)
 
 def is_admin(telegram_id: str = "") -> bool:
-    """Check if request is from an authenticated admin.
-    
-    telegram_id='0' means email-login — the middleware already validated
-    the X-Admin-Session token before the request reached this handler.
-    """
     if admin_authenticated_session.get():
         return True
     if not telegram_id:
         return False
-    # Email-login users pass telegram_id=0; they are already authenticated
-    # by admin_auth_middleware which checks X-Admin-Session header.
-    if telegram_id == "0":
-        return True
     from AryaPremium.config import Config
     try:
         uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
@@ -3320,14 +3311,14 @@ async def enterprise_dashboard(
     returning_users: bool = False,
 ):
     """Enterprise analytics JSON for the Next.js intelligence console (Mongo-backed)."""
-    from AryaPremium.config import Config
-    from arya_enterprise_analytics import build_enterprise_dashboard, filters_from_query
-
-    user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-    if not is_admin(str(telegram_id)):
-        raise HTTPException(status_code=403, detail="Not authorized")
-    arya_db = app.state.db
     try:
+        from AryaPremium.config import Config
+        from arya_enterprise_analytics import build_enterprise_dashboard, filters_from_query
+
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
         flt = filters_from_query(
             days=days,
             query=query,
@@ -3337,11 +3328,9 @@ async def enterprise_dashboard(
             returning_users=returning_users,
         )
         return await build_enterprise_dashboard(arya_db, flt)
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Enterprise dashboard error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Analytics error: {str(e)}")
+        logger.exception("Failed to build enterprise dashboard analytics")
+        raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
 
 # ─────────────────────────────────────────────────────────────────
 # ADMIN STANDALONE AUTHENTICATION & SESSIONS
