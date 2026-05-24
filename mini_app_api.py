@@ -2194,21 +2194,39 @@ async def get_admin_buyers(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
-        # Auto-expire pending/processing bot checkouts and orders older than 7 minutes
+        # Auto-expire pending/processing checkouts and orders
         from datetime import timedelta
-        expiry_threshold = datetime.now(timezone.utc) - timedelta(minutes=7)
+        expiry_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+        expiry_7m = datetime.now(timezone.utc) - timedelta(minutes=7)
         try:
+            # 1. Clear checkouts/orders in pending/processing/waiting states older than 24 hours
+            await arya_db.db.premium_checkout.update_many(
+                {
+                    "status": {"$in": ["pending_gateway", "pending", "waiting_screenshot", "processing"]},
+                    "created_at": {"$lt": expiry_24h}
+                },
+                {"$set": {"status": "failed"}}
+            )
+            await arya_db.db.orders.update_many(
+                {
+                    "status": {"$in": ["pending", "processing"]},
+                    "created_at": {"$lt": expiry_24h}
+                },
+                {"$set": {"status": "failed"}}
+            )
+            
+            # 2. Clear fast-expiry checkouts/orders older than 7 minutes
             await arya_db.db.premium_checkout.update_many(
                 {
                     "status": {"$in": ["pending_gateway", "pending"]},
-                    "created_at": {"$lt": expiry_threshold}
+                    "created_at": {"$lt": expiry_7m}
                 },
                 {"$set": {"status": "failed"}}
             )
             await arya_db.db.orders.update_many(
                 {
                     "status": "pending",
-                    "created_at": {"$lt": expiry_threshold}
+                    "created_at": {"$lt": expiry_7m}
                 },
                 {"$set": {"status": "failed"}}
             )
@@ -2389,16 +2407,34 @@ async def get_admin_buyers(telegram_id: str):
 
         buyers = []
         for uid, data in buyers_map.items():
+            payments = data["payments"]
+            # Determine user status
+            has_paid = any(p["status"] == "paid" for p in payments)
+            has_pending_or_processing = any(p["status"] in ["pending", "processing"] for p in payments)
+            
+            if has_paid:
+                user_status = "paid"
+                # Only count paid orders amount for paid users
+                user_amount = sum(p["amount"] for p in payments if p["status"] == "paid")
+            elif has_pending_or_processing:
+                first_pending_or_proc = next((p for p in payments if p["status"] in ["pending", "processing"]), None)
+                user_status = first_pending_or_proc["status"] if first_pending_or_proc else "pending"
+                # Sum pending/processing payments
+                user_amount = sum(p["amount"] for p in payments if p["status"] in ["pending", "processing"])
+            else:
+                user_status = payments[0]["status"] if payments else "failed"
+                user_amount = sum(p["amount"] for p in payments)
+                
             buyers.append({
                 "order_id": f"uid_{uid}",
                 "user_id": uid,
                 "username": data["username"],
                 "first_name": data["first_name"],
                 "photo_url": data["photo_url"],
-                "amount": data["total_amt"],
-                "status": "paid" if any(p["status"] == "paid" for p in data["payments"]) else data["payments"][0]["status"] if data["payments"] else "pending",
+                "amount": user_amount,
+                "status": user_status,
                 "source": data["source"],
-                "payments": sorted(data["payments"], key=lambda x: x["date"], reverse=True),
+                "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
                 "date": data["date"]
             })
             
