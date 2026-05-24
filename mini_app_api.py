@@ -1144,7 +1144,7 @@ async def get_admin_stats(telegram_id: str):
     
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized as Admin")
             
         arya_db = app.state.db
@@ -1268,7 +1268,7 @@ async def get_admin_stories(telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized as Admin")
             
         arya_db = app.state.db
@@ -1334,7 +1334,7 @@ async def save_admin_story(request: Request):
         data = await request.json()
         telegram_id = str(data.get("telegram_id", ""))
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         
         # Remove non-DB fields
@@ -1362,7 +1362,7 @@ async def adjust_all_story_prices(payload: dict):
     try:
         telegram_id = str(payload.get("telegram_id", ""))
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized as Admin")
         
         amount = payload.get("amount")
@@ -1401,7 +1401,7 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
     from PIL import Image
 
     user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-    if user_id_int not in Config.OWNER_IDS:
+    if not is_admin(str(telegram_id)):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -1508,7 +1508,7 @@ async def delete_admin_story(story_id: str, telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
@@ -1524,7 +1524,7 @@ async def get_admin_support(telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
@@ -1561,7 +1561,7 @@ async def get_admin_requests(telegram_id: str):
     from bson.objectid import ObjectId
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         cursor = arya_db.db.premium_feedback.find(
@@ -1603,7 +1603,7 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
     import aiohttp
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(data.telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         doc = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(request_id)})
@@ -1673,7 +1673,7 @@ async def reply_support(data: SupportReply):
     import aiohttp
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(data.telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
@@ -1920,7 +1920,7 @@ async def get_admin_banners(telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         cursor = arya_db.db.mini_app_banners.find({}).sort("order", 1)
@@ -1958,7 +1958,7 @@ async def save_admin_banner(data: BannerUpdate):
     from bson.objectid import ObjectId
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(data.telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         doc = {
@@ -1984,7 +1984,7 @@ async def delete_admin_banner(telegram_id: str, banner_id: str):
     from bson.objectid import ObjectId
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         await arya_db.db.mini_app_banners.delete_one({"_id": ObjectId(banner_id)})
@@ -2000,7 +2000,7 @@ async def get_admin_buyers(telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
@@ -2233,7 +2233,7 @@ async def manual_purchase(data: ManualPurchase):
     from AryaPremium.config import Config
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(data.telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
@@ -2290,7 +2290,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         action = payload.get("action")
@@ -3017,7 +3017,7 @@ async def get_analytics(telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
@@ -3043,7 +3043,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
 
         arya_db = app.state.db
@@ -3196,7 +3196,7 @@ async def get_admin_settings(telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
@@ -3225,7 +3225,7 @@ async def update_admin_settings(payload: dict):
     try:
         telegram_id = str(payload.get("telegram_id", ""))
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if user_id_int not in Config.OWNER_IDS:
+        if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         update_fields = {}
@@ -3315,7 +3315,7 @@ async def enterprise_dashboard(
     from arya_enterprise_analytics import build_enterprise_dashboard, filters_from_query
 
     user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-    if user_id_int not in Config.OWNER_IDS:
+    if not is_admin(str(telegram_id)):
         raise HTTPException(status_code=403, detail="Not authorized")
     arya_db = app.state.db
     flt = filters_from_query(
@@ -3662,6 +3662,7 @@ async def admin_auth_middleware(request: Request, call_next):
             })
             if session:
                 authenticated = True
+                admin_authenticated_session.set(True)
                 
         # Telegram ID validation fallback for Mini App query checks
         if not authenticated:
