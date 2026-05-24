@@ -50,6 +50,31 @@ async def lifespan(app: FastAPI):
         await arya_db.connect()
         app.state.db = arya_db
         logger.info("âœ… Connected to MongoDB via AryaPremium DB module")
+        
+        # Background index creation for performance optimization
+        try:
+            analytics_coll = arya_db.db.mini_app_analytics
+            await analytics_coll.create_index([("type", 1), ("timestamp", -1)], background=True)
+            await analytics_coll.create_index("timestamp", background=True)
+            await analytics_coll.create_index("user_id", background=True)
+            await analytics_coll.create_index("session_id", background=True)
+            
+            feedback_coll = arya_db.db.premium_feedback
+            await feedback_coll.create_index([("created_at", -1)], background=True)
+            
+            orders_coll = arya_db.db.orders
+            await orders_coll.create_index([("created_at", -1)], background=True)
+            await orders_coll.create_index("user_id", background=True)
+            
+            checkout_coll = arya_db.db.premium_checkout
+            await checkout_coll.create_index([("created_at", -1)], background=True)
+            await checkout_coll.create_index("user_id", background=True)
+            await checkout_coll.create_index("status", background=True)
+            
+            logger.info("✅ Database indexes verified/created in background")
+        except Exception as idx_err:
+            logger.warning(f"Failed to create indexes: {idx_err}")
+            
     except Exception as e:
         logger.error(f"DB connect failed: {e}")
         raise
@@ -1305,35 +1330,28 @@ async def get_admin_stats(telegram_id: str):
         # Bot Users (users who have interacted with the Telegram bot)
         bot_users_count = await arya_db.db.users.count_documents({})
         
-        # Count unique logged-in Mini App users directly from db.users where last_active is set
-        miniapp_users_count = await arya_db.db.users.count_documents({"last_active": {"$ne": None}})
-        
-        # Estimate unique anonymous visitors (unique IPs) in the last 7 days to avoid scanning all raw telemetry history
-        from datetime import timedelta
-        since_7d = datetime.now(timezone.utc) - timedelta(days=7)
-        
-        anonymous_pipeline = [
-            {
-                "$match": {
-                    "timestamp": {"$gte": since_7d},
-                    "user_id": {"$in": [None, 0, "0", "null", "undefined"]},
-                    "data.client_user_agent": {
-                        "$not": {
-                            "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
-                            "$options": "i"
-                        }
-                    }
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$ip"
+        # Count unique Mini App users (visitors) from analytics
+        from arya_enterprise_analytics import visitor_id_expression
+        bot_filter = {
+            "data.client_user_agent": {
+                "$not": {
+                    "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
+                    "$options": "i"
                 }
             }
+        }
+        
+        page_views_count = await arya_db.db.mini_app_analytics.count_documents({"type": "page_view", **bot_filter})
+        
+        miniapp_users_pipeline = [
+            {"$match": {"type": "page_view", **bot_filter}},
+            {"$project": {"visitor_id": visitor_id_expression()}},
+            {"$group": {"_id": "$visitor_id"}},
+            {"$count": "c"}
         ]
-        anonymous_docs = await arya_db.db.mini_app_analytics.aggregate(anonymous_pipeline).to_list(length=20000)
-        anonymous_count = len(anonymous_docs) if anonymous_docs else 0
-        total_users_count = bot_users_count + anonymous_count
+        miniapp_users_res = await arya_db.db.mini_app_analytics.aggregate(miniapp_users_pipeline).to_list(length=1)
+        miniapp_users_count = miniapp_users_res[0]["c"] if miniapp_users_res else 0
+        total_users_count = bot_users_count + miniapp_users_count
         
         # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})
@@ -1429,7 +1447,8 @@ async def get_admin_stats(telegram_id: str):
                 "miniapp_revenue": miniapp_revenue,
                 "bot_revenue": bot_revenue,
                 "recent_feedback": feedbacks,
-                "recent_orders": orders
+                "recent_orders": orders,
+                "page_views": page_views_count
             }
         }
     except HTTPException:
@@ -2183,44 +2202,48 @@ async def get_admin_buyers(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         
-        # Auto-expire pending/processing checkouts and orders
+        # Auto-expire pending/processing checkouts and orders (run in background to avoid blocking buyers list fetch)
         from datetime import timedelta
         expiry_24h = datetime.now(timezone.utc) - timedelta(hours=24)
         expiry_7m = datetime.now(timezone.utc) - timedelta(minutes=7)
-        try:
-            # 1. Clear checkouts/orders in pending/processing/waiting states older than 24 hours
-            await arya_db.db.premium_checkout.update_many(
-                {
-                    "status": {"$in": ["pending_gateway", "pending", "waiting_screenshot", "processing"]},
-                    "created_at": {"$lt": expiry_24h}
-                },
-                {"$set": {"status": "failed"}}
-            )
-            await arya_db.db.orders.update_many(
-                {
-                    "status": {"$in": ["pending", "processing"]},
-                    "created_at": {"$lt": expiry_24h}
-                },
-                {"$set": {"status": "failed"}}
-            )
-            
-            # 2. Clear fast-expiry checkouts/orders older than 7 minutes
-            await arya_db.db.premium_checkout.update_many(
-                {
-                    "status": {"$in": ["pending_gateway", "pending"]},
-                    "created_at": {"$lt": expiry_7m}
-                },
-                {"$set": {"status": "failed"}}
-            )
-            await arya_db.db.orders.update_many(
-                {
-                    "status": "pending",
-                    "created_at": {"$lt": expiry_7m}
-                },
-                {"$set": {"status": "failed"}}
-            )
-        except Exception as e:
-            logger.error(f"Failed to auto-expire checkouts: {e}")
+        
+        async def run_cleanup():
+            try:
+                # 1. Clear checkouts/orders in pending/processing/waiting states older than 24 hours
+                await arya_db.db.premium_checkout.update_many(
+                    {
+                        "status": {"$in": ["pending_gateway", "pending", "waiting_screenshot", "processing"]},
+                        "created_at": {"$lt": expiry_24h}
+                    },
+                    {"$set": {"status": "failed"}}
+                )
+                await arya_db.db.orders.update_many(
+                    {
+                        "status": {"$in": ["pending", "processing"]},
+                        "created_at": {"$lt": expiry_24h}
+                    },
+                    {"$set": {"status": "failed"}}
+                )
+                
+                # 2. Clear fast-expiry checkouts/orders older than 7 minutes
+                await arya_db.db.premium_checkout.update_many(
+                    {
+                        "status": {"$in": ["pending_gateway", "pending"]},
+                        "created_at": {"$lt": expiry_7m}
+                    },
+                    {"$set": {"status": "failed"}}
+                )
+                await arya_db.db.orders.update_many(
+                    {
+                        "status": "pending",
+                        "created_at": {"$lt": expiry_7m}
+                    },
+                    {"$set": {"status": "failed"}}
+                )
+            except Exception as e:
+                logger.error(f"Failed to auto-expire checkouts in background: {e}")
+                
+        asyncio.create_task(run_cleanup())
 
         # Fetch all recent checkouts (Bot) and orders (MiniApp) and merge by User
         buyers_map = {}

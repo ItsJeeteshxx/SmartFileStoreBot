@@ -293,10 +293,21 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$match": {"status": "paid"}},
         {"$group": {"_id": None, "t": {"$sum": {"$ifNull": ["$total_amount", {"$ifNull": ["$total", 0]}]}}}},
     ]
-    users_coll = arya_db.db.users
+    bot_filter_all_time = {
+        "data.client_user_agent": {
+            "$not": {
+                "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
+                "$options": "i"
+            }
+        }
+    }
     total_users_pipeline = [
+        {"$match": {"type": "page_view", **bot_filter_all_time}},
+        {"$project": {"visitor_id": visitor_id_expression()}},
+        {"$group": {"_id": "$visitor_id"}},
         {"$count": "c"}
     ]
+    users_coll = arya_db.db.users
     new_users_window_pipeline = [
         {"$match": {"joined_date": {"$gte": since}}},
         {"$count": "c"},
@@ -342,7 +353,7 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         total_events_n,
         sess,
     ) = await asyncio.gather(
-        _safe_agg(users_coll, total_users_pipeline, []),
+        _safe_agg(analytics, total_users_pipeline, []),
         _safe_agg(users_coll, new_users_window_pipeline, []),
         _safe_agg(analytics, premium_mini_pipeline, []),
         _safe_agg(analytics, visitor_pipeline, []),
