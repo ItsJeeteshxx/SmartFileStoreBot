@@ -12,10 +12,19 @@ from contextvars import ContextVar
 admin_authenticated_session: ContextVar[bool] = ContextVar("admin_authenticated_session", default=False)
 
 def is_admin(telegram_id: str = "") -> bool:
+    """Check if request is from an authenticated admin.
+    
+    telegram_id='0' means email-login — the middleware already validated
+    the X-Admin-Session token before the request reached this handler.
+    """
     if admin_authenticated_session.get():
         return True
     if not telegram_id:
         return False
+    # Email-login users pass telegram_id=0; they are already authenticated
+    # by admin_auth_middleware which checks X-Admin-Session header.
+    if telegram_id == "0":
+        return True
     from AryaPremium.config import Config
     try:
         uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
@@ -3318,15 +3327,21 @@ async def enterprise_dashboard(
     if not is_admin(str(telegram_id)):
         raise HTTPException(status_code=403, detail="Not authorized")
     arya_db = app.state.db
-    flt = filters_from_query(
-        days=days,
-        query=query,
-        telegram_only=telegram_only,
-        premium_only=premium_only,
-        new_users=new_users,
-        returning_users=returning_users,
-    )
-    return await build_enterprise_dashboard(arya_db, flt)
+    try:
+        flt = filters_from_query(
+            days=days,
+            query=query,
+            telegram_only=telegram_only,
+            premium_only=premium_only,
+            new_users=new_users,
+            returning_users=returning_users,
+        )
+        return await build_enterprise_dashboard(arya_db, flt)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Enterprise dashboard error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analytics error: {str(e)}")
 
 # ─────────────────────────────────────────────────────────────────
 # ADMIN STANDALONE AUTHENTICATION & SESSIONS
