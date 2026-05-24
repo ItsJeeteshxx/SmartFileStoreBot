@@ -1178,10 +1178,12 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 "• <b>Version 1 (Default):</b> Standard English/Hindi text.\n"
                 "• <b>Version 2 (𝘼𝘳𝙮𝙖):</b> English only + Arya Premium Buy Link.\n"
                 "• <b>Version 3 (ᥲrყᥲ):</b> English only + Arya Premium Buy Link.\n"
+                "• <b>Version 4 (हिंदी):</b> Hindi only + Arya Premium Buy Link.\n"
                 "• <b>Missing Episodes:</b> Special missing episodes list format.",
                 reply_markup=_RKM([
                     ["Version 1 (Default)"], 
                     ["Version 2 (𝘼𝘳𝙮𝙖)", "Version 3 (ᥲrყᥲ)"], 
+                    ["Version 4 (हिंदी)"],
                     ["Missing Episodes Format"], 
                     ["⛔ Cancel"]
                 ], resize_keyboard=True, one_time_keyboard=True)
@@ -1194,6 +1196,9 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             if "Missing" in ans:
                 sj['post_format'] = "missing"
                 sj['caption_version'] = 1
+            elif "Version 4" in ans:
+                sj['post_format'] = "normal"
+                sj['caption_version'] = 4
             elif "Version 2" in ans:
                 sj['post_format'] = "normal"
                 sj['caption_version'] = 2
@@ -1204,7 +1209,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 sj['post_format'] = "normal"
                 sj['caption_version'] = 1
 
-            if sj['caption_version'] in (2, 3):
+            if sj['caption_version'] in (2, 3, 4):
                 _m_buy = await _ask(bot, user_id,
                     "<b>❪ ARYA PREMIUM BUY LINK ❫</b>\n\n"
                     "Enter the Arya Premium Buy Link for this story:\n"
@@ -1537,7 +1542,24 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             time_str = now.strftime('%I:%M %p, %d %b %Y')
 
             if sj.get('is_completed'):
-                if cv in (2, 3):
+                if cv == 4:
+                    # Version 4: Hindi
+                    dm_header  = f"›› नमस्ते <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
+                    ch_header  = f"›› नमस्ते दोस्तों\n\n"
+
+                    hi_body = (
+                        f"यह {story} {bot_link} द्वारा पूरी की गई है। "
+                        "मैंने सटीकता सुनिश्चित करने का प्रयास किया है और विवरण के साथ अंतिम रिपोर्ट प्रदान की है। "
+                        "गायब एपिसोड स्वाभाविक रूप से हो सकते हैं—इसमें कुछ नहीं किया जा सकता। "
+                        "अगर 10+ गायब हैं, तो सपोर्ट से संपर्क करें। अनपार्स फ़ाइलें सुरक्षित रूप से "
+                        "बटनों के अंदर मैप की गई हैं। डुप्लिकेट फ़ाइलें स्रोत में समान नाम वाली फ़ाइलों की वजह से "
+                        "हो सकती हैं। मैं सामग्री के लिए जिम्मेदार नहीं हूँ क्योंकि ये फ़ाइलें "
+                        "आर्या बॉट के माध्यम से अग्रेषित हैं, बिल्कुल स्क्रैप नहीं की गई हैं।"
+                        f"\n\nअगर आप बिना किसी रोक-टोक के {story} सुनना चाहते हैं तो नीचे दिए गए बटन से खरीद सकते हैं।"
+                        f"\n\nपूरा हुआ: {time_str}"
+                    )
+                    en_body = ""
+                elif cv in (2, 3):
                     dm_header  = f"›› Hey <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
                     ch_header  = f"›› Hey Strangers\n\n"
 
@@ -1549,6 +1571,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                         "inside buttons. Duplicates may appear if the source had identically "
                         "named files. I am not responsible for the content as these files are "
                         "purely forwarded via Arya bot, strictly not scraped."
+                        f"\n\nIf you want to listen to {story} without any restrictions, you can buy it from the button below."
                     )
                     
                     en_body += f"\n\nCompleted at: {time_str}"
@@ -1581,7 +1604,15 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     )
                     hi_body += f"\n\nCompleted at: {time_str}"
 
-                if hi_body:
+                if cv == 4:
+                    dm_cap = (
+                        f"<blockquote expandable>{dm_header}{hi_body}\n\n"
+                        "<i>नोट: अगर कुछ मौजूद फ़ाइलें गलत तरीके से मिसिंग मार्क हो गई हैं, तो आप इस रिपोर्ट के साथ /deepscanbatch कमांड चला सकते हैं!</i></blockquote>"
+                    )
+                    ch_cap = (
+                        f"<blockquote expandable>{ch_header}{hi_body}</blockquote>"
+                    )
+                elif hi_body:
                     dm_cap = (
                         f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n"
                         "<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
@@ -1599,13 +1630,25 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     )
 
             else:
-                if cv in (2, 3):
+                if cv == 4:
+                    # Version 4: Hindi (not completed)
+                    dm_header  = f"›› नमस्ते <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
+                    ch_header  = f"›› नमस्ते दोस्तों\n\n"
+                    hi_body = (
+                        "वर्तमान में उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
+                        "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!"
+                        f"\n\nअगर आप बिना किसी रोक-टोक के {story} सुनना चाहते हैं तो नीचे दिए गए बटन से खरीद सकते हैं।"
+                        f"\n\nअपडेट: {time_str}"
+                    )
+                    en_body = ""
+                elif cv in (2, 3):
                     dm_header  = f"›› Hey <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
                     ch_header  = f"›› Hey Strangers\n\n"
                     
                     en_body = (
                         "All currently available files have been posted here. "
                         "New episodes will be added as they arrive. Enjoy and stay tuned!"
+                        f"\n\nIf you want to listen to {story} without any restrictions, you can buy it from the button below."
                     )
                     
                     en_body += f"\n\nUpdated at: {time_str}"
@@ -1625,7 +1668,10 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                                "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!")
                     hi_body += f"\n\nUpdated at: {time_str}"
 
-                if hi_body:
+                if cv == 4:
+                    dm_cap = f"<blockquote expandable>{dm_header}{hi_body}\n\n<i>नोट: अगर कुछ मौजूद फ़ाइलें गलत तरीके से मिसिंग मार्क हो गई हैं, तो आप इस रिपोर्ट के साथ /deepscanbatch कमांड चला सकते हैं!</i></blockquote>"
+                    ch_cap = f"<blockquote expandable>{ch_header}{hi_body}</blockquote>"
+                elif hi_body:
                     dm_cap = f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
                     ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
                 else:
@@ -1633,16 +1679,22 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>"
 
             report_markup = None
-            if cv in (2, 3):
-                report_buttons = []
-                btn1_text = apply_custom_font("Buy on AP's Mini App", cv)
-                report_buttons.append(InlineKeyboardButton(btn1_text, url=buy_link))
+            if cv in (2, 3, 4):
+                report_buttons_rows = []
+                if cv == 4:
+                    btn1_text = "हमारे मिनी ऐप पर खरीदें"
+                else:
+                    btn1_text = apply_custom_font("Buy on Our Mini App", cv)
+                report_buttons_rows.append([InlineKeyboardButton(btn1_text, url=buy_link)])
                 
                 if cv == 2:
                     btn2_text = apply_custom_font("Pocket FM English", cv)
-                    report_buttons.append(InlineKeyboardButton(btn2_text, url="https://t.me/PocketFMEnglishSL"))
+                    report_buttons_rows.append([InlineKeyboardButton(btn2_text, url="https://t.me/PocketFMEnglishSL")])
+                elif cv == 4:
+                    btn2_text = "पॉकेट एफएम हिंदी"
+                    report_buttons_rows.append([InlineKeyboardButton(btn2_text, url="https://t.me/PocketFMEnglishSL")])
                 
-                report_markup = InlineKeyboardMarkup([report_buttons])
+                report_markup = InlineKeyboardMarkup(report_buttons_rows)
 
             # Send to admin DM — independent of channel
             try:
