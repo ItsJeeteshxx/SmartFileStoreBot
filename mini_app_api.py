@@ -7,6 +7,24 @@ from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter, HTTPException, Form, File, UploadFile, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from contextvars import ContextVar
+
+admin_authenticated_session: ContextVar[bool] = ContextVar("admin_authenticated_session", default=False)
+
+def is_admin(telegram_id: str = "") -> bool:
+    if admin_authenticated_session.get():
+        return True
+    if not telegram_id:
+        return False
+    from AryaPremium.config import Config
+    try:
+        uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if uid in Config.OWNER_IDS:
+            return True
+    except Exception:
+        pass
+    return False
+
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -1135,7 +1153,7 @@ async def get_admin_stats(telegram_id: str):
         bot_users_count = await arya_db.db.users.count_documents({})
         
         # Mini App Users (users who have a session / placed an order via mini app)
-        miniapp_users_list = await arya_db.db.mini_app_analytics.distinct("user_id", {"user_id": {"$gt": 0}})
+        miniapp_users_list = await arya_db.db.orders.distinct("user_id", {"user_id": {"$gt": 0}})
         miniapp_users_count = len(miniapp_users_list) if miniapp_users_list else 0
         
         # Total Stories
@@ -1224,7 +1242,7 @@ async def get_admin_stats(telegram_id: str):
         return {
             "success": True,
             "data": {
-                "total_users": bot_users_count + miniapp_users_count,
+                "total_users": bot_users_count,
                 "bot_users": bot_users_count,
                 "miniapp_users": miniapp_users_count,
                 "total_stories": total_stories,
@@ -2962,29 +2980,30 @@ async def track_event(data: TrackEvent, request: Request):
 
         ins = await arya_db.db.mini_app_analytics.insert_one(doc)
         try:
-            from arya_enterprise_analytics import hub as _analytics_hub
-            asyncio.create_task(
-                _analytics_hub.broadcast(
-                    {
-                        "channel": "live",
-                        "id": str(ins.inserted_id),
-                        "type": data.event_type,
-                        "summary": _live_event_summary(data.event_type, ed, doc),
-                        "user_id": user_id_int,
-                        "country": geo.get("country"),
-                        "city": geo.get("city"),
-                        "region": geo.get("region"),
-                        "geo_source": geo_source,
-                        "lat": doc.get("map_lat"),
-                        "lng": doc.get("map_lng"),
-                        "device": ua_info["device_type"],
-                        "browser": ua_info["browser"],
-                        "story_id": doc.get("story_id"),
-                        "page": doc.get("page"),
-                        "ts": doc["timestamp"].isoformat(),
-                    }
+            if data.event_type not in ("page_view", "view_story", "session_duration", "session_start", "heartbeat"):
+                from arya_enterprise_analytics import hub as _analytics_hub
+                asyncio.create_task(
+                    _analytics_hub.broadcast(
+                        {
+                            "channel": "live",
+                            "id": str(ins.inserted_id),
+                            "type": data.event_type,
+                            "summary": _live_event_summary(data.event_type, ed, doc),
+                            "user_id": user_id_int,
+                            "country": geo.get("country"),
+                            "city": geo.get("city"),
+                            "region": geo.get("region"),
+                            "geo_source": geo_source,
+                            "lat": doc.get("map_lat"),
+                            "lng": doc.get("map_lng"),
+                            "device": ua_info["device_type"],
+                            "browser": ua_info["browser"],
+                            "story_id": doc.get("story_id"),
+                            "page": doc.get("page"),
+                            "ts": doc["timestamp"].isoformat(),
+                        }
+                    )
                 )
-            )
         except Exception:
             pass
         return {"success": True}
