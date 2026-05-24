@@ -273,24 +273,177 @@ def _format_story(s: dict) -> dict | None:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/stories")
 async def get_stories():
-    """Fetch all premium stories using AryaPremium's db.get_all_stories()"""
+    """Fetch all premium stories with dynamic engagement counts from orders and analytics collections"""
     try:
         arya_db = app.state.db
-        # Use the existing, tested method from AryaPremium/database.py
         stories = await arya_db.get_all_stories()
+
+        # Aggregate purchases (orders with status paid/delivered) in the last 30 days
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        purchase_pipeline = [
+            {"$match": {
+                "status": {"$in": ["paid", "delivered"]},
+                "created_at": {"$gte": thirty_days_ago}
+            }},
+            {"$unwind": "$story_ids"},
+            {"$group": {
+                "_id": "$story_ids",
+                "purchases": {"$sum": 1}
+            }}
+        ]
+        purchases_agg = await arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None)
+        purchase_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in purchases_agg}
+
+        # Aggregate story views (clicks) in the last 7 days
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        views_pipeline = [
+            {"$match": {
+                "type": "view_story",
+                "timestamp": {"$gte": seven_days_ago}
+            }},
+            {"$project": {
+                "story_id": {
+                    "$cond": {
+                        "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
+                        "then": "$story_id",
+                        "else": "$data.story_id"
+                    }
+                }
+            }},
+            {"$match": {
+                "story_id": {"$ne": None}
+            }},
+            {"$group": {
+                "_id": "$story_id",
+                "views": {"$sum": 1}
+            }}
+        ]
+        views_agg = await arya_db.db.mini_app_analytics.aggregate(views_pipeline).to_list(length=None)
+        views_map = {str(v["_id"]): int(v.get("views", 0)) for v in views_agg}
 
         formatted = []
         for s in stories:
             item = _format_story(s)
             if item:
+                sid = item["id"]
+                item["purchase_count"] = purchase_map.get(sid, 0)
+                item["view_count"] = views_map.get(sid, 0)
+                item["trending_score"] = float(item["purchase_count"] * 100.0 + item["view_count"] * 1.0)
                 formatted.append(item)
 
-        logger.info(f"Returning {len(formatted)} stories")
+        logger.info(f"Returning {len(formatted)} stories with dynamic engagement metrics")
         return {"success": True, "data": formatted}
 
     except Exception as e:
         logger.error(f"Error in /stories: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/trending")
+async def get_trending(limit: int = 10):
+    """
+    Computes real-time trending stories:
+      - Purchases: Count instances of story IDs in paid/delivered orders. (Weight: 100)
+      - Views: Count 'view_story' events in mini_app_analytics. (Weight: 1)
+    """
+    try:
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+
+        # 1. Aggregate purchases over the last 30 days
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        purchase_pipeline = [
+            {"$match": {
+                "status": {"$in": ["paid", "delivered"]},
+                "created_at": {"$gte": thirty_days_ago}
+            }},
+            {"$unwind": "$story_ids"},
+            {"$group": {
+                "_id": "$story_ids",
+                "purchases": {"$sum": 1}
+            }}
+        ]
+        purchases_agg = await arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None)
+        
+        # 2. Aggregate views (clicks on story card) over the last 7 days
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        views_pipeline = [
+            {"$match": {
+                "type": "view_story",
+                "timestamp": {"$gte": seven_days_ago}
+            }},
+            {"$project": {
+                "story_id": {
+                    "$cond": {
+                        "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
+                        "then": "$story_id",
+                        "else": "$data.story_id"
+                    }
+                }
+            }},
+            {"$match": {
+                "story_id": {"$ne": None}
+            }},
+            {"$group": {
+                "_id": "$story_id",
+                "views": {"$sum": 1}
+            }}
+        ]
+        views_agg = await arya_db.db.mini_app_analytics.aggregate(views_pipeline).to_list(length=None)
+
+        # 3. Combine scores
+        scores = {}
+        for p in purchases_agg:
+            sid = str(p["_id"])
+            scores[sid] = scores.get(sid, 0.0) + float(p.get("purchases", 0)) * 100.0
+
+        for v in views_agg:
+            sid = str(v["_id"])
+            scores[sid] = scores.get(sid, 0.0) + float(v.get("views", 0)) * 1.0
+
+        # Sort by score descending
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        top_sids = [sid for sid, score in sorted_scores[:limit]]
+
+        # Fetch actual story documents
+        all_stories = await arya_db.get_all_stories()
+        story_map = {str(s["_id"]): s for s in all_stories}
+
+        trending_list = []
+        seen_sids = set()
+
+        for sid in top_sids:
+            if sid in story_map:
+                fmt = _format_story(story_map[sid])
+                if fmt:
+                    fmt["purchase_count"] = int(next((p.get("purchases", 0) for p in purchases_agg if str(p["_id"]) == sid), 0))
+                    fmt["view_count"] = int(next((v.get("views", 0) for v in views_agg if str(v["_id"]) == sid), 0))
+                    fmt["trending_score"] = scores.get(sid, 0.0)
+                    trending_list.append(fmt)
+                    seen_sids.add(sid)
+
+        # Fallback to fill up to limit using newest stories
+        if len(trending_list) < limit:
+            newest_stories = sorted(all_stories, key=lambda x: x.get("_id"), reverse=True)
+            for s in newest_stories:
+                sid = str(s["_id"])
+                if sid not in seen_sids:
+                    fmt = _format_story(s)
+                    if fmt:
+                        fmt["purchase_count"] = 0
+                        fmt["view_count"] = 0
+                        fmt["trending_score"] = 0.0
+                        trending_list.append(fmt)
+                        seen_sids.add(sid)
+                        if len(trending_list) >= limit:
+                            break
+
+        logger.info(f"Returning {len(trending_list)} dynamic trending stories")
+        return {"success": True, "data": trending_list[:limit]}
+    except Exception as e:
+        logger.error(f"Trending route error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 from AryaPremium.config import Config
