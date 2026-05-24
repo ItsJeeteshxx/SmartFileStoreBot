@@ -63,9 +63,7 @@ def get_youtube_auth_url():
 
 def _run_in_executor_safe(creds, func, *args, **kwargs):
     """Builds a thread-safe service object and executes the function with it."""
-    import httplib2
-    http = httplib2.Http()
-    youtube = _yt_build('youtube', 'v3', http=http, credentials=creds)
+    youtube = _yt_build('youtube', 'v3', credentials=creds)
     return func(youtube, *args, **kwargs)
 
 

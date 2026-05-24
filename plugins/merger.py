@@ -46,6 +46,14 @@ _mg_dl_choices: dict[str, str | None] = {}   # key→ "skip"|"retry"|"abort"|Non
 MAX_CONCURRENT_MERGES = 1   # keep at 1 — merges are extremely CPU+RAM heavy
 _mg_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MERGES)
 _mg_global_lock = asyncio.Lock()  # kept for backward compat
+_FFMPEG_LOCK = None
+
+def _get_ffmpeg_lock() -> asyncio.Lock:
+    global _FFMPEG_LOCK
+    if _FFMPEG_LOCK is None:
+        _FFMPEG_LOCK = asyncio.Lock()
+    return _FFMPEG_LOCK
+
 
 # ─── FFmpeg CPU throttle ──────────────────────────────────────────────────────
 # 1 thread per process + OS-level niceness 15 = ~40-60% CPU sustained.
@@ -448,22 +456,25 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
     async def _run_cmd(cmd_list, timeout_sec):
         """Run an FFmpeg command and return (ok, error_message).
-        Runs via run_in_executor (non-blocking).  On POSIX systems the
-        process is started with SCHED_BATCH priority so it cannot starve
-        other processes even during long encodes.
+        Uses asyncio.create_subprocess_exec for non-blocking execution and proper cancellation support.
+        On POSIX systems, the process is started with idle priority/niceness so it won't starve other processes.
         """
-        loop = asyncio.get_event_loop()
+        import platform as _plat
+        import time as _time
 
-        def _sync_run():
+        lock = _get_ffmpeg_lock()
+        
+        async with lock:
+            process = None
             try:
-                import platform as _plat
-                import shutil as _sh
-                kwargs = dict(stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=timeout_sec)
+                kwargs = dict(
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
 
                 if _plat.system() != "Windows":
                     def _preexec():
                         os.nice(FFMPEG_NICE)
-                        # ionice: idle class (3) so disk IO never starves the bot
                         try:
                             import ctypes
                             _syscall = ctypes.CDLL(None).syscall
@@ -473,45 +484,75 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                             pass
                     kwargs["preexec_fn"] = _preexec
 
-                    actual_cmd = cmd_list
+                # Convert all arguments to strings
+                cmd_args = [str(x) for x in cmd_list]
+
+                # Start the subprocess asynchronously
+                process = await asyncio.create_subprocess_exec(
+                    cmd_args[0],
+                    *cmd_args[1:],
+                    **kwargs
+                )
+
+                # Wait for completion with timeout
+                if progress_cb:
+                    _start = _time.time()
+                    while True:
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=3.0)
+                            break
+                        except asyncio.TimeoutError:
+                            elapsed = _time.time() - _start
+                            try:
+                                await progress_cb(elapsed)
+                            except Exception:
+                                pass
                 else:
-                    actual_cmd = cmd_list
+                    await asyncio.wait_for(process.wait(), timeout=timeout_sec)
 
-                result = _sp.run(actual_cmd, **kwargs)
-                return result.returncode, result.stderr.decode('utf-8', errors='replace')
-            except _sp.TimeoutExpired:
-                return -1, "FFmpeg timed out"
-            except FileNotFoundError:
-                return -1, "ffmpeg executable not found — please install FFmpeg and ensure it is in PATH"
+                # Capture stdout and stderr
+                stdout, stderr = await process.communicate()
+                returncode = process.returncode
+                stderr_text = stderr.decode('utf-8', errors='replace')
+                
+                if returncode == 0:
+                    return True, ""
+                
+                meaningful = _strip_ffmpeg_banner(stderr_text)
+                logger.error(
+                    "[FFmpeg] Command failed (rc=%d):\n  %s\nError:\n%s",
+                    returncode,
+                    " ".join(cmd_args),
+                    meaningful[:2000]
+                )
+                return False, meaningful
+
+            except asyncio.TimeoutError:
+                if process:
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except Exception:
+                        pass
+                return False, "FFmpeg timed out"
+
+            except asyncio.CancelledError:
+                if process:
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except Exception:
+                        pass
+                raise
+
             except Exception as exc:
-                return -1, str(exc)
-
-        # Use the global single-worker executor so at most 1 FFmpeg runs at a time.
-        if progress_cb:
-            import time as _time
-            _start = _time.time()
-            fut = loop.run_in_executor(_FFMPEG_EXECUTOR, _sync_run)
-            while not fut.done():
-                await asyncio.sleep(3)
-                elapsed = _time.time() - _start
-                try:
-                    await progress_cb(elapsed)
-                except Exception:
-                    pass
-            returncode, stderr_text = await fut
-        else:
-            returncode, stderr_text = await loop.run_in_executor(_FFMPEG_EXECUTOR, _sync_run)
-
-        if returncode == 0:
-            return True, ""
-        meaningful = _strip_ffmpeg_banner(stderr_text)
-        logger.error(
-            "[FFmpeg] Command failed (rc=%d):\n  %s\nError:\n%s",
-            returncode,
-            " ".join(str(x) for x in cmd_list),
-            meaningful[:2000]
-        )
-        return False, meaningful
+                if process:
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except Exception:
+                        pass
+                return False, str(exc)
 
     lst = output_path + ".list.txt"
     vconcat_txt = output_path + ".vconcat.txt"
