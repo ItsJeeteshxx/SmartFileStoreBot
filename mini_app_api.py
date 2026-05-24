@@ -1152,9 +1152,46 @@ async def get_admin_stats(telegram_id: str):
         # Bot Users (users who have interacted with the Telegram bot)
         bot_users_count = await arya_db.db.users.count_documents({})
         
-        # Mini App Users (users who have a session / placed an order via mini app)
-        miniapp_users_list = await arya_db.db.orders.distinct("user_id", {"user_id": {"$gt": 0}})
-        miniapp_users_count = len(miniapp_users_list) if miniapp_users_list else 0
+        # Mini App Users: logged-in Telegram users (user_id > 0) + unique IPs for anonymous, excluding bots/crawlers.
+        visitor_pipeline = [
+            {
+                "$match": {
+                    "data.client_user_agent": {
+                        "$not": {
+                            "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
+                            "$options": "i"
+                        }
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "visitor_id": {
+                        "$cond": [
+                            {"$and": [
+                                {"$ne": ["$user_id", None]},
+                                {"$ne": ["$user_id", 0]},
+                                {"$ne": ["$user_id", "0"]},
+                                {"$ne": ["$user_id", "null"]},
+                                {"$ne": ["$user_id", "undefined"]}
+                            ]},
+                            {"$concat": ["user_", {"$toString": "$user_id"}]},
+                            {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
+                        ]
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$visitor_id"
+                }
+            },
+            {
+                "$count": "total"
+            }
+        ]
+        visitor_res = await arya_db.db.mini_app_analytics.aggregate(visitor_pipeline).to_list(length=1)
+        miniapp_users_count = visitor_res[0]["total"] if visitor_res else 0
         
         # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})
@@ -1242,7 +1279,7 @@ async def get_admin_stats(telegram_id: str):
         return {
             "success": True,
             "data": {
-                "total_users": bot_users_count,
+                "total_users": bot_users_count + miniapp_users_count,
                 "bot_users": bot_users_count,
                 "miniapp_users": miniapp_users_count,
                 "total_stories": total_stories,
@@ -2866,6 +2903,21 @@ def _live_event_summary(event_type: str, ed: dict, doc: dict) -> str:
 async def track_event(data: TrackEvent, request: Request):
     """Track a mini-app event with full IP geolocation + device info."""
     try:
+        ua  = request.headers.get("user-agent", "")
+        # Filter out bots, crawlers, pingers, and uptime checkers to avoid fake analytics data
+        ua_lower = ua.lower() if ua else ""
+        bot_keywords = (
+            "bot", "crawler", "spider", "ping", "uptime", "status", "http", "curl", 
+            "wget", "python", "node", "axios", "fetch", "headless", "selenium", 
+            "puppeteer", "playwright", "scrape", "scan", "checker"
+        )
+        if any(k in ua_lower for k in bot_keywords):
+            is_real_client = any(ok in ua_lower for ok in ("mozilla", "chrome", "safari", "firefox", "telegram", "whatsapp", "instagram", "facebook"))
+            is_explicit_bot = any(bk in ua_lower for bk in ("googlebot", "bingbot", "yandexbot", "ahrefsbot", "semrushbot", "crawler", "spider", "bot"))
+            if is_explicit_bot or not is_real_client:
+                # Return success but do not log in the database
+                return {"success": True}
+
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
         arya_db = app.state.db
         ed = data.event_data or {}
@@ -3048,7 +3100,15 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
 
         arya_db = app.state.db
         since = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)
-        pipeline_base = {"timestamp": {"$gte": since}}
+        bot_filter = {
+            "data.client_user_agent": {
+                "$not": {
+                    "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
+                    "$options": "i"
+                }
+            }
+        }
+        pipeline_base = {"timestamp": {"$gte": since}, **bot_filter}
 
         async def _top(field: str, limit: int = 10) -> list:
             pipeline = [
@@ -3066,7 +3126,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
         now = datetime.now(timezone.utc)
         h48_since = now - __import__("datetime").timedelta(hours=48)
         hourly_pipeline = [
-            {"$match": {"timestamp": {"$gte": h48_since}}},
+            {"$match": {"timestamp": {"$gte": h48_since}, **bot_filter}},
             {"$group": {
                 "_id": {
                     "y": {"$year": "$timestamp"},
@@ -3084,12 +3144,33 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
             label = f"{_id.get('d',1):02d}/{_id.get('mo',1):02d} {_id.get('h',0):02d}:00"
             hourly.append({"label": label, "count": doc["count"]})
 
-        # Unique visitors (distinct user_ids)
-        unique_users = await arya_db.db.mini_app_analytics.distinct("user_id", {"timestamp": {"$gte": since}})
-        total_events = await arya_db.db.mini_app_analytics.count_documents({"timestamp": {"$gte": since}})
+        # Unique visitors (distinct Telegram user_ids + unique IPs for anonymous, excluding bots)
+        visitor_pipeline = [
+            {"$match": {"timestamp": {"$gte": since}, **bot_filter}},
+            {"$project": {
+                "visitor_id": {
+                    "$cond": [
+                        {"$and": [
+                            {"$ne": ["$user_id", None]},
+                            {"$ne": ["$user_id", 0]},
+                            {"$ne": ["$user_id", "0"]},
+                            {"$ne": ["$user_id", "null"]},
+                            {"$ne": ["$user_id", "undefined"]}
+                        ]},
+                        {"$concat": ["user_", {"$toString": "$user_id"}]},
+                        {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
+                    ]
+                }
+            }},
+            {"$group": {"_id": "$visitor_id"}},
+            {"$count": "c"}
+        ]
+        visitor_res = await arya_db.db.mini_app_analytics.aggregate(visitor_pipeline).to_list(length=1)
+        unique_users_count = visitor_res[0]["c"] if visitor_res else 0
+        total_events = await arya_db.db.mini_app_analytics.count_documents({"timestamp": {"$gte": since}, **bot_filter})
 
         session_pipeline = [
-            {"$match": {"type": "session_duration", "timestamp": {"$gte": since}}},
+            {"$match": {"type": "session_duration", "timestamp": {"$gte": since}, **bot_filter}},
             {"$group": {
                 "_id": {
                     "user_id": "$user_id",
@@ -3120,7 +3201,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
 
         # Heatmap (day of week vs hour)
         heatmap_pipeline = [
-            {"$match": {"timestamp": {"$gte": since}}},
+            {"$match": {"timestamp": {"$gte": since}, **bot_filter}},
             {"$group": {
                 "_id": {
                     "dayOfWeek": {"$dayOfWeek": "$timestamp"}, # 1 (Sun) to 7 (Sat)
@@ -3134,7 +3215,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
             heatmap.append({"day": doc["_id"]["dayOfWeek"] - 1, "hour": doc["_id"]["hour"], "count": doc["count"]})
 
         # Live Activity / Click Log (last 50 events)
-        live_cursor = arya_db.db.mini_app_analytics.find({"timestamp": {"$gte": since}}).sort("timestamp", -1).limit(50)
+        live_cursor = arya_db.db.mini_app_analytics.find({"timestamp": {"$gte": since}, **bot_filter}).sort("timestamp", -1).limit(50)
         live_activity = []
         async for doc in live_cursor:
             live_activity.append({
@@ -3164,7 +3245,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
             "data": {
                 "summary": {
                     "total_events":   total_events,
-                    "unique_visitors": len(unique_users),
+                    "unique_visitors": unique_users_count,
                     "days":           days,
                     "avg_session_seconds": avg_session,
                     "total_session_seconds": total_session,

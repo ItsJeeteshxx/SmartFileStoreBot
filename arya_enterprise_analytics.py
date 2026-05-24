@@ -202,6 +202,20 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         since = m["$and"][0]["timestamp"]["$gte"]
     else:
         since = m["timestamp"]["$gte"]
+
+    bot_filter = {
+        "data.client_user_agent": {
+            "$not": {
+                "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
+                "$options": "i"
+            }
+        }
+    }
+    if "$and" in m:
+        m["$and"].append(bot_filter)
+    else:
+        m = {"$and": [m, bot_filter]}
+
     arya_db = db
     analytics = arya_db.db.mini_app_analytics
     story_events = arya_db.db.story_events
@@ -212,9 +226,25 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     active_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
     ret_pipeline = [
         {"$match": m},
-        {"$group": {"_id": "$user_id", "days": {"$addToSet": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp", "timezone": "Asia/Kolkata"}}}}},
+        {"$project": {
+            "visitor_id": {
+                "$cond": [
+                    {"$and": [
+                        {"$ne": ["$user_id", None]},
+                        {"$ne": ["$user_id", 0]},
+                        {"$ne": ["$user_id", "0"]},
+                        {"$ne": ["$user_id", "null"]},
+                        {"$ne": ["$user_id", "undefined"]}
+                    ]},
+                    {"$concat": ["user_", {"$toString": "$user_id"}]},
+                    {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
+                ]
+            },
+            "timestamp": 1
+        }},
+        {"$group": {"_id": "$visitor_id", "days": {"$addToSet": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp", "timezone": "Asia/Kolkata"}}}}},
         {"$project": {"_id": 1, "n": {"$size": "$days"}}},
-        {"$match": {"n": {"$gte": 2}, "_id": {"$ne": None}}},
+        {"$match": {"n": {"$gte": 2}}},
         {"$count": "c"},
     ]
     rev_mini_pipeline = [
@@ -242,12 +272,41 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         {"$match": session_match},
         {"$group": {"_id": None, "avg": {"$avg": "$data.duration"}, "n": {"$sum": 1}}},
     ]
+
+    # Unique visitors pipeline (distinct Telegram user_ids + unique IPs for anonymous)
+    visitor_pipeline = [
+        {"$match": m},
+        {"$project": {
+            "visitor_id": {
+                "$cond": [
+                    {"$and": [
+                        {"$ne": ["$user_id", None]},
+                        {"$ne": ["$user_id", 0]},
+                        {"$ne": ["$user_id", "0"]},
+                        {"$ne": ["$user_id", "null"]},
+                        {"$ne": ["$user_id", "undefined"]}
+                    ]},
+                    {"$concat": ["user_", {"$toString": "$user_id"}]},
+                    {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
+                ]
+            }
+        }},
+        {"$group": {"_id": "$visitor_id"}},
+        {"$count": "c"}
+    ]
+
+    active_now_pipeline = [
+        {"$match": {"timestamp": {"$gte": active_cutoff}, "user_id": {"$gt": 0}}},
+        {"$group": {"_id": "$user_id"}},
+        {"$count": "c"}
+    ]
+
     (
         total_users_row,
         new_users_row,
         premium_mini_row,
-        distinct_analytics_users,
-        active_distinct_ids,
+        visitor_row,
+        active_now_row,
         ret,
         mini_paid,
         rev_mini,
@@ -257,8 +316,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
         _safe_agg(users_coll, total_users_pipeline, []),
         _safe_agg(users_coll, new_users_window_pipeline, []),
         _safe_agg(analytics, premium_mini_pipeline, []),
-        analytics.distinct("user_id", m),
-        analytics.distinct("user_id", {"timestamp": {"$gte": active_cutoff}, "user_id": {"$gt": 0}}),
+        _safe_agg(analytics, visitor_pipeline, []),
+        _safe_agg(analytics, active_now_pipeline, []),
         _safe_agg(analytics, ret_pipeline, []),
         orders.count_documents({"status": {"$in": ["paid", "delivered"]}}),
         _safe_agg(orders, rev_mini_pipeline, []),
@@ -268,8 +327,8 @@ async def build_enterprise_dashboard(db, flt: AnalyticsFilters) -> dict[str, Any
     total_users = int(total_users_row[0]["c"]) if total_users_row else 0
     new_users_in_window = int(new_users_row[0]["c"]) if new_users_row else 0
     premium_users = int(premium_mini_row[0]["c"]) if premium_mini_row else 0
-    n_distinct = len([x for x in distinct_analytics_users if x and (not isinstance(x, int) or x > 0)])
-    active_now = len([x for x in active_distinct_ids if x])
+    n_distinct = int(visitor_row[0]["c"]) if visitor_row else 0
+    active_now = int(active_now_row[0]["c"]) if active_now_row else 0
     returning_count = ret[0]["c"] if ret else 0
 
     mini_rev = 0.0
