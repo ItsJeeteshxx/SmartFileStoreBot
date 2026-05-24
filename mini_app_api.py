@@ -1135,24 +1135,24 @@ async def submit_support(
         
         if type == "request":
             admin_txt = (
-                f"<b>📝 New Story Request from Mini App</b>\n"
+                f"<b>New Story Request from Mini App</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>👤 User:</b> {first_name}\n"
-                f"<b>🔗 Username:</b> @{username}\n"
-                f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
-                f"<b>💬 Type:</b> Story Request\n"
+                f"<b>User:</b> {first_name}\n"
+                f"<b>Username:</b> @{username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"<b>Type:</b> Story Request\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<b>Details:</b>\n"
                 f"<blockquote>{message[:800]}</blockquote>"
             )
         else:
             admin_txt = (
-                f"<b>📨 New Feedback from Mini App</b>\n"
+                f"<b>New Feedback from Mini App</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>👤 User:</b> {first_name}\n"
-                f"<b>🔗 Username:</b> @{username}\n"
-                f"<b>🆔 User ID:</b> <code>{telegram_id}</code>\n"
-                f"<b>💬 Type:</b> {type.title()}\n"
+                f"<b>User:</b> {first_name}\n"
+                f"<b>Username:</b> @{username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"<b>Type:</b> {type.title()}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<b>Message:</b>\n"
                 f"<blockquote>{message[:800]}</blockquote>"
@@ -1305,10 +1305,18 @@ async def get_admin_stats(telegram_id: str):
         # Bot Users (users who have interacted with the Telegram bot)
         bot_users_count = await arya_db.db.users.count_documents({})
         
-        # Mini App Users: logged-in Telegram users (user_id > 0) + unique IPs for anonymous, excluding bots/crawlers.
-        visitor_pipeline = [
+        # Count unique logged-in Mini App users directly from db.users where last_active is set
+        miniapp_users_count = await arya_db.db.users.count_documents({"last_active": {"$ne": None}})
+        
+        # Estimate unique anonymous visitors (unique IPs) in the last 7 days to avoid scanning all raw telemetry history
+        from datetime import timedelta
+        since_7d = datetime.now(timezone.utc) - timedelta(days=7)
+        
+        anonymous_pipeline = [
             {
                 "$match": {
+                    "timestamp": {"$gte": since_7d},
+                    "user_id": {"$in": [None, 0, "0", "null", "undefined"]},
                     "data.client_user_agent": {
                         "$not": {
                             "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
@@ -1318,32 +1326,13 @@ async def get_admin_stats(telegram_id: str):
                 }
             },
             {
-                "$project": {
-                    "visitor_id": {
-                        "$cond": [
-                            {"$and": [
-                                {"$ne": ["$user_id", None]},
-                                {"$ne": ["$user_id", 0]},
-                                {"$ne": ["$user_id", "0"]},
-                                {"$ne": ["$user_id", "null"]},
-                                {"$ne": ["$user_id", "undefined"]}
-                            ]},
-                            {"$concat": ["user_", {"$toString": "$user_id"}]},
-                            {"$concat": ["ip_", {"$ifNull": ["$ip", "unknown"]}]}
-                        ]
-                    }
-                }
-            },
-            {
                 "$group": {
-                    "_id": "$visitor_id"
+                    "_id": "$ip"
                 }
             }
         ]
-        visitor_docs = await arya_db.db.mini_app_analytics.aggregate(visitor_pipeline).to_list(length=100000)
-        visitor_ids = [d["_id"] for d in visitor_docs] if visitor_docs else []
-        miniapp_users_count = len(visitor_ids)
-        anonymous_count = len([vid for vid in visitor_ids if vid.startswith("ip_")])
+        anonymous_docs = await arya_db.db.mini_app_analytics.aggregate(anonymous_pipeline).to_list(length=20000)
+        anonymous_count = len(anonymous_docs) if anonymous_docs else 0
         total_users_count = bot_users_count + anonymous_count
         
         # Total Stories
@@ -1832,12 +1821,12 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
                 token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
             
             if token and doc.get("user_id"):
-                status_emoji = {"open": "🟡", "in_progress": "🔵", "completed": "✅", "rejected": "❌"}.get(data.status, "📢")
+                status_label = {"open": "[OPEN]", "in_progress": "[IN PROGRESS]", "completed": "[COMPLETED]", "rejected": "[REJECTED]"}.get(data.status, "[UPDATE]")
                 try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                             "chat_id": doc["user_id"],
-                            "text": f"<b>{status_emoji} Story Request Update</b>\n\n<b>Status:</b> {data.status.replace('_',' ').title()}\n\n{data.reply_text}",
+                            "text": f"<b>{status_label} Story Request Update</b>\n\n<b>Status:</b> {data.status.replace('_',' ').title()}\n\n{data.reply_text}",
                             "parse_mode": "HTML"
                         }, timeout=5)
                 except Exception as e:
@@ -2236,6 +2225,18 @@ async def get_admin_buyers(telegram_id: str):
         # Fetch all recent checkouts (Bot) and orders (MiniApp) and merge by User
         buyers_map = {}
         
+        # Pre-fetch all premium stories once to prevent N+1 query loops
+        stories_list = await arya_db.db.premium_stories.find({}, {"story_id": 1, "story_name_en": 1}).to_list(length=10000)
+        story_cache_by_id = {}
+        story_cache_by_oid = {}
+        for s in stories_list:
+            sid = s.get("story_id")
+            if sid:
+                story_cache_by_id[str(sid)] = s
+            oid = s.get("_id")
+            if oid:
+                story_cache_by_oid[str(oid)] = s
+        
         # 1. Fetch Bot checkouts
         checkouts = await arya_db.db.premium_checkout.find({}).sort("_id", -1).limit(100).to_list(length=100)
         
@@ -2292,13 +2293,7 @@ async def get_admin_buyers(telegram_id: str):
             story_id = c.get("story_id")
             story = None
             if story_id:
-                try:
-                    from bson.objectid import ObjectId
-                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(story_id))})
-                except Exception:
-                    pass
-                if not story:
-                    story = await arya_db.db.premium_stories.find_one({"story_id": str(story_id)})
+                story = story_cache_by_oid.get(str(story_id)) or story_cache_by_id.get(str(story_id))
             sname = story.get("story_name_en", str(story_id)) if story else (str(story_id) if story_id else "Deleted Story")
             amt = c.get("amount", 0)
             try: amt = float(amt)
@@ -2377,14 +2372,7 @@ async def get_admin_buyers(telegram_id: str):
                 
             story_names = []
             for sid in story_ids:
-                story = None
-                try:
-                    from bson.objectid import ObjectId
-                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))}, {"story_name_en": 1})
-                except Exception:
-                    pass
-                if not story:
-                    story = await arya_db.db.premium_stories.find_one({"story_id": str(sid)}, {"story_name_en": 1})
+                story = story_cache_by_oid.get(str(sid)) or story_cache_by_id.get(str(sid))
                 if story:
                     story_names.append(story.get("story_name_en", str(sid)))
                 else:
@@ -3832,7 +3820,7 @@ async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)
     )
     logger.info(f"Owner {telegram_id} registered admin email: {email_clean}")
     await log_to_telegram(
-        f"<b>🔧 Admin Email Registered</b>\n"
+        f"<b>Admin Email Registered</b>\n"
         f"By Telegram ID: <code>{telegram_id}</code>\n"
         f"Email: <code>{email_clean}</code>\n"
         f"All admin emails: <code>{new_emails_str}</code>"
@@ -3888,7 +3876,7 @@ async def send_admin_otp(email: str = Form(...)):
     )
     
     log_msg = (
-        f"<b>🔐 Admin OTP Request</b>\n"
+        f"<b>Admin OTP Request</b>\n"
         f"Email: <code>{email_clean}</code>\n"
         f"OTP: <code>{otp}</code>\n"
         f"Status: {'Sent via SMTP' if email_sent else 'SMTP Config Missing/Failed — Code logged as fallback'}"
@@ -3944,7 +3932,7 @@ async def verify_admin_otp(request: Request, email: str = Form(...), otp: str = 
     await db.db.admin_sessions.insert_one(session_doc)
     
     await log_to_telegram(
-        f"<b>✅ Admin Logged In</b>\n"
+        f"<b>Admin Logged In</b>\n"
         f"Email: <code>{email_clean}</code>\n"
         f"IP: <code>{ip_addr}</code>\n"
         f"User Agent: <code>{user_agent}</code>"
