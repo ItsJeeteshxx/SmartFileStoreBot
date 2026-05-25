@@ -1548,14 +1548,14 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     ch_header  = f"›› नमस्ते दोस्तों\n\n"
 
                     hi_body = (
-                        f"यह {story} {bot_link} द्वारा पूरी की गई है। "
+                        f"यह कहानी ( ❝ {story} ❞ ) अब {bot_link} द्वारा पूरी कर दी गई है। "
                         "मैंने सटीकता सुनिश्चित करने का प्रयास किया है और विवरण के साथ अंतिम रिपोर्ट प्रदान की है। "
                         "गायब एपिसोड स्वाभाविक रूप से हो सकते हैं—इसमें कुछ नहीं किया जा सकता। "
                         "अगर 10+ गायब हैं, तो सपोर्ट से संपर्क करें। अनपार्स फ़ाइलें सुरक्षित रूप से "
                         "बटनों के अंदर मैप की गई हैं। डुप्लिकेट फ़ाइलें स्रोत में समान नाम वाली फ़ाइलों की वजह से "
                         "हो सकती हैं। मैं सामग्री के लिए जिम्मेदार नहीं हूँ क्योंकि ये फ़ाइलें "
                         "आर्या बॉट के माध्यम से अग्रेषित हैं, बिल्कुल स्क्रैप नहीं की गई हैं।"
-                        f"\n\nअगर आप बिना किसी रोक-टोक के {story} सुनना चाहते हैं तो नीचे दिए गए बटन से खरीद सकते हैं।"
+                        f"\n\nअगर आप बिना किसी रोक-टोक के ( ❝ {story} ❞ ) सुनना चाहते हैं तो नीचे दिए गए बटन से खरीद सकते हैं।"
                         f"\n\nपूरा हुआ: {time_str}"
                     )
                     en_body = ""
@@ -1564,14 +1564,14 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     ch_header  = f"›› Hey Strangers\n\n"
 
                     en_body = (
-                        f"This {story} is completed by {bot_link}. "
+                        f"This story ( ❝ {story} ❞ ) has been completed by {bot_link}. "
                         "I've tried to ensure accuracy and provided a final report with details. "
                         "Missing episodes can occur naturally—nothing can be done. "
                         "If 10+ are missing, contact support. Unparsed files are safely mapped "
                         "inside buttons. Duplicates may appear if the source had identically "
                         "named files. I am not responsible for the content as these files are "
                         "purely forwarded via Arya bot, strictly not scraped."
-                        f"\n\nIf you want to listen to {story} without any restrictions, you can buy it from the button below."
+                        f"\n\nIf you want to listen to ( ❝ {story} ❞ ) without any restrictions, you can buy it from the button below."
                     )
                     
                     en_body += f"\n\nCompleted at: {time_str}"
@@ -1585,7 +1585,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     ch_header  = f"›› {_sc('Hey Strangers')}\n\n"
 
                     en_body = (
-                        _sc("This ") + story_sz + _sc(" is completed by ") + bot_link +
+                        _sc("This story ( ❝ ") + story_sz + _sc(" ❞ ) is completed by ") + bot_link +
                         _sc(". I've tried to ensure accuracy and provided a final report with details. "
                             "Missing episodes can occur naturally—nothing can be done. "
                             "If 10+ are missing, contact support. Unparsed files are safely mapped "
@@ -1595,7 +1595,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     )
 
                     hi_body = (
-                        f"यह {story_sz} {bot_link} द्वारा पूरी की गई है। मैंने सटीकता सुनिश्चित करने का "
+                        f"यह कहानी ( ❝ {story_sz} ❞ ) अब {bot_link} द्वारा पूरी कर दी गई है। मैंने सटीकता सुनिश्चित करने का "
                         "प्रयास किया है और अंतिम रिपोर्ट संलग्न है। गायब एपिसोड स्वाभाविक हैं। "
                         "अगर 10+ गायब हैं, तो सपोर्ट से संपर्क करें। अनपार्स फ़ाइलें सुरक्षित रूप से "
                         "बटनों में मैप की गई हैं। डुप्लिकेट फ़ाइलें स्रोत की वजह से हो सकती हैं। मैं "
@@ -1635,9 +1635,9 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     dm_header  = f"›› नमस्ते <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
                     ch_header  = f"›› नमस्ते दोस्तों\n\n"
                     hi_body = (
-                        "वर्तमान में उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
+                        f"वर्तमान में ( ❝ {story} ❞ ) की उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
                         "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!"
-                        f"\n\nअगर आप बिना किसी रोक-टोक के {story} सुनना चाहते हैं तो नीचे दिए गए बटन से खरीद सकते हैं।"
+                        f"\n\nअगर आप बिना किसी रोक-टोक के ( ❝ {story} ❞ ) सुनना चाहते हैं तो नीचे दिए गए बटन से खरीद सकते हैं।"
                         f"\n\nअपडेट: {time_str}"
                     )
                     en_body = ""
@@ -1646,9 +1646,9 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     ch_header  = f"›› Hey Strangers\n\n"
                     
                     en_body = (
-                        "All currently available files have been posted here. "
+                        f"All currently available files of ( ❝ {story} ❞ ) have been posted here. "
                         "New episodes will be added as they arrive. Enjoy and stay tuned!"
-                        f"\n\nIf you want to listen to {story} without any restrictions, you can buy it from the button below."
+                        f"\n\nIf you want to listen to ( ❝ {story} ❞ ) without any restrictions, you can buy it from the button below."
                     )
                     
                     en_body += f"\n\nUpdated at: {time_str}"
@@ -1661,10 +1661,12 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     dm_header  = f"›› {_sc('Hey')} <a href='tg://user?id={user_id}'>{u_name}</a>\n\n"
                     ch_header  = f"›› {_sc('Hey Strangers')}\n\n"
                     
-                    en_body = _sc("All currently available files have been posted here. "
-                               "New episodes will be added as they arrive. Enjoy and stay tuned!")
+                    en_body = (
+                        _sc("All currently available files of ( ❝ ") + story_sz + _sc(" ❞ ) have been posted here. ") +
+                        _sc("New episodes will be added as they arrive. Enjoy and stay tuned!")
+                    )
                                
-                    hi_body = ("वर्तमान में उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
+                    hi_body = (f"वर्तमान में ( ❝ {story_sz} ❞ ) की उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
                                "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!")
                     hi_body += f"\n\nUpdated at: {time_str}"
 
@@ -1728,6 +1730,73 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 )
             except Exception as ch_err:
                 logger.error(f"[Report] Channel send failed: {ch_err}", exc_info=True)
+
+            # --- AUTO POST AUTO MESSAGE SYSTEM ---
+            auto_post_text = ""
+            auto_btn1_text = ""
+            auto_btn2_text = ""
+
+            if cv == 4:
+                # Hindi Version 4
+                auto_post_text = (
+                    "आशा है कि आपको यह कहानी पसंद आई होगी? यदि हाँ, तो रिएक्शन देना न भूलें! 👍\n"
+                    "मुझे यकीन है कि आप ऐसी ही या अन्य बेहतरीन कहानियों की तलाश में हैं। चिंता न करें, रिया यहाँ है!\n\n"
+                    "आप नीचे दिए गए 'यहाँ सर्च करें' बटन पर क्लिक करके अपनी पसंदीदा कहानी खोज सकते हैं। "
+                    "यदि वहाँ आपको आपकी पसंदीदा कहानी नहीं मिलती है, तो आप 'रिक्वेस्ट करें' बटन पर क्लिक करके सीधे बॉट में स्टोरी की जानकारी सबमिट करके कहानी का अनुरोध कर सकते हैं।\n\n"
+                    "⚠️ [कहानी का अनुरोध करते समय आप यह ध्यान रखिएगा कि आपकी कहानी चैनल पर आए इसकी कोई गारंटी नहीं है क्योंकि ऐसा भी हो सकता है कि हमको वो कहानी मिले ही नहीं, "
+                    "या फिर हमको उस कहानी में मेहनत करना सही न लगे, या फिर ऐसा भी हो सकता है कि वो कहानी केवल 'आर्या प्रीमियम' पर ही उपलब्ध कराई जाए...]"
+                )
+                auto_btn1_text = "यहाँ सर्च करें"
+                auto_btn2_text = "रिक्वेस्ट करें"
+            else:
+                # English/Hinglish Version
+                english_auto_text = (
+                    "I think you liked this story? If so, don't forget to leave a reaction! 👍\n"
+                    "I am sure you are looking for more amazing stories like this. Don't worry, Riya is here!\n\n"
+                    "Aap neeche diye gaye 'Search Here' button par click karke waha apni favourite story search kar sakte hain. "
+                    "Agar waha aapko apni favourite story nahi milti, toh aap 'Request It' button par click karke direct bot me story details submit karke request kar sakte hain.\n\n"
+                    "⚠️ [Story Request submit karte waqt dhyan rakhiyega ki aapki story channel par aaye iski koi guarantee nahi hai because aisa ho sakta hai ki humein wo story mile hi nahi, "
+                    "ya us story par efforts waste karna sahi na lage, ya fir aisa bhi ho sakta hai ki wo story only 'Arya Premium' par available karayi jaye...]"
+                )
+                
+                if cv in (2, 3):
+                    auto_post_text = apply_custom_font(english_auto_text, cv)
+                    auto_btn1_text = apply_custom_font("Search Here", cv)
+                    auto_btn2_text = apply_custom_font("Request It", cv)
+                else:
+                    auto_post_text = _sc(english_auto_text)
+                    auto_btn1_text = _sc("Search Here")
+                    auto_btn2_text = _sc("Request It")
+
+            auto_post_markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(auto_btn1_text, url="https://t.me/+KPVtaAm9k-RmMjdl"),
+                    InlineKeyboardButton(auto_btn2_text, url="https://t.me/StoriesFinderBot?start=request")
+                ]
+            ])
+
+            # Send Auto Post to DM
+            try:
+                await bot.send_message(
+                    user_id,
+                    text=auto_post_text,
+                    parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    reply_markup=auto_post_markup
+                )
+            except Exception as dm_auto_err:
+                logger.error(f"[Report] DM auto post failed: {dm_auto_err}", exc_info=True)
+
+            # Send Auto Post to Target Channel
+            try:
+                await poster.send_message(
+                    sj['target'],
+                    text=auto_post_text,
+                    parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    reply_to_message_id=sj.get('target_topic_id'),
+                    reply_markup=auto_post_markup
+                )
+            except Exception as ch_auto_err:
+                logger.error(f"[Report] Channel auto post failed: {ch_auto_err}", exc_info=True)
 
         except Exception as rep_err:
             logger.error(f"[Report] Could not prepare report: {rep_err}", exc_info=True)
