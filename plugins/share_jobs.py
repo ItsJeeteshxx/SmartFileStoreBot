@@ -1738,7 +1738,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             if cv == 4:
                 # Hindi Version 4
-                auto_post_text = (
+                raw_text = (
                     "आशा है कि आपको यह कहानी पसंद आई होगी? यदि हाँ, तो रिएक्शन देना न भूलें! 👍\n"
                     "मुझे यकीन है कि आप ऐसी ही या अन्य बेहतरीन कहानियों की तलाश में हैं। चिंता न करें, रिया यहाँ है!\n\n"
                     "आप नीचे दिए गए 'यहाँ सर्च करें' बटन पर क्लिक करके अपनी पसंदीदा कहानी खोज सकते हैं। "
@@ -1746,27 +1746,31 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     "⚠️ [कहानी का अनुरोध करते समय आप यह ध्यान रखिएगा कि आपकी कहानी चैनल पर आए इसकी कोई गारंटी नहीं है क्योंकि ऐसा भी हो सकता है कि हमको वो कहानी मिले ही नहीं, "
                     "या फिर हमको उस कहानी में मेहनत करना सही न लगे, या फिर ऐसा भी हो सकता है कि वो कहानी केवल 'आर्या प्रीमियम' पर ही उपलब्ध कराई जाए...]"
                 )
+                auto_post_text = f"<blockquote expandable>{raw_text}</blockquote>"
                 auto_btn1_text = "यहाँ सर्च करें"
                 auto_btn2_text = "रिक्वेस्ट करें"
             else:
-                # English/Hinglish Version
+                # Pure English Version (1, 2, 3)
                 english_auto_text = (
                     "I think you liked this story? If so, don't forget to leave a reaction! 👍\n"
-                    "I am sure you are looking for more amazing stories like this. Don't worry, Riya is here!\n\n"
-                    "Aap neeche diye gaye 'Search Here' button par click karke waha apni favourite story search kar sakte hain. "
-                    "Agar waha aapko apni favourite story nahi milti, toh aap 'Request It' button par click karke direct bot me story details submit karke request kar sakte hain.\n\n"
-                    "⚠️ [Story Request submit karte waqt dhyan rakhiyega ki aapki story channel par aaye iski koi guarantee nahi hai because aisa ho sakta hai ki humein wo story mile hi nahi, "
-                    "ya us story par efforts waste karna sahi na lage, ya fir aisa bhi ho sakta hai ki wo story only 'Arya Premium' par available karayi jaye...]"
+                    "I am sure you are looking for more amazing stories like this or others... Don't worry, Riya is here!\n\n"
+                    "You can click the 'Search Here' button below to search for your favorite story. "
+                    "If you can't find your favorite story there, you can click the 'Request It' button to directly submit the story details and request it in the bot.\n\n"
+                    "⚠️ [When requesting a story, please keep in mind that there is no guarantee that your story will be posted on the channel. "
+                    "It might be because we cannot find that story, or we don't feel it is worth wasting our efforts on it, "
+                    "or it might be made available exclusively on 'Arya Premium'...]"
                 )
                 
                 if cv in (2, 3):
-                    auto_post_text = apply_custom_font(english_auto_text, cv)
+                    styled_text = apply_custom_font(english_auto_text, cv)
                     auto_btn1_text = apply_custom_font("Search Here", cv)
                     auto_btn2_text = apply_custom_font("Request It", cv)
                 else:
-                    auto_post_text = _sc(english_auto_text)
+                    styled_text = _sc(english_auto_text)
                     auto_btn1_text = _sc("Search Here")
                     auto_btn2_text = _sc("Request It")
+                
+                auto_post_text = f"<blockquote expandable>{styled_text}</blockquote>"
 
             auto_post_markup = InlineKeyboardMarkup([
                 [
