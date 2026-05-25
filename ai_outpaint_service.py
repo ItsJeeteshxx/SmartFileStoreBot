@@ -105,11 +105,12 @@ async def process_outpaint(image_bytes: bytes, title_position: str = "left") -> 
 
 async def call_replicate_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
     """
-    Cinematic Recomposition Workflow using Replicate and black-forest-labs/flux-fill-pro.
-    1. Preprocesses original square poster.
-    2. Builds widescreen canvas (1344x768) pasting the original poster on one side.
+    Cinematic Widescreen Outpainting Workflow using Replicate and black-forest-labs/flux-fill-pro.
+    1. Preprocesses original square poster to fit widescreen height (768x768).
+    2. Mirrored background padding is applied to fill the empty widescreen canvas (1344x768)
+       with real context before calling Replicate (Image-to-Image Outpainting).
     3. Generates a pixel-perfect mask to preserve characters/faces from original artwork.
-    4. Submits prediction using flux-fill-pro to outpaint a cinematic landscape on the opposing side.
+    4. Calls flux-fill-pro with strict prompts to outpaint ONLY scenery, preventing collages or extra posters.
     """
     try:
         orig = Image.open(io.BytesIO(square_bytes))
@@ -125,32 +126,43 @@ async def call_replicate_outpaint(square_bytes: bytes, api_key: str, title_posit
         # Scale poster to fill canvas height (768x768)
         poster_scaled = orig.resize((768, 768), Image.Resampling.LANCZOS)
 
-        # Position square dynamically to build diagonal composition breathing space
+        # Apply mirrored edge padding to masked area so the AI has realistic context
+        # rather than pure black (this completely eliminates fake movie cover hallucinations)
+        left_pad = poster_scaled.crop((0, 0, 8, 768)).resize((576, 768), Image.Resampling.BOX)
+        right_pad = poster_scaled.crop((760, 0, 768, 768)).resize((576, 768), Image.Resampling.BOX)
+
         if title_position == "left":
-            # Original characters center/right, empty cinematic breathing space on left
+            # Original poster on the right, extended background on the left
+            canvas.paste(left_pad, (0, 0))
             x_offset = 576
             canvas.paste(poster_scaled, (x_offset, 0))
-            # Preserve the poster perfectly
+            # Preserve the poster perfectly (black in mask)
             for x in range(x_offset, canvas_w):
                 for y in range(canvas_h):
                     mask.putpixel((x, y), 0)
         elif title_position == "right":
-            # Original characters center/left, empty cinematic breathing space on right
+            # Original poster on the left, extended background on the right
             x_offset = 0
             canvas.paste(poster_scaled, (x_offset, 0))
-            # Preserve the poster perfectly
+            canvas.paste(right_pad, (768, 0))
+            # Preserve the poster perfectly (black in mask)
             for x in range(0, 768):
                 for y in range(canvas_h):
                     mask.putpixel((x, y), 0)
         else:
             # Centered characters
+            canvas.paste(left_pad.resize((288, 768)), (0, 0))
             x_offset = 288
             canvas.paste(poster_scaled, (x_offset, 0))
+            canvas.paste(right_pad.resize((288, 768)), (1056, 0))
             for x in range(x_offset, x_offset + 768):
                 for y in range(canvas_h):
                     mask.putpixel((x, y), 0)
 
-        # Encode preprocessed canvas and mask to JPEG base64 URIs
+        # Soften mask boundary to ensure ultra-smooth blending transitions
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=8))
+
+        # Encode preprocessed canvas and mask to base64 URIs
         canvas_io = io.BytesIO()
         canvas.save(canvas_io, format="JPEG", quality=95)
         canvas_uri = f"data:image/jpeg;base64,{base64.b64encode(canvas_io.getvalue()).decode('utf-8')}"
@@ -160,11 +172,11 @@ async def call_replicate_outpaint(square_bytes: bytes, api_key: str, title_posit
         mask_uri = f"data:image/png;base64,{base64.b64encode(mask_io.getvalue()).decode('utf-8')}"
 
         prompt = (
-            "Create a cinematic 16:9 OTT hero banner from this poster artwork. "
-            "Expand the background and environment seamlessly into the masked space, matching the lighting, colors, textures, and mood perfectly. "
-            "Leave clean empty negative space on the opposing side for title, text and UI overlays. "
-            "Preserve original characters, facial identity, details and lighting completely. Do not stretch, warp, crop, or distort faces. "
-            "High-fidelity professional Netflix or PocketFM widescreen composition."
+            "Seamlessly outpaint the background environment scenery. "
+            "Continue the natural colors, atmospheric lighting, and architectural details of the original background. "
+            "Do NOT add any new characters, duplicate actors, extra faces, text, fake logos, or movie covers. "
+            "Do NOT generate a collage or split poster layout. "
+            "Maintain strict fidelity to the original artwork, keeping the composition cinematic, wide, clean and professional."
         )
 
         payload = {
@@ -173,7 +185,7 @@ async def call_replicate_outpaint(square_bytes: bytes, api_key: str, title_posit
                 "mask": mask_uri,
                 "prompt": prompt,
                 "steps": 28,
-                "guidance_scale": 30.0,
+                "guidance_scale": 15.0,  # Lower guidance scale for realistic blending and less hallucination
                 "output_format": "jpg",
                 "output_quality": 95
             }
