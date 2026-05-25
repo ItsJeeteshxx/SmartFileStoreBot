@@ -3821,10 +3821,10 @@ async def run_outpaint_migration(payload: dict, background_tasks: BackgroundTask
             arya_db = app.state.db
             from bson.objectid import ObjectId
             stories = await arya_db.db.premium_stories.find({}).to_list(length=None)
+            force = bool(payload.get("force", True))  # Defaults to True to refresh all banners asymmetrically
             for story in stories:
                 poster_url = story.get("poster_url") or story.get("cover") or story.get("image_url")
-                # We skip if it already has a banner_url
-                if poster_url and (not story.get("banner_url") or story.get("banner_url") == poster_url):
+                if poster_url and (force or not story.get("banner_url") or story.get("banner_url") == poster_url):
                     try:
                         import aiohttp
                         async with aiohttp.ClientSession() as session:
