@@ -104,64 +104,121 @@ async def process_outpaint(image_bytes: bytes, title_position: str = "left") -> 
 
 
 async def call_replicate_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
-    """Call Replicate SDXL Outpaint model (logerfo/sdxl-outpaint) with layout alignment control"""
-    b64 = base64.b64encode(square_bytes).decode("utf-8")
-    uri = f"data:image/jpeg;base64,{b64}"
+    """
+    Cinematic Recomposition Workflow using Replicate and black-forest-labs/flux-fill-pro.
+    1. Preprocesses original square poster.
+    2. Builds widescreen canvas (1344x768) pasting the original poster on one side.
+    3. Generates a pixel-perfect mask to preserve characters/faces from original artwork.
+    4. Submits prediction using flux-fill-pro to outpaint a cinematic landscape on the opposing side.
+    """
+    try:
+        orig = Image.open(io.BytesIO(square_bytes))
+        if orig.mode != "RGB":
+            orig = orig.convert("RGB")
 
-    # Asymmetric canvas extension based on title position
-    left_width = 314
-    right_width = 314
-    if title_position == "left":
-        left_width = 0
-        right_width = 628
-    elif title_position == "right":
-        left_width = 628
-        right_width = 0
+        # Step 1: Initialize 16:9 target widescreen canvas (1344x768)
+        canvas_w, canvas_h = 1344, 768
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+        # Mask: White (255) defines outpaint target area, Black (0) preserves the original artwork
+        mask = Image.new("L", (canvas_w, canvas_h), 255)
 
-    payload = {
-        "version": "209af00e28d447470659ee02f8319f37c768910b80e45c47fa18fb41f173167b",
-        "input": {
-            "image": uri,
-            "prompt": "cinematic detailed scenery backdrop matching original art, seamless transition, high quality, 8k",
-            "left_width": left_width,
-            "right_width": right_width,
-            "top_height": 0,
-            "bottom_height": 0
+        # Scale poster to fill canvas height (768x768)
+        poster_scaled = orig.resize((768, 768), Image.Resampling.LANCZOS)
+
+        # Position square dynamically to build diagonal composition breathing space
+        if title_position == "left":
+            # Original characters center/right, empty cinematic breathing space on left
+            x_offset = 576
+            canvas.paste(poster_scaled, (x_offset, 0))
+            # Preserve the poster perfectly
+            for x in range(x_offset, canvas_w):
+                for y in range(canvas_h):
+                    mask.putpixel((x, y), 0)
+        elif title_position == "right":
+            # Original characters center/left, empty cinematic breathing space on right
+            x_offset = 0
+            canvas.paste(poster_scaled, (x_offset, 0))
+            # Preserve the poster perfectly
+            for x in range(0, 768):
+                for y in range(canvas_h):
+                    mask.putpixel((x, y), 0)
+        else:
+            # Centered characters
+            x_offset = 288
+            canvas.paste(poster_scaled, (x_offset, 0))
+            for x in range(x_offset, x_offset + 768):
+                for y in range(canvas_h):
+                    mask.putpixel((x, y), 0)
+
+        # Encode preprocessed canvas and mask to JPEG base64 URIs
+        canvas_io = io.BytesIO()
+        canvas.save(canvas_io, format="JPEG", quality=95)
+        canvas_uri = f"data:image/jpeg;base64,{base64.b64encode(canvas_io.getvalue()).decode('utf-8')}"
+
+        mask_io = io.BytesIO()
+        mask.save(mask_io, format="PNG")
+        mask_uri = f"data:image/png;base64,{base64.b64encode(mask_io.getvalue()).decode('utf-8')}"
+
+        prompt = (
+            "Create a cinematic 16:9 OTT hero banner from this poster artwork. "
+            "Expand the background and environment seamlessly into the masked space, matching the lighting, colors, textures, and mood perfectly. "
+            "Leave clean empty negative space on the opposing side for title, text and UI overlays. "
+            "Preserve original characters, facial identity, details and lighting completely. Do not stretch, warp, crop, or distort faces. "
+            "High-fidelity professional Netflix or PocketFM widescreen composition."
+        )
+
+        payload = {
+            "input": {
+                "image": canvas_uri,
+                "mask": mask_uri,
+                "prompt": prompt,
+                "steps": 28,
+                "guidance_scale": 30.0,
+                "output_format": "jpg",
+                "output_quality": 95
+            }
         }
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+        headers = {
+            "Authorization": f"Token {api_key}",
+            "Content-Type": "application/json"
+        }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://api.replicate.com/v1/predictions", json=payload, headers=headers, timeout=20) as r:
-            if r.status == 402:
-                raise Exception("Billing issue or payment required on Replicate")
-            if r.status not in (200, 201):
-                err = await r.text()
-                raise Exception(f"Replicate API returned status {r.status}: {err[:150]}")
-            pred = await r.json()
-            poll_url = pred["urls"]["get"]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-pro/predictions",
+                json=payload,
+                headers=headers,
+                timeout=25
+            ) as r:
+                if r.status == 402:
+                    raise Exception("Billing issue or payment required on Replicate")
+                if r.status not in (200, 201):
+                    err = await r.text()
+                    raise Exception(f"Replicate API returned status {r.status}: {err[:150]}")
+                pred = await r.json()
+                poll_url = pred["urls"]["get"]
 
-        # Poll the prediction result
-        for _ in range(30):
-            await asyncio.sleep(2)
-            async with session.get(poll_url, headers=headers) as r2:
-                if r2.status == 200:
-                    data = await r2.json()
-                    status = data.get("status")
-                    if status == "succeeded":
-                        out_url = data.get("output")
-                        if isinstance(out_url, list):
-                            out_url = out_url[0]
-                        async with session.get(out_url) as r3:
-                            if r3.status == 200:
-                                return await r3.read()
-                            raise Exception("Failed to download generated image from Replicate storage")
-                    elif status in ("failed", "canceled"):
-                        raise Exception(f"Replicate prediction ended with status: {status}")
-        raise Exception("Replicate prediction timed out after 60 seconds")
+            # Poll the prediction results
+            for _ in range(30):
+                await asyncio.sleep(2)
+                async with session.get(poll_url, headers=headers) as r2:
+                    if r2.status == 200:
+                        data = await r2.json()
+                        status = data.get("status")
+                        if status == "succeeded":
+                            out_url = data.get("output")
+                            if isinstance(out_url, list):
+                                out_url = out_url[0]
+                            async with session.get(out_url) as r3:
+                                if r3.status == 200:
+                                    return await r3.read()
+                                raise Exception("Failed to download generated image from Replicate storage")
+                        elif status in ("failed", "canceled"):
+                            raise Exception(f"Replicate prediction ended with status: {status}")
+            raise Exception("Replicate prediction timed out after 60 seconds")
+    except Exception as e:
+        logger.error(f"Flux Fill Pro Outpainting Error: {e}")
+        raise e
 
 
 async def call_fal_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
