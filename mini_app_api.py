@@ -1657,7 +1657,8 @@ async def save_admin_story(request: Request):
                             
                             # Perform outpainting
                             from ai_outpaint_service import process_outpaint
-                            outpainted_bytes = await process_outpaint(poster_bytes)
+                            title_pos = save_doc.get("title_position", "left")
+                            outpainted_bytes = await process_outpaint(poster_bytes, title_pos)
                             
                             # Optimize and upload widescreen banner
                             uploaded_banner_url = await optimize_and_upload_to_storage(
@@ -3831,7 +3832,8 @@ async def run_outpaint_migration(payload: dict, background_tasks: BackgroundTask
                                 if resp.status == 200:
                                     poster_bytes = await resp.read()
                                     from ai_outpaint_service import process_outpaint
-                                    outpainted_bytes = await process_outpaint(poster_bytes)
+                                    title_pos = story.get("title_position", "left")
+                                    outpainted_bytes = await process_outpaint(poster_bytes, title_pos)
                                     uploaded_banner_url = await optimize_and_upload_to_storage(
                                         outpainted_bytes, width=1184, height=556, quality=80
                                     )

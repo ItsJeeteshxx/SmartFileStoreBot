@@ -8,7 +8,7 @@ from AryaPremium.database import db as arya_db
 
 logger = logging.getLogger(__name__)
 
-async def process_outpaint(image_bytes: bytes) -> bytes:
+async def process_outpaint(image_bytes: bytes, title_position: str = "left") -> bytes:
     """
     Main outpainting pipeline.
     1. Loads configuration from database.
@@ -48,10 +48,9 @@ async def process_outpaint(image_bytes: bytes) -> bytes:
     has_keys = bool(replicate_key or fal_key or stability_key)
     if not outpaint_enabled or not has_keys:
         logger.info("AI outpainting is disabled or no keys are set. Using premium blurred side padding.")
-        return generate_blurred_fallback(image_bytes)
+        return generate_blurred_fallback(image_bytes, title_position=title_position)
 
-    # Prepare standard square to fit center (556x556)
-    # We resize the square poster to 556x556 so that expanding it by 314 px on left and right makes it exactly 1184x556!
+    # Prepare standard square to fit center/side (556x556)
     try:
         square_io = io.BytesIO()
         img_resized = img.resize((556, 556), Image.Resampling.LANCZOS)
@@ -61,7 +60,7 @@ async def process_outpaint(image_bytes: bytes) -> bytes:
         square_bytes = square_io.getvalue()
     except Exception as e:
         logger.error(f"Error preparing square image for outpaint: {e}")
-        return generate_blurred_fallback(image_bytes)
+        return generate_blurred_fallback(image_bytes, title_position=title_position)
 
     # Failover sequence based on user settings
     providers = []
@@ -78,19 +77,19 @@ async def process_outpaint(image_bytes: bytes) -> bytes:
     active_providers = [p for p in providers if p[1]]
     if not active_providers:
         logger.info("No active API keys found for outpainting. Using blurred fallback.")
-        return generate_blurred_fallback(image_bytes)
+        return generate_blurred_fallback(image_bytes, title_position=title_position)
 
     # Attempt outpainting with sequential failover
     for provider_name, api_key in active_providers:
-        logger.info(f"Attempting outpainting with provider: {provider_name}")
+        logger.info(f"Attempting outpainting with provider: {provider_name} (Layout alignment: {title_position})")
         try:
             outpainted_bytes = None
             if provider_name == "replicate":
-                outpainted_bytes = await call_replicate_outpaint(square_bytes, api_key)
+                outpainted_bytes = await call_replicate_outpaint(square_bytes, api_key, title_position)
             elif provider_name == "fal":
-                outpainted_bytes = await call_fal_outpaint(square_bytes, api_key)
+                outpainted_bytes = await call_fal_outpaint(square_bytes, api_key, title_position)
             elif provider_name == "stability":
-                outpainted_bytes = await call_stability_outpaint(square_bytes, api_key)
+                outpainted_bytes = await call_stability_outpaint(square_bytes, api_key, title_position)
 
             if outpainted_bytes:
                 logger.info(f"Outpainting succeeded using {provider_name}!")
@@ -101,21 +100,31 @@ async def process_outpaint(image_bytes: bytes) -> bytes:
 
     # If all configured AI models fail, fall back gracefully to premium blurred padding
     logger.error("All outpainting APIs failed. Returning premium blurred fallback.")
-    return generate_blurred_fallback(image_bytes)
+    return generate_blurred_fallback(image_bytes, title_position=title_position)
 
 
-async def call_replicate_outpaint(square_bytes: bytes, api_key: str) -> bytes:
-    """Call Replicate SDXL Outpaint model (logerfo/sdxl-outpaint)"""
+async def call_replicate_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
+    """Call Replicate SDXL Outpaint model (logerfo/sdxl-outpaint) with layout alignment control"""
     b64 = base64.b64encode(square_bytes).decode("utf-8")
     uri = f"data:image/jpeg;base64,{b64}"
+
+    # Asymmetric canvas extension based on title position
+    left_width = 314
+    right_width = 314
+    if title_position == "left":
+        left_width = 0
+        right_width = 628
+    elif title_position == "right":
+        left_width = 628
+        right_width = 0
 
     payload = {
         "version": "209af00e28d447470659ee02f8319f37c768910b80e45c47fa18fb41f173167b",
         "input": {
             "image": uri,
             "prompt": "cinematic detailed scenery backdrop matching original art, seamless transition, high quality, 8k",
-            "left_width": 314,
-            "right_width": 314,
+            "left_width": left_width,
+            "right_width": right_width,
             "top_height": 0,
             "bottom_height": 0
         }
@@ -155,17 +164,23 @@ async def call_replicate_outpaint(square_bytes: bytes, api_key: str) -> bytes:
         raise Exception("Replicate prediction timed out after 60 seconds")
 
 
-async def call_fal_outpaint(square_bytes: bytes, api_key: str) -> bytes:
-    """Call Fal.ai fooocus inpaint/outpaint model synchronously"""
+async def call_fal_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
+    """Call Fal.ai fooocus inpaint/outpaint model synchronously with layout alignment control"""
     b64 = base64.b64encode(square_bytes).decode("utf-8")
     uri = f"data:image/jpeg;base64,{b64}"
 
-    # Fully compliant with Fal.ai fooocus/inpaint unified schema
+    # Asymmetric canvas selections based on title position
+    selections = ["Left", "Right"]
+    if title_position == "left":
+        selections = ["Right"]
+    elif title_position == "right":
+        selections = ["Left"]
+
     payload = {
         "inpaint_image_url": uri,
         "prompt": "cinematic horizontal background, seamless transition, highly detailed poster art backdrop, match colors",
         "inpaint_mode": "Inpaint or Outpaint",
-        "outpaint_selections": ["Left", "Right"],
+        "outpaint_selections": selections,
         "guidance_scale": 7.5
     }
     headers = {
@@ -190,17 +205,27 @@ async def call_fal_outpaint(square_bytes: bytes, api_key: str) -> bytes:
                 raise Exception("Failed to download generated image from Fal.ai storage")
 
 
-async def call_stability_outpaint(square_bytes: bytes, api_key: str) -> bytes:
-    """Call Stability AI Stable Image Edit Uncrop/Outpaint API"""
+async def call_stability_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
+    """Call Stability AI Stable Image Edit Uncrop/Outpaint API with layout alignment control"""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/json"
     }
 
+    # Asymmetric canvas dimensions based on title position
+    left = 314
+    right = 314
+    if title_position == "left":
+        left = 0
+        right = 628
+    elif title_position == "right":
+        left = 628
+        right = 0
+
     data = aiohttp.FormData()
     data.add_field("image", square_bytes, filename="square.jpg", content_type="image/jpeg")
-    data.add_field("left", "314")
-    data.add_field("right", "314")
+    data.add_field("left", str(left))
+    data.add_field("right", str(right))
     data.add_field("up", "0")
     data.add_field("down", "0")
     data.add_field("prompt", "cinematic detailed scenery backdrop matching original art, seamless transition, high quality, 8k")
@@ -252,10 +277,10 @@ def crop_to_banner(image_bytes: bytes, target_width: int = 1184, target_height: 
     return output.getvalue()
 
 
-def generate_blurred_fallback(image_bytes: bytes, target_width: int = 1184, target_height: int = 556) -> bytes:
+def generate_blurred_fallback(image_bytes: bytes, target_width: int = 1184, target_height: int = 556, title_position: str = "left") -> bytes:
     """
-    Premium fallback: centers the original cover over a heavily-blurred widescreen stretch
-    of itself. Zero third-party dependency, fast, and extremely neat.
+    Premium fallback: centers or offsets the original cover over a heavily-blurred widescreen stretch
+    of itself based on layout alignment preferences. Zero third-party dependency, fast, and extremely neat.
     """
     try:
         orig_img = Image.open(io.BytesIO(image_bytes))
@@ -270,16 +295,21 @@ def generate_blurred_fallback(image_bytes: bytes, target_width: int = 1184, targ
         overlay = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 110)) # translucent dark
         bg = Image.alpha_composite(bg.convert("RGBA"), overlay)
         
-        # 2. Fit the original image as a centered square card
+        # 2. Fit the original image as a centered or side-offset square card
         # Center square height is target_height, so its size is target_height x target_height
         card_size = target_height
         card = orig_img.resize((card_size, card_size), Image.Resampling.LANCZOS)
         
-        # Center coordinates
-        offset_x = (target_width - card_size) // 2
+        # Determine offset_x dynamically based on alignment
+        if title_position == "left":
+            offset_x = 0
+        elif title_position == "right":
+            offset_x = target_width - card_size
+        else:
+            offset_x = (target_width - card_size) // 2
         offset_y = 0
         
-        # Paste centered card on the blurred background
+        # Paste card on the blurred background
         bg.paste(card, (offset_x, offset_y))
         
         # Save output
