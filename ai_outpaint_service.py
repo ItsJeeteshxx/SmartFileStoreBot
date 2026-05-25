@@ -275,41 +275,111 @@ async def call_fal_outpaint(square_bytes: bytes, api_key: str, title_position: s
 
 
 async def call_stability_outpaint(square_bytes: bytes, api_key: str, title_position: str = "left") -> bytes:
-    """Call Stability AI Stable Image Edit Uncrop/Outpaint API with layout alignment control"""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json"
-    }
+    """
+    Cinematic Widescreen Outpainting Workflow using Stability AI Stable Image Edit Inpaint API.
+    1. Preprocesses original square poster to fit widescreen height (768x768).
+    2. Mirrored background padding is applied to fill the empty widescreen canvas (1344x768)
+       with real context (Image-to-Image Inpaint/Outpaint).
+    3. Generates a pixel-perfect mask to preserve characters/faces/text from original artwork.
+    4. Calls Stability Inpaint API to outpaint ONLY the scenery on the opposing side, locking the original poster.
+    """
+    try:
+        orig = Image.open(io.BytesIO(square_bytes))
+        if orig.mode != "RGB":
+            orig = orig.convert("RGB")
 
-    # Asymmetric canvas dimensions based on title position
-    left = 314
-    right = 314
-    if title_position == "left":
-        left = 0
-        right = 628
-    elif title_position == "right":
-        left = 628
-        right = 0
+        # Step 1: Initialize 16:9 target widescreen canvas (1344x768)
+        canvas_w, canvas_h = 1344, 768
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+        # Mask: White (255) defines outpaint target area, Black (0) preserves the original artwork
+        mask = Image.new("L", (canvas_w, canvas_h), 255)
 
-    data = aiohttp.FormData()
-    data.add_field("image", square_bytes, filename="square.jpg", content_type="image/jpeg")
-    data.add_field("left", str(left))
-    data.add_field("right", str(right))
-    data.add_field("up", "0")
-    data.add_field("down", "0")
-    data.add_field("prompt", "cinematic detailed scenery backdrop matching original art, seamless transition, high quality, 8k")
-    data.add_field("output_format", "webp")
+        # Scale poster to fill canvas height (768x768)
+        poster_scaled = orig.resize((768, 768), Image.Resampling.LANCZOS)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://api.stability.ai/v2beta/stable-image/edit/outpaint", data=data, headers=headers, timeout=25) as r:
-            if r.status != 200:
-                err = await r.text()
-                raise Exception(f"Stability AI API returned status {r.status}: {err[:150]}")
-            res = await r.json()
-            b64_out = res.get("image")
-            if not b64_out:
-                raise Exception("Stability AI response did not contain base64 image data")
-            return base64.b64decode(b64_out)
+        # Apply mirrored edge padding to masked area so the AI has realistic context
+        # rather than pure black (eliminates fake movie cover / text hallucinations)
+        left_pad = poster_scaled.crop((0, 0, 8, 768)).resize((576, 768), Image.Resampling.BOX)
+        right_pad = poster_scaled.crop((760, 0, 768, 768)).resize((576, 768), Image.Resampling.BOX)
+
+        if title_position == "left":
+            # Original poster on the right, extended background on the left
+            canvas.paste(left_pad, (0, 0))
+            x_offset = 576
+            canvas.paste(poster_scaled, (x_offset, 0))
+            # Preserve the poster perfectly (black in mask)
+            for x in range(x_offset, canvas_w):
+                for y in range(canvas_h):
+                    mask.putpixel((x, y), 0)
+        elif title_position == "right":
+            # Original poster on the left, extended background on the right
+            x_offset = 0
+            canvas.paste(poster_scaled, (x_offset, 0))
+            canvas.paste(right_pad, (768, 0))
+            # Preserve the poster perfectly (black in mask)
+            for x in range(0, 768):
+                for y in range(canvas_h):
+                    mask.putpixel((x, y), 0)
+        else:
+            # Centered characters
+            canvas.paste(left_pad.resize((288, 768)), (0, 0))
+            x_offset = 288
+            canvas.paste(poster_scaled, (x_offset, 0))
+            canvas.paste(right_pad.resize((288, 768)), (1056, 0))
+            for x in range(x_offset, x_offset + 768):
+                for y in range(canvas_h):
+                    mask.putpixel((x, y), 0)
+
+        # Soften mask boundary to ensure ultra-smooth blending transitions
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=8))
+
+        # Save canvas and mask to byte streams
+        canvas_io = io.BytesIO()
+        canvas.save(canvas_io, format="JPEG", quality=95)
+        canvas_bytes = canvas_io.getvalue()
+
+        mask_io = io.BytesIO()
+        mask.save(mask_io, format="PNG")
+        mask_bytes = mask_io.getvalue()
+
+        prompt = (
+            "cinematic OTT hero banner, premium streaming app style, preserve original poster, "
+            "maintain same characters, maintain same title typography, realistic background continuation, "
+            "seamless widescreen expansion, no collage, no split composition, no extra posters, "
+            "no redesigned text, clean cinematic side extension"
+        )
+        
+        negative_prompt = (
+            "collage, netflix poster, hollywood poster, multiple posters, split screen, "
+            "duplicated characters, distorted text, redesigned title, extra faces, "
+            "random scenes, cinematic mashup, fake movie cover, poster montage"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json"
+        }
+
+        data = aiohttp.FormData()
+        data.add_field("image", canvas_bytes, filename="canvas.jpg", content_type="image/jpeg")
+        data.add_field("mask", mask_bytes, filename="mask.png", content_type="image/png")
+        data.add_field("prompt", prompt)
+        data.add_field("negative_prompt", negative_prompt)
+        data.add_field("output_format", "webp")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.stability.ai/v2beta/stable-image/edit/inpaint", data=data, headers=headers, timeout=30) as r:
+                if r.status != 200:
+                    err = await r.text()
+                    raise Exception(f"Stability AI API returned status {r.status}: {err[:150]}")
+                res = await r.json()
+                b64_out = res.get("image")
+                if not b64_out:
+                    raise Exception("Stability AI response did not contain base64 image data")
+                return base64.b64decode(b64_out)
+    except Exception as e:
+        logger.error(f"Stability Inpaint Outpainting Error: {e}")
+        raise e
 
 
 def crop_to_banner(image_bytes: bytes, target_width: int = 1184, target_height: int = 556) -> bytes:
