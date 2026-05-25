@@ -268,7 +268,7 @@ def _format_story(s: dict) -> dict | None:
         bot_id = s.get("bot_id")
         cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
 
-    banner = s.get("banner_url") or s.get("banner") or cover
+    banner = s.get("banner_url") or cover
     if banner and not banner.startswith("http"):
         bot_id = s.get("bot_id")
         banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
@@ -3803,6 +3803,54 @@ async def update_admin_settings(payload: dict):
     except Exception as e:
         logger.error(f"update_admin_settings error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+from fastapi import BackgroundTasks
+
+@api_router.post("/admin/outpaint-migration")
+async def run_outpaint_migration(payload: dict, background_tasks: BackgroundTasks):
+    """Triggers background outpaint migration for all existing stories."""
+    try:
+        telegram_id = str(payload.get("telegram_id", ""))
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        async def do_migration():
+            logger.info("Starting background outpaint migration...")
+            arya_db = app.state.db
+            from bson.objectid import ObjectId
+            stories = await arya_db.db.premium_stories.find({}).to_list(length=None)
+            for story in stories:
+                poster_url = story.get("poster_url") or story.get("cover") or story.get("image_url")
+                # We skip if it already has a banner_url
+                if poster_url and not story.get("banner_url"):
+                    try:
+                        import aiohttp
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(poster_url) as resp:
+                                if resp.status == 200:
+                                    poster_bytes = await resp.read()
+                                    from ai_outpaint_service import process_outpaint
+                                    outpainted_bytes = await process_outpaint(poster_bytes)
+                                    uploaded_banner_url = await optimize_and_upload_to_storage(
+                                        outpainted_bytes, width=1184, height=556, quality=80
+                                    )
+                                    if uploaded_banner_url:
+                                        await arya_db.db.premium_stories.update_one(
+                                            {"_id": story["_id"]},
+                                            {"$set": {"banner_url": uploaded_banner_url}}
+                                        )
+                                        logger.info(f"Successfully migrated story {story.get('story_id')}: {uploaded_banner_url}")
+                    except Exception as e:
+                        logger.error(f"Migration error for story {story.get('story_id')}: {e}")
+                    await asyncio.sleep(1.5) # stagger requests
+            logger.info("Background outpaint migration complete!")
+
+        background_tasks.add_task(do_migration)
+        return {"success": True, "message": "Migration successfully started in the background."}
+    except Exception as e:
+        logger.error(f"Error starting outpaint migration: {e}")
+        return {"success": False, "message": str(e)}
 
 @api_router.get("/settings")
 async def get_public_settings():
