@@ -227,16 +227,16 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
         # Return a fallback or 404
         raise HTTPException(status_code=404, detail="Image fetch failed")
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Helper: format a single MongoDB story doc â†’ frontend Story shape
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ————————————————————————————————————————————————————————————————————————————————————————————————————
+# Helper: format a single MongoDB story doc → frontend Story shape
+# ————————————————————————————————————————————————————————————————————————————————————————————————————
 def _format_story(s: dict) -> dict | None:
-    # ID â€” never null
+    # ID — never null
     story_id = str(s["_id"]) if s.get("_id") else None
     if not story_id:
         return None
 
-    # TITLE â€” real value, never "Unknown"
+    # TITLE — real value, never "Unknown"
     title = (
         s.get("story_name_en")
         or s.get("story_name_hi")
@@ -249,14 +249,14 @@ def _format_story(s: dict) -> dict | None:
     if not title:
         return None  # skip stories with no title
 
-    # DESCRIPTION â€” clean UTF-8
+    # DESCRIPTION — clean UTF-8
     description = s.get("description") or s.get("description_hi") or ""
     try:
         description = description.encode("utf-8", errors="ignore").decode("utf-8").strip()
     except Exception:
         description = ""
 
-    # COVER â€” prefer HTTP URL, fallback to Telegram file_id, then placeholder
+    # COVER — prefer HTTP URL, fallback to Telegram file_id, then placeholder
     cover = (
         s.get("poster_url")
         or s.get("cover")
@@ -268,6 +268,11 @@ def _format_story(s: dict) -> dict | None:
         bot_id = s.get("bot_id")
         cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
 
+    banner = s.get("banner_url") or s.get("banner") or cover
+    if banner and not banner.startswith("http"):
+        bot_id = s.get("bot_id")
+        banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
+
     return {
         "id":           story_id,
         "title":        title,
@@ -277,8 +282,9 @@ def _format_story(s: dict) -> dict | None:
         "descriptionHi": (s.get("description_hi") or "").strip() or None,
         "descriptionHin": (s.get("description_hin") or "").strip() or None,
         "poster":       cover,
-        "banner":       cover,
+        "banner":       banner,
         "cover":        cover,
+        "title_position": s.get("title_position") or "left",
         "price":        float(s.get("price") or 0),
         "language":     s.get("language") or "Hindi",
         "platform":     s.get("platform") or "Pocket FM",
@@ -1524,9 +1530,85 @@ class StoryUpdate(BaseModel):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /admin/story
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, height: int = None, format: str = "JPEG", quality: int = 75) -> str:
+    import io
+    import uuid
+    import asyncio
+    import aiohttp
+    from PIL import Image
+    from decouple import config
+    
+    r2_account_id = config("R2_ACCOUNT_ID", default="")
+    r2_access_key = config("R2_ACCESS_KEY_ID", default="")
+    r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
+    r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
+    r2_domain = config("R2_CUSTOM_DOMAIN", default="")
+
+    def process_data(data):
+        img = Image.open(io.BytesIO(data))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        if width and height:
+            img = img.resize((width, height), Image.Resampling.LANCZOS)
+        elif width:
+            img.thumbnail((width, width))
+        output = io.BytesIO()
+        img.save(output, format=format, quality=quality, optimize=True)
+        return output.getvalue()
+
+    processed_bytes = await asyncio.to_thread(process_data, img_bytes)
+    
+    url = ""
+    if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
+        import boto3
+        def upload_r2():
+            try:
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                    aws_access_key_id=r2_access_key,
+                    aws_secret_access_key=r2_secret_key,
+                    region_name="auto"
+                )
+                filename = f"{uuid.uuid4().hex}.jpg"
+                s3.put_object(
+                    Bucket=r2_bucket,
+                    Key=filename,
+                    Body=processed_bytes,
+                    ContentType="image/jpeg"
+                )
+                if r2_domain:
+                    domain = r2_domain.strip("/")
+                    if not domain.startswith("http"):
+                        domain = "https://" + domain
+                    return f"{domain}/{filename}"
+                else:
+                    return f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{filename}"
+            except Exception as e:
+                logger.error(f"Cloudflare R2 upload failed: {e}")
+                return ""
+        url = await asyncio.to_thread(upload_r2)
+
+    # Fallback to Catbox
+    if not url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("reqtype", "fileupload")
+                form.add_field("fileToUpload", processed_bytes, filename="image.jpg", content_type="image/jpeg")
+                async with session.post("https://catbox.moe/user/api.php", data=form, timeout=10) as resp:
+                    if resp.status == 200:
+                        url = (await resp.text()).strip()
+        except Exception as e:
+            logger.error(f"Catbox upload failed: {e}")
+            url = ""
+            
+    return url
+
+
 @api_router.post("/admin/story")
 async def save_admin_story(request: Request):
-    """Creates or updates a story â€” accepts any JSON payload."""
+    """Creates or updates a story — accepts any JSON payload."""
     from AryaPremium.config import Config
     try:
         data = await request.json()
@@ -1542,6 +1624,51 @@ async def save_admin_story(request: Request):
         if not save_doc.get("story_id"):
             raise HTTPException(status_code=400, detail="story_id is required")
         
+        # Check if we should automatically outpaint and upload widescreen banner
+        poster_url = save_doc.get("poster_url")
+        banner_url = save_doc.get("banner_url")
+        
+        # Determine if we should generate the outpainted banner
+        should_outpaint = False
+        if poster_url and not banner_url:
+            should_outpaint = True
+        elif poster_url:
+            # Check if poster changed from existing story
+            try:
+                arya_db = app.state.db
+                from bson.objectid import ObjectId
+                query = {"story_id": save_doc.get("story_id")}
+                if len(str(save_doc.get("story_id"))) == 24:
+                    query = {"$or": [{"story_id": save_doc.get("story_id")}, {"_id": ObjectId(str(save_doc.get("story_id")))}]}
+                existing = await arya_db.db.premium_stories.find_one(query)
+                if existing and (existing.get("poster_url") != poster_url or not existing.get("banner_url")):
+                    should_outpaint = True
+            except:
+                should_outpaint = True
+                
+        if should_outpaint:
+            try:
+                logger.info(f"Auto-outpainting banner for story: {save_doc.get('story_name_en') or save_doc.get('story_id')}")
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(poster_url) as resp:
+                        if resp.status == 200:
+                            poster_bytes = await resp.read()
+                            
+                            # Perform outpainting
+                            from ai_outpaint_service import process_outpaint
+                            outpainted_bytes = await process_outpaint(poster_bytes)
+                            
+                            # Optimize and upload widescreen banner
+                            uploaded_banner_url = await optimize_and_upload_to_storage(
+                                outpainted_bytes, width=1184, height=556, quality=80
+                            )
+                            if uploaded_banner_url:
+                                save_doc["banner_url"] = uploaded_banner_url
+                                logger.info(f"Successfully auto-generated and uploaded banner: {uploaded_banner_url}")
+            except Exception as e:
+                logger.error(f"Failed to auto-outpaint story banner: {e}", exc_info=True)
+
         save_doc["updated_via"] = "mini_app_admin"
         arya_db = app.state.db
         await arya_db.save_story(save_doc)
@@ -3602,6 +3729,11 @@ async def get_admin_settings(telegram_id: str):
                 "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
                 "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
                 "promo_codes": cfg.get("promo_codes", []),
+                "outpaint_enabled": cfg.get("outpaint_enabled", False),
+                "outpaint_provider": cfg.get("outpaint_provider", "replicate"),
+                "replicate_api_key": cfg.get("replicate_api_key", ""),
+                "fal_api_key": cfg.get("fal_api_key", ""),
+                "stability_api_key": cfg.get("stability_api_key", ""),
             }
         }
     except HTTPException:
@@ -3633,6 +3765,16 @@ async def update_admin_settings(payload: dict):
             update_fields["platform_fee_amount"] = float(payload["platform_fee_amount"])
         if "platform_fee_enabled" in payload:
             update_fields["platform_fee_enabled"] = bool(payload["platform_fee_enabled"])
+        if "outpaint_enabled" in payload:
+            update_fields["outpaint_enabled"] = bool(payload["outpaint_enabled"])
+        if "outpaint_provider" in payload:
+            update_fields["outpaint_provider"] = str(payload["outpaint_provider"]).strip().lower()
+        if "replicate_api_key" in payload:
+            update_fields["replicate_api_key"] = str(payload["replicate_api_key"]).strip()
+        if "fal_api_key" in payload:
+            update_fields["fal_api_key"] = str(payload["fal_api_key"]).strip()
+        if "stability_api_key" in payload:
+            update_fields["stability_api_key"] = str(payload["stability_api_key"]).strip()
         if "promo_codes" in payload:
             raw_codes = payload["promo_codes"]
             promo_codes = []
