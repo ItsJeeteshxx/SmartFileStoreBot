@@ -201,11 +201,11 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             
         for idx in range(changed_idx, len(blocks)):
             block = blocks[idx]
-            v_starts = [b["ep_start"] for b in block if str(b["ep_start"]).isdigit()]
-            v_ends   = [b["ep_end"] for b in block if str(b["ep_end"]).isdigit()]
+            v_starts = [int(b["ep_start"]) for b in block if str(b["ep_start"]).isdigit()]
+            v_ends   = [int(b["ep_end"]) for b in block if str(b["ep_end"]).isdigit()]
             first_ep = min(v_starts) if v_starts else "?"
             last_ep  = max(v_ends) if v_ends else "?"
-            from plugins.utils import to_custom_font
+            from plugins.share_jobs import to_custom_font
             font_style = job.get('font', 'Default')
             cv = job.get('caption_version', 1)
             buy_link = job.get('premium_buy_link', '#')
