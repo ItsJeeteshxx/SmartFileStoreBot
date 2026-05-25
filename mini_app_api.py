@@ -2300,6 +2300,16 @@ async def save_admin_banner(data: BannerUpdate):
             await arya_db.db.mini_app_banners.update_one({"_id": ObjectId(data.id)}, {"$set": doc})
         else:
             await arya_db.db.mini_app_banners.insert_one(doc)
+
+        # Sync image_url to premium_stories if target_link points to a story
+        if data.target_link:
+            story = await arya_db.db.premium_stories.find_one({"story_id": data.target_link})
+            if story:
+                await arya_db.db.premium_stories.update_one(
+                    {"story_id": data.target_link},
+                    {"$set": {"banner_url": data.image_url}}
+                )
+
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
