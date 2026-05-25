@@ -3810,7 +3810,7 @@ from fastapi import BackgroundTasks
 
 @api_router.post("/admin/outpaint-migration")
 async def run_outpaint_migration(payload: dict, background_tasks: BackgroundTasks):
-    """Triggers background outpaint migration for all existing stories."""
+    """Triggers background outpaint migration for all existing stories or active slider stories only."""
     try:
         telegram_id = str(payload.get("telegram_id", ""))
         if not is_admin(str(telegram_id)):
@@ -3820,7 +3820,61 @@ async def run_outpaint_migration(payload: dict, background_tasks: BackgroundTask
             logger.info("Starting background outpaint migration...")
             arya_db = app.state.db
             from bson.objectid import ObjectId
-            stories = await arya_db.db.premium_stories.find({}).to_list(length=None)
+            
+            banners_only = bool(payload.get("test_only", False)) or bool(payload.get("banners_only", False))
+            
+            if banners_only:
+                logger.info("Outpaint migration running in BANNERS-ONLY / TEST mode to save Replicate credits.")
+                target_story_ids = set()
+                
+                # 1. Add trending story ID
+                try:
+                    pipeline = [
+                        {"$match": {"status": {"$in": ["paid", "delivered"]}}},
+                        {"$unwind": "$story_ids"},
+                        {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}},
+                        {"$sort": {"count": -1}},
+                        {"$limit": 1}
+                    ]
+                    agg = await arya_db.db.orders.aggregate(pipeline).to_list(1)
+                    if agg:
+                        target_story_ids.add(str(agg[0]["_id"]))
+                except Exception as e:
+                    logger.warning(f"Error fetching trending in migration: {e}")
+                    
+                # 2. Add newest story ID
+                try:
+                    newest = await arya_db.db.premium_stories.find_one({}, sort=[("_id", -1)])
+                    if newest:
+                        target_story_ids.add(str(newest["_id"]))
+                except Exception as e:
+                    logger.warning(f"Error fetching newest in migration: {e}")
+                    
+                # 3. Add manual banner story IDs
+                try:
+                    manual_cursor = arya_db.db.mini_app_banners.find({})
+                    async for b in manual_cursor:
+                        t_link = b.get("target_link")
+                        if t_link:
+                            target_story_ids.add(str(t_link))
+                except Exception as e:
+                    logger.warning(f"Error fetching manual banners in migration: {e}")
+                
+                # Convert string IDs back to ObjectIds
+                query_ids = []
+                for sid in target_story_ids:
+                    try:
+                        query_ids.append(ObjectId(sid))
+                    except:
+                        pass
+                
+                if query_ids:
+                    stories = await arya_db.db.premium_stories.find({"_id": {"$in": query_ids}}).to_list(length=None)
+                else:
+                    stories = []
+            else:
+                stories = await arya_db.db.premium_stories.find({}).to_list(length=None)
+                
             force = bool(payload.get("force", True))  # Defaults to True to refresh all banners asymmetrically
             for story in stories:
                 poster_url = story.get("poster_url") or story.get("cover") or story.get("image_url")
