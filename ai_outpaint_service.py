@@ -156,14 +156,16 @@ async def call_replicate_outpaint(square_bytes: bytes, api_key: str) -> bytes:
 
 
 async def call_fal_outpaint(square_bytes: bytes, api_key: str) -> bytes:
-    """Call Fal.ai fooocus outpaint model synchronously"""
+    """Call Fal.ai fooocus inpaint/outpaint model synchronously"""
     b64 = base64.b64encode(square_bytes).decode("utf-8")
     uri = f"data:image/jpeg;base64,{b64}"
 
+    # Fully compliant with Fal.ai fooocus/inpaint unified schema
     payload = {
-        "image_url": uri,
-        "outpaint_selections": ["left", "right"],
+        "inpaint_image_url": uri,
         "prompt": "cinematic horizontal background, seamless transition, highly detailed poster art backdrop, match colors",
+        "inpaint_mode": "Inpaint or Outpaint",
+        "outpaint_selections": ["Left", "Right"],
         "guidance_scale": 7.5
     }
     headers = {
@@ -172,7 +174,7 @@ async def call_fal_outpaint(square_bytes: bytes, api_key: str) -> bytes:
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post("https://fal.run/fal-ai/fooocus/outpaint", json=payload, headers=headers, timeout=30) as r:
+        async with session.post("https://fal.run/fal-ai/fooocus/inpaint", json=payload, headers=headers, timeout=30) as r:
             if r.status != 200:
                 err = await r.text()
                 raise Exception(f"Fal.ai API returned status {r.status}: {err[:150]}")
@@ -199,6 +201,8 @@ async def call_stability_outpaint(square_bytes: bytes, api_key: str) -> bytes:
     data.add_field("image", square_bytes, filename="square.jpg", content_type="image/jpeg")
     data.add_field("left", "314")
     data.add_field("right", "314")
+    data.add_field("up", "0")
+    data.add_field("down", "0")
     data.add_field("prompt", "cinematic detailed scenery backdrop matching original art, seamless transition, high quality, 8k")
     data.add_field("output_format", "webp")
 
