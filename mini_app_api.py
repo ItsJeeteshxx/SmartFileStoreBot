@@ -1630,7 +1630,7 @@ async def save_admin_story(request: Request):
         
         # Determine if we should generate the outpainted banner
         should_outpaint = False
-        if poster_url and not banner_url:
+        if poster_url and (not banner_url or banner_url == poster_url):
             should_outpaint = True
         elif poster_url:
             # Check if poster changed from existing story
@@ -3823,7 +3823,7 @@ async def run_outpaint_migration(payload: dict, background_tasks: BackgroundTask
             for story in stories:
                 poster_url = story.get("poster_url") or story.get("cover") or story.get("image_url")
                 # We skip if it already has a banner_url
-                if poster_url and not story.get("banner_url"):
+                if poster_url and (not story.get("banner_url") or story.get("banner_url") == poster_url):
                     try:
                         import aiohttp
                         async with aiohttp.ClientSession() as session:
