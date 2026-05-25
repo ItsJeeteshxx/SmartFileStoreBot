@@ -45,7 +45,7 @@ echo "    ✓ Nginx configured and running on port 80"
 
 # 3. Install Python dependencies
 echo "[3/4] Installing Python dependencies..."
-pip3 install -q fastapi uvicorn motor python-multipart
+pip3 install -q fastapi uvicorn motor python-multipart razorpay Pillow aiohttp aiofiles httpx
 
 # 4. Create systemd service for API
 echo "[4/4] Creating systemd service..."
