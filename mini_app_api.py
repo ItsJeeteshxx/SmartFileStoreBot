@@ -1618,7 +1618,8 @@ async def save_admin_story(request: Request):
             raise HTTPException(status_code=403, detail="Not authorized")
         
         # Remove non-DB fields
-        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "_id")}
+        show_in_banners = data.get("show_in_banners")
+        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "_id", "show_in_banners")}
         
         # Ensure story_id exists
         if not save_doc.get("story_id"):
@@ -1673,6 +1674,39 @@ async def save_admin_story(request: Request):
         save_doc["updated_via"] = "mini_app_admin"
         arya_db = app.state.db
         await arya_db.save_story(save_doc)
+
+        # Sync to manual custom banners if show_in_banners is set
+        if show_in_banners is not None:
+            if show_in_banners:
+                existing_banner = await arya_db.db.mini_app_banners.find_one({"target_link": save_doc["story_id"]})
+                banner_img = save_doc.get("banner_url") or save_doc.get("poster_url")
+                if not existing_banner:
+                    banners_count = await arya_db.db.mini_app_banners.count_documents({})
+                    banner_doc = {
+                        "image_url": banner_img,
+                        "target_link": save_doc["story_id"],
+                        "order": banners_count,
+                        "button_text": "Shop Now",
+                        "button_position": save_doc.get("title_position") or "left",
+                        "button_bg": "#000000",
+                        "button_color": "#ffffff",
+                        "title": save_doc.get("story_name_en") or "",
+                        "badge": "TRENDING",
+                    }
+                    await arya_db.db.mini_app_banners.insert_one(banner_doc)
+                    logger.info(f"Auto-pinned story {save_doc['story_id']} to manual banners.")
+                else:
+                    await arya_db.db.mini_app_banners.update_one(
+                        {"target_link": save_doc["story_id"]},
+                        {"$set": {
+                            "image_url": banner_img,
+                            "button_position": save_doc.get("title_position") or "left",
+                            "title": save_doc.get("story_name_en") or "",
+                        }}
+                    )
+            else:
+                await arya_db.db.mini_app_banners.delete_many({"target_link": save_doc["story_id"]})
+                logger.info(f"Auto-removed story {save_doc['story_id']} from manual banners.")
         return {"success": True, "message": "Story saved successfully"}
     except HTTPException:
         raise
