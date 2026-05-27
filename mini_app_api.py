@@ -1075,9 +1075,15 @@ async def create_oxapay_order(payload: dict):
     """Create an OxaPay crypto invoice. Reads API key fresh at request time."""
     # Read key fresh each request so .env changes take effect without restart
     oxapay_key = getattr(Config, "OXAPAY_KEY", "") or os.environ.get("OXAPAY_KEY", "")
-    if not oxapay_key or oxapay_key == "sandbox":
-        logger.error("OXAPAY_KEY not configured! Add it to .env as OXAPAY_KEY=your_key")
+    if not oxapay_key:
+        logger.error("OXAPAY_KEY not configured! Add it to .env")
         raise HTTPException(status_code=503, detail="Crypto payment not configured. Contact admin.")
+
+    is_sandbox = False
+    if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox":
+        is_sandbox = True
+
+    base_url = "https://sandbox.oxapay.com" if is_sandbox else "https://api.oxapay.com"
 
     story_ids = payload.get("story_ids", [])
     tg_id     = payload.get("telegram_id") or 0
@@ -1129,7 +1135,7 @@ async def create_oxapay_order(payload: dict):
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
-                "https://api.oxapay.com/v1/payment/invoice",
+                f"{base_url}/v1/payment/invoice",
                 json={
                     "merchant": oxapay_key,
                     "amount": total_usd,
@@ -1140,6 +1146,7 @@ async def create_oxapay_order(payload: dict):
                     "description": f"{len(valid_stories)} Arya Premium stories for {tg_id}",
                     "callbackUrl": "https://aryapremium.store/api/oxapay-webhook",
                     "returnUrl": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
+                    "sandbox": is_sandbox,
                 }
             )
             oxapay_result = r.json()
@@ -1196,14 +1203,20 @@ async def oxapay_webhook(request: Request):
         return {"success": False, "message": "Ignored or invalid status"}
 
     # Verify via OxaPay Inquiry API to prevent fake webhooks
+    is_sandbox = False
+    if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox":
+        is_sandbox = True
+    base_url = "https://sandbox.oxapay.com" if is_sandbox else "https://api.oxapay.com"
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                "https://api.oxapay.com/merchants/inquiry",
-                json={"merchant": oxapay_key, "trackId": track_id}
+            r = await client.get(
+                f"{base_url}/v1/payment/{track_id}",
+                headers={"merchant_api_key": oxapay_key}
             )
             inquiry = r.json()
-            if inquiry.get("result") != 100 or inquiry.get("status") != "Paid":
+            inq_status = inquiry.get("status", "").lower()
+            if inq_status != "paid":
                 logger.warning(f"OxaPay verification failed: {track_id} → {inquiry}")
                 return {"success": False, "message": "Verification failed"}
     except Exception as e:
