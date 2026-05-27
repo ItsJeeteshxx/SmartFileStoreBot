@@ -1079,8 +1079,9 @@ async def create_oxapay_order(payload: dict):
         logger.error("OXAPAY_KEY not configured! Add it to .env")
         raise HTTPException(status_code=503, detail="Crypto payment not configured. Contact admin.")
 
+    oxapay_env = getattr(Config, "OXAPAY_ENV", "production") or os.environ.get("OXAPAY_ENV", "production")
     is_sandbox = False
-    if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox":
+    if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox" or oxapay_env.lower() == "sandbox":
         is_sandbox = True
 
     base_url = "https://sandbox.oxapay.com" if is_sandbox else "https://api.oxapay.com"
@@ -1203,8 +1204,9 @@ async def oxapay_webhook(request: Request):
         return {"success": False, "message": "Ignored or invalid status"}
 
     # Verify via OxaPay Inquiry API to prevent fake webhooks
+    oxapay_env = getattr(Config, "OXAPAY_ENV", "production") or os.environ.get("OXAPAY_ENV", "production")
     is_sandbox = False
-    if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox":
+    if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox" or oxapay_env.lower() == "sandbox":
         is_sandbox = True
     base_url = "https://sandbox.oxapay.com" if is_sandbox else "https://api.oxapay.com"
 

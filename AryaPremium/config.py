@@ -78,3 +78,4 @@ class Config:
     PAYMENT_TOS_URL = _env("PAYMENT_TOS_URL", "")
     REFUND_POLICY_URL = _env("REFUND_POLICY_URL", "")
     OXAPAY_KEY = _env("OXAPAY_KEY", "")  # OxaPay merchant key (empty = disabled)
+    OXAPAY_ENV = _env("OXAPAY_ENV", "production")  # 'sandbox' or 'production'
