@@ -78,8 +78,11 @@ except ImportError:
 
 @app.on_event("startup")
 async def startup_event():
-    await arya_db.connect()
-    logger.info(f"✅ MongoDB connected | bot={BOT_USERNAME}")
+    try:
+        await arya_db.connect()
+        logger.info(f"✅ MongoDB connected | bot={BOT_USERNAME}")
+    except Exception as startup_db_err:
+        logger.error(f"Startup DB connection failed: {startup_db_err}")
     asyncio.create_task(_warmup_image_cache())
 
 
@@ -92,9 +95,22 @@ async def _warmup_image_cache():
     try:
         await asyncio.sleep(15)  # Let server fully serve first users before any background work
         if arya_db.db is None:
-            await arya_db.connect()
+            try:
+                await arya_db.connect()
+            except Exception as db_err:
+                logger.error(f"Warmup DB connection failed: {db_err}")
+                return
 
-        raw    = await arya_db.get_all_stories()
+        if arya_db.db is None:
+            logger.warning("Warmup skipped: DB not connected")
+            return
+
+        try:
+            raw    = await arya_db.get_all_stories()
+        except Exception as query_err:
+            logger.error(f"Warmup story query failed: {query_err}")
+            return
+
         total  = len(raw)
         logger.info(f"🔥 Image warmup starting — {total} stories")
 
@@ -362,6 +378,7 @@ def _format_story(s: dict) -> dict | None:
             s.get("uploaded_at") or s.get("created_at") or s.get("added_at") or
             s.get("date") or s.get("upload_date")
         ),
+        "is_must_have":    bool(s.get("is_must_have", False)),
     }
 
 
