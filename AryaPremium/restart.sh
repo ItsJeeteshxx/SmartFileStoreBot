@@ -8,6 +8,21 @@ echo "Cleaning up corrupted session files..."
 rm -f ~/bot/TryAryaForwardBot/main_bot_session.session*
 rm -f ~/bot/TryAryaForwardBot/AryaPremium/mgmt_bot.session*
 
+# Auto-repair SQLite database schema issues in all session files
+python3 -c "
+import glob, sqlite3, os
+path = os.path.expanduser('~/bot/TryAryaForwardBot/**/*.session')
+for f in glob.glob(path, recursive=True):
+    try:
+        conn = sqlite3.connect(f)
+        conn.cursor().execute('DROP TABLE IF EXISTS update_state;')
+        conn.commit()
+        conn.close()
+        print('Repaired session state for:', f)
+    except Exception as e:
+        print('Error repairing session:', f, e)
+"
+
 echo "Pulling latest updates..."
 # Assuming script is run from AryaPremium
 git pull --recurse-submodules origin main
