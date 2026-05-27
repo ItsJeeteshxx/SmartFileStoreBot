@@ -304,9 +304,18 @@ def _format_story(s: dict) -> dict | None:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /stories
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+_stories_cache = None
+_stories_cache_time = 0
+_stories_cache_ttl = 30  # 30 seconds
+
 @api_router.get("/stories")
 async def get_stories():
     """Fetch all premium stories with dynamic engagement counts from orders and analytics collections"""
+    global _stories_cache, _stories_cache_time
+    import time
+    if _stories_cache is not None and (time.time() - _stories_cache_time) < _stories_cache_ttl:
+        logger.info("Returning cached stories (memory cache hit)")
+        return _stories_cache
     try:
         arya_db = app.state.db
         stories = await arya_db.get_all_stories()
@@ -365,7 +374,10 @@ async def get_stories():
                 formatted.append(item)
 
         logger.info(f"Returning {len(formatted)} stories with dynamic engagement metrics")
-        return {"success": True, "data": formatted}
+        res = {"success": True, "data": formatted}
+        _stories_cache = res
+        _stories_cache_time = time.time()
+        return res
 
     except Exception as e:
         logger.error(f"Error in /stories: {e}", exc_info=True)
@@ -1084,7 +1096,7 @@ async def create_oxapay_order(payload: dict):
     if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox" or oxapay_env.lower() == "sandbox":
         is_sandbox = True
 
-    base_url = "https://sandbox.oxapay.com" if is_sandbox else "https://api.oxapay.com"
+    base_url = "https://api.oxapay.com"
 
     story_ids = payload.get("story_ids", [])
     tg_id     = payload.get("telegram_id") or 0
@@ -1211,7 +1223,7 @@ async def oxapay_webhook(request: Request):
     is_sandbox = False
     if oxapay_key.lower().startswith("sandbox") or oxapay_key.lower() == "sandbox" or oxapay_env.lower() == "sandbox":
         is_sandbox = True
-    base_url = "https://sandbox.oxapay.com" if is_sandbox else "https://api.oxapay.com"
+    base_url = "https://api.oxapay.com"
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -1845,6 +1857,9 @@ async def save_admin_story(request: Request):
             else:
                 await arya_db.db.mini_app_banners.delete_many({"target_link": save_doc["story_id"]})
                 logger.info(f"Auto-removed story {save_doc['story_id']} from manual banners.")
+        # Clear /stories cache
+        global _stories_cache
+        _stories_cache = None
         return {"success": True, "message": "Story saved successfully"}
     except HTTPException:
         raise
@@ -1877,6 +1892,9 @@ async def adjust_all_story_prices(payload: dict):
             {"$inc": {"price": amount}}
         )
         logger.info(f"Admin {telegram_id} adjusted all story prices by {amount}. Modified {result.modified_count} documents.")
+        # Clear /stories cache
+        global _stories_cache
+        _stories_cache = None
         return {
             "success": True, 
             "message": f"Successfully updated story prices by {amount}", 
@@ -2011,6 +2029,9 @@ async def delete_admin_story(story_id: str, telegram_id: str):
             
         arya_db = app.state.db
         await arya_db.delete_story(story_id)
+        # Clear /stories cache
+        global _stories_cache
+        _stories_cache = None
         return {"success": True, "message": "Story deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

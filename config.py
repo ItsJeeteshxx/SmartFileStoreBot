@@ -25,11 +25,12 @@ class Config:
 
     # -------- OWNER (FIXED) --------
     # Reads from BOTH "OWNER_IDS" and "BOT_OWNER_ID" env vars (either or both can be set)
+    import re
     _raw_ids = (
         environ.get("OWNER_IDS", "") + " " +
         environ.get("BOT_OWNER_ID", "")
-    ).replace(",", " ").split()
-    OWNER_IDS = list({int(i) for i in _raw_ids if i.strip().isdigit()})
+    )
+    OWNER_IDS = list(set([int(i) for i in re.findall(r'\d+', _raw_ids)]))
 
     BOT_OWNER_ID = OWNER_IDS
 

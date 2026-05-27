@@ -49,7 +49,8 @@ class Config:
         _e1.get("BOT_OWNER_ID", "") + " " +
         _e2.get("BOT_OWNER_ID", "")
     )
-    OWNER_IDS = list(set([int(i.strip()) for i in _raw_ids.replace(",", " ").split() if i.strip().isdigit()]))
+    import re
+    OWNER_IDS = list(set([int(i) for i in re.findall(r'\d+', _raw_ids)]))
     # Backward-compatible alias used by some callbacks.
     SUDO_USERS    = OWNER_IDS
     PAYMENT_LOGS_CHANNEL = _env("PAYMENT_LOGS_CHANNEL", "")
