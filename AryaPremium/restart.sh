@@ -4,10 +4,6 @@ pkill -9 -f main.py
 pkill -9 -f uvicorn
 pkill -9 screen
 screen -wipe
-echo "Cleaning up corrupted session files..."
-rm -f ~/bot/TryAryaForwardBot/main_bot_session.session*
-rm -f ~/bot/TryAryaForwardBot/AryaPremium/mgmt_bot.session*
-
 # Auto-repair SQLite database schema issues in all session files
 python3 -c "
 import glob, sqlite3, os

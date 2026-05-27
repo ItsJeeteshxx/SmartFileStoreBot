@@ -5,14 +5,17 @@ import os
 # --- PATCH PYROGRAM SQLITE SCHEMA ISSUES ---
 try:
     import pyrogram.storage.sqlite_storage
-    pyrogram.storage.sqlite_storage.USERNAMES_SCHEMA = pyrogram.storage.sqlite_storage.USERNAMES_SCHEMA.replace(
-        "CREATE TABLE usernames", "CREATE TABLE IF NOT EXISTS usernames"
-    ).replace(
-        "CREATE INDEX idx_usernames_username", "CREATE INDEX IF NOT EXISTS idx_usernames_username"
-    )
-    pyrogram.storage.sqlite_storage.UPDATE_STATE_SCHEMA = pyrogram.storage.sqlite_storage.UPDATE_STATE_SCHEMA.replace(
-        "CREATE TABLE update_state", "CREATE TABLE IF NOT EXISTS update_state"
-    )
+    import re
+    for name in dir(pyrogram.storage.sqlite_storage):
+        val = getattr(pyrogram.storage.sqlite_storage, name)
+        if isinstance(val, str):
+            patched = val
+            if "CREATE TABLE" in val:
+                patched = re.sub(r"CREATE TABLE (?!IF NOT EXISTS)", "CREATE TABLE IF NOT EXISTS ", patched)
+            if "CREATE INDEX" in val:
+                patched = re.sub(r"CREATE INDEX (?!IF NOT EXISTS)", "CREATE INDEX IF NOT EXISTS ", patched)
+            if patched != val:
+                setattr(pyrogram.storage.sqlite_storage, name, patched)
 except Exception as e:
     logging.warning(f"Failed to patch Pyrogram storage schemas: {e}")
 # -------------------------------------------
