@@ -1,5 +1,6 @@
 import os
 import uuid
+import httpx
 import logging
 import asyncio
 import urllib.parse
