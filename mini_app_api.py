@@ -1137,16 +1137,19 @@ async def create_oxapay_order(payload: dict):
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
                 f"{base_url}/v1/payment/invoice",
+                headers={
+                    "merchant_api_key": oxapay_key,
+                    "Content-Type": "application/json"
+                },
                 json={
-                    "merchant": oxapay_key,
                     "amount": total_usd,
                     "currency": "USD",
-                    "lifeTime": 30,
-                    "feePaidByPayer": 1,
-                    "orderId": oid,
+                    "lifetime": 30,
+                    "fee_paid_by_payer": 1,
+                    "order_id": oid,
                     "description": f"{len(valid_stories)} Arya Premium stories for {tg_id}",
-                    "callbackUrl": "https://aryapremium.store/api/oxapay-webhook",
-                    "returnUrl": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
+                    "callback_url": "https://aryapremium.store/api/oxapay-webhook",
+                    "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                     "sandbox": is_sandbox,
                 }
             )
