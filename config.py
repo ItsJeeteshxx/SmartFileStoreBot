@@ -15,10 +15,11 @@ def _parse_env(path):
     return env_vars
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_e = _parse_env(os.path.join(_THIS_DIR, ".env"))
+_e1 = _parse_env(os.path.join(_THIS_DIR, ".env"))
+_e2 = _parse_env(os.path.join(_THIS_DIR, "AryaPremium", ".env"))
 
 def _env(key, default=""):
-    return environ.get(key) or _e.get(key) or default
+    return environ.get(key) or _e1.get(key) or _e2.get(key) or default
 
 try:
     from dotenv import load_dotenv
