@@ -1147,7 +1147,7 @@ async def create_oxapay_order(payload: dict):
 
     if oxapay_error:
         logger.error(f"OxaPay network error: {oxapay_error}")
-        raise HTTPException(status_code=502, detail="Failed to reach OxaPay. Try again.")
+        raise HTTPException(status_code=502, detail=f"Failed to reach OxaPay: {oxapay_error}")
 
     if oxapay_result.get("result") != 100:
         logger.error(f"OxaPay rejected: {oxapay_result}")
