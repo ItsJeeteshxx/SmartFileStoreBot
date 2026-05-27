@@ -1,4 +1,24 @@
+import os
 from os import environ
+
+def _parse_env(path):
+    env_vars = {}
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env_vars[k.strip()] = v.strip().strip("'").strip('"')
+    except Exception:
+        pass
+    return env_vars
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_e = _parse_env(os.path.join(_THIS_DIR, ".env"))
+
+def _env(key, default=""):
+    return environ.get(key) or _e.get(key) or default
 
 try:
     from dotenv import load_dotenv
@@ -9,19 +29,19 @@ except ImportError:
 
 class Config:
     # -------- TELEGRAM --------
-    API_ID = int(environ.get("API_ID", 0))
-    API_HASH = environ.get("API_HASH", "")
-    BOT_TOKEN = environ.get("BOT_TOKEN", "")
-    BOT_SESSION = environ.get("BOT_SESSION", "bot")
+    API_ID = int(_env("API_ID", "0"))
+    API_HASH = _env("API_HASH", "")
+    BOT_TOKEN = _env("BOT_TOKEN", "")
+    BOT_SESSION = _env("BOT_SESSION", "bot")
 
     # -------- DATABASE --------
     DATABASE_URI = (
-        environ.get("DATABASE_URI") or
-        environ.get("DATABASE") or
+        _env("DATABASE_URI") or
+        _env("DATABASE") or
         ""
     )
 
-    DATABASE_NAME = environ.get("DATABASE_NAME", "arya")
+    DATABASE_NAME = _env("DATABASE_NAME", "arya")
 
     # -------- OWNER (FIXED) --------
     # Reads from BOTH "OWNER_IDS" and "BOT_OWNER_ID" env vars (either or both can be set)
