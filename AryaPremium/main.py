@@ -6,6 +6,7 @@ import os
 try:
     import pyrogram.storage.sqlite_storage
     import re
+    # Patch string schemas for fresh databases
     for name in dir(pyrogram.storage.sqlite_storage):
         val = getattr(pyrogram.storage.sqlite_storage, name)
         if isinstance(val, str):
@@ -16,6 +17,34 @@ try:
                 patched = re.sub(r"CREATE INDEX (?!IF NOT EXISTS)", "CREATE INDEX IF NOT EXISTS ", patched)
             if patched != val:
                 setattr(pyrogram.storage.sqlite_storage, name, patched)
+
+    # Patch open() to ensure tables are created even if migrations skipped them
+    original_open = pyrogram.storage.sqlite_storage.SQLiteStorage.open
+    async def patched_open(self):
+        await original_open(self)
+        try:
+            with self.conn:
+                self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS update_state (
+                    id   INTEGER PRIMARY KEY,
+                    pts  INTEGER,
+                    qts  INTEGER,
+                    date INTEGER,
+                    seq  INTEGER
+                );
+                """)
+                self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS usernames (
+                    id       INTEGER,
+                    username TEXT,
+                    FOREIGN KEY (id) REFERENCES peers(id)
+                );
+                """)
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_usernames_username ON usernames (username);")
+        except Exception as tbl_err:
+            logging.warning(f"Failed to verify/create SQLite tables: {tbl_err}")
+
+    pyrogram.storage.sqlite_storage.SQLiteStorage.open = patched_open
 except Exception as e:
     logging.warning(f"Failed to patch Pyrogram storage schemas: {e}")
 # -------------------------------------------
