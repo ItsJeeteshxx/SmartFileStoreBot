@@ -575,7 +575,6 @@ async def create_payment_link(payload: dict):
             "reference_id": order_id,
             "callback_url": f"https://t.me/{bot_username}/app",  # Returns to WebApp after payment
             "callback_method": "get",
-            "notify_url": f"https://aryapremium.store/api/razorpay-webhook",  # Auto-webhook on payment
         })
         
         tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
@@ -1129,7 +1128,7 @@ async def create_oxapay_order(payload: dict):
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
-                "https://api.oxapay.com/merchants/request",
+                "https://api.oxapay.com/v1/payment/invoice",
                 json={
                     "merchant": oxapay_key,
                     "amount": total_usd,
@@ -1138,6 +1137,7 @@ async def create_oxapay_order(payload: dict):
                     "feePaidByPayer": 1,
                     "orderId": oid,
                     "description": f"{len(valid_stories)} Arya Premium stories for {tg_id}",
+                    "callbackUrl": "https://aryapremium.store/api/oxapay-webhook",
                     "returnUrl": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                 }
             )
