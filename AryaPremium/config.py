@@ -58,8 +58,9 @@ class Config:
 
     # Premium Configs
     MGMT_BOT_TOKEN  = _env("MGMT_BOT_TOKEN", "")
-    RAZORPAY_KEY    = _env("RAZORPAY_KEY", "")
-    RAZORPAY_SECRET = _env("RAZORPAY_SECRET", "")
+    RAZORPAY_KEY            = _env("RAZORPAY_KEY", "")
+    RAZORPAY_SECRET         = _env("RAZORPAY_SECRET", "")
+    RAZORPAY_WEBHOOK_SECRET = _env("RAZORPAY_WEBHOOK_SECRET", "")  # Set in Razorpay Dashboard > Webhooks
     EASEBUZZ_KEY    = _env("EASEBUZZ_KEY", "")
     EASEBUZZ_SALT   = _env("EASEBUZZ_SALT", "")
     EASEBUZZ_ENV    = _env("EASEBUZZ_ENV", "test")
@@ -76,4 +77,4 @@ class Config:
     SLICEURL_SHORTEN_URL = _env("SLICEURL_SHORTEN_URL", "").strip()
     PAYMENT_TOS_URL = _env("PAYMENT_TOS_URL", "")
     REFUND_POLICY_URL = _env("REFUND_POLICY_URL", "")
-    OXAPAY_KEY = _env("OXAPAY_KEY", "sandbox")
+    OXAPAY_KEY = _env("OXAPAY_KEY", "")  # OxaPay merchant key (empty = disabled)

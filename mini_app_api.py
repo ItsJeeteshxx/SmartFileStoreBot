@@ -573,8 +573,9 @@ async def create_payment_link(payload: dict):
             "notify": {"sms": False, "email": False},
             "reminder_enable": False,
             "reference_id": order_id,
-            "callback_url": f"https://t.me/{bot_username}", # Redirect back to bot after payment
-            "callback_method": "get"
+            "callback_url": f"https://t.me/{bot_username}/app",  # Returns to WebApp after payment
+            "callback_method": "get",
+            "notify_url": f"https://aryapremium.store/api/razorpay-webhook",  # Auto-webhook on payment
         })
         
         tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
@@ -950,6 +951,123 @@ async def razorpay_callback(
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
 
 
+# ===== Razorpay: Payment Link Webhook =====
+
+@api_router.post("/razorpay-webhook")
+async def razorpay_webhook(request: Request):
+    """
+    Webhook from Razorpay upon Payment Link payment completion.
+    Razorpay sends event type "payment_link.paid" with payment_link entity.
+    This auto-grants stories when user pays via the Payment Link flow.
+    """
+    import hmac as _hmac
+    import hashlib as _hashlib
+    import base64
+
+    # Razorpay webhook signature verification
+    webhook_secret = getattr(Config, "RAZORPAY_WEBHOOK_SECRET", "") or os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+    body = await request.body()
+
+    if webhook_secret:
+        sig = request.headers.get("X-Razorpay-Signature", "")
+        expected = _hmac.new(webhook_secret.encode(), body, _hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(expected, sig):
+            logger.warning("Invalid Razorpay webhook signature")
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    event = data.get("event", "")
+    logger.info(f"Razorpay webhook received: {event}")
+
+    if event not in ("payment_link.paid", "payment.captured"):
+        # Acknowledge other events without processing
+        return {"status": "ok", "event": event}
+
+    arya_db = app.state.db
+    if not arya_db:
+        logger.error("DB not connected — cannot process webhook")
+        return {"status": "error", "detail": "DB not available"}
+
+    try:
+        if event == "payment_link.paid":
+            pl = data.get("payload", {}).get("payment_link", {}).get("entity", {})
+            payment_link_id = pl.get("id", "")
+            status = pl.get("status", "")
+            amount_paid = pl.get("amount_paid", 0)
+
+            if status != "paid" or not payment_link_id:
+                return {"status": "ok"}
+
+            order = await arya_db.db.orders.find_one({"payment_link_id": payment_link_id})
+            if not order:
+                logger.warning(f"No order found for payment_link_id={payment_link_id}")
+                return {"status": "ok"}
+
+            if order.get("status") == "paid":
+                # Already processed — idempotent
+                return {"status": "ok", "detail": "already_processed"}
+
+            tg_id = order.get("user_id")
+            story_ids = order.get("story_ids", [])
+
+            # Mark order as paid
+            await arya_db.db.orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {
+                    "status": "paid",
+                    "amount_paid": amount_paid,
+                    "updated_at": datetime.now(timezone.utc),
+                    "source": "razorpay_link_webhook"
+                }}
+            )
+
+            # Grant stories
+            if tg_id:
+                for sid in story_ids:
+                    await arya_db.add_purchase(int(tg_id) if str(tg_id).isdigit() else tg_id, sid)
+
+            logger.info(f"Webhook: Payment Link {payment_link_id} paid — granted {len(story_ids)} stories to user {tg_id}")
+
+        elif event == "payment.captured":
+            pay = data.get("payload", {}).get("payment", {}).get("entity", {})
+            rzp_order_id = pay.get("order_id", "")
+            rzp_payment_id = pay.get("id", "")
+
+            if not rzp_order_id:
+                return {"status": "ok"}
+
+            # Find order by razorpay_order_id
+            order = await arya_db.db.orders.find_one({"razorpay_order_id": rzp_order_id})
+            if order and order.get("status") != "paid":
+                tg_id = order.get("user_id")
+                story_ids = order.get("story_ids", [])
+
+                await arya_db.db.orders.update_one(
+                    {"_id": order["_id"]},
+                    {"$set": {
+                        "status": "paid",
+                        "razorpay_payment_id": rzp_payment_id,
+                        "updated_at": datetime.now(timezone.utc),
+                        "source": "razorpay_sdk_webhook"
+                    }}
+                )
+
+                if tg_id:
+                    for sid in story_ids:
+                        await arya_db.add_purchase(int(tg_id) if str(tg_id).isdigit() else tg_id, sid)
+
+                logger.info(f"Webhook: payment.captured {rzp_payment_id} — granted {len(story_ids)} stories to user {tg_id}")
+
+    except Exception as e:
+        logger.error(f"Razorpay webhook processing error: {e}", exc_info=True)
+
+    return {"status": "ok"}
+
+
 # ===== OxaPay: Create Crypto Invoice =====
 
 @api_router.post("/create-oxapay-order")
@@ -1020,7 +1138,7 @@ async def create_oxapay_order(payload: dict):
                     "feePaidByPayer": 1,
                     "orderId": oid,
                     "description": f"{len(valid_stories)} Arya Premium stories for {tg_id}",
-                    "returnUrl": "https://t.me/UseAryaBot/app",
+                    "returnUrl": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                 }
             )
             oxapay_result = r.json()
