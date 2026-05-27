@@ -1,6 +1,22 @@
 import asyncio
 import os
 import logging
+
+# --- PATCH PYROGRAM SQLITE SCHEMA ISSUES ---
+try:
+    import pyrogram.storage.sqlite_storage
+    pyrogram.storage.sqlite_storage.USERNAMES_SCHEMA = pyrogram.storage.sqlite_storage.USERNAMES_SCHEMA.replace(
+        "CREATE TABLE usernames", "CREATE TABLE IF NOT EXISTS usernames"
+    ).replace(
+        "CREATE INDEX idx_usernames_username", "CREATE INDEX IF NOT EXISTS idx_usernames_username"
+    )
+    pyrogram.storage.sqlite_storage.UPDATE_STATE_SCHEMA = pyrogram.storage.sqlite_storage.UPDATE_STATE_SCHEMA.replace(
+        "CREATE TABLE update_state", "CREATE TABLE IF NOT EXISTS update_state"
+    )
+except Exception as e:
+    logging.warning(f"Failed to patch Pyrogram storage schemas: {e}")
+# -------------------------------------------
+
 import time
 import aiohttp
 from aiohttp import web
