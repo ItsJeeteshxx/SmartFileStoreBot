@@ -20,7 +20,7 @@ import logging
 from database import db
 from bot import BOT_INSTANCE
 from .test import CLIENT, start_clone_bot, release_client
-from pyrogram import Client, filters
+from pyrogram import Client, filters, ContinuePropagation, ContinuePropagation
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
@@ -2495,6 +2495,8 @@ async def _create_job_flow(bot, user_id: int):
             from_title = str(from_chat)
 
     from_thread = await _ask_topic(bot, user_id, "Source")
+    if from_thread == "cancelled":
+        return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
     # ── Step 4: First Destination ─────────────────────────────────
     channels = await db.get_user_channels(user_id)
@@ -2534,6 +2536,8 @@ async def _create_job_flow(bot, user_id: int):
         break
 
     to_thread = await _ask_topic(bot, user_id, "Primary Destination")
+    if to_thread == "cancelled":
+        return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
     # ── Step 5: Second Destination (Optional) ─────────────────────
     to_chat_2, to_title_2, cancelled2 = await _ask_dest(bot, user_id, channels,
@@ -2547,6 +2551,10 @@ async def _create_job_flow(bot, user_id: int):
     to_thread_2 = None
     if to_chat_2:
         to_thread_2 = await _ask_topic(bot, user_id, "Second Destination")
+        if to_thread_2 == "cancelled":
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        if to_thread_2 == "cancelled":
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
     # ── Step 6: Batch Mode ────────────────────────────────────────
     while True:
@@ -2575,6 +2583,8 @@ async def _create_job_flow(bot, user_id: int):
             if cancelled:
                 return
             to_thread = await _ask_topic(bot, user_id, "Primary Destination")
+            if to_thread == "cancelled":
+                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
             continue
         break
 

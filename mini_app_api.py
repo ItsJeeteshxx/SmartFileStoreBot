@@ -1471,15 +1471,30 @@ async def get_my_purchases(telegram_id: str):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /admin/stats
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- ADMIN STATS CACHE ---
+import time
+_admin_stats_cache = None
+_admin_stats_cache_time = 0.0
+ADMIN_STATS_CACHE_TTL = 300.0  # 5 minutes cache
+# -------------------------
+
 @api_router.get("/admin/stats")
-async def get_admin_stats(telegram_id: str):
+async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
     """Fetches full admin analysis dashboard."""
+    global _admin_stats_cache, _admin_stats_cache_time
     from AryaPremium.config import Config
     
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized as Admin")
+            
+        now = time.time()
+        if not force and _admin_stats_cache and (now - _admin_stats_cache_time < ADMIN_STATS_CACHE_TTL):
+            return {
+                "success": True,
+                "data": _admin_stats_cache
+            }
             
         arya_db = app.state.db
         
@@ -1592,20 +1607,26 @@ async def get_admin_stats(telegram_id: str):
         # Sort and take top 10
         orders = sorted(orders, key=lambda x: x["created_at"], reverse=True)[:10]
             
+        result_data = {
+            "total_users": total_users_count,
+            "bot_users": bot_users_count,
+            "miniapp_users": miniapp_users_count,
+            "total_stories": total_stories,
+            "total_revenue": total_revenue,
+            "miniapp_revenue": miniapp_revenue,
+            "bot_revenue": bot_revenue,
+            "recent_feedback": feedbacks,
+            "recent_orders": orders,
+            "page_views": page_views_count
+        }
+        
+        # Save cache
+        _admin_stats_cache = result_data
+        _admin_stats_cache_time = now
+        
         return {
             "success": True,
-            "data": {
-                "total_users": total_users_count,
-                "bot_users": bot_users_count,
-                "miniapp_users": miniapp_users_count,
-                "total_stories": total_stories,
-                "total_revenue": total_revenue,
-                "miniapp_revenue": miniapp_revenue,
-                "bot_revenue": bot_revenue,
-                "recent_feedback": feedbacks,
-                "recent_orders": orders,
-                "page_views": page_views_count
-            }
+            "data": result_data
         }
     except HTTPException:
         raise
