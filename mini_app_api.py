@@ -501,11 +501,16 @@ rzp_client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
 # ─────────────────────────────────────────────────────────────────────────────
 from pydantic import BaseModel
 
+from typing import Optional, Union
+
 class PromoValidateRequest(BaseModel):
     promo_code: str
     story_ids: list[str]
+    telegram_id: Optional[Union[str, int]] = None
 
-async def calculate_promo_discount(db, pcode: str, story_ids: list, subtotal: float) -> tuple[float, str]:
+async def calculate_promo_discount(
+    db, pcode: str, story_ids: list, subtotal: float, telegram_id: Optional[Union[str, int]] = None
+) -> tuple[float, str]:
     """Validates the promo code and returns (discount_amount, error_message).
     If valid, error_message is "". If invalid, discount_amount is 0.0 and error_message describes the issue.
     """
@@ -519,6 +524,74 @@ async def calculate_promo_discount(db, pcode: str, story_ids: list, subtotal: fl
         
     if not promo.get("active", True):
         return 0.0, "Promo code is inactive"
+        
+    # Check target audience
+    user_target = promo.get("user_target", "all")
+    if user_target != "all" and telegram_id is not None:
+        tg_id_str = str(telegram_id).strip()
+        if tg_id_str:
+            tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
+            query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
+            
+            # Query completed orders
+            orders_count = await db.db.orders.count_documents({
+                "user_id": {"$in": query_user},
+                "status": "paid"
+            })
+            
+            if user_target == "new_only":
+                if orders_count > 0:
+                    return 0.0, "Promo code is only valid for new users (with 0 purchases)"
+                    
+            elif user_target == "existing_only":
+                if orders_count == 0:
+                    return 0.0, "Promo code is only valid for existing buyers"
+                    
+            elif user_target == "inactive_only":
+                if orders_count > 0:
+                    return 0.0, "Promo code is only valid for users with 0 purchases"
+                    
+                # Check registration date
+                user_doc = await db.db.users.find_one({"id": tg_id_int}) if tg_id_int else None
+                joined_date = None
+                if user_doc:
+                    joined_date = user_doc.get("joined_date") or user_doc.get("created_at")
+                    if not joined_date:
+                        doc_id = user_doc.get("_id")
+                        if doc_id and hasattr(doc_id, "generation_time"):
+                            joined_date = doc_id.generation_time
+                
+                if not joined_date:
+                    # Fallback: if user doc doesn't exist yet, we can't assume they are old
+                    return 0.0, "Promo code is only valid for inactive non-buyers (registered >= 7 days ago)"
+                    
+                # Compare dates
+                now = datetime.now(timezone.utc)
+                if joined_date.tzinfo is None:
+                    joined_date = joined_date.replace(tzinfo=timezone.utc)
+                    
+                if (now - joined_date).days < 7:
+                    return 0.0, "Promo code is only valid for older users who haven't made a purchase yet (registered >= 7 days ago)"
+
+    # Check user-specific limit
+    user_limit = promo.get("user_limit")
+    if user_limit is not None and telegram_id is not None:
+        tg_id_str = str(telegram_id).strip()
+        if tg_id_str:
+            tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
+            query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
+            
+            used_count = await db.db.orders.count_documents({
+                "user_id": {"$in": query_user},
+                "status": "paid",
+                "promo_code": pcode_clean
+            })
+            
+            if used_count >= user_limit:
+                if user_limit == 1:
+                    return 0.0, "You have already used this promo code once"
+                else:
+                    return 0.0, f"You can only use this promo code up to {user_limit} times"
         
     # Check expiration
     expires_at = promo.get("expires_at")
@@ -626,7 +699,7 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
                 
         subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
         
-        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal, data.telegram_id)
         if err:
             return {"valid": False, "discount": 0.0, "message": err}
             
@@ -687,7 +760,7 @@ async def create_payment_link(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal, telegram_id)
         if err:
             raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
                 
@@ -853,7 +926,7 @@ async def create_razorpay_order(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal, tg_id)
         if err:
             raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
                 
@@ -964,7 +1037,7 @@ async def verify_payment(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal, tg_id)
         if err:
             raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
                 
@@ -1282,7 +1355,7 @@ async def create_oxapay_order(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, total_inr)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, total_inr, tg_id)
         if err:
             raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
 
