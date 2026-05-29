@@ -433,12 +433,12 @@ async def market_callback(client, query):
 
         elif cmd.startswith("reqs_"):
             page = int(cmd.replace("reqs_", ""))
-            # Fetch all unresolved requests
+            # Fetch all story requests — now includes both bot & mini app
             reqs = await db.db.premium_requests.find({}).sort("created_at", -1).to_list(length=None)
             
             if not reqs:
                 if "query" in locals() and query:
-                    return await query.answer("No active story requests.", show_alert=True)
+                    return await query.answer("No story requests yet.", show_alert=True)
                 return
                 
             items_per_page = 10
@@ -448,20 +448,29 @@ async def market_callback(client, query):
             
             subset = reqs[page*items_per_page : (page+1)*items_per_page]
             
+            # Count by status for header
+            pending_c = sum(1 for r in reqs if r.get('status', '').lower() in ('pending', 'sent', ''))
+            active_c = sum(1 for r in reqs if r.get('status', '').lower() in ('searching', 'posting', 'posted'))
+            done_c = sum(1 for r in reqs if r.get('status', '').lower() in ('completed', 'rejected'))
+            
             txt_req = (
                 f"<b>╔══════════════════════╗</b>\n"
                 f"<b>        𝗦𝗧𝗢𝗥𝗬 𝗥𝗘𝗤𝗨𝗘𝗦𝗧𝗦</b>\n"
                 f"<b>╚══════════════════════╝</b>\n\n"
-                f"<b>⧉ PAGE {page+1} 𝗢𝗙 {total_pages}</b>\n"
+                f"<b>⧉ PAGE {page+1} 𝗢𝗙 {total_pages}</b> | Total: {len(reqs)}\n"
+                f"⏳ Pending: {pending_c}  🔄 Active: {active_c}  ✅ Done: {done_c}\n"
                 f"<i>Click an entry to view details & update status:</i>\n"
             )
             kb = []
             for r in subset:
-                sname = r.get('story_name', 'Unknown')
+                # Show story name or first 22 chars of text
+                sname = r.get('story_name') or r.get('text', 'Unknown')
                 if len(sname) > 22: sname = sname[:20] + ".."
-                stt = r.get('status', 'Sent').upper()
-                # Clean status tags
-                kb.append([InlineKeyboardButton(f"• {sname} [{stt}]", callback_data=f"mk#req_{str(r['_id'])}")])
+                stt = r.get('status', 'Pending').upper()
+                # Source badge
+                src = r.get('source', 'bot')
+                src_tag = "📱" if src in ("mini_app", "mini_app_legacy") else "🤖"
+                kb.append([InlineKeyboardButton(f"{src_tag} {sname} [{stt}]", callback_data=f"mk#req_{str(r['_id'])}")])
             
             nav = []
             if page > 0:
@@ -472,7 +481,7 @@ async def market_callback(client, query):
             
             kb.append([InlineKeyboardButton("BACK TO DASHBOARD", callback_data="mk#back")])
             
-            await query.message.edit_text(txt_req, reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_text(txt_req, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
             return
 
         elif cmd.startswith("req_") and len(cmd) > 10:
@@ -488,21 +497,36 @@ async def market_callback(client, query):
                 return
                 
             t_str = r.get("created_at").strftime('%d %b %Y, %H:%M') if r.get("created_at") else "Unknown"
-            status = r.get('status', 'Sent').upper()
+            status = r.get('status', 'Pending').upper()
+            src = r.get('source', 'bot')
+            src_label = "📱 Mini App" if src in ("mini_app", "mini_app_legacy") else "🤖 Bot"
+            
+            # For mini_app requests: story_name is the full text message from user
+            story_display = r.get('story_name', 'Unknown')
+            text_detail = r.get('text', '')
+            if text_detail and text_detail != story_display:
+                # Show text separately if different from story_name
+                text_block = f'<blockquote expandable="true">{text_detail[:300]}</blockquote>\n'
+            else:
+                text_block = ''
+            
             txt_d = (
                 f"<b>╔══════════════════════╗</b>\n"
                 f"<b>        𝗥𝗘𝗤𝗨𝗘𝗦𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦</b>\n"
                 f"<b>╚══════════════════════╝</b>\n\n"
+                f"<b>⧉ SOURCE:  {src_label}</b>\n\n"
                 f"<b>⧉ STORY INFO</b>\n"
                 f'<blockquote expandable="true">'
-                f"<b>• NAME      ⟶</b> {r.get('story_name')}\n"
-                f"<b>• PLATFORM  ⟶</b> {r.get('platform')}\n"
+                f"<b>• NAME      ⟶</b> {story_display}\n"
+                f"<b>• PLATFORM  ⟶</b> {r.get('platform', 'N/A')}\n"
                 f"<b>• TYPE      ⟶</b> {r.get('completion_type', 'N/A')}\n"
                 f"<b>• REQUESTED ⟶</b> {t_str}\n"
                 f'</blockquote>\n'
+                f"{text_block}"
                 f"<b>⧉ USER INFO</b>\n"
                 f'<blockquote expandable="true">'
                 f"<b>• USER ID   ⟶</b> <code>{r.get('user_id')}</code>\n"
+                f"<b>• USERNAME  ⟶</b> @{r.get('username') or 'N/A'}\n"
                 f"<b>• BOT ID    ⟶</b> <code>{r.get('bot_id')}</code>\n"
                 f'</blockquote>\n'
                 f"<b>⧉ CURRENT STATUS</b>\n"
@@ -511,15 +535,15 @@ async def market_callback(client, query):
             )
             
             kb = [
-                [InlineKeyboardButton("PENDING", callback_data=f"mk#rstat#{req_id}#Pending"),
-                 InlineKeyboardButton("SEARCHING", callback_data=f"mk#rstat#{req_id}#Searching")],
-                [InlineKeyboardButton("POSTING", callback_data=f"mk#rstat#{req_id}#Posting"),
-                 InlineKeyboardButton("POSTED", callback_data=f"mk#rstat#{req_id}#Posted")],
-                [InlineKeyboardButton("COMPLETED", callback_data=f"mk#rstat#{req_id}#Completed")],
-                [InlineKeyboardButton("REJECT & REMOVE", callback_data=f"mk#req_rej#{req_id}")],
+                [InlineKeyboardButton("⏳ PENDING", callback_data=f"mk#rstat#{req_id}#Pending"),
+                 InlineKeyboardButton("🔍 SEARCHING", callback_data=f"mk#rstat#{req_id}#Searching")],
+                [InlineKeyboardButton("📤 POSTING", callback_data=f"mk#rstat#{req_id}#Posting"),
+                 InlineKeyboardButton("✅ POSTED", callback_data=f"mk#rstat#{req_id}#Posted")],
+                [InlineKeyboardButton("🎉 COMPLETED", callback_data=f"mk#rstat#{req_id}#Completed")],
+                [InlineKeyboardButton("❌ REJECT & REMOVE", callback_data=f"mk#req_rej#{req_id}")],
                 [InlineKeyboardButton("BACK TO LIST", callback_data="mk#reqs_0")]
             ]
-            await query.message.edit_text(txt_d, reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_text(txt_d, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
             return
 
         elif cmd == "rstat":

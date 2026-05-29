@@ -1320,10 +1320,11 @@ async def submit_support(
         raise HTTPException(status_code=400, detail="Message or file is required")
 
     arya_db = app.state.db
+    uid = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
     
-    # Save to premium_feedback collection so it appears in Management Bot Support Panel
+    # Always save to premium_feedback (for support panel + legacy compat)
     fb_doc = {
-        "user_id": int(telegram_id) if str(telegram_id).isdigit() else telegram_id,
+        "user_id": uid,
         "bot_id": "mini_app",
         "type": "photo" if file and file.content_type and file.content_type.startswith("image/") else ("video" if file and file.content_type and file.content_type.startswith("video/") else ("document" if file else "text")),
         "text": f"[{type.upper()}] {message}",
@@ -1331,10 +1332,32 @@ async def submit_support(
         "created_at": datetime.now(timezone.utc),
         "user_name": first_name,
         "username": username,
+        "source": "mini_app",
     }
     
     try:
-        await arya_db.db.premium_feedback.insert_one(fb_doc)
+        fb_result = await arya_db.db.premium_feedback.insert_one(fb_doc)
+        fb_id = str(fb_result.inserted_id)
+
+        # If this is a Story Request, ALSO write to premium_requests
+        # so the Management Bot can see and manage it from its STORY REQUESTS panel
+        if type == "request":
+            req_doc = {
+                "user_id": uid,
+                "bot_id": "mini_app",
+                "story_name": message[:120],   # use message as story name (user fills in details)
+                "platform": "Mini App",
+                "completion_type": "full",
+                "status": "Pending",
+                "source": "mini_app",
+                "text": message,
+                "user_name": first_name,
+                "username": username,
+                "feedback_id": fb_id,          # cross-ref for status sync
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }
+            await arya_db.db.premium_requests.insert_one(req_doc)
         
         # Notify admins via Telegram API using Management Bot Token
         from AryaPremium.config import Config
@@ -1342,24 +1365,23 @@ async def submit_support(
         
         if type == "request":
             admin_txt = (
-                f"<b>New Story Request from Mini App</b>\n"
+                f"🛎️ <b>New Story Request from Mini App</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<b>User:</b> {first_name}\n"
                 f"<b>Username:</b> @{username}\n"
                 f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"<b>Type:</b> Story Request\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>Details:</b>\n"
-                f"<blockquote>{message[:800]}</blockquote>"
+                f"<b>Request:</b>\n"
+                f"<blockquote>{message[:800]}</blockquote>\n"
+                f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
             )
         else:
             admin_txt = (
-                f"<b>New Feedback from Mini App</b>\n"
+                f"💬 <b>New {type.title()} from Mini App</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<b>User:</b> {first_name}\n"
                 f"<b>Username:</b> @{username}\n"
                 f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"<b>Type:</b> {type.title()}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<b>Message:</b>\n"
                 f"<blockquote>{message[:800]}</blockquote>"
@@ -1379,27 +1401,20 @@ async def submit_support(
                             form.add_field('chat_id', str(oid))
                             form.add_field('caption', admin_txt)
                             form.add_field('parse_mode', 'HTML')
-                            
                             method = "sendDocument"
                             field_name = "document"
                             if file.content_type:
                                 if file.content_type.startswith("image/"):
-                                    method = "sendPhoto"
-                                    field_name = "photo"
+                                    method = "sendPhoto"; field_name = "photo"
                                 elif file.content_type.startswith("video/"):
-                                    method = "sendVideo"
-                                    field_name = "video"
+                                    method = "sendVideo"; field_name = "video"
                                 elif file.content_type.startswith("audio/"):
-                                    method = "sendAudio"
-                                    field_name = "audio"
-                                    
+                                    method = "sendAudio"; field_name = "audio"
                             form.add_field(field_name, file_bytes, filename=file.filename or "file")
                             await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
                         else:
                             await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": oid,
-                                "text": admin_txt,
-                                "parse_mode": "HTML"
+                                "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
                             }, timeout=3)
                     except Exception as e:
                         logger.warning(f"Failed to notify admin {oid}: {e}")
@@ -1415,26 +1430,57 @@ async def submit_support(
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/my-requests")
 async def get_my_requests(telegram_id: str):
-    """Fetches user's requests and support tickets."""
+    """Fetches user's story requests — reads from premium_requests (unified) + legacy feedback."""
     arya_db = app.state.db
     
     try:
         user_id = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        cursor = arya_db.db.premium_feedback.find({
+        requests = []
+        seen_feedback_ids = set()
+
+        # Primary: premium_requests (unified bot+miniapp collection)
+        cursor = arya_db.db.premium_requests.find(
+            {"user_id": user_id}
+        ).sort("created_at", -1)
+        async for doc in cursor:
+            fb_id = doc.get("feedback_id", "")
+            if fb_id:
+                seen_feedback_ids.add(fb_id)
+            status = doc.get("status", "Pending")
+            requests.append({
+                "id": str(doc["_id"]),
+                "type": "request",
+                "story_name": doc.get("story_name", ""),
+                "platform": doc.get("platform", ""),
+                "text": doc.get("text", doc.get("story_name", "")),
+                "status": status.lower() if status else "pending",
+                "source": doc.get("source", "bot"),
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+            })
+
+        # Legacy: premium_feedback with [REQUEST] prefix (not already linked)
+        cursor2 = arya_db.db.premium_feedback.find({
             "user_id": user_id,
             "text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}
         }).sort("created_at", -1)
-        
-        requests = []
-        async for doc in cursor:
+        async for doc in cursor2:
+            fb_id = str(doc["_id"])
+            if fb_id in seen_feedback_ids:
+                continue
+            raw_text = doc.get("text", "")
+            display = raw_text.replace("[REQUEST]", "").replace("[request]", "").strip()
             requests.append({
-                "id": str(doc.get("_id", "")),
-                "type": doc.get("type", "text"),
-                "text": doc.get("text", ""),
+                "id": fb_id,
+                "type": "request",
+                "story_name": display[:80],
+                "platform": "",
+                "text": display,
                 "status": doc.get("status", "open"),
+                "source": "mini_app_legacy",
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
             })
-            
+
+        requests.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return {"success": True, "data": requests}
     except Exception as e:
         logger.error(f"Failed to fetch requests: {e}")
@@ -2129,7 +2175,11 @@ async def get_admin_support(telegram_id: str):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/requests")
 async def get_admin_requests(telegram_id: str):
-    """Fetch all story requests (type=REQUEST) for admin management."""
+    """Fetch all story requests for admin management.
+    
+    Reads from premium_requests (bot's collection) FIRST — this is the unified source.
+    Also merges in any legacy premium_feedback[REQUEST] entries not already in premium_requests.
+    """
     from AryaPremium.config import Config
     from bson.objectid import ObjectId
     try:
@@ -2137,25 +2187,62 @@ async def get_admin_requests(telegram_id: str):
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
-        cursor = arya_db.db.premium_feedback.find(
-            {"text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}}
-        ).sort("created_at", -1).limit(200)
         items = []
+        seen_ids = set()
+
+        # ── 1. Primary: premium_requests (bot collection, unified) ──
+        cursor = arya_db.db.premium_requests.find({}).sort("created_at", -1).limit(200)
         async for doc in cursor:
-            raw_text = doc.get("text", "")
-            # Strip [REQUEST] prefix for display
-            display_text = raw_text.replace("[REQUEST]", "").replace("[request]", "").strip()
+            doc_id = str(doc["_id"])
+            seen_ids.add(doc_id)
+            # Normalize status: bot uses Title Case (Pending/Searching/etc.)
+            raw_status = doc.get("status", "Pending")
             items.append({
-                "id": str(doc["_id"]),
+                "id": doc_id,
+                "source": doc.get("source", "bot"),
                 "user_id": doc.get("user_id"),
                 "username": doc.get("username", ""),
                 "first_name": doc.get("user_name", doc.get("first_name", "Unknown")),
-                "text": display_text,
-                "raw_text": raw_text,
-                "file_url": doc.get("file_url", ""),
-                "status": doc.get("status", "open"),
+                "story_name": doc.get("story_name", ""),
+                "platform": doc.get("platform", ""),
+                "completion_type": doc.get("completion_type", ""),
+                "text": doc.get("text", doc.get("story_name", "")),
+                "status": raw_status.lower() if raw_status else "pending",
+                "feedback_id": doc.get("feedback_id", ""),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
+
+        # ── 2. Legacy fallback: premium_feedback with [REQUEST] prefix ──
+        # Only include those not already cross-referenced in premium_requests
+        cursor2 = arya_db.db.premium_feedback.find(
+            {"text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}}
+        ).sort("created_at", -1).limit(200)
+        async for doc in cursor2:
+            fb_id = str(doc["_id"])
+            # Skip if already represented via feedback_id cross-ref
+            already_linked = any(it.get("feedback_id") == fb_id for it in items)
+            if already_linked:
+                continue
+            raw_text = doc.get("text", "")
+            display_text = raw_text.replace("[REQUEST]", "").replace("[request]", "").strip()
+            raw_status = doc.get("status", "open")
+            items.append({
+                "id": fb_id,
+                "source": "mini_app_legacy",
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username", ""),
+                "first_name": doc.get("user_name", doc.get("first_name", "Unknown")),
+                "story_name": display_text[:80],
+                "platform": "",
+                "completion_type": "",
+                "text": display_text,
+                "status": raw_status if raw_status in ("pending","searching","posting","posted","completed","rejected","open","in_progress") else "pending",
+                "feedback_id": fb_id,
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            })
+
+        # Sort combined list by created_at descending
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return {"success": True, "data": items}
     except HTTPException:
         raise
@@ -2170,7 +2257,12 @@ class RequestStatusUpdate(BaseModel):
 
 @api_router.patch("/admin/requests/{request_id}")
 async def update_request_status(request_id: str, data: RequestStatusUpdate):
-    """Update the status of a story request, optionally notifying the user via Telegram."""
+    """Update the status of a story request and notify the user via Telegram.
+    
+    Tries premium_requests (unified bot collection) first.
+    Falls back to premium_feedback for legacy entries.
+    ALWAYS sends notification on status change (not just when reply_text is provided).
+    """
     from AryaPremium.config import Config
     from bson.objectid import ObjectId
     import aiohttp
@@ -2179,52 +2271,104 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
         if not is_admin(str(data.telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
-        doc = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(request_id)})
+
+        # ── Try premium_requests first (unified collection) ──
+        doc = None
+        collection = None
+        try:
+            doc = await arya_db.db.premium_requests.find_one({"_id": ObjectId(request_id)})
+            if doc:
+                collection = arya_db.db.premium_requests
+        except Exception:
+            pass
+
+        # ── Fallback: premium_feedback (legacy mini app requests) ──
         if not doc:
+            try:
+                doc = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(request_id)})
+                if doc:
+                    collection = arya_db.db.premium_feedback
+            except Exception:
+                pass
+
+        if not doc or not collection:
             raise HTTPException(status_code=404, detail="Request not found")
-        update_fields = {"status": data.status}
+
+        # Normalize status: admin panel sends lowercase, bot uses Title Case
+        # Store in the format each collection expects
+        if collection == arya_db.db.premium_requests:
+            # Bot collection uses Title Case
+            status_to_store = data.status.replace("_", " ").title()
+        else:
+            status_to_store = data.status  # feedback uses lowercase
+
+        update_fields = {
+            "status": status_to_store,
+            "updated_at": datetime.now(timezone.utc)
+        }
         if data.reply_text:
             update_fields["admin_reply"] = data.reply_text
-        await arya_db.db.premium_feedback.update_one(
+
+        await collection.update_one(
             {"_id": ObjectId(request_id)},
             {"$set": update_fields}
         )
-        # Optionally notify user
-        if data.reply_text:
-            token = None
+
+        # ── Cross-sync: if premium_requests doc has a feedback_id, sync status there too ──
+        if collection == arya_db.db.premium_requests and doc.get("feedback_id"):
             try:
-                user_doc = await arya_db.db.users.find_one({"id": int(doc["user_id"])})
-                if user_doc and user_doc.get("bot_ids"):
-                    for bid in user_doc["bot_ids"]:
-                        bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
-                        if bot_doc and bot_doc.get("token"):
-                            token = bot_doc["token"]
-                            break
+                await arya_db.db.premium_feedback.update_one(
+                    {"_id": ObjectId(doc["feedback_id"])},
+                    {"$set": {"status": data.status, "updated_at": datetime.now(timezone.utc)}}
+                )
             except Exception as e:
-                logger.error(f"Failed to resolve seller bot token: {e}")
-            
-            if not token:
-                try:
-                    bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
-                    if bot_doc:
-                        token = bot_doc["token"]
-                except Exception:
-                    pass
-            
-            if not token:
-                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
-            
-            if token and doc.get("user_id"):
-                status_label = {"open": "[OPEN]", "in_progress": "[IN PROGRESS]", "completed": "[COMPLETED]", "rejected": "[REJECTED]"}.get(data.status, "[UPDATE]")
+                logger.warning(f"Cross-sync to feedback failed: {e}")
+
+        # ── Always notify user via Telegram (on every status change) ──
+        user_chat_id = doc.get("user_id")
+        if user_chat_id:
+            # Use MGMT_BOT_TOKEN directly — most reliable
+            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+
+            # Status label with emoji
+            status_emojis = {
+                "pending": "⏳", "searching": "🔍", "posting": "📤",
+                "posted": "✅", "completed": "🎉", "rejected": "❌",
+                "open": "📬", "in_progress": "🔄", "in progress": "🔄"
+            }
+            status_key = data.status.lower().replace(" ", "_")
+            emoji = status_emojis.get(data.status.lower(), "📋")
+            story_name = doc.get("story_name", "") or doc.get("text", "")[:80]
+
+            msg_lines = [
+                f"{emoji} <b>Story Request Update!</b>",
+                "",
+            ]
+            if story_name:
+                msg_lines.append(f"<b>Story:</b> {story_name}")
+            msg_lines.append(f"<b>Status:</b> <code>{data.status.replace('_', ' ').title()}</code>")
+            if data.reply_text:
+                msg_lines.append("")
+                msg_lines.append(f"<b>Admin Message:</b>")
+                msg_lines.append(data.reply_text)
+            msg_lines.append("")
+            msg_lines.append("<i>Check 'My Requests' in your Profile for more info!</i>")
+            notify_text = "\n".join(msg_lines)
+
+            if token:
                 try:
                     async with aiohttp.ClientSession() as session:
-                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                            "chat_id": doc["user_id"],
-                            "text": f"<b>{status_label} Story Request Update</b>\n\n<b>Status:</b> {data.status.replace('_',' ').title()}\n\n{data.reply_text}",
-                            "parse_mode": "HTML"
-                        }, timeout=5)
+                        await session.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": user_chat_id, "text": notify_text, "parse_mode": "HTML"},
+                            timeout=5
+                        )
+                        logger.info(f"Notified user {user_chat_id} about request status → {data.status}")
                 except Exception as e:
-                    logger.warning(f"Failed to notify user: {e}")
+                    logger.warning(f"Failed to notify user {user_chat_id}: {e}")
+            else:
+                logger.warning("No bot token available to notify user about request status update")
+
         return {"success": True}
     except HTTPException:
         raise
