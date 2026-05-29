@@ -496,6 +496,157 @@ RZP_KEY_ID = Config.RAZORPAY_KEY
 RZP_KEY_SECRET = Config.RAZORPAY_SECRET
 rzp_client = razorpay.Client(auth=(RZP_KEY_ID, RZP_KEY_SECRET))
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PROMO CODE SYSTEM HELPERS & ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+from pydantic import BaseModel
+
+class PromoValidateRequest(BaseModel):
+    promo_code: str
+    story_ids: list[str]
+
+async def calculate_promo_discount(db, pcode: str, story_ids: list, subtotal: float) -> tuple[float, str]:
+    """Validates the promo code and returns (discount_amount, error_message).
+    If valid, error_message is "". If invalid, discount_amount is 0.0 and error_message describes the issue.
+    """
+    pcode_clean = str(pcode).strip().upper()
+    if not pcode_clean:
+        return 0.0, ""
+        
+    promo = await db.db.premium_promo_codes.find_one({"code": pcode_clean})
+    if not promo:
+        return 0.0, "Promo code not found"
+        
+    if not promo.get("active", True):
+        return 0.0, "Promo code is inactive"
+        
+    # Check expiration
+    expires_at = promo.get("expires_at")
+    if expires_at:
+        if isinstance(expires_at, str):
+            try:
+                # Parse ISO string safely
+                expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        if isinstance(expires_at, datetime):
+            if datetime.now(timezone.utc) > expires_at:
+                return 0.0, "Promo code has expired"
+                
+    # Check usage limit
+    usage_limit = promo.get("usage_limit")
+    if usage_limit is not None:
+        usage_count = promo.get("usage_count", 0)
+        if usage_count >= usage_limit:
+            return 0.0, "Promo code usage limit reached"
+            
+    # Check story applicability
+    story_id_target = promo.get("story_id")
+    if story_id_target and story_id_target != "global":
+        # Check if the target story_id matches any of the stories in the cart
+        # (either matching the custom story_id OR matching the _id of the story document)
+        from bson.objectid import ObjectId
+        applicable_in_cart = False
+        applicable_story_price = 0.0
+        
+        for sid in story_ids:
+            s = None
+            try:
+                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
+            except Exception:
+                pass
+            if not s:
+                s = await db.db.premium_stories.find_one({"story_id": sid})
+                
+            if s:
+                s_custom_id = s.get("story_id")
+                s_db_id = str(s.get("_id"))
+                if story_id_target == s_custom_id or story_id_target == s_db_id:
+                    applicable_in_cart = True
+                    applicable_story_price = float(s.get("price", 0) or 0)
+                    break
+                
+        if not applicable_in_cart:
+            target_story = None
+            try:
+                target_story = await db.db.premium_stories.find_one({
+                    "$or": [
+                        {"story_id": story_id_target},
+                        {"_id": ObjectId(story_id_target) if len(story_id_target) == 24 else None}
+                    ]
+                })
+            except Exception:
+                pass
+            story_name = target_story.get("story_name_en") if target_story else story_id_target
+            return 0.0, f"Promo code is only valid for story: {story_name}"
+            
+        # Calculate discount restricted to target story
+        ptype = promo.get("type", "percentage")
+        pval = float(promo.get("value", 0))
+        if ptype == "percentage":
+            discount = round((applicable_story_price * pval) / 100.0, 2)
+        elif ptype == "flat":
+            discount = min(pval, applicable_story_price)
+    else:
+        # Global promo, applied to the entire subtotal
+        ptype = promo.get("type", "percentage")
+        pval = float(promo.get("value", 0))
+        if ptype == "percentage":
+            discount = round((subtotal * pval) / 100.0, 2)
+        elif ptype == "flat":
+            discount = min(pval, subtotal)
+            
+    return discount, ""
+
+@api_router.post("/promo-codes/validate")
+async def validate_promo_endpoint(data: PromoValidateRequest):
+    """Validates a promo code and returns validation status and calculated discount."""
+    try:
+        arya_db = app.state.db
+        if not arya_db:
+            raise HTTPException(status_code=500, detail="Database not available")
+            
+        pcode = data.promo_code.strip().upper()
+        # Find all stories to calculate subtotal
+        from bson.objectid import ObjectId
+        valid_stories = []
+        for sid in data.story_ids:
+            s = None
+            try:
+                s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
+            except Exception:
+                pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                except Exception:
+                    pass
+            if s:
+                valid_stories.append(s)
+                
+        subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+        
+        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal)
+        if err:
+            return {"valid": False, "discount": 0.0, "message": err}
+            
+        promo = await arya_db.db.premium_promo_codes.find_one({"code": pcode})
+        return {
+            "valid": True,
+            "discount": discount,
+            "message": "Promo code applied successfully!",
+            "promo": {
+                "code": promo.get("code"),
+                "type": promo.get("type"),
+                "value": promo.get("value"),
+                "story_id": promo.get("story_id", "global"),
+                "description": promo.get("description", "")
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error validating promo code: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /create-payment-link
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -536,15 +687,9 @@ async def create_payment_link(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        active_promos = cfg.get("promo_codes", [])
-        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
-        if promo_match:
-            ptype = promo_match.get("type", "percentage")
-            pval = float(promo_match.get("value", 0))
-            if ptype == "percentage":
-                discount = round((subtotal * pval) / 100.0, 2)
-            elif ptype == "flat":
-                discount = min(pval, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
                 
     # 2. Platform Fee
     platform_fee = 0.0
@@ -708,15 +853,9 @@ async def create_razorpay_order(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        active_promos = cfg.get("promo_codes", [])
-        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
-        if promo_match:
-            ptype = promo_match.get("type", "percentage")
-            pval = float(promo_match.get("value", 0))
-            if ptype == "percentage":
-                discount = round((subtotal * pval) / 100.0, 2)
-            elif ptype == "flat":
-                discount = min(pval, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
                 
     # 2. Platform Fee
     platform_fee = 0.0
@@ -825,15 +964,9 @@ async def verify_payment(payload: dict):
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        active_promos = cfg.get("promo_codes", [])
-        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
-        if promo_match:
-            ptype = promo_match.get("type", "percentage")
-            pval = float(promo_match.get("value", 0))
-            if ptype == "percentage":
-                discount = round((subtotal * pval) / 100.0, 2)
-            elif ptype == "flat":
-                discount = min(pval, subtotal)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
                 
     # 2. Platform Fee
     platform_fee = 0.0
@@ -1145,18 +1278,13 @@ async def create_oxapay_order(payload: dict):
 
     # Fetch settings for promo codes
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    # 1. Promo Code Discount
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
-        active_promos = cfg.get("promo_codes", [])
-        promo_match = next((p for p in active_promos if p.get("code") == pcode_clean and p.get("active")), None)
-        if promo_match:
-            ptype = promo_match.get("type", "percentage")
-            pval = float(promo_match.get("value", 0))
-            if ptype == "percentage":
-                discount = round((total_inr * pval) / 100.0, 2)
-            elif ptype == "flat":
-                discount = min(pval, total_inr)
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, total_inr)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
 
     total_inr = max(0.0, total_inr - discount)
     # OxaPay expects USD. Minimum $0.50.
@@ -4144,6 +4272,23 @@ async def get_admin_settings(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        
+        # Load from premium_promo_codes collection
+        db_promos = await arya_db.db.premium_promo_codes.find().to_list(length=1000)
+        promo_codes_list = []
+        for p in db_promos:
+            promo_codes_list.append({
+                "code": p.get("code"),
+                "type": p.get("type", "percentage"),
+                "value": p.get("value", 0.0),
+                "active": p.get("active", True),
+                "story_id": p.get("story_id", "global"),
+                "expires_at": p.get("expires_at"),
+                "usage_limit": p.get("usage_limit"),
+                "usage_count": p.get("usage_count", 0),
+                "description": p.get("description", "")
+            })
+            
         return {
             "success": True,
             "data": {
@@ -4153,7 +4298,7 @@ async def get_admin_settings(telegram_id: str):
                 "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
                 "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
                 "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
-                "promo_codes": cfg.get("promo_codes", []),
+                "promo_codes": promo_codes_list,
                 "outpaint_enabled": cfg.get("outpaint_enabled", False),
                 "outpaint_provider": cfg.get("outpaint_provider", "replicate"),
                 "replicate_api_key": cfg.get("replicate_api_key", ""),
@@ -4200,27 +4345,70 @@ async def update_admin_settings(payload: dict):
             update_fields["fal_api_key"] = str(payload["fal_api_key"]).strip()
         if "stability_api_key" in payload:
             update_fields["stability_api_key"] = str(payload["stability_api_key"]).strip()
+        
+        # Merge promo codes directly in the collection
         if "promo_codes" in payload:
             raw_codes = payload["promo_codes"]
-            promo_codes = []
+            promo_codes_to_save = []
             if isinstance(raw_codes, list):
                 for pc in raw_codes:
                     if isinstance(pc, dict) and "code" in pc:
-                        promo_codes.append({
-                            "code": str(pc["code"]).strip().upper(),
+                        code_upper = str(pc["code"]).strip().upper()
+                        promo_codes_to_save.append({
+                            "code": code_upper,
                             "type": str(pc.get("type", "percentage")),
-                            "value": float(pc.get("value", 0)),
-                            "active": bool(pc.get("active", True))
+                            "value": float(pc.get("value", 0.0)),
+                            "active": bool(pc.get("active", True)),
+                            "story_id": str(pc.get("story_id", "global")).strip() if pc.get("story_id") else "global",
+                            "expires_at": str(pc.get("expires_at")).strip() if pc.get("expires_at") else None,
+                            "usage_limit": int(pc["usage_limit"]) if pc.get("usage_limit") is not None and str(pc["usage_limit"]).isdigit() else None,
+                            "description": str(pc.get("description", "")).strip()
                         })
-            update_fields["promo_codes"] = promo_codes
+            
+            # Fetch existing codes to merge
+            existing_promos = await arya_db.db.premium_promo_codes.find().to_list(length=1000)
+            existing_dict = {p["code"]: p for p in existing_promos}
+            codes_in_payload = {p["code"] for p in promo_codes_to_save}
+            
+            # Delete promo codes not in payload
+            for code in existing_dict:
+                if code not in codes_in_payload:
+                    await arya_db.db.premium_promo_codes.delete_one({"code": code})
+                    
+            # Upsert payload promo codes
+            for p in promo_codes_to_save:
+                db_p = existing_dict.get(p["code"])
+                if db_p:
+                    # Update fields, preserve usage_count
+                    await arya_db.db.premium_promo_codes.update_one(
+                        {"code": p["code"]},
+                        {"$set": {
+                            "type": p["type"],
+                            "value": p["value"],
+                            "active": p["active"],
+                            "story_id": p["story_id"],
+                            "expires_at": p["expires_at"],
+                            "usage_limit": p["usage_limit"],
+                            "description": p["description"]
+                        }}
+                    )
+                else:
+                    # Insert new promo code
+                    p["usage_count"] = 0
+                    await arya_db.db.premium_promo_codes.insert_one(p)
 
-        if not update_fields:
-            raise HTTPException(status_code=400, detail="No valid fields to update")
-        await arya_db.db.mini_app_config.update_one(
-            {"_key": "feature_toggles"},
-            {"$set": update_fields},
-            upsert=True
-        )
+        # Do not save promo codes inside the global feature toggles configuration to prevent duplication
+        if "promo_codes" in update_fields:
+            del update_fields["promo_codes"]
+
+        # If there are other fields, update config
+        if update_fields:
+            await arya_db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": update_fields},
+                upsert=True
+            )
+            
         logger.info(f"Admin {telegram_id} updated settings: {update_fields}")
         return {"success": True, "data": update_fields}
     except HTTPException:
@@ -4338,6 +4526,43 @@ async def get_public_settings():
     try:
         arya_db = app.state.db
         cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        
+        # Load and filter active, unexpired, unexhausted promo codes
+        now = datetime.now(timezone.utc)
+        db_promos = await arya_db.db.premium_promo_codes.find({"active": True}).to_list(length=1000)
+        promo_codes_list = []
+        for p in db_promos:
+            # Check usage limit
+            u_limit = p.get("usage_limit")
+            if u_limit is not None:
+                u_count = p.get("usage_count", 0)
+                if u_count >= u_limit:
+                    continue
+                    
+            # Check expiration
+            expires_at = p.get("expires_at")
+            if expires_at:
+                if isinstance(expires_at, str):
+                    try:
+                        expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                    except ValueError:
+                        pass
+                if isinstance(expires_at, datetime):
+                    if now > expires_at:
+                        continue
+                        
+            promo_codes_list.append({
+                "code": p.get("code"),
+                "type": p.get("type", "percentage"),
+                "value": p.get("value", 0.0),
+                "active": True,
+                "story_id": p.get("story_id", "global"),
+                "expires_at": p.get("expires_at"),
+                "usage_limit": p.get("usage_limit"),
+                "usage_count": p.get("usage_count", 0),
+                "description": p.get("description", "")
+            })
+            
         return {
             "success": True,
             "mini_app_enabled": cfg.get("mini_app_enabled", True),
@@ -4346,7 +4571,7 @@ async def get_public_settings():
             "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
             "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
             "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
-            "promo_codes": cfg.get("promo_codes", []),
+            "promo_codes": promo_codes_list,
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -4710,6 +4935,18 @@ async def record_purchased_stories(order: dict):
                     })
             except Exception as e:
                 logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
+                
+        # Increment usage count for the promo code if used in the completed order
+        promo_code = order.get("promo_code")
+        if promo_code:
+            try:
+                await arya_db.db.premium_promo_codes.update_one(
+                    {"code": str(promo_code).strip().upper()},
+                    {"$inc": {"usage_count": 1}}
+                )
+                logger.info(f"Incremented usage count for promo code: {promo_code}")
+            except Exception as pe:
+                logger.error(f"Failed to increment usage count for promo code {promo_code}: {pe}")
     except Exception as e:
         logger.error(f"Error in record_purchased_stories: {e}", exc_info=True)
 
