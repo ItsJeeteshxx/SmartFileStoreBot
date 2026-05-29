@@ -1432,6 +1432,66 @@ async def oxapay_webhook(request: Request):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /support
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async def upload_file_to_storage(file_bytes: bytes, filename: str, content_type: str) -> str:
+    """Uploads any file bytes to Cloudflare R2 if configured, or falls back to Catbox.moe."""
+    import uuid
+    import aiohttp
+    import asyncio
+    from decouple import config
+    
+    r2_account_id = config("R2_ACCOUNT_ID", default="")
+    r2_access_key = config("R2_ACCESS_KEY_ID", default="")
+    r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
+    r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
+    r2_domain = config("R2_CUSTOM_DOMAIN", default="")
+
+    url = ""
+    if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
+        import boto3
+        def upload_r2():
+            try:
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                    aws_access_key_id=r2_access_key,
+                    aws_secret_access_key=r2_secret_key,
+                    region_name="auto"
+                )
+                ext = filename.split(".")[-1] if "." in filename else "bin"
+                key = f"{uuid.uuid4().hex}.{ext}"
+                s3.put_object(
+                    Bucket=r2_bucket,
+                    Key=key,
+                    Body=file_bytes,
+                    ContentType=content_type or "application/octet-stream"
+                )
+                if r2_domain:
+                    domain = r2_domain.strip("/")
+                    if not domain.startswith("http"):
+                        domain = "https://" + domain
+                    return f"{domain}/{key}"
+                else:
+                    return f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{key}"
+            except Exception as e:
+                logger.error(f"Cloudflare R2 upload failed in upload_file_to_storage: {e}")
+                return ""
+        url = await asyncio.to_thread(upload_r2)
+
+    if not url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("reqtype", "fileupload")
+                form.add_field("fileToUpload", file_bytes, filename=filename, content_type=content_type)
+                async with session.post("https://catbox.moe/user/api.php", data=form, timeout=60) as resp:
+                    if resp.status == 200:
+                        url = (await resp.text()).strip()
+        except Exception as e:
+            logger.error(f"Catbox upload failed in upload_file_to_storage: {e}")
+            url = ""
+
+    return url
+
 @api_router.post("/support")
 async def submit_support(
     telegram_id: str = Form(...),
@@ -1453,6 +1513,30 @@ async def submit_support(
     arya_db = app.state.db
     uid = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
     
+    # 1. Upload file if provided
+    file_url = None
+    if file:
+        try:
+            file_contents = await file.read()
+            # Seek back in case the file is read again
+            await file.seek(0)
+            
+            # If it's an image, we can try to optimize it first
+            is_image = file.content_type and file.content_type.startswith("image/")
+            if is_image:
+                try:
+                    file_url = await optimize_and_upload_to_storage(file_contents)
+                except Exception as opt_err:
+                    logger.warning(f"Failed to optimize image, falling back to raw upload: {opt_err}")
+            
+            # Fallback to uploading the raw bytes
+            if not file_url:
+                file_url = await upload_file_to_storage(file_contents, file.filename or "file", file.content_type)
+                
+            logger.info(f"File uploaded successfully for support ticket. URL: {file_url}")
+        except Exception as upload_err:
+            logger.error(f"Failed to upload file attachment: {upload_err}")
+
     # Always save to premium_feedback (for support panel + legacy compat)
     fb_doc = {
         "user_id": uid,
@@ -1465,6 +1549,9 @@ async def submit_support(
         "username": username,
         "source": "mini_app",
     }
+    if file_url:
+        fb_doc["file_url"] = file_url
+        fb_doc["file_name"] = file.filename or "file"
     
     try:
         fb_result = await arya_db.db.premium_feedback.insert_one(fb_doc)
@@ -1488,6 +1575,9 @@ async def submit_support(
                 "created_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
             }
+            if file_url:
+                req_doc["file_url"] = file_url
+                req_doc["file_name"] = file.filename or "file"
             await arya_db.db.premium_requests.insert_one(req_doc)
         
         # Notify admins via Telegram API using Management Bot Token (wrapped in try/except to be non-blocking)
@@ -2347,6 +2437,8 @@ async def get_admin_requests(telegram_id: str):
                 "text": doc.get("text", doc.get("story_name", "")),
                 "status": raw_status.lower() if raw_status else "pending",
                 "feedback_id": doc.get("feedback_id", ""),
+                "file_url": doc.get("file_url", ""),
+                "file_name": doc.get("file_name", ""),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
 
@@ -2376,6 +2468,8 @@ async def get_admin_requests(telegram_id: str):
                 "text": display_text,
                 "status": raw_status if raw_status in ("pending","searching","posting","posted","completed","rejected","open","in_progress") else "pending",
                 "feedback_id": fb_id,
+                "file_url": doc.get("file_url", ""),
+                "file_name": doc.get("file_name", ""),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
 
@@ -2429,12 +2523,12 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
             except Exception:
                 pass
 
-        if not doc or not collection:
+        if doc is None or collection is None:
             raise HTTPException(status_code=404, detail="Request not found")
 
         # Normalize status: admin panel sends lowercase, bot uses Title Case
         # Store in the format each collection expects
-        if collection == arya_db.db.premium_requests:
+        if getattr(collection, "name", None) == "premium_requests":
             # Bot collection uses Title Case
             status_to_store = data.status.replace("_", " ").title()
         else:
@@ -2453,7 +2547,7 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
         )
 
         # ── Cross-sync: if premium_requests doc has a feedback_id, sync status there too ──
-        if collection == arya_db.db.premium_requests and doc.get("feedback_id"):
+        if getattr(collection, "name", None) == "premium_requests" and doc.get("feedback_id"):
             try:
                 await arya_db.db.premium_feedback.update_one(
                     {"_id": ObjectId(doc["feedback_id"])},
