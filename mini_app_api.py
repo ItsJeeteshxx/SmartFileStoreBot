@@ -265,12 +265,12 @@ def _format_story(s: dict) -> dict | None:
         or s.get("image")       # Telegram file_id (mgmt bot saves this)
         or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400"
     )
-    if cover and not cover.startswith("http"):
+    if cover and not cover.startswith("http") and not cover.startswith("/api/"):
         bot_id = s.get("bot_id")
         cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
 
     banner = s.get("banner_url") or cover
-    if banner and not banner.startswith("http"):
+    if banner and not banner.startswith("http") and not banner.startswith("/api/"):
         bot_id = s.get("bot_id")
         banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
 
@@ -1656,7 +1656,7 @@ async def get_admin_stories(telegram_id: str):
             
             # Normalize poster_url so it always exists
             cover = s.get("poster_url") or s.get("cover") or s.get("image_url") or s.get("image") or ""
-            if cover and not cover.startswith("http"):
+            if cover and not cover.startswith("http") and not cover.startswith("/api/"):
                 bot_id = s.get("bot_id")
                 cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
                 
@@ -1701,7 +1701,7 @@ class StoryUpdate(BaseModel):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /admin/story
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, height: int = None, format: str = "JPEG", quality: int = 75) -> str:
+async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, height: int = None, format: str = "WEBP", quality: int = 75) -> str:
     import io
     import uuid
     import asyncio
@@ -1717,14 +1717,14 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
 
     def process_data(data):
         img = Image.open(io.BytesIO(data))
-        if img.mode in ("RGBA", "P"):
+        if img.mode == "CMYK":
             img = img.convert("RGB")
         if width and height:
             img = img.resize((width, height), Image.Resampling.LANCZOS)
         elif width:
             img.thumbnail((width, width))
         output = io.BytesIO()
-        img.save(output, format=format, quality=quality, optimize=True)
+        img.save(output, format=format, quality=quality)
         return output.getvalue()
 
     processed_bytes = await asyncio.to_thread(process_data, img_bytes)
@@ -1741,12 +1741,16 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
                     aws_secret_access_key=r2_secret_key,
                     region_name="auto"
                 )
-                filename = f"{uuid.uuid4().hex}.jpg"
+                ext = format.lower()
+                content_type = f"image/{ext}"
+                if ext == "jpg":
+                    ext = "jpeg"
+                filename = f"{uuid.uuid4().hex}.{ext}"
                 s3.put_object(
                     Bucket=r2_bucket,
                     Key=filename,
                     Body=processed_bytes,
-                    ContentType="image/jpeg"
+                    ContentType=content_type
                 )
                 if r2_domain:
                     domain = r2_domain.strip("/")
@@ -1766,7 +1770,10 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
             async with aiohttp.ClientSession() as session:
                 form = aiohttp.FormData()
                 form.add_field("reqtype", "fileupload")
-                form.add_field("fileToUpload", processed_bytes, filename="image.jpg", content_type="image/jpeg")
+                ext = format.lower()
+                content_type = f"image/{ext}"
+                filename = f"image.{ext}"
+                form.add_field("fileToUpload", processed_bytes, filename=filename, content_type=content_type)
                 async with session.post("https://catbox.moe/user/api.php", data=form, timeout=10) as resp:
                     if resp.status == 200:
                         url = (await resp.text()).strip()
@@ -1958,11 +1965,11 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
         def process_and_upload(data_bytes):
             # Compress image
             img = Image.open(io.BytesIO(data_bytes))
-            if img.mode in ("RGBA", "P"):
+            if img.mode == "CMYK":
                 img = img.convert("RGB")
             img.thumbnail((800, 800))
             output = io.BytesIO()
-            img.save(output, format="JPEG", quality=75, optimize=True)
+            img.save(output, format="WEBP", quality=75)
             compressed_bytes = output.getvalue()
             
             url = ""
@@ -1976,12 +1983,12 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
                         aws_secret_access_key=r2_secret_key,
                         region_name="auto"
                     )
-                    filename = f"{uuid.uuid4().hex}.jpg"
+                    filename = f"{uuid.uuid4().hex}.webp"
                     s3.put_object(
                         Bucket=r2_bucket,
                         Key=filename,
                         Body=compressed_bytes,
-                        ContentType="image/jpeg"
+                        ContentType="image/webp"
                     )
                     if r2_domain:
                         domain = r2_domain.strip("/")
@@ -2005,10 +2012,10 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
                 async with aiohttp.ClientSession() as session:
                     form = aiohttp.FormData()
                     form.add_field("reqtype", "fileupload")
-                    form.add_field("fileToUpload", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+                    form.add_field("fileToUpload", img_bytes, filename="poster.webp", content_type="image/webp")
                     async with session.post("https://catbox.moe/user/api.php", data=form, timeout=6) as resp:
                         if resp.status == 200:
-                            poster_url = await resp.text()
+                            poster_url = (await resp.text()).strip()
             except Exception as e:
                 logger.error(f"Catbox upload failed: {e}")
                 poster_url = ""
@@ -2020,7 +2027,7 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
                 async with aiohttp.ClientSession() as session:
                     form = aiohttp.FormData()
                     form.add_field("chat_id", str(user_id_int))
-                    form.add_field("photo", img_bytes, filename="poster.jpg", content_type="image/jpeg")
+                    form.add_field("photo", img_bytes, filename="poster.webp", content_type="image/webp")
                     form.add_field("caption", f"Auto-uploaded poster from Mini App Admin")
                     async with session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form, timeout=6) as resp:
                         if resp.status == 200:
@@ -2361,7 +2368,7 @@ async def get_banners():
                 bid = str(b["_id"])
                 image_url = b.get("image_url") or ""
                 # If image_url isn't an http link, assume it's a file ID
-                if image_url and not image_url.startswith("http"):
+                if image_url and not image_url.startswith("http") and not image_url.startswith("/api/"):
                     image_url = f"/api/tg-image?file_id={image_url}"
                 result.append({
                     "id": bid,
