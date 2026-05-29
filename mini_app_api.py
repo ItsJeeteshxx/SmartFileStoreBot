@@ -1311,6 +1311,9 @@ async def submit_support(
     message: str = Form(""),
     username: str = Form(""),
     first_name: str = Form("Mini App User"),
+    story_name: str = Form(None),
+    platform: str = Form(None),
+    status: str = Form(None),
     file: UploadFile = File(None)
 ):
     """Submits a support ticket, feedback, or suggestion from the Mini App, with optional file attachment."""
@@ -1345,9 +1348,9 @@ async def submit_support(
             req_doc = {
                 "user_id": uid,
                 "bot_id": "mini_app",
-                "story_name": message[:120],   # use message as story name (user fills in details)
-                "platform": "Mini App",
-                "completion_type": "full",
+                "story_name": story_name or message[:120],
+                "platform": platform or "Mini App",
+                "completion_type": status or "full",
                 "status": "Pending",
                 "source": "mini_app",
                 "text": message,
@@ -1359,65 +1362,72 @@ async def submit_support(
             }
             await arya_db.db.premium_requests.insert_one(req_doc)
         
-        # Notify admins via Telegram API using Management Bot Token
-        from AryaPremium.config import Config
-        import aiohttp
-        
-        if type == "request":
-            admin_txt = (
-                f"🛎️ <b>New Story Request from Mini App</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>User:</b> {first_name}\n"
-                f"<b>Username:</b> @{username}\n"
-                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>Request:</b>\n"
-                f"<blockquote>{message[:800]}</blockquote>\n"
-                f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
-            )
-        else:
-            admin_txt = (
-                f"💬 <b>New {type.title()} from Mini App</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>User:</b> {first_name}\n"
-                f"<b>Username:</b> @{username}\n"
-                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>Message:</b>\n"
-                f"<blockquote>{message[:800]}</blockquote>"
-            )
-        
-        token = Config.MGMT_BOT_TOKEN
-        if token and Config.OWNER_IDS:
-            async with aiohttp.ClientSession() as session:
-                file_bytes = None
-                if file:
-                    file_bytes = await file.read()
-                
-                for oid in Config.OWNER_IDS:
-                    try:
-                        if file_bytes:
-                            form = aiohttp.FormData()
-                            form.add_field('chat_id', str(oid))
-                            form.add_field('caption', admin_txt)
-                            form.add_field('parse_mode', 'HTML')
-                            method = "sendDocument"
-                            field_name = "document"
-                            if file.content_type:
-                                if file.content_type.startswith("image/"):
-                                    method = "sendPhoto"; field_name = "photo"
-                                elif file.content_type.startswith("video/"):
-                                    method = "sendVideo"; field_name = "video"
-                                elif file.content_type.startswith("audio/"):
-                                    method = "sendAudio"; field_name = "audio"
-                            form.add_field(field_name, file_bytes, filename=file.filename or "file")
-                            await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
-                        else:
-                            await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
-                            }, timeout=3)
-                    except Exception as e:
-                        logger.warning(f"Failed to notify admin {oid}: {e}")
+        # Notify admins via Telegram API using Management Bot Token (wrapped in try/except to be non-blocking)
+        try:
+            from AryaPremium.config import Config
+            import aiohttp
+            
+            escaped_first_name = escape_html(first_name or "Mini App User")
+            escaped_username = f"@{escape_html(username)}" if username else "—"
+            escaped_message = escape_html(message)
+            
+            if type == "request":
+                admin_txt = (
+                    f"🛎️ <b>New Story Request from Mini App</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>User:</b> {escaped_first_name}\n"
+                    f"<b>Username:</b> {escaped_username}\n"
+                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Request:</b>\n"
+                    f"<blockquote>{escaped_message[:800]}</blockquote>\n"
+                    f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
+                )
+            else:
+                admin_txt = (
+                    f"💬 <b>New {type.title()} from Mini App</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>User:</b> {escaped_first_name}\n"
+                    f"<b>Username:</b> {escaped_username}\n"
+                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Message:</b>\n"
+                    f"<blockquote>{escaped_message[:800]}</blockquote>"
+                )
+            
+            token = Config.MGMT_BOT_TOKEN
+            if token and Config.OWNER_IDS:
+                async with aiohttp.ClientSession() as session:
+                    file_bytes = None
+                    if file:
+                        file_bytes = await file.read()
+                    
+                    for oid in Config.OWNER_IDS:
+                        try:
+                            if file_bytes:
+                                form = aiohttp.FormData()
+                                form.add_field('chat_id', str(oid))
+                                form.add_field('caption', admin_txt)
+                                form.add_field('parse_mode', 'HTML')
+                                method = "sendDocument"
+                                field_name = "document"
+                                if file.content_type:
+                                    if file.content_type.startswith("image/"):
+                                        method = "sendPhoto"; field_name = "photo"
+                                    elif file.content_type.startswith("video/"):
+                                        method = "sendVideo"; field_name = "video"
+                                    elif file.content_type.startswith("audio/"):
+                                        method = "sendAudio"; field_name = "audio"
+                                form.add_field(field_name, file_bytes, filename=file.filename or "file")
+                                await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
+                            else:
+                                await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                    "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
+                                }, timeout=3)
+                        except Exception as e:
+                            logger.warning(f"Failed to notify admin {oid}: {e}")
+        except Exception as notify_err:
+            logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
                         
         return {"success": True, "message": "Support request submitted successfully"}
     except Exception as e:
