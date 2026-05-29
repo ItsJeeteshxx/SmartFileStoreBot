@@ -223,6 +223,10 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
 # Helper: format a single MongoDB story doc → frontend Story shape
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 def _format_story(s: dict) -> dict | None:
+    # Filter out hidden stories in public endpoints
+    if s.get("status") == "hidden":
+        return None
+
     # ID — never null
     story_id = str(s["_id"]) if s.get("_id") else None
     if not story_id:
@@ -281,7 +285,8 @@ def _format_story(s: dict) -> dict | None:
         "language":     s.get("language") or "Hindi",
         "platform":     s.get("platform") or "Pocket FM",
         "genre":        s.get("genre") or "Drama",
-        "status":       "available",
+        "status":       s.get("status") or "available",
+        "bot_username":  s.get("bot_username") or "UseAryaBot",
         "episodes":     s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes":s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":         s.get("total_size") or s.get("size") or None,
