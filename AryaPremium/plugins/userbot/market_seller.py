@@ -70,6 +70,62 @@ def to_mathbold(val): return f"<b>{val}</b>"
 
 
 
+async def get_robust_user(client: Client, user_id: int):
+    """
+    Fetches user details with robust fallback mechanisms.
+    First tries client.get_users(), then queries Telegram get_chat directly,
+    then queries local MongoDB users collection, and finally returns a DummyUser object.
+    """
+    class DummyUser:
+        def __init__(self, uid, fn="User", ln="", un=""):
+            self.id = int(uid)
+            self.first_name = fn
+            self.last_name = ln
+            self.username = un
+
+    user_obj = None
+    try:
+        user_obj = await client.get_users(user_id)
+        if user_obj:
+            # If names are missing/generic, attempt database enrichment
+            if not getattr(user_obj, "first_name", "") or getattr(user_obj, "first_name") == "Unknown":
+                db_user = await db.db.users.find_one({"id": int(user_id)})
+                if db_user:
+                    user_obj.first_name = db_user.get("first_name") or user_obj.first_name
+                    user_obj.last_name = db_user.get("last_name") or getattr(user_obj, "last_name", "")
+                    user_obj.username = db_user.get("username") or getattr(user_obj, "username", "")
+            return user_obj
+    except Exception as e:
+        logger.warning(f"get_users failed for {user_id}: {e}")
+
+    try:
+        chat_obj = await client.get_chat(user_id)
+        if chat_obj:
+            return DummyUser(
+                user_id,
+                fn=chat_obj.first_name or "User",
+                ln=chat_obj.last_name or "",
+                un=chat_obj.username or ""
+            )
+    except Exception as e:
+        pass
+
+    try:
+        db_user = await db.db.users.find_one({"id": int(user_id)})
+        if db_user:
+            return DummyUser(
+                user_id,
+                fn=db_user.get("first_name") or "User",
+                ln=db_user.get("last_name") or "",
+                un=db_user.get("username") or ""
+            )
+    except Exception as e:
+        logger.warning(f"Database query failed for user {user_id}: {e}")
+
+    return DummyUser(user_id)
+
+
+
 def _is_cancel(msg):
 
     if not msg: return False
@@ -1682,7 +1738,7 @@ async def _show_tc(client, user_id, story_id, lang='en'):
 
     from bson.objectid import ObjectId
 
-    u_obj = await client.get_users(user_id)
+    u_obj = await get_robust_user(client, user_id)
 
     s_obj = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
 
@@ -5134,7 +5190,7 @@ async def _process_callback(client, query):
 
         from utils import log_arya_event
 
-        user_obj = await client.get_users(user_id)
+        user_obj = await get_robust_user(client, user_id)
 
         asyncio.create_task(log_arya_event(
 
@@ -5334,7 +5390,7 @@ async def _process_callback(client, query):
 
         from utils import log_arya_event
 
-        user_obj = await client.get_users(user_id)
+        user_obj = await get_robust_user(client, user_id)
 
         asyncio.create_task(log_arya_event(
 
@@ -7130,7 +7186,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
         bt_cfg = bt.get("config", {}) if bt else {}
 
-        user_obj = await client.get_users(user_id)
+        user_obj = await get_robust_user(client, user_id)
 
         src = story.get('source')
 
@@ -7686,7 +7742,7 @@ async def _do_channel_delivery(client, user_id, story, status_msg=None):
 
         from utils import log_delivery, log_arya_event
 
-        user_obj = await client.get_users(user_id)
+        user_obj = await get_robust_user(client, user_id)
 
         
 
@@ -7766,7 +7822,7 @@ async def _do_channel_delivery(client, user_id, story, status_msg=None):
 
         if suc_tpl:
 
-            user_obj = await client.get_users(user_id)
+            user_obj = await get_robust_user(client, user_id)
 
             txt = _fmt_delivery_text(suc_tpl, user_obj, story).replace("{channel_link}", invite_link.invite_link)
 

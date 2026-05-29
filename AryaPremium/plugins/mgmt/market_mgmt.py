@@ -808,8 +808,20 @@ async def market_callback(client, query):
             if hasattr(joined, "strftime"):
                 joined = joined.strftime('%d %b %Y')
 
-            name = f"{getattr(tg_user, 'first_name', '') or ''} {getattr(tg_user, 'last_name', '') or ''}".strip() or "Unknown"
-            uname = f"@{tg_user.username}" if tg_user and tg_user.username else "N/A"
+            db_fn = user_doc.get("first_name", "") or ""
+            db_ln = user_doc.get("last_name", "") or ""
+            db_un = user_doc.get("username", "") or ""
+            
+            tg_fn = getattr(tg_user, 'first_name', '') or ''
+            tg_ln = getattr(tg_user, 'last_name', '') or ''
+            tg_un = getattr(tg_user, 'username', '') or ''
+            
+            first_name = tg_fn or db_fn or "User"
+            last_name = tg_ln or db_ln or ""
+            username_val = tg_un or db_un or ""
+            
+            name = f"{first_name} {last_name}".strip() or "Unknown"
+            uname = f"@{username_val}" if username_val else "N/A"
             lang_label = "English" if lang == 'en' else "हिंदी"
 
             lines = []

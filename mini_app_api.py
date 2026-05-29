@@ -639,6 +639,11 @@ async def check_payment_link(id: str, payload: dict):
                 # Logic to grant stories to user in DB goes here
                 for sid in order.get("story_ids", []):
                     await arya_db.add_purchase(int(telegram_id) if str(telegram_id).isdigit() else telegram_id, sid)
+                
+                # Log and audit records
+                updated_order = {**order, "status": "paid"}
+                asyncio.create_task(trigger_payment_log_from_order(updated_order))
+                asyncio.create_task(record_purchased_stories(updated_order))
             
             bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
             return {
@@ -842,7 +847,7 @@ async def verify_payment(payload: dict):
 
     tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
 
-    await arya_db.db.orders.insert_one({
+    order_doc = {
         "order_id":            oid,
         "user_id":             tg_id_int if tg_id_int else tg_id,
         "username":            username,
@@ -859,11 +864,16 @@ async def verify_payment(payload: dict):
         "razorpay_order_id":   rzp_order_id,
         "razorpay_payment_id": rzp_payment_id,
         "created_at":          datetime.now(timezone.utc),
-    })
+    }
+    await arya_db.db.orders.insert_one(order_doc)
 
     if tg_id:
         for sid in story_ids:
             await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
+
+    # Log and audit records
+    asyncio.create_task(trigger_payment_log_from_order(order_doc))
+    asyncio.create_task(record_purchased_stories(order_doc))
 
     return {"success": True, "message": "Payment verified successfully"}
 
@@ -932,7 +942,7 @@ async def razorpay_callback(
     tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
 
     # Store order
-    await arya_db.db.orders.insert_one({
+    order_doc = {
         "order_id":            oid,
         "user_id":             tg_id_int if tg_id_int else tg_id,
         "username":            username,
@@ -944,11 +954,16 @@ async def razorpay_callback(
         "razorpay_order_id":   razorpay_order_id,
         "razorpay_payment_id": razorpay_payment_id,
         "created_at":          datetime.now(timezone.utc),
-    })
+    }
+    await arya_db.db.orders.insert_one(order_doc)
 
     if tg_id:
         for sid in story_ids:
             await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
+
+    # Log and audit records
+    asyncio.create_task(trigger_payment_log_from_order(order_doc))
+    asyncio.create_task(record_purchased_stories(order_doc))
 
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
@@ -1033,6 +1048,11 @@ async def razorpay_webhook(request: Request):
                 for sid in story_ids:
                     await arya_db.add_purchase(int(tg_id) if str(tg_id).isdigit() else tg_id, sid)
 
+            # Log and audit records
+            updated_order = {**order, "status": "paid", "amount_paid": amount_paid, "source": "razorpay_link_webhook"}
+            asyncio.create_task(trigger_payment_log_from_order(updated_order))
+            asyncio.create_task(record_purchased_stories(updated_order))
+
             logger.info(f"Webhook: Payment Link {payment_link_id} paid — granted {len(story_ids)} stories to user {tg_id}")
 
         elif event == "payment.captured":
@@ -1062,6 +1082,11 @@ async def razorpay_webhook(request: Request):
                 if tg_id:
                     for sid in story_ids:
                         await arya_db.add_purchase(int(tg_id) if str(tg_id).isdigit() else tg_id, sid)
+
+                # Log and audit records
+                updated_order = {**order, "status": "paid", "razorpay_payment_id": rzp_payment_id, "source": "razorpay_sdk_webhook"}
+                asyncio.create_task(trigger_payment_log_from_order(updated_order))
+                asyncio.create_task(record_purchased_stories(updated_order))
 
                 logger.info(f"Webhook: payment.captured {rzp_payment_id} — granted {len(story_ids)} stories to user {tg_id}")
 
@@ -1260,6 +1285,11 @@ async def oxapay_webhook(request: Request):
                 await arya_db.add_purchase(user_id, sid)
             except Exception as e:
                 logger.error(f"add_purchase error for {sid}: {e}")
+
+    # Log and audit records
+    updated_order = {**order, "status": "paid", "payment_id": data.get("txID", ""), "paid_currency": data.get("payCurrency", "")}
+    asyncio.create_task(trigger_payment_log_from_order(updated_order))
+    asyncio.create_task(record_purchased_stories(updated_order))
 
     logger.info(f"OxaPay ✅ unlocked {len(story_ids)} stories for user={user_id} trackId={track_id}")
     return {"success": True, "message": "Payment verified and processed"}
@@ -2854,7 +2884,7 @@ async def manual_purchase(data: ManualPurchase):
             )
             
         # Insert Order
-        await arya_db.db.orders.insert_one({
+        order_doc = {
             "order_id": f"MANUAL_{data.user_id}_{int(datetime.now().timestamp())}",
             "user_id": data.user_id,
             "username": data.username,
@@ -2865,7 +2895,12 @@ async def manual_purchase(data: ManualPurchase):
             "status": "paid",
             "source": "manual_admin",
             "created_at": datetime.now(timezone.utc)
-        })
+        }
+        await arya_db.db.orders.insert_one(order_doc)
+        
+        # Log and audit records
+        asyncio.create_task(trigger_payment_log_from_order(order_doc))
+        asyncio.create_task(record_purchased_stories(order_doc))
         
         return {"success": True}
     except Exception as e:
@@ -4275,6 +4310,241 @@ async def log_to_telegram(text: str):
             )
     except Exception as e:
         logger.error(f"Failed to send Telegram log: {e}")
+
+def escape_html(text: str) -> str:
+    """Escapes HTML special characters for safe inclusion in Telegram messages."""
+    if not isinstance(text, str):
+        return str(text) if text is not None else ""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+async def fetch_user_details_from_tg(telegram_id: int) -> dict:
+    """
+    Fetches the user's profile information (first_name, last_name, username)
+    directly from Telegram using the getChat API method.
+    Also updates the local MongoDB users database.
+    """
+    from AryaPremium.config import Config
+    token = getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN")
+    if not token or not telegram_id:
+        return {}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"https://api.telegram.org/bot{token}/getChat?chat_id={telegram_id}")
+            if r.status_code == 200:
+                res = r.json()
+                if res.get("ok"):
+                    chat = res.get("result", {})
+                    first_name = chat.get("first_name", "")
+                    last_name = chat.get("last_name", "")
+                    username = chat.get("username", "")
+                    
+                    # Update local database
+                    arya_db = app.state.db
+                    if arya_db:
+                        await arya_db.db.users.update_one(
+                            {"id": int(telegram_id)},
+                            {"$set": {
+                                "first_name": first_name,
+                                "last_name": last_name,
+                                "username": username,
+                                "last_active": datetime.now(timezone.utc)
+                            }},
+                            upsert=True
+                        )
+                    return {"first_name": first_name, "last_name": last_name, "username": username}
+    except Exception as e:
+        logger.error(f"Failed to fetch user details from Telegram for {telegram_id}: {e}")
+    return {}
+
+async def trigger_payment_log_from_order(order: dict):
+    """
+    Sends a formatted receipt of the purchase to the PAYMENT_LOGS_CHANNEL.
+    """
+    from AryaPremium.config import Config
+    token = getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN")
+    channel_id = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("PAYMENT_LOGS_CHANNEL")
+    if not token or not channel_id:
+        logger.warning("MGMT_BOT_TOKEN or PAYMENT_LOGS_CHANNEL not configured, skipping payment log")
+        return
+
+    try:
+        arya_db = app.state.db
+        if not arya_db:
+            return
+
+        tg_id = order.get("user_id")
+        if not tg_id:
+            return
+
+        tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
+
+        # Query user details from DB / Telegram
+        user_first_name = order.get("first_name", "")
+        user_last_name = ""
+        username = order.get("username", "")
+
+        # Try to resolve user details robustly
+        resolved = await fetch_user_details_from_tg(tg_id_int)
+        if resolved:
+            user_first_name = resolved.get("first_name") or user_first_name
+            user_last_name = resolved.get("last_name") or ""
+            username = resolved.get("username") or username
+        elif tg_id_int:
+            user_doc = await arya_db.users.find_one({"id": tg_id_int})
+            if user_doc:
+                if not username:
+                    username = user_doc.get("username", "")
+                user_first_name = user_doc.get("first_name") or user_first_name
+                user_last_name = user_doc.get("last_name") or ""
+
+        if not user_first_name:
+            user_first_name = "User"
+
+        # Join story names
+        story_names = order.get("story_names", [])
+        if not story_names:
+            story_ids = order.get("story_ids", [])
+            from bson.objectid import ObjectId
+            for sid in story_ids:
+                try:
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                    if story:
+                        story_names.append(story.get("story_name_en", story.get("title", "")))
+                except Exception:
+                    pass
+        story_names_str = ", ".join(story_names) if story_names else "N/A"
+
+        # Payment details
+        amount = order.get("total") or order.get("amount_paid", 0)
+        source = order.get("source", "")
+        
+        # Map source to method name
+        method = "razorpay"
+        if "oxapay" in source.lower():
+            method = "oxapay"
+        elif "manual" in source.lower():
+            method = "manual_admin"
+
+        method_badge = {
+            "razorpay":  "💳 Razorpay (Automatic)",
+            "easebuzz":  "💸 Easebuzz (Automatic)",
+            "upi":       "🏦 Manual UPI",
+            "manual_upi":"🏦 Manual UPI",
+            "oxapay":     "🪙 Oxapay (Crypto)",
+            "crypto":     "🪙 Oxapay (Crypto)",
+            "manual_admin": "👑 Manual Admin",
+        }.get(method.lower(), method.capitalize())
+
+        uname_line = f"@{escape_html(username)}" if username else "—"
+        tg_link = f"tg://user?id={tg_id}"
+        full_name = escape_html(f"{user_first_name} {user_last_name}".strip())
+        story_names_str = escape_html(story_names_str)
+
+        receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or ""
+
+        from datetime import datetime, timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
+
+        link_line = ""
+        pay_link = order.get("payment_link_url") or ""
+        if pay_link and "razorpay" in method.lower():
+            link_line = f"\n<b>Payment Link:</b> <a href=\"{pay_link}\">View Receipt</a>"
+
+        caption = (
+            f"<b>✅ PAYMENT CONFIRMED (MINI APP)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>❖ Order ID:</b> <code>{order.get('order_id') or 'N/A'}</code>\n"
+            f"<b>❖ User:</b> <a href=\"{tg_link}\">{full_name}</a> ({uname_line})\n"
+            f"<b>❖ Telegram ID:</b> <code>{tg_id}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>❖ Story:</b> {story_names_str}\n"
+            f"<b>❖ Amount Paid:</b> ₹{amount}\n"
+            f"<b>❖ Method:</b> {method_badge}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>❖ Receipt / Gateway ID:</b>\n<code>{receipt_id or 'N/A'}</code>"
+            f"{link_line}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>❖ Time:</b> {time_str}"
+        )
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": int(channel_id),
+                    "text": caption,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True
+                }
+            )
+    except Exception as e:
+        logger.error(f"Failed to send payment log via Telegram API: {e}", exc_info=True)
+
+async def record_purchased_stories(order: dict):
+    """
+    Creates premium_purchases audit records for all stories in the order.
+    This ensures that when a user requests delivery from the bot,
+    the bot can find the purchase records and properly log the deliveries.
+    """
+    try:
+        arya_db = app.state.db
+        if not arya_db:
+            return
+            
+        tg_id = order.get("user_id")
+        if not tg_id:
+            return
+            
+        tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
+        if not tg_id_int:
+            return
+            
+        story_ids = order.get("story_ids", [])
+        from bson.objectid import ObjectId
+        
+        # Get default bot_id
+        default_bot_id = None
+        try:
+            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+            bot_doc = await arya_db.db.premium_bots.find_one({"username": bot_username})
+            if bot_doc:
+                default_bot_id = bot_doc.get("id") or bot_doc.get("bot_id")
+        except Exception as e:
+            logger.error(f"Failed to query default bot_id: {e}")
+            
+        for sid in story_ids:
+            try:
+                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                if not story:
+                    story = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                    
+                bot_id = None
+                if story:
+                    bot_id = story.get("bot_id")
+                if not bot_id:
+                    bot_id = default_bot_id
+                    
+                existing = await arya_db.db.premium_purchases.find_one({
+                    "user_id": tg_id_int,
+                    "story_id": ObjectId(sid)
+                })
+                if not existing:
+                    await arya_db.db.premium_purchases.insert_one({
+                        "user_id": tg_id_int,
+                        "story_id": ObjectId(sid),
+                        "bot_id": bot_id,
+                        "purchased_at": datetime.now(timezone.utc),
+                        "source": order.get("source", "miniapp"),
+                        "amount": order.get("total", 0),
+                        "reference": order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or "",
+                        "order_id": order.get("order_id") or ""
+                    })
+            except Exception as e:
+                logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Error in record_purchased_stories: {e}", exc_info=True)
 
 @api_router.post("/admin/auth/setup-email")
 async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)):

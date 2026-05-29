@@ -153,13 +153,23 @@ async def send_invoice_to_user(client, user_id: int, order_id: str, amount: int,
     if not checkout: checkout = {}
     
     # Fetch user data from Telegram directly
+    first_name = "User"
+    username = ""
     try:
         user_obj = await client.get_users(user_id)
         first_name = limit_name(user_obj.first_name or user_obj.title or "User")
         username = user_obj.username or ""
     except Exception:
-        first_name = "User"
-        username = ""
+        pass
+        
+    if first_name == "User" and not username:
+        try:
+            db_user = await db.db.users.find_one({"id": int(user_id)})
+            if db_user:
+                first_name = limit_name(db_user.get("first_name") or "User")
+                username = db_user.get("username") or ""
+        except Exception:
+            pass
         
     raw_uname = username.strip() if username else ""
     if raw_uname and raw_uname.lower() != "none":
