@@ -15,15 +15,6 @@ admin_authenticated_session: ContextVar[bool] = ContextVar("admin_authenticated_
 def is_admin(telegram_id: str = "") -> bool:
     if admin_authenticated_session.get():
         return True
-    if not telegram_id:
-        return False
-    from AryaPremium.config import Config
-    try:
-        uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
-        if uid in Config.OWNER_IDS:
-            return True
-    except Exception:
-        pass
     return False
 
 
@@ -4542,18 +4533,6 @@ async def admin_auth_middleware(request: Request, call_next):
                 authenticated = True
                 admin_authenticated_session.set(True)
                 
-        # Telegram ID validation fallback for Mini App query checks
-        if not authenticated:
-            telegram_id = request.query_params.get("telegram_id")
-            if telegram_id:
-                from AryaPremium.config import Config
-                try:
-                    uid = int(telegram_id)
-                except ValueError:
-                    uid = telegram_id
-                if uid in Config.OWNER_IDS:
-                    authenticated = True
-                    
         if not authenticated:
             return Response(
                 content='{"detail":"Unauthorized: Admin session required"}',
@@ -4570,19 +4549,36 @@ app.include_router(api_router) # Handle both /api/stories and /stories for Nginx
 
 
 @app.websocket("/api/ws/analytics")
-async def analytics_websocket(websocket: WebSocket, telegram_id: str = Query(...)):
+async def analytics_websocket(
+    websocket: WebSocket,
+    telegram_id: str = Query(...),
+    session_token: Optional[str] = Query(None)
+):
     """Owner-only live event stream (JSON lines). Scale-out: replace hub with Redis."""
     from AryaPremium.config import Config
     from arya_enterprise_analytics import hub as _analytics_ws_hub
+    from typing import Optional
 
-    try:
-        uid = int(telegram_id)
-    except ValueError:
-        await websocket.close(code=4400)
-        return
-    if uid not in Config.OWNER_IDS:
+    db = getattr(app.state, "db", None)
+    authenticated = False
+    if session_token and db:
+        session = await db.db.admin_sessions.find_one({
+            "session_token": session_token,
+            "active": True,
+            "expires_at": {"$gt": datetime.now(timezone.utc)}
+        })
+        if session:
+            try:
+                uid = int(telegram_id)
+            except ValueError:
+                uid = telegram_id
+            if uid in Config.OWNER_IDS:
+                authenticated = True
+
+    if not authenticated:
         await websocket.close(code=4403)
         return
+
     await websocket.accept()
     await _analytics_ws_hub.connect(websocket)
     try:

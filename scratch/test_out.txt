@@ -1,3 +1,0 @@
-Test 1 (The Warrior): योद्धा
-Test 2 (Tere Aane Se): तेरे आने से
-Test 3 (Hindi Input): तेरे आने से
