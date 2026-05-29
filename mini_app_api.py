@@ -2335,56 +2335,60 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
                 logger.warning(f"Cross-sync to feedback failed: {e}")
 
         # ── Always notify user via Telegram (on every status change) ──
-        user_chat_id = doc.get("user_id")
-        if user_chat_id:
-            # Use MGMT_BOT_TOKEN directly — most reliable
-            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+        try:
+            user_chat_id = doc.get("user_id")
+            if user_chat_id:
+                # Use MGMT_BOT_TOKEN directly — most reliable
+                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+                if token:
+                    # Status label with emoji
+                    status_emojis = {
+                        "pending": "⏳", "searching": "🔍", "posting": "📤",
+                        "posted": "✅", "completed": "🎉", "rejected": "❌",
+                        "open": "📬", "in_progress": "🔄", "in progress": "🔄"
+                    }
+                    status_str = data.status or "pending"
+                    emoji = status_emojis.get(status_str.lower(), "📋")
+                    
+                    # Safely build and escape story name
+                    story_val = doc.get("story_name") or ""
+                    text_val = doc.get("text") or ""
+                    raw_story = story_val or text_val
+                    story_name = escape_html(raw_story[:80] if raw_story else "")
 
-            # Status label with emoji
-            status_emojis = {
-                "pending": "⏳", "searching": "🔍", "posting": "📤",
-                "posted": "✅", "completed": "🎉", "rejected": "❌",
-                "open": "📬", "in_progress": "🔄", "in progress": "🔄"
-            }
-            status_key = data.status.lower().replace(" ", "_")
-            emoji = status_emojis.get(data.status.lower(), "📋")
-            story_name = doc.get("story_name", "") or doc.get("text", "")[:80]
+                    msg_lines = [
+                        f"{emoji} <b>Story Request Update!</b>",
+                        "",
+                    ]
+                    if story_name:
+                        msg_lines.append(f"<b>Story:</b> {story_name}")
+                    msg_lines.append(f"<b>Status:</b> <code>{escape_html(status_str.replace('_', ' ').title())}</code>")
+                    if data.reply_text:
+                        msg_lines.append("")
+                        msg_lines.append(f"<b>Admin Message:</b>")
+                        msg_lines.append(escape_html(data.reply_text))
+                    msg_lines.append("")
+                    msg_lines.append("<i>Check 'My Requests' in your Profile for more info!</i>")
+                    notify_text = "\n".join(msg_lines)
 
-            msg_lines = [
-                f"{emoji} <b>Story Request Update!</b>",
-                "",
-            ]
-            if story_name:
-                msg_lines.append(f"<b>Story:</b> {story_name}")
-            msg_lines.append(f"<b>Status:</b> <code>{data.status.replace('_', ' ').title()}</code>")
-            if data.reply_text:
-                msg_lines.append("")
-                msg_lines.append(f"<b>Admin Message:</b>")
-                msg_lines.append(data.reply_text)
-            msg_lines.append("")
-            msg_lines.append("<i>Check 'My Requests' in your Profile for more info!</i>")
-            notify_text = "\n".join(msg_lines)
-
-            if token:
-                try:
                     async with aiohttp.ClientSession() as session:
                         await session.post(
                             f"https://api.telegram.org/bot{token}/sendMessage",
                             json={"chat_id": user_chat_id, "text": notify_text, "parse_mode": "HTML"},
                             timeout=5
                         )
-                        logger.info(f"Notified user {user_chat_id} about request status → {data.status}")
-                except Exception as e:
-                    logger.warning(f"Failed to notify user {user_chat_id}: {e}")
-            else:
-                logger.warning("No bot token available to notify user about request status update")
+                        logger.info(f"Notified user {user_chat_id} about request status → {status_str}")
+                else:
+                    logger.warning("No bot token available to notify user about request status update")
+        except Exception as notify_err:
+            logger.error(f"Failed to build or send status update notification: {notify_err}", exc_info=True)
 
         return {"success": True}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating request: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update request")
+        logger.error(f"Error updating request: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update request: {str(e)}")
 
 class SupportReply(BaseModel):
     telegram_id: str
@@ -2433,31 +2437,34 @@ async def reply_support(data: SupportReply):
             token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
 
         if token:
-            async with aiohttp.ClientSession() as session:
-                chat_id = ticket["user_id"]
-                # Send text reply
-                if data.reply_text:
-                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": f"<b>Admin Reply:</b>\n\n{data.reply_text}",
-                        "parse_mode": "HTML"
-                    })
-                # Forward media if provided
-                if data.reply_media_file_id and data.reply_media_type:
-                    method_map = {
-                        "photo": "sendPhoto", "video": "sendVideo",
-                        "audio": "sendAudio", "document": "sendDocument"
-                    }
-                    method = method_map.get(data.reply_media_type, "sendDocument")
-                    field_map = {
-                        "photo": "photo", "video": "video",
-                        "audio": "audio", "document": "document"
-                    }
-                    field = field_map.get(data.reply_media_type, "document")
-                    await session.post(f"https://api.telegram.org/bot{token}/{method}", json={
-                        "chat_id": chat_id,
-                        field: data.reply_media_file_id
-                    })
+            try:
+                async with aiohttp.ClientSession() as session:
+                    chat_id = ticket["user_id"]
+                    # Send text reply
+                    if data.reply_text:
+                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                            "chat_id": chat_id,
+                            "text": f"<b>Admin Reply:</b>\n\n{escape_html(data.reply_text)}",
+                            "parse_mode": "HTML"
+                        })
+                    # Forward media if provided
+                    if data.reply_media_file_id and data.reply_media_type:
+                        method_map = {
+                            "photo": "sendPhoto", "video": "sendVideo",
+                            "audio": "sendAudio", "document": "sendDocument"
+                        }
+                        method = method_map.get(data.reply_media_type, "sendDocument")
+                        field_map = {
+                            "photo": "photo", "video": "video",
+                            "audio": "audio", "document": "document"
+                        }
+                        field = field_map.get(data.reply_media_type, "document")
+                        await session.post(f"https://api.telegram.org/bot{token}/{method}", json={
+                            "chat_id": chat_id,
+                            field: data.reply_media_file_id
+                        })
+            except Exception as notify_err:
+                logger.error(f"Failed to send support reply Telegram notification: {notify_err}", exc_info=True)
         
         # Mark resolved
         await arya_db.db.premium_feedback.update_one(
@@ -2468,7 +2475,8 @@ async def reply_support(data: SupportReply):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in reply_support: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to reply: {str(e)}")
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # BANNERS MANAGEMENT
