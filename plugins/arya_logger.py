@@ -82,8 +82,10 @@ async def _send(text: str, ch_key: str) -> None:
             import bot as _bot
             bot = getattr(_bot, 'BOT_INSTANCE', None)
             if not bot:
+                logger.warning(f"[AryaLog] BOT_INSTANCE is None! Cannot send log to {ch_key} ({ch_id}) yet.")
                 return   # Not yet initialized
-        except Exception:
+        except Exception as ie:
+            logger.error(f"[AryaLog] Failed to import BOT_INSTANCE: {ie}")
             return
 
         await bot.send_message(
@@ -94,7 +96,7 @@ async def _send(text: str, ch_key: str) -> None:
         )
 
     except Exception as e:
-        logger.debug(f"[AryaLog] Log send failed (silently suppressed): {e}")
+        logger.error(f"[AryaLog] Log send failed to channel {ch_id} (key: {ch_key}): {e}", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
