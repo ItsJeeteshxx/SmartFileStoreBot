@@ -94,7 +94,19 @@ async def ban_user_cmd(client: Client, message: Message):
 
     # Safety: never ban an owner
     if await _is_any_owner(uid):
-        await message.reply_text("⛔ Cannot ban an owner or co-owner.")
+        await message.reply_text("⛔ <b>Cᴀɴɴᴏᴛ Bᴀɴ Aᴅᴍɪɴ</b>\n\nYou cannot ban an owner or co-owner of the bot.")
+        return
+
+    # Check if already banned
+    ban_status = await db.get_ban_status(uid)
+    if ban_status.get('is_banned', False):
+        already_reason = ban_status.get('ban_reason', 'No Reason')
+        await message.reply_text(
+            f"⚠️ <b>Uꜱᴇʀ Aʟʀᴇᴀᴅʏ Bᴀɴɴᴇᴅ</b>\n\n"
+            f"👤 <b>User:</b> <code>{uid}</code> ({name})\n"
+            f"📝 <b>Reason:</b> {already_reason}\n\n"
+            f"<i>This user has already been banned.</i>"
+        )
         return
 
     await db.ban_user(uid, ban_reason=reason)
@@ -103,9 +115,10 @@ async def ban_user_cmd(client: Client, message: Message):
     _notify_share_bots_ban(uid)
 
     await message.reply_text(
-        f"✅ **Banned:** `{uid}` ({name})\n"
-        f"**Reason:** {reason}\n\n"
-        f"_This user is now blocked from the main bot AND all delivery bots._"
+        f"🚫 <b>Uꜱᴇʀ Bᴀɴɴᴇᴅ Sᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ</b>\n\n"
+        f"👤 <b>User:</b> <code>{uid}</code> ({name})\n"
+        f"📝 <b>Reason:</b> {reason}\n\n"
+        f"<i>This user is now blocked from the main bot AND all delivery bots.</i>"
     )
 
 # ── /unban command ────────────────────────────────────────────────────────────
@@ -119,6 +132,16 @@ async def unban_user_cmd(client: Client, message: Message):
         await message.reply_text(f"❌ {_}")
         return
 
+    # Check if banned first
+    ban_status = await db.get_ban_status(uid)
+    if not ban_status.get('is_banned', False):
+        await message.reply_text(
+            f"ℹ️ <b>Uꜱᴇʀ Nᴏᴛ Bᴀɴɴᴇᴅ</b>\n\n"
+            f"👤 <b>User:</b> <code>{uid}</code> ({name})\n\n"
+            f"<i>This user is not banned or is not present in the ban list.</i>"
+        )
+        return
+
     await db.remove_ban(uid)
     # Safely clear strikes too
     try:
@@ -127,7 +150,11 @@ async def unban_user_cmd(client: Client, message: Message):
         _abuse_last_delivery.pop(uid, None)
     except Exception:
         pass
-    await message.reply_text(f"✅ **Unbanned:** `{uid}` ({name})\n_This user has been unbanned and their anti-abuse strike counts have been cleared._")
+    await message.reply_text(
+        f"🔓 <b>Uꜱᴇʀ Uɴʙᴀɴɴᴇᴅ Sᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ</b>\n\n"
+        f"👤 <b>User:</b> <code>{uid}</code> ({name})\n\n"
+        f"<i>This user has been unbanned, and their anti-abuse strike counts have been cleared.</i>"
+    )
 
 # ── /banlist command & Interactive UI ──────────────────────────────────────────
 async def _render_ban_list(client, user_id: int, message_or_query, page: int = 1):
