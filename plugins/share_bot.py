@@ -223,19 +223,25 @@ async def _warm_peer(client, chat_id) -> None:
     import time
     client_id = getattr(client, 'me', None)
     client_id = client_id.id if client_id else id(client)
-    key = (client_id, int(chat_id))
+    
+    try:
+        ch_id_int = int(chat_id)
+    except (ValueError, TypeError):
+        ch_id_int = chat_id
+        
+    key = (client_id, ch_id_int)
     if key in _peer_cache and (time.time() - _peer_cache[key]) < _PEER_CACHE_TTL:
         return   # already warm — skip the network call
     
     from bot import BOT_INSTANCE
     from plugins.utils import safe_resolve_peer
     try:
-        await safe_resolve_peer(client, int(chat_id), bot=BOT_INSTANCE)
+        await safe_resolve_peer(client, ch_id_int, bot=BOT_INSTANCE)
     except Exception:
         pass
         
     try:
-        await client.get_chat(int(chat_id))
+        await client.get_chat(ch_id_int)
         _peer_cache[key] = time.time()
     except Exception:
         pass
@@ -253,6 +259,7 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
     """
     import time
     import asyncio
+    from pyrogram.errors import UserNotParticipant, PeerIdInvalid, ChannelInvalid
     now = time.time()
     
     async def _check_single(ch):
@@ -272,17 +279,27 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
             return None
 
         try:
-            await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
-        except Exception:
-            pass
-
-        try:
             member = await client.get_chat_member(ch_id_int, user_id)
             if getattr(member, 'status', None) in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
                 raise UserNotParticipant()
             else:
                 # Aggressively Cache SUCCESS for 2 hours to prevent FloodWaits across bulk link-clicks!
                 _fsub_user_cache[cache_key] = now + 7200
+                return None
+        except (PeerIdInvalid, ChannelInvalid):
+            # Try to resolve peer and retry once if it was not in local Pyrogram peer cache
+            try:
+                await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
+                member = await client.get_chat_member(ch_id_int, user_id)
+                if getattr(member, 'status', None) in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
+                    raise UserNotParticipant()
+                else:
+                    _fsub_user_cache[cache_key] = now + 7200
+                    return None
+            except UserNotParticipant:
+                pass
+            except Exception as retry_err:
+                logger.warning(f"FSub check retry failed for {chat_id}: {retry_err}")
                 return None
         except UserNotParticipant:
             _fsub_user_cache.pop(cache_key, None)

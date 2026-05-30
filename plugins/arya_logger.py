@@ -77,23 +77,54 @@ async def _send(text: str, ch_key: str) -> None:
         if not ch_id:
             return   # This log type's channel not configured — skip silently
 
-        # Get the main bot client
-        try:
-            import bot as _bot
-            bot = getattr(_bot, 'BOT_INSTANCE', None)
-            if not bot:
-                logger.warning(f"[AryaLog] BOT_INSTANCE is None! Cannot send log to {ch_key} ({ch_id}) yet.")
-                return   # Not yet initialized
-        except Exception as ie:
-            logger.error(f"[AryaLog] Failed to import BOT_INSTANCE: {ie}")
-            return
+        # Get the main bot client dynamically using sys.modules lookup for safety
+        import sys
+        bot = None
+        if 'bot' in sys.modules:
+            bot = getattr(sys.modules['bot'], 'BOT_INSTANCE', None)
+        if not bot:
+            try:
+                import bot as _bot
+                bot = getattr(_bot, 'BOT_INSTANCE', None)
+            except Exception:
+                pass
 
-        await bot.send_message(
-            chat_id=int(ch_id),
-            text=text,
-            parse_mode='html',
-            disable_web_page_preview=True,
-        )
+        if not bot:
+            logger.warning(f"[AryaLog] BOT_INSTANCE is None! Cannot send log to {ch_key} ({ch_id}) yet.")
+            return   # Not yet initialized
+
+        # Safely parse the chat ID (support usernames and integer IDs)
+        target_chat_id = str(ch_id).strip()
+        if target_chat_id.startswith('-') or target_chat_id.startswith('+'):
+            is_digit = target_chat_id[1:].isdigit()
+        else:
+            is_digit = target_chat_id.isdigit()
+        
+        if is_digit:
+            target_chat_id = int(target_chat_id)
+
+        from pyrogram.errors import PeerIdInvalid, ChannelInvalid
+        from plugins.utils import safe_resolve_peer
+
+        try:
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=text,
+                parse_mode='html',
+                disable_web_page_preview=True,
+            )
+        except (PeerIdInvalid, ChannelInvalid):
+            # Warm up Pyrogram peer cache if unresolved and retry once
+            try:
+                await safe_resolve_peer(bot, target_chat_id)
+                await bot.send_message(
+                    chat_id=target_chat_id,
+                    text=text,
+                    parse_mode='html',
+                    disable_web_page_preview=True,
+                )
+            except Exception as e2:
+                logger.error(f"[AryaLog] Retry send failed to channel {target_chat_id}: {e2}")
 
     except Exception as e:
         logger.error(f"[AryaLog] Log send failed to channel {ch_id} (key: {ch_key}): {e}", exc_info=True)
