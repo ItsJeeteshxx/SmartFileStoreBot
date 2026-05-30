@@ -71,9 +71,15 @@ async def _send(text: str, ch_key: str) -> None:
                         'ch_live', 'ch_cleaner', 'ch_errors'.
     Silently skips if channel is not configured (0 or missing).
     """
+    import time as _t
+    ts = _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime())
     try:
         cfg = await _get_cfg()
         ch_id = cfg.get(ch_key, 0)
+        
+        with open("debug_logger.log", "a", encoding="utf-8") as df:
+            df.write(f"[{ts}] _send called for {ch_key}. Configured ch_id: {ch_id}\n")
+
         if not ch_id:
             return   # This log type's channel not configured — skip silently
 
@@ -86,8 +92,12 @@ async def _send(text: str, ch_key: str) -> None:
             try:
                 import bot as _bot
                 bot = getattr(_bot, 'BOT_INSTANCE', None)
-            except Exception:
-                pass
+            except Exception as ie_err:
+                with open("debug_logger.log", "a", encoding="utf-8") as df:
+                    df.write(f"[{ts}] Import bot fallback failed: {ie_err}\n")
+
+        with open("debug_logger.log", "a", encoding="utf-8") as df:
+            df.write(f"[{ts}] Resolved bot client: {bot} (is_connected: {getattr(bot, 'is_connected', None) if bot else 'N/A'})\n")
 
         if not bot:
             logger.warning(f"[AryaLog] BOT_INSTANCE is None! Cannot send log to {ch_key} ({ch_id}) yet.")
@@ -113,7 +123,11 @@ async def _send(text: str, ch_key: str) -> None:
                 parse_mode='html',
                 disable_web_page_preview=True,
             )
-        except (PeerIdInvalid, ChannelInvalid):
+            with open("debug_logger.log", "a", encoding="utf-8") as df:
+                df.write(f"[{ts}] Successfully sent log to {target_chat_id}!\n")
+        except (PeerIdInvalid, ChannelInvalid) as p_err:
+            with open("debug_logger.log", "a", encoding="utf-8") as df:
+                df.write(f"[{ts}] Send failed with {type(p_err).__name__}. Trying safe_resolve_peer...\n")
             # Warm up Pyrogram peer cache if unresolved and retry once
             try:
                 await safe_resolve_peer(bot, target_chat_id)
@@ -123,11 +137,24 @@ async def _send(text: str, ch_key: str) -> None:
                     parse_mode='html',
                     disable_web_page_preview=True,
                 )
+                with open("debug_logger.log", "a", encoding="utf-8") as df:
+                    df.write(f"[{ts}] Successfully resolved peer and sent log on retry!\n")
             except Exception as e2:
                 logger.error(f"[AryaLog] Retry send failed to channel {target_chat_id}: {e2}")
+                with open("debug_logger.log", "a", encoding="utf-8") as df:
+                    df.write(f"[{ts}] Retry failed: {e2}\n")
+        except Exception as general_send_err:
+            with open("debug_logger.log", "a", encoding="utf-8") as df:
+                df.write(f"[{ts}] Send failed with error: {general_send_err}\n")
+            raise general_send_err
 
     except Exception as e:
         logger.error(f"[AryaLog] Log send failed to channel {ch_id} (key: {ch_key}): {e}", exc_info=True)
+        try:
+            with open("debug_logger.log", "a", encoding="utf-8") as df:
+                df.write(f"[{ts}] Outer except caught: {e}\n")
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

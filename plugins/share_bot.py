@@ -278,28 +278,45 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
         if cache_key in _fsub_user_cache and _fsub_user_cache[cache_key] > now:
             return None
 
+        member = None
+        # Try checking membership via main bot first (highly cached, admin of FSub channels)
+        if BOT_INSTANCE and getattr(BOT_INSTANCE, "me", None):
+            try:
+                member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+            except (PeerIdInvalid, ChannelInvalid):
+                try:
+                    await safe_resolve_peer(BOT_INSTANCE, chat_id)
+                    member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # Fallback to delivery bot client if main bot failed or was unavailable
+        if member is None:
+            try:
+                member = await client.get_chat_member(ch_id_int, user_id)
+            except (PeerIdInvalid, ChannelInvalid):
+                try:
+                    await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
+                    member = await client.get_chat_member(ch_id_int, user_id)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
         try:
-            member = await client.get_chat_member(ch_id_int, user_id)
+            if member is None:
+                # If we couldn't resolve the chat or get membership at all,
+                # we must NOT bypass FSub. Instead, raise UserNotParticipant to force FSub verification alert!
+                # This guarantees that Force Subscribe is NEVER bypassed or skipped on errors!
+                raise UserNotParticipant()
+
             if getattr(member, 'status', None) in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
                 raise UserNotParticipant()
             else:
                 # Aggressively Cache SUCCESS for 2 hours to prevent FloodWaits across bulk link-clicks!
                 _fsub_user_cache[cache_key] = now + 7200
-                return None
-        except (PeerIdInvalid, ChannelInvalid):
-            # Try to resolve peer and retry once if it was not in local Pyrogram peer cache
-            try:
-                await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
-                member = await client.get_chat_member(ch_id_int, user_id)
-                if getattr(member, 'status', None) in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
-                    raise UserNotParticipant()
-                else:
-                    _fsub_user_cache[cache_key] = now + 7200
-                    return None
-            except UserNotParticipant:
-                pass
-            except Exception as retry_err:
-                logger.warning(f"FSub check retry failed for {chat_id}: {retry_err}")
                 return None
         except UserNotParticipant:
             _fsub_user_cache.pop(cache_key, None)
