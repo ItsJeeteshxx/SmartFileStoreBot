@@ -1273,7 +1273,21 @@ async def _run_job(job_id: str, user_id: int):
 
         #  LIVE PHASE 
         logger.info(f"[Job {job_id}] Live polling started. last_seen={last_seen}")
-
+        # ── Log live job start to centralized logs channel ─────────────────────
+        try:
+            import asyncio as _aio
+            import plugins.arya_logger as _log
+            _src_disp = str(job.get('from_title', from_chat))
+            _dst_disp = str(job.get('to_title', to_chat))
+            _aio.create_task(_log.log_live_job(
+                job_id=job_id,
+                source=_src_disp,
+                dest=_dst_disp,
+                user_id=int(job.get('user_id', 0)),
+            ))
+        except Exception:
+            pass
+        # ──────────────────────────────────────────────────────────────────
         # Send / restore live-phase destination progress message
         live_prog_id = (await _get_job(job_id)).get("live_prog_msg_id")
         if not live_prog_id:

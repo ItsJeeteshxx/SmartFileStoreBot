@@ -298,6 +298,21 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         _bot     = bot or _cl_bot_ref.get(job_id)
         _cl_bot_ref[job_id] = _bot
 
+        # ── Log cleaner job start ────────────────────────────────────────────────
+        try:
+            import asyncio as _cl_aio
+            import plugins.arya_logger as _cl_alog
+            _cl_aio.create_task(_cl_alog.log_cleaner_job(
+                job_id=job_id,
+                base_name=job.get("base_name", ""),
+                files_done=job.get("files_done", 0),
+                total_files=job.get("total_files", 0),
+                status="started",
+                user_id=int(uid),
+            ))
+        except Exception:
+            pass
+        # ───────────────────────────────────────────────────────────────────
         # ── Client Init ───────────────────────────────────────────────────
         acc_id = job.get("account_id")
         client = None
@@ -1329,6 +1344,21 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         job = await _cl_get_job(job_id)
         if job and job.get("status") not in ("failed", "stopped", "paused"):
             await _cl_update_job(job_id, {"status": "completed", "error": ""})
+            # ── Log cleaner job completion ────────────────────────────────────
+            try:
+                import asyncio as _cl_aio2
+                import plugins.arya_logger as _cl_alog2
+                _cl_aio2.create_task(_cl_alog2.log_cleaner_job(
+                    job_id=job_id,
+                    base_name=base_name,
+                    files_done=done,
+                    total_files=job.get("total_files", done),
+                    status="completed",
+                    user_id=int(uid),
+                ))
+            except Exception:
+                pass
+            # ─────────────────────────────────────────────────────────────────
             # Completion notification — use _bot, fallback to main bot client
             _notify_bot = _bot
             if not _notify_bot:

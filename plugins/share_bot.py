@@ -31,6 +31,132 @@ _PEER_CACHE_TTL = 3600    # 1 hour — re-warm after this long
 _jr_approved: dict = {}
 _JR_TTL = 864000          # 10 days
 
+# ── Anti-Abuse: 3-Strike Rapid Request Tracker ───────────────────────────────
+# In-memory dict to track per-user delivery timestamps and strike counts.
+# These complement the DB strike records — DB survives restarts, memory is fast.
+#   _abuse_last_delivery[user_id] = float  (unix timestamp of last delivery)
+#   _abuse_strikes[user_id]       = int    (rapid-request offense count)
+_abuse_last_delivery: dict = {}   # { user_id: float }
+_abuse_strikes: dict       = {}   # { user_id: int }
+
+
+async def _check_and_record_rapid_request(client, message, user_id: int, bot_id: str) -> bool:
+    """
+    Check whether this request is a "rapid re-request" (within cooldown window).
+    If so, issue a warning (strikes 1 & 2) or silently ban (strike 3).
+
+    Returns True  → caller should ABORT delivery (rapid abuse detected).
+    Returns False → caller may proceed with delivery normally.
+    """
+    import time as _t
+    from config import Config as _Cfg
+    from plugins.banned import _is_any_owner
+    import plugins.arya_logger as _log
+
+    # Owners / co-owners are always exempt
+    if await _is_any_owner(user_id):
+        return False
+
+    cooldown = _Cfg.ABUSE_COOLDOWN_SECS   # default 60 s
+    max_strikes = _Cfg.ABUSE_MAX_STRIKES  # default 3
+
+    now = _t.time()
+    last_delivery = _abuse_last_delivery.get(user_id, 0.0)
+
+    # --- Within cooldown window? ---
+    if last_delivery > 0 and (now - last_delivery) < cooldown:
+        # This is a rapid re-request — increment strike
+        current = _abuse_strikes.get(user_id, 0) + 1
+        _abuse_strikes[user_id] = current
+
+        # Also persist to DB so strikes survive a bot restart
+        try:
+            await db.update_user_strike(user_id, current, last_strike_ts=now)
+        except Exception:
+            pass
+
+        bot_name = client.me.first_name if getattr(client, 'me', None) else "DeliveryBot"
+        u_name = message.from_user.first_name or str(user_id) if message.from_user else str(user_id)
+
+        if current >= max_strikes:
+            # ── STRIKE 3 (or more): Silent permanent ban ─────────────────────
+            try:
+                await db.ban_user(user_id, "Auto-ban: rapid bulk file requests (3 strikes)")
+            except Exception:
+                pass
+            try:
+                await db.reset_user_strike(user_id)
+            except Exception:
+                pass
+            # Clear in-memory state
+            _abuse_strikes.pop(user_id, None)
+            _abuse_last_delivery.pop(user_id, None)
+
+            # Fire ban log (non-blocking)
+            import asyncio as _aio
+            _aio.create_task(_log.log_ban(
+                user_id=user_id,
+                user_name=u_name,
+                strike_count=current,
+                bot_name=bot_name,
+                bot_id=str(bot_id or ""),
+            ))
+            logger.info(f"[Abuse] BANNED user {user_id} after {current} rapid strikes")
+            # Return True = abort delivery; give NO response to user (silent ban)
+            return True
+
+        elif current == 1:
+            # ── STRIKE 1: Subtle warning ─────────────────────────────────────
+            remaining = max_strikes - current
+            try:
+                await message.reply_text(
+                    f"<b>‣  Sʟᴏᴡ Dᴏᴡɴ ⚡</b>\n\n"
+                    f"<i>Files were just delivered to you. Please wait a moment before requesting again.</i>\n\n"
+                    f"<b>Warning {current}/{max_strikes}</b> — {remaining} more rapid request(s) will result in a permanent ban."
+                )
+            except Exception:
+                pass
+            # Log warn
+            import asyncio as _aio
+            _aio.create_task(_log.log_warn(
+                user_id=user_id, user_name=u_name,
+                strike_count=current, max_strikes=max_strikes,
+                bot_name=bot_name, bot_id=str(bot_id or ""),
+            ))
+            logger.info(f"[Abuse] Strike {current}/{max_strikes} for user {user_id}")
+            return True   # block this delivery
+
+        elif current == 2:
+            # ── STRIKE 2: Stricter warning ───────────────────────────────────
+            remaining = max_strikes - current
+            try:
+                await message.reply_text(
+                    f"<b>⚠️ Fɪɴᴀʟ Wᴀʀɴɪɴɢ!</b>\n\n"
+                    f"<i>You are requesting files too fast. Your next rapid request will result in a <b>permanent ban</b>.</i>\n\n"
+                    f"<b>Warning {current}/{max_strikes}</b> — Please wait 1 minute between requests."
+                )
+            except Exception:
+                pass
+            import asyncio as _aio
+            _aio.create_task(_log.log_warn(
+                user_id=user_id, user_name=u_name,
+                strike_count=current, max_strikes=max_strikes,
+                bot_name=bot_name, bot_id=str(bot_id or ""),
+            ))
+            logger.info(f"[Abuse] Strike {current}/{max_strikes} for user {user_id}")
+            return True   # block this delivery
+
+    else:
+        # Outside cooldown window — reset strike counter
+        if _abuse_strikes.get(user_id, 0) > 0:
+            _abuse_strikes[user_id] = 0
+            try:
+                await db.reset_user_strike(user_id)
+            except Exception:
+                pass
+
+    return False   # proceed normally
+
 # 
 # Arya Bot Font constants
 # 
@@ -280,8 +406,24 @@ async def _process_start(client, message):
     args = message.command
     bot_id = str(client.me.id) if client.me else None
 
-    # Track user for stats and broadcast
+    # Check for rapid re-request FIRST (before any DB or delivery work)
+    # Returns True → abort silently or with warning. False → proceed.
+    if len(args) >= 2 and args[1].strip() not in ("help",):
+        if await _check_and_record_rapid_request(client, message, user_id, bot_id):
+            return
+
+    # Track user for stats and broadcast; detect first-ever start for new-user log
+    _was_new_user = False
+    try:
+        _was_new_user = await db.add_share_bot_seen_user(bot_id, user_id)
+    except Exception:
+        pass
     await db.add_share_bot_user(bot_id, user_id)
+    if _was_new_user:
+        import asyncio as _aio, plugins.arya_logger as _log
+        u_name = (message.from_user.first_name or str(user_id)) if message.from_user else str(user_id)
+        b_name = client.me.first_name if getattr(client, 'me', None) else "DeliveryBot"
+        _aio.create_task(_log.log_new_user(user_id, u_name, b_name, bot_id or ""))
 
     # Plain /start — show welcome
     if len(args) < 2:
@@ -457,6 +599,20 @@ async def _process_start(client, message):
         await asyncio.sleep(0.02)
 
     active_downloads.discard(dl_id)
+
+    # ── Record delivery timestamp for 3-strike abuse detection ───────────────
+    import time as _ab_time
+    _abuse_last_delivery[user_id] = _ab_time.time()
+    # Persist to DB so strikes can be evaluated even after a restart
+    try:
+        strike_rec = await db.get_user_strike(user_id)
+        await db.update_user_strike(
+            user_id,
+            count=strike_rec.get('count', 0),
+            last_delivery_ts=_ab_time.time()
+        )
+    except Exception:
+        pass
     try:
         await sts.delete()
     except Exception:

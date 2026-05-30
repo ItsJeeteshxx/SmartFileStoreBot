@@ -1284,7 +1284,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 uuid_str, mids, source_chat_id,
                 protect=protect, access_hash=db_access_hash
             )
-            url = f"https://t.me/{bot_usr}?start={uuid_str}"
+            # \u2500\u2500 Log batch link creation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                import asyncio as _aio\n                import plugins.arya_logger as _alog\n                _aio.create_task(_alog.log_batch_link(\n                    uuid=uuid_str,\n                    source_chat=source_chat_id,\n                    msg_ids=mids,\n                    story=story,\n                    ep_range=f\"{b_s}\u2013{b_e}\",\n                ))\n            except Exception:\n                pass\n            # \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            url = f"https://t.me/{bot_usr}?start={uuid_str}"
 
             # --- APPLY SHORTENER ---
             short_choice = sj.get('shortener')

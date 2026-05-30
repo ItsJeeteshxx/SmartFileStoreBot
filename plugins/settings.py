@@ -859,9 +859,13 @@ async def settings_query(bot, query):
      bots = await db.get_share_bots()
      protect = await db.get_share_protect_global()
      ptxt = "»  ON" if protect else "‣  OFF"
-     
+     logs_cfg = await db.get_logs_config()
+     configured_count = sum(1 for k in ['ch_bans', 'ch_new_users', 'ch_batch', 'ch_live', 'ch_cleaner', 'ch_errors'] if logs_cfg.get(k, 0))
+     logs_lbl = f"»  {configured_count}/6 configured" if configured_count else "‣  None Set"
+
      buttons = []
      buttons.append([InlineKeyboardButton(f"Pʀᴏᴛᴇᴄᴛɪᴏɴ:{ptxt}", callback_data="settings#sharebotprotect")])
+     buttons.append([InlineKeyboardButton(f"📋 Lᴏɢs Cᴏɴꜰɪɢ: {logs_lbl}", callback_data="settings#sb_logs_channel")])
      buttons.append([InlineKeyboardButton("— Dᴇʟɪᴠᴇʀʏ Bᴏᴛs —", callback_data="settings#noop")])
      for b in bots:
          buttons.append([InlineKeyboardButton(f"{b['name']}", callback_data=f"settings#sb_view_{b['id']}")])
@@ -869,7 +873,7 @@ async def settings_query(bot, query):
          buttons.append([InlineKeyboardButton("— Aᴄᴛɪᴏɴs —", callback_data="settings#noop")])
          buttons.append([InlineKeyboardButton('➕ Aᴅᴅ Sʜᴀʀᴇ Bᴏᴛ', callback_data="settings#sb_add")])
      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#main")])
-     
+
      text = (
          "<b>❪ SHARE BOT CONFIGURATION ❫</b>\n\n"
          f"<b>Allocated Bots:</b> {len(bots)}/10\n\n"
@@ -1947,6 +1951,151 @@ async def settings_query(bot, query):
       query.data = "settings#sbt_manage"
       return await settings_query(bot, query)
 
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Logs Channel Configuration UI
+  # ─────────────────────────────────────────────────────────────────────────
+
+  elif type == "sb_logs_channel":
+      logs_cfg = await db.get_logs_config()
+
+      CH_KEYS = [
+          ('ch_bans',      "🚫 Bans & Warnings"),
+          ('ch_new_users', "👤 New Users"),
+          ('ch_batch',     "🔗 Batch Links"),
+          ('ch_live',      "⚡ Live Jobs"),
+          ('ch_cleaner',   "🧹 Cleaner Jobs"),
+          ('ch_errors',    "❌ Error Alerts"),
+      ]
+
+      text = (
+          "<b>❪ LOGS CONFIGURATION ❫</b>\n\n"
+          "Configure independent Telegram channels for each log category.\n"
+          "Make sure the Main Bot is an admin in each configured channel.\n\n"
+          "<b>Current Channels:</b>\n"
+      )
+
+      btns = []
+      for key, label in CH_KEYS:
+          val = logs_cfg.get(key, 0)
+          val_str = f"<code>{val}</code>" if val else "<i>Not Set</i>"
+          text += f"  {label}: {val_str}\n"
+
+          btn_lbl = f"{label}: {'Set ✅' if val else 'Not Set ❌'}"
+          btns.append([InlineKeyboardButton(btn_lbl, callback_data=f"settings#sb_logs_manage_{key}")])
+
+      btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sharebot")])
+
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+
+  elif type.startswith("sb_logs_manage_"):
+      ch_key = type.split("sb_logs_manage_")[1]
+      CH_MAP = {
+          'ch_bans':      "🚫 Bans & Warnings",
+          'ch_new_users': "👤 New Users",
+          'ch_batch':     "🔗 Batch Links",
+          'ch_live':      "⚡ Live Jobs",
+          'ch_cleaner':   "🧹 Cleaner Jobs",
+          'ch_errors':    "❌ Error Alerts",
+      }
+      label = CH_MAP.get(ch_key, ch_key)
+      logs_cfg = await db.get_logs_config()
+      ch_id = logs_cfg.get(ch_key, 0)
+      ch_lbl = f"<code>{ch_id}</code>" if ch_id else "<i>Not Configured</i>"
+
+      text = (
+          f"<b>❪ LOG CATEGORY: {label.upper()} ❫</b>\n\n"
+          f"<b>Current Channel:</b> {ch_lbl}\n\n"
+          f"You can configure a dedicated channel for {label.lower()}.\n"
+          f"Make sure the Main Bot is added as an Administrator with post message permissions."
+      )
+
+      btns = [
+          [InlineKeyboardButton("📋 Sᴇᴛ Cʜᴀɴɴᴇʟ", callback_data=f"settings#sb_logs_set_{ch_key}")],
+      ]
+      if ch_id:
+          btns.append([InlineKeyboardButton("🗑 Rᴇᴍᴏᴠᴇ Cʜᴀɴɴᴇʟ", callback_data=f"settings#sb_logs_del_{ch_key}")])
+      btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_logs_channel")])
+
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+
+  elif type.startswith("sb_logs_set_"):
+      ch_key = type.split("sb_logs_set_")[1]
+      CH_MAP = {
+          'ch_bans':      "🚫 Bans & Warnings",
+          'ch_new_users': "👤 New Users",
+          'ch_batch':     "🔗 Batch Links",
+          'ch_live':      "⚡ Live Jobs",
+          'ch_cleaner':   "🧹 Cleaner Jobs",
+          'ch_errors':    "❌ Error Alerts",
+      }
+      label = CH_MAP.get(ch_key, ch_key)
+      await query.message.delete()
+      ask = await bot.send_message(
+          user_id,
+          f"<b>❪ SET {label.upper()} CHANNEL ❫</b>\n\n"
+          f"Send the Channel ID or username for <b>{label}</b> logs.\n\n"
+          "<b>Examples:</b>\n"
+          "  <code>-1001234567890</code>  (private channel)\n"
+          "  <code>@mychannel</code>  (public channel)\n\n"
+          "<i>Make sure the Main Bot is an admin in that channel.</i>\n\n"
+          "Send /cancel to abort."
+      )
+      try:
+          resp = await _ask(bot, user_id, timeout=120)
+          txt = (resp.text or "").strip()
+          await resp.delete()
+          if txt.lower() in ("/cancel", "cancel"):
+              return await ask.edit_text(
+                  "<i>Process Cancelled.</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+              )
+          # Resolve and validate
+          try:
+              ch_info = await bot.get_chat(txt)
+              ch_id_int = ch_info.id
+              ch_title = ch_info.title or str(ch_id_int)
+          except Exception as e:
+              return await ask.edit_text(
+                  f"<b>‣  Error:</b> <code>{e}</code>\n"
+                  "Make sure the Main Bot is an admin in that channel and the ID/username is correct.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+              )
+          await db.set_logs_config(**{ch_key: ch_id_int})
+          # Invalidate cache
+          try:
+              import plugins.arya_logger as _alog
+              _alog._invalidate_cfg_cache()
+          except Exception:
+              pass
+          await ask.edit_text(
+              f"»  ✅ <b>{label} channel set to:</b> {ch_title} (<code>{ch_id_int}</code>)",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+          )
+      except asyncio.TimeoutError:
+          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]]))
+          except Exception: pass
+
+  elif type.startswith("sb_logs_del_"):
+      ch_key = type.split("sb_logs_del_")[1]
+      CH_MAP = {
+          'ch_bans':      "🚫 Bans & Warnings",
+          'ch_new_users': "👤 New Users",
+          'ch_batch':     "🔗 Batch Links",
+          'ch_live':      "⚡ Live Jobs",
+          'ch_cleaner':   "🧹 Cleaner Jobs",
+          'ch_errors':    "❌ Error Alerts",
+      }
+      label = CH_MAP.get(ch_key, ch_key)
+      await db.set_logs_config(**{ch_key: 0})
+      try:
+          import plugins.arya_logger as _alog
+          _alog._invalidate_cfg_cache()
+      except Exception:
+          pass
+      await query.answer(f"{label} channel removed!", show_alert=True)
+      query.data = f"settings#sb_logs_manage_{ch_key}"
+      return await settings_query(bot, query)
 
 
   elif type == "sharefsub":

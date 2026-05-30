@@ -784,4 +784,107 @@ class Database:
         )
 
 
+    # ── Abuse / Strike Tracking ───────────────────────────────────────────────
+    # Each strike record stores {count, last_delivery_ts, last_strike_ts}
+    # so the delivery bot can decide whether the window has expired.
+
+    async def get_user_strike(self, user_id: int) -> dict:
+        """Return the current abuse-strike record for this user."""
+        doc = await self.col.find_one({'id': int(user_id)})
+        return (doc or {}).get('abuse_strike', {
+            'count': 0,
+            'last_delivery_ts': 0.0,
+            'last_strike_ts': 0.0,
+        })
+
+    async def update_user_strike(self, user_id: int, count: int,
+                                  last_delivery_ts: float = None,
+                                  last_strike_ts: float = None) -> None:
+        """Update the abuse-strike record atomically."""
+        import time as _t
+        now = _t.time()
+        update_fields = {'abuse_strike.count': count}
+        if last_delivery_ts is not None:
+            update_fields['abuse_strike.last_delivery_ts'] = last_delivery_ts
+        if last_strike_ts is not None:
+            update_fields['abuse_strike.last_strike_ts'] = last_strike_ts
+        await self.col.update_one(
+            {'id': int(user_id)},
+            {'$set': update_fields},
+            upsert=True
+        )
+
+    async def reset_user_strike(self, user_id: int) -> None:
+        """Reset all strike data for this user (called after ban or manual reset)."""
+        await self.col.update_one(
+            {'id': int(user_id)},
+            {'$unset': {'abuse_strike': ''}},
+        )
+
+    # ── Logs Channel Config ───────────────────────────────────────────────────
+    # Stored in global_stats so owners can set it from the Settings UI
+    # without needing to touch .env or restart the bot.
+
+    async def get_logs_config(self) -> dict:
+        """
+        Returns the logs configuration dict — one channel ID per log type:
+        {
+          'ch_bans':      int or 0,   # Channel for ban/warn events
+          'ch_new_users': int or 0,   # Channel for new-user events
+          'ch_batch':     int or 0,   # Channel for batch-link creation
+          'ch_live':      int or 0,   # Channel for live-job events
+          'ch_cleaner':   int or 0,   # Channel for cleaner-job events
+          'ch_errors':    int or 0,   # Channel for error events
+        }
+        Each key is an independent Telegram channel.  0 = not configured (silent).
+        """
+        doc = await self.stats.find_one({'_id': 'logs_config'})
+        defaults = {
+            'ch_bans':      0,
+            'ch_new_users': 0,
+            'ch_batch':     0,
+            'ch_live':      0,
+            'ch_cleaner':   0,
+            'ch_errors':    0,
+        }
+        if not doc:
+            return defaults
+        # Auto-migrate old schema: if old 'channel_id' key exists and no new keys,
+        # keep returning zeros so UI prompts fresh configuration.
+        result = {**defaults}
+        for k, v in doc.items():
+            if k != '_id' and k in defaults:
+                result[k] = v
+        return result
+
+    async def set_logs_config(self, **kwargs) -> None:
+        """Set one or more logs config keys (ch_bans, ch_new_users, etc.)."""
+        # Only persist recognised keys to avoid storing old schema fields
+        _VALID = {'ch_bans', 'ch_new_users', 'ch_batch', 'ch_live', 'ch_cleaner', 'ch_errors'}
+        filtered = {k: v for k, v in kwargs.items() if k in _VALID}
+        if not filtered:
+            return
+        await self.stats.update_one(
+            {'_id': 'logs_config'},
+            {'$set': filtered},
+            upsert=True
+        )
+
+    async def add_share_bot_seen_user(self, bot_id: str, user_id: int) -> bool:
+        """
+        Record that user_id has started bot_id for the first time.
+        Returns True if this IS a new user for this specific bot, False if already seen.
+        Uses a lightweight set stored per-bot to avoid a full document scan.
+        """
+        doc = await self.stats.find_one({'_id': f'seen_users_{bot_id}'})
+        if doc and int(user_id) in doc.get('ids', []):
+            return False   # already seen on this bot
+        await self.stats.update_one(
+            {'_id': f'seen_users_{bot_id}'},
+            {'$addToSet': {'ids': int(user_id)}},
+            upsert=True
+        )
+        return True   # first time on this bot
+
+
 db = Database(Config.DATABASE_URI, Config.DATABASE_NAME)
