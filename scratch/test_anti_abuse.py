@@ -1,8 +1,9 @@
 """
-test_anti_abuse.py — Unit Tests for the 3-Strike Anti-Abuse System
-====================================================================
-Tests the core logic of _check_and_record_rapid_request without
-requiring a live Telegram connection or MongoDB.
+test_anti_abuse.py — Unit Tests for the 5-Strike Silent Ban Anti-Abuse System
+=============================================================================
+Tests the core logic of _check_and_record_rapid_request where:
+1. LEGITIMATE users can request rapidly up to 4 times without warnings or blocks.
+2. Only repeat scrapers (5+ rapid requests) are silently banned without any warning in chat.
 
 Run:  python scratch/test_anti_abuse.py
 """
@@ -74,21 +75,6 @@ class FakeDB:
 
 # ── Helper to call _check_and_record_rapid_request with mocked deps ─────────
 
-async def run_check(fn, client, message, user_id, bot_id, is_owner=False):
-    """Run the abuse check with faked config and owner check."""
-    with patch('plugins.share_bot.db', fake_db), \
-         patch('plugins.share_bot.Config') as mock_cfg, \
-         patch('plugins.share_bot._is_any_owner' if False else 'plugins.banned._is_any_owner',
-               new=AsyncMock(return_value=is_owner)), \
-         patch('plugins.arya_logger.log_ban', new=AsyncMock()), \
-         patch('plugins.arya_logger.log_warn', new=AsyncMock()):
-        mock_cfg.ABUSE_COOLDOWN_SECS = 60
-        mock_cfg.ABUSE_MAX_STRIKES = 3
-        return await fn(client, message, user_id, bot_id)
-
-
-# ── Test runner ────────────────────────────────────────────────────────────────
-
 fake_db = FakeDB()
 results = []
 
@@ -100,7 +86,6 @@ def record(name, passed, detail=""):
 
 async def main():
     # Import the function under test AFTER stubs are ready
-    # We patch at import time to avoid live connections
     with patch.dict('sys.modules', {
         'pyrogram': MagicMock(),
         'pyrogram.Client': MagicMock(),
@@ -112,7 +97,7 @@ async def main():
         'database': MagicMock(db=fake_db),
         'config': MagicMock(Config=MagicMock(
             ABUSE_COOLDOWN_SECS=60,
-            ABUSE_MAX_STRIKES=3,
+            ABUSE_MAX_STRIKES=5,
         )),
         'plugins.banned': MagicMock(_is_any_owner=AsyncMock(return_value=False)),
         'plugins.arya_logger': MagicMock(
@@ -144,54 +129,48 @@ async def main():
         result = await sbot._check_and_record_rapid_request(client, msg, uid, "bot1")
         record("No prior delivery → allow (return False)", result is False)
 
-        # ── Test 2: Re-request within cooldown → Strike 1 (warn, block) ──────
-        print("\n=== Test: Rapid re-request within 60s → Strike 1 ===")
-        sbot._abuse_last_delivery[uid] = NOW  # just delivered
-        msg = FakeMessage(uid)
-        result = await sbot._check_and_record_rapid_request(client, msg, uid, "bot1")
-        record("Rapid request → return True (block)", result is True)
-        record("Strike 1 recorded in memory", sbot._abuse_strikes.get(uid, 0) == 1)
-        record("Warning message sent", msg.reply_text.called)
+        # ── Test 2: Rapid requests 1 to 4 → increment strike but allow normally without warning ──
+        print("\n=== Test: Rapid requests 1 to 4 (within 60s cooldown) → strikes logged but delivery allowed ===")
+        
+        for strike in range(1, 5):
+            sbot._abuse_last_delivery[uid] = NOW  # mark delivered
+            msg_loop = FakeMessage(uid)
+            result_loop = await sbot._check_and_record_rapid_request(client, msg_loop, uid, "bot1")
+            
+            record(f"Strike {strike} rapid request → allowed (returns False)", result_loop is False)
+            record(f"Strike {strike} recorded in memory", sbot._abuse_strikes.get(uid, 0) == strike)
+            record(f"No warning message sent to user on strike {strike}", not msg_loop.reply_text.called)
 
-        # ── Test 3: Second rapid request → Strike 2 (final warn, block) ──────
-        print("\n=== Test: 2nd rapid request → Strike 2 ===")
-        sbot._abuse_last_delivery[uid] = NOW  # still within window
-        msg2 = FakeMessage(uid)
-        result2 = await sbot._check_and_record_rapid_request(client, msg2, uid, "bot1")
-        record("2nd rapid request → return True (block)", result2 is True)
-        record("Strike 2 recorded in memory", sbot._abuse_strikes.get(uid, 0) == 2)
-        record("Warning message sent again", msg2.reply_text.called)
-
-        # ── Test 4: Third rapid request → Strike 3 → Silent ban ─────────────
-        print("\n=== Test: 3rd rapid request → Strike 3 → Ban ===")
+        # ── Test 3: Strike 5 → Exceeds limit → Silent Ban & Abort Delivery ────
+        print("\n=== Test: Strike 5 → Exceeds limit → Silent ban & Abort ===")
         sbot._abuse_last_delivery[uid] = NOW
-        msg3 = FakeMessage(uid)
-        result3 = await sbot._check_and_record_rapid_request(client, msg3, uid, "bot1")
-        record("3rd rapid request → return True (block, silent)", result3 is True)
-        record("NO warning message sent (silent ban)", not msg3.reply_text.called)
+        msg_ban = FakeMessage(uid)
+        result_ban = await sbot._check_and_record_rapid_request(client, msg_ban, uid, "bot1")
+        
+        record("Strike 5 rapid request → blocked (returns True)", result_ban is True)
+        record("NO warning message sent to user (silent ban)", not msg_ban.reply_text.called)
         record("User banned in DB", uid in fake_db._bans)
         ban_reason = fake_db._bans.get(uid, "")
         record("Ban reason contains 'strike'", "strike" in ban_reason.lower())
         record("Strike data cleared from memory", uid not in sbot._abuse_strikes)
         record("Delivery ts cleared from memory", uid not in sbot._abuse_last_delivery)
 
-        # ── Test 5: Request outside cooldown window → reset strikes, allow ────
+        # ── Test 4: Request outside cooldown window → reset strikes, allow ────
         print("\n=== Test: Request after cooldown expiry → reset and allow ===")
         uid2 = 100002
         sbot._abuse_last_delivery[uid2] = NOW - 120  # 2 minutes ago (outside 60s window)
-        sbot._abuse_strikes[uid2] = 2  # had 2 strikes
+        sbot._abuse_strikes[uid2] = 3  # had 3 strikes
         msg4 = FakeMessage(uid2)
         result4 = await sbot._check_and_record_rapid_request(client, msg4, uid2, "bot1")
         record("Old cooldown expired → return False (allow)", result4 is False)
         record("Strikes reset to 0", sbot._abuse_strikes.get(uid2, 0) == 0)
 
-        # ── Test 6: Owner is always exempt ─────────────────────────────────────
+        # ── Test 5: Owner is always exempt ─────────────────────────────────────
         print("\n=== Test: Owner is exempt from abuse detection ===")
         uid3 = 999999  # owner
         sbot._abuse_last_delivery[uid3] = NOW  # just delivered
-        sbot._abuse_strikes[uid3] = 2
+        sbot._abuse_strikes[uid3] = 3
         msg5 = FakeMessage(uid3)
-        # Patch is_any_owner to return True for this test
         with patch('plugins.banned._is_any_owner', new=AsyncMock(return_value=True)):
             result5 = await sbot._check_and_record_rapid_request(client, msg5, uid3, "bot1")
         record("Owner → always return False (exempt)", result5 is False)

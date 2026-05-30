@@ -63,7 +63,7 @@ class Config:
     # How many seconds after delivery during which re-requests count as a "rapid" strike
     ABUSE_COOLDOWN_SECS = int(_env("ABUSE_COOLDOWN_SECS", "60"))
     # How many rapid strikes before a silent permanent ban is issued
-    ABUSE_MAX_STRIKES   = int(_env("ABUSE_MAX_STRIKES", "3"))
+    ABUSE_MAX_STRIKES   = int(_env("ABUSE_MAX_STRIKES", "5"))
 
 
 class temp(object):

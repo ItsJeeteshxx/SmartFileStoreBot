@@ -43,10 +43,9 @@ _abuse_strikes: dict       = {}   # { user_id: int }
 async def _check_and_record_rapid_request(client, message, user_id: int, bot_id: str) -> bool:
     """
     Check whether this request is a "rapid re-request" (within cooldown window).
-    If so, issue a warning (strikes 1 & 2) or silently ban (strike 3).
-
-    Returns True  → caller should ABORT delivery (rapid abuse detected).
-    Returns False → caller may proceed with delivery normally.
+    If they exceed the max strike limit, silently ban them and return True to abort.
+    Otherwise, increment strike count internally but allow delivery (return False)
+    with absolutely no warning message sent to the user.
     """
     import time as _t
     from config import Config as _Cfg
@@ -58,18 +57,18 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
         return False
 
     cooldown = _Cfg.ABUSE_COOLDOWN_SECS   # default 60 s
-    max_strikes = _Cfg.ABUSE_MAX_STRIKES  # default 3
+    max_strikes = _Cfg.ABUSE_MAX_STRIKES  # default 5
 
     now = _t.time()
     last_delivery = _abuse_last_delivery.get(user_id, 0.0)
 
     # --- Within cooldown window? ---
     if last_delivery > 0 and (now - last_delivery) < cooldown:
-        # This is a rapid re-request — increment strike
+        # Increment strike count
         current = _abuse_strikes.get(user_id, 0) + 1
         _abuse_strikes[user_id] = current
 
-        # Also persist to DB so strikes survive a bot restart
+        # Persist to DB so strikes survive a bot restart
         try:
             await db.update_user_strike(user_id, current, last_strike_ts=now)
         except Exception:
@@ -79,9 +78,9 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
         u_name = message.from_user.first_name or str(user_id) if message.from_user else str(user_id)
 
         if current >= max_strikes:
-            # ── STRIKE 3 (or more): Silent permanent ban ─────────────────────
+            # ── Silent permanent ban ──────────────────────────────────────────
             try:
-                await db.ban_user(user_id, "Auto-ban: rapid bulk file requests (3 strikes)")
+                await db.ban_user(user_id, f"Auto-ban: rapid bulk file requests ({current} strikes)")
             except Exception:
                 pass
             try:
@@ -92,7 +91,7 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
             _abuse_strikes.pop(user_id, None)
             _abuse_last_delivery.pop(user_id, None)
 
-            # Fire ban log (non-blocking)
+            # Fire ban log to channel
             import asyncio as _aio
             _aio.create_task(_log.log_ban(
                 user_id=user_id,
@@ -100,51 +99,23 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
                 strike_count=current,
                 bot_name=bot_name,
                 bot_id=str(bot_id or ""),
+                reason=f"Exceeded rapid request limit ({current} strikes within {cooldown}s cooldown)"
             ))
-            logger.info(f"[Abuse] BANNED user {user_id} after {current} rapid strikes")
-            # Return True = abort delivery; give NO response to user (silent ban)
+            logger.info(f"[Abuse] BANNED user {user_id} silently after {current} rapid strikes")
+            # Return True to abort delivery; completely silent with no reply to user
             return True
-
-        elif current == 1:
-            # ── STRIKE 1: Subtle warning ─────────────────────────────────────
-            remaining = max_strikes - current
-            try:
-                await message.reply_text(
-                    f"<b>‣  Sʟᴏᴡ Dᴏᴡɴ ⚡</b>\n\n"
-                    f"<i>Files were just delivered to you. Please wait a moment before requesting again.</i>\n\n"
-                    f"<b>Warning {current}/{max_strikes}</b> — {remaining} more rapid request(s) will result in a permanent ban."
-                )
-            except Exception:
-                pass
-            # Log warn
+            
+        else:
+            # Under the limit: Log the warning to the admin channel, but DO NOT warn the user
+            # and allow the delivery to proceed normally by returning False
             import asyncio as _aio
             _aio.create_task(_log.log_warn(
                 user_id=user_id, user_name=u_name,
                 strike_count=current, max_strikes=max_strikes,
                 bot_name=bot_name, bot_id=str(bot_id or ""),
             ))
-            logger.info(f"[Abuse] Strike {current}/{max_strikes} for user {user_id}")
-            return True   # block this delivery
-
-        elif current == 2:
-            # ── STRIKE 2: Stricter warning ───────────────────────────────────
-            remaining = max_strikes - current
-            try:
-                await message.reply_text(
-                    f"<b>⚠️ Fɪɴᴀʟ Wᴀʀɴɪɴɢ!</b>\n\n"
-                    f"<i>You are requesting files too fast. Your next rapid request will result in a <b>permanent ban</b>.</i>\n\n"
-                    f"<b>Warning {current}/{max_strikes}</b> — Please wait 1 minute between requests."
-                )
-            except Exception:
-                pass
-            import asyncio as _aio
-            _aio.create_task(_log.log_warn(
-                user_id=user_id, user_name=u_name,
-                strike_count=current, max_strikes=max_strikes,
-                bot_name=bot_name, bot_id=str(bot_id or ""),
-            ))
-            logger.info(f"[Abuse] Strike {current}/{max_strikes} for user {user_id}")
-            return True   # block this delivery
+            logger.info(f"[Abuse] Strike {current}/{max_strikes} for user {user_id} (allowed)")
+            return False
 
     else:
         # Outside cooldown window — reset strike counter
