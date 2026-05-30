@@ -20,6 +20,8 @@ logging.getLogger("pyrogram").setLevel(logging.ERROR)
 
 import concurrent.futures
 
+BOT_INSTANCE = None
+
 class Bot(Client): 
     def __init__(self):
         global BOT_INSTANCE

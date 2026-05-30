@@ -79,8 +79,10 @@ async def _send(text: str, ch_key: str) -> None:
 
         # Get the main bot client
         try:
-            from bot import BOT_INSTANCE
-            bot = BOT_INSTANCE
+            import bot as _bot
+            bot = getattr(_bot, 'BOT_INSTANCE', None)
+            if not bot:
+                return   # Not yet initialized
         except Exception:
             return
 
