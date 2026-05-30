@@ -413,14 +413,17 @@ class Database:
             is_banned=False,
             ban_reason=''
         )
-        await self.col.update_one({'id': id}, {'$set': {'ban_status': ban_status}}, upsert=True)
+        await self.col.update_one({'id': int(id)}, {
+            '$set': {'ban_status': ban_status},
+            '$unset': {'abuse_strike': ''}
+        }, upsert=True)
     
     async def ban_user(self, user_id, ban_reason="No Reason"):
         ban_status = dict(
             is_banned=True,
             ban_reason=ban_reason
         )
-        await self.col.update_one({'id': user_id}, {'$set': {'ban_status': ban_status}}, upsert=True)
+        await self.col.update_one({'id': int(user_id)}, {'$set': {'ban_status': ban_status}}, upsert=True)
 
     async def get_ban_status(self, id):
         default = dict(
@@ -442,6 +445,23 @@ class Database:
         users = self.col.find({'ban_status.is_banned': True})
         b_users = [user['id'] async for user in users]
         return b_users
+
+    # ── Whitelist System ───────────────────────────────────────────────────────
+    async def is_whitelisted(self, user_id: int) -> bool:
+        user = await self.col.find_one({'id': int(user_id)})
+        return user.get('is_whitelisted', False) if user else False
+
+    async def whitelist_user(self, user_id: int) -> bool:
+        await self.col.update_one({'id': int(user_id)}, {'$set': {'is_whitelisted': True}}, upsert=True)
+        return True
+
+    async def unwhitelist_user(self, user_id: int) -> bool:
+        await self.col.update_one({'id': int(user_id)}, {'$set': {'is_whitelisted': False}}, upsert=True)
+        return True
+
+    async def get_whitelisted_users(self) -> list:
+        cursor = self.col.find({'is_whitelisted': True})
+        return [u async for u in cursor]
 
     async def update_configs(self, id, configs):
         await self.col.update_one({'id': int(id)}, {'$set': {'configs': configs}})

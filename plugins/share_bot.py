@@ -52,8 +52,8 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
     from plugins.banned import _is_any_owner
     import plugins.arya_logger as _log
 
-    # Owners / co-owners are always exempt
-    if await _is_any_owner(user_id):
+    # Owners / co-owners / whitelisted users are always exempt
+    if await _is_any_owner(user_id) or await db.is_whitelisted(user_id):
         return False
 
     cooldown = _Cfg.ABUSE_COOLDOWN_SECS   # default 60 s

@@ -351,7 +351,8 @@ async def owners_cb(bot, query):
             InlineKeyboardButton("🔒 Pʀᴏᴛᴇᴄᴛᴇᴅ Cʜᴀᴛs", callback_data="settings#protected")
         ])
         btns.append([
-            InlineKeyboardButton("🚫 Bᴀɴ Lɪsᴛ", callback_data="ban#list#1")
+            InlineKeyboardButton("🚫 Bᴀɴ Lɪsᴛ", callback_data="ban#list#1"),
+            InlineKeyboardButton("⚪ Wʜɪᴛᴇʟɪsᴛ", callback_data="wl#list#1")
         ])
         btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         txt = (
