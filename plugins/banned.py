@@ -1,6 +1,6 @@
 import logging
 from pyrogram import Client, filters, StopPropagation
-from pyrogram.types import Message
+from pyrogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from database import db
 from config import Config
 
@@ -122,26 +122,116 @@ async def unban_user_cmd(client: Client, message: Message):
     await db.remove_ban(uid)
     await message.reply_text(f"✅ **Unbanned:** `{uid}` ({name})")
 
-# ── /banlist command ──────────────────────────────────────────────────────────
+# ── /banlist command & Interactive UI ──────────────────────────────────────────
+async def _render_ban_list(client, user_id: int, message_or_query, page: int = 1):
+    try:
+        cursor = db.col.find({"ban_status.is_banned": True}, {"id": 1, "ban_status": 1, "name": 1})
+        users = await cursor.to_list(length=1000)
+    except Exception as e:
+        err_msg = f"Error fetching banlist: {e}"
+        if isinstance(message_or_query, CallbackQuery):
+            await message_or_query.answer(err_msg, show_alert=True)
+        else:
+            await message_or_query.reply_text(err_msg)
+        return
+
+    is_cb = isinstance(message_or_query, CallbackQuery)
+
+    if not users:
+        text = "<b>🚫 Banned Users List</b>\n\n✅ <i>No users are currently banned.</i>"
+        btns = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Sᴇᴛᴛɪɴɢs", callback_data="settings#owners")],
+            [InlineKeyboardButton("🗑 Cʟᴏsᴇ", callback_data="ban#close")]
+        ])
+        if is_cb:
+            await message_or_query.message.edit_text(text, reply_markup=btns)
+        else:
+            await message_or_query.reply_text(text, reply_markup=btns)
+        return
+
+    PAGE_SIZE = 5
+    total_users = len(users)
+    total_pages = (total_users + PAGE_SIZE - 1) // PAGE_SIZE
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    chunk = users[start_idx:end_idx]
+
+    lines = [
+        "<b>🚫 <u>Banned Users Control Panel</u></b>\n",
+        f"Total Banned Users: <b>{total_users}</b>",
+        f"Showing Page <b>{page}</b> of <b>{total_pages}</b>\n"
+    ]
+
+    btns_list = []
+
+    for idx, u in enumerate(chunk, start=start_idx + 1):
+        reason = u.get("ban_status", {}).get("ban_reason", "No reason")
+        uname = u.get("name", "")
+        uid = u.get("id")
+        display_name = uname if uname else f"User {uid}"
+        mention = f"<a href='tg://user?id={uid}'>{display_name}</a>"
+        
+        lines.append(
+            f"<b>{idx}.</b> {mention} (<code>{uid}</code>)\n"
+            f"   └ <b>Reason:</b> <i>{reason}</i>\n"
+        )
+        btns_list.append([
+            InlineKeyboardButton(f"🔓 Unban {display_name[:15]}", callback_data=f"ban#unban#{uid}#{page}")
+        ])
+
+    # Navigation buttons
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"ban#list#{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"ban#list#{page+1}"))
+    btns_list.append(nav_row)
+
+    # Back / Close buttons
+    btns_list.append([
+        InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Sᴇᴛᴛɪɴɢs", callback_data="settings#owners"),
+        InlineKeyboardButton("🗑 Cʟᴏsᴇ", callback_data="ban#close")
+    ])
+
+    text = "\n".join(lines)
+    reply_markup = InlineKeyboardMarkup(btns_list)
+
+    if is_cb:
+        await message_or_query.message.edit_text(text, reply_markup=reply_markup)
+    else:
+        await message_or_query.reply_text(text, reply_markup=reply_markup)
+
 @Client.on_message(filters.command("banlist"))
 async def ban_list_cmd(client: Client, message: Message):
     if not await _is_any_owner(message.from_user.id if message.from_user else 0):
         return
-    try:
-        cursor = db.col.find({"ban_status.is_banned": True}, {"id": 1, "ban_status": 1, "name": 1})
-        users = await cursor.to_list(length=50)
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
-        return
-    if not users:
-        await message.reply_text("✅ No banned users.")
-        return
-    lines = [f"🚫 **Banned Users ({len(users)}):**"]
-    for u in users:
-        reason = u.get("ban_status", {}).get("ban_reason", "No reason")
-        uname  = u.get("name", "")
-        lines.append(f"• `{u.get('id')}` {uname} — {reason}")
-    await message.reply_text("\n".join(lines))
+    await _render_ban_list(client, message.from_user.id, message, page=1)
+
+@Client.on_callback_query(filters.regex(r'^ban#list#(\d+)$'))
+async def ban_list_cb(client, query):
+    if not await _is_any_owner(query.from_user.id):
+        return await query.answer("⛔ Owner only!", show_alert=True)
+    page = int(query.matches[0].group(1))
+    await query.answer()
+    await _render_ban_list(client, query.from_user.id, query, page)
+
+@Client.on_callback_query(filters.regex(r'^ban#unban#(-?\d+)#(\d+)$'))
+async def ban_unban_cb(client, query):
+    if not await _is_any_owner(query.from_user.id):
+        return await query.answer("⛔ Owner only!", show_alert=True)
+    target_uid = int(query.matches[0].group(1))
+    page = int(query.matches[0].group(2))
+    
+    await db.remove_ban(target_uid)
+    await query.answer(f"✅ User {target_uid} Unbanned Successfully!", show_alert=True)
+    await _render_ban_list(client, query.from_user.id, query, page)
+
+@Client.on_callback_query(filters.regex(r'^ban#close$'))
+async def ban_close_cb(client, query):
+    await query.message.delete()
 
 # ── Helper to propagate ban to all running share bots ─────────────────────────
 def _notify_share_bots_ban(user_id: int):

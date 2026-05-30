@@ -1869,6 +1869,16 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
     jobs = await _list_jobs(user_id)
     is_cb = hasattr(message_or_query, "message")
 
+    # Extract current page from callback data if paginating
+    page = 1
+    if is_cb:
+        data = getattr(message_or_query, "data", "") or ""
+        if data.startswith("job#list#"):
+            try:
+                page = int(data.split("#")[-1])
+            except Exception:
+                page = 1
+
     if not jobs:
         text = (
             "<b>Live Jobs</b>\n\n"
@@ -1884,8 +1894,18 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
         ])
     else:
-        lines = ["<b>Your Live Jobs</b>\n"]
-        for j in jobs:
+        # Pagination constants
+        PAGE_SIZE = 10
+        total_jobs = len(jobs)
+        total_pages = (total_jobs + PAGE_SIZE - 1) // PAGE_SIZE
+        page = max(1, min(page, total_pages))
+
+        start_idx = (page - 1) * PAGE_SIZE
+        end_idx = start_idx + PAGE_SIZE
+        chunk = jobs[start_idx:end_idx]
+
+        lines = [f"<b>Your Live Jobs (Page {page}/{total_pages})</b>\n"]
+        for j in chunk:
             st  = _status_emoji(j.get("status", "stopped"))
             fwd = j.get("forwarded", 0)
             err = f" <code>[{j.get('error','')}]</code>" if j.get("status") == "error" else ""
@@ -1904,12 +1924,13 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
                 f"  └ <i>{j.get('from_title','?')} ➝ {j.get('to_title','?')}{dest2}</i>\n"
                 f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}   {fetched}{bp}{err}\n"
             )
+            
         import datetime
         now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
         text = "\n".join(lines) + f"\n\n<i>Last refreshed: {now_str}</i>"
 
         btns_list = []
-        for j in jobs:
+        for j in chunk:
             st  = j.get("status", "stopped")
             jid = j["job_id"]
             short = jid[-6:]
@@ -1924,8 +1945,19 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             row.append(InlineKeyboardButton(f"Dᴇʟ [{short}]",  callback_data=f"job#del#{jid}"))
             btns_list.append(row)
 
-        btns_list.append([InlineKeyboardButton("Cʀᴇᴀᴛᴇ Nᴇᴡ Jᴏʙ", callback_data="job#new")])
-        btns_list.append([InlineKeyboardButton("Rᴇғʀᴇsʜ",        callback_data="job#list")])
+        # Pagination controls row
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"job#list#{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"job#list#{page+1}"))
+        btns_list.append(nav_row)
+
+        btns_list.append([
+            InlineKeyboardButton("➕ Cʀᴇᴀᴛᴇ Nᴇᴡ Jᴏʙ", callback_data="job#new"),
+            InlineKeyboardButton("Rᴇғʀᴇsʜ", callback_data=f"job#list#{page}")
+        ])
         btns_list.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")])
         btns = InlineKeyboardMarkup(btns_list)
 
@@ -1955,7 +1987,7 @@ async def jobs_cmd(bot, message):
 # Callbacks
 # ══════════════════════════════════════════════════════════════════════════════
 
-@Client.on_callback_query(filters.regex(r'^job#list$'))
+@Client.on_callback_query(filters.regex(r'^job#list(?:#\d+)?$'))
 async def job_list_cb(bot, query):
     from plugins.owner_utils import is_feature_enabled, is_any_owner, FEATURE_LABELS
     uid = query.from_user.id
@@ -2330,7 +2362,7 @@ async def job_new_cb(bot, query):
     user_id = query.from_user.id
     from plugins.owner_utils import is_any_owner
     limits = await db.get_user_limits(user_id)
-    max_live = limits.get('max_live_jobs', 45)
+    max_live = limits.get('max_live_jobs', 65)
     if not await is_any_owner(user_id) and max_live != -1:
         existing = await _list_jobs(user_id)
         if len(existing) >= max_live:
@@ -2348,7 +2380,7 @@ async def newjob_cmd(bot, message):
     if not is_owner and not await is_feature_enabled("live_job"):
         return await message.reply_text(_DISABLED_MSG.format(feature=FEATURE_LABELS["live_job"]))
     limits = await db.get_user_limits(uid)
-    max_live = limits.get('max_live_jobs', 45)
+    max_live = limits.get('max_live_jobs', 65)
     if not is_owner and max_live != -1:
         existing = await _list_jobs(uid)
         if len(existing) >= max_live:

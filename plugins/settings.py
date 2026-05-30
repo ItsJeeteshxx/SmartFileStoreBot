@@ -350,12 +350,15 @@ async def owners_cb(bot, query):
             InlineKeyboardButton("📊 Sʏs Mᴏɴɪᴛᴏʀ", callback_data="sysmon#stats"),
             InlineKeyboardButton("🔒 Pʀᴏᴛᴇᴄᴛᴇᴅ Cʜᴀᴛs", callback_data="settings#protected")
         ])
+        btns.append([
+            InlineKeyboardButton("🚫 Bᴀɴ Lɪsᴛ", callback_data="ban#list#1")
+        ])
         btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         txt = (
             "<b><u>👑 Owner / Admin Control Panel</u></b>\n\n"
             f"<b>Primary Owners:</b> {len(primary)}  |  <b>Co-Owners:</b> {len(co)}\n\n"
             f"<b>Global User Limits:</b>\n"
-            f"  Live Jobs: <code>{limits.get('max_live_jobs', 45)}</code>  "
+            f"  Live Jobs: <code>{limits.get('max_live_jobs', 65)}</code>  "
             f"Multi Jobs: <code>{limits.get('max_multi_jobs', 2)}</code>\n"
             f"  Merge Jobs: <code>{limits.get('max_merge_jobs', 1)}</code>  "
             f"Accounts: <code>{limits.get('max_accounts', 2)}</code>\n\n"
