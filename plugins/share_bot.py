@@ -46,18 +46,30 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
     If they exceed the max strike limit, silently ban them and return True to abort.
     Otherwise, increment strike count internally but allow delivery (return False)
     with absolutely no warning message sent to the user.
+
+    Returns False immediately (no-op) if the Anti-Abuse system is disabled from Settings.
     """
     import time as _t
     from config import Config as _Cfg
     from plugins.banned import _is_any_owner
     import plugins.arya_logger as _log
 
+    # ── Master switch: skip everything if Anti-Abuse is disabled ────────────
+    try:
+        abuse_cfg = await db.get_anti_abuse_config()
+    except Exception:
+        abuse_cfg = {'enabled': True, 'cooldown_secs': _Cfg.ABUSE_COOLDOWN_SECS, 'max_strikes': _Cfg.ABUSE_MAX_STRIKES}
+
+    if not abuse_cfg.get('enabled', True):
+        return False   # Anti-Abuse is OFF — allow all requests without any check
+
     # Owners / co-owners / whitelisted users are always exempt
     if await _is_any_owner(user_id) or await db.is_whitelisted(user_id):
         return False
 
-    cooldown = _Cfg.ABUSE_COOLDOWN_SECS   # default 60 s
-    max_strikes = _Cfg.ABUSE_MAX_STRIKES  # default 5
+    # DB-stored values take priority; fall back to Config env vars
+    cooldown    = int(abuse_cfg.get('cooldown_secs', _Cfg.ABUSE_COOLDOWN_SECS))
+    max_strikes = int(abuse_cfg.get('max_strikes',   _Cfg.ABUSE_MAX_STRIKES))
 
     now = _t.time()
     last_delivery = _abuse_last_delivery.get(user_id, 0.0)
@@ -127,6 +139,7 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
                 pass
 
     return False   # proceed normally
+
 
 # 
 # Arya Bot Font constants

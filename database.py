@@ -914,6 +914,62 @@ class Database:
             upsert=True
         )
 
+    # ── Anti-Abuse Toggle ─────────────────────────────────────────────────────
+    # Stored in global_stats so owner can toggle from Settings UI without
+    # touching .env or restarting the bot.
+
+    async def get_anti_abuse_enabled(self) -> bool:
+        """Returns True if the Anti-Abuse system is enabled (default: True)."""
+        doc = await self.stats.find_one({'_id': 'anti_abuse_config'})
+        if not doc:
+            return True   # ON by default
+        return doc.get('enabled', True)
+
+    async def set_anti_abuse_enabled(self, enabled: bool) -> None:
+        """Enable or disable the Anti-Abuse system globally."""
+        await self.stats.update_one(
+            {'_id': 'anti_abuse_config'},
+            {'$set': {'enabled': enabled}},
+            upsert=True
+        )
+
+    async def get_anti_abuse_config(self) -> dict:
+        """
+        Returns full Anti-Abuse config:
+        {
+          'enabled':      bool,  # Master on/off switch
+          'cooldown_secs': int,  # Seconds between requests before counting as rapid
+          'max_strikes':   int,  # Strikes before auto-ban
+        }
+        """
+        doc = await self.stats.find_one({'_id': 'anti_abuse_config'})
+        defaults = {
+            'enabled':       True,
+            'cooldown_secs': 60,
+            'max_strikes':   5,
+        }
+        if not doc:
+            return defaults
+        result = {**defaults}
+        for k in defaults:
+            if k in doc:
+                result[k] = doc[k]
+        return result
+
+    async def set_anti_abuse_config(self, **kwargs) -> None:
+        """Set one or more anti-abuse config keys."""
+        _VALID = {'enabled', 'cooldown_secs', 'max_strikes'}
+        filtered = {k: v for k, v in kwargs.items() if k in _VALID}
+        if not filtered:
+            return
+        await self.stats.update_one(
+            {'_id': 'anti_abuse_config'},
+            {'$set': filtered},
+            upsert=True
+        )
+
+
+
     async def add_share_bot_seen_user(self, bot_id: str, user_id: int) -> bool:
         """
         Record that user_id has started bot_id for the first time.
