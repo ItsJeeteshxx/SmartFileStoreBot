@@ -63,6 +63,10 @@ async def lifespan(app: FastAPI):
             await checkout_coll.create_index("user_id", background=True)
             await checkout_coll.create_index("status", background=True)
             
+            # Premium Unified Ban System Indexes
+            await arya_db.db.premium_bans.create_index("ips", background=True)
+            await arya_db.db.premium_ban_activity.create_index([("timestamp", -1)], background=True)
+            
             logger.info("✅ Database indexes verified/created in background")
         except Exception as idx_err:
             logger.warning(f"Failed to create indexes: {idx_err}")
@@ -3035,6 +3039,161 @@ async def delete_admin_banner(telegram_id: str, banner_id: str):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # BUYERS MANAGEMENT
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# PREMIUM UNIFIED BAN MANAGEMENT
+# ─────────────────────────────────────────────────────────────────────────────
+@api_router.get("/admin/bans")
+async def get_admin_bans(telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        # Fetch all premium bans
+        bans = await arya_db.db.premium_bans.find().sort("banned_at", -1).to_list(length=None)
+        for b in bans:
+            b["_id"] = str(b["_id"])
+            if "banned_at" in b and isinstance(b["banned_at"], datetime):
+                b["banned_at"] = b["banned_at"].isoformat()
+                
+        # Fetch live activity attempts (last 100)
+        activity = await arya_db.db.premium_ban_activity.find().sort("timestamp", -1).to_list(length=100)
+        for a in activity:
+            a["_id"] = str(a["_id"])
+            if "timestamp" in a and isinstance(a["timestamp"], datetime):
+                a["timestamp"] = a["timestamp"].isoformat()
+                
+        return {"success": True, "bans": bans, "activity": activity}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/ban")
+async def admin_ban_user(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        target_id = payload.get("target_id")
+        reason = payload.get("reason", "Banned by administrator")
+        name = payload.get("name", f"User {target_id}")
+        
+        if not target_id:
+            raise HTTPException(status_code=400, detail="Missing target_id")
+            
+        try:
+            target_id_int = int(target_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid target Telegram ID")
+            
+        # Prevent banning admins/owners
+        if is_admin(str(target_id_int)):
+            raise HTTPException(status_code=400, detail="Cannot ban an administrator")
+        from config import Config as MainConfig
+        if MainConfig.OWNER_IDS and target_id_int in MainConfig.OWNER_IDS:
+            raise HTTPException(status_code=400, detail="Cannot ban an owner")
+            
+        arya_db = app.state.db
+        
+        # Get historical IPs of target_id
+        historical_ips = await arya_db.db.mini_app_analytics.distinct("ip", {"user_id": target_id_int})
+        ips = [ip for ip in historical_ips if ip and ip not in ("unknown", "127.0.0.1", "::1") and not ip.startswith(("192.168.", "10.", "172."))]
+        
+        # Save ban in premium_bans collection
+        await arya_db.db.premium_bans.update_one(
+            {"_id": target_id_int},
+            {"$set": {
+                "ips": list(set(ips)),
+                "reason": reason,
+                "status": "banned",
+                "banned_at": datetime.now(timezone.utc),
+                "name": name
+            }},
+            upsert=True
+        )
+        
+        # Propagate to Delivery Bot ban list in main database
+        await arya_db.db.users.update_one(
+            {"id": target_id_int},
+            {"$set": {"ban_status": {"is_banned": True, "ban_reason": reason}}},
+            upsert=True
+        )
+        
+        # Clear in-memory abuse strike counts for clean state
+        try:
+            from plugins.share_bot import _abuse_strikes, _abuse_last_delivery
+            _abuse_strikes.pop(target_id_int, None)
+            _abuse_last_delivery.pop(target_id_int, None)
+        except Exception:
+            pass
+            
+        # Log to logs channel (Strictly No Emojis)
+        from utils_ban_logger import log_premium_ban_event
+        asyncio.create_task(log_premium_ban_event(
+            user_id=target_id_int,
+            name=name,
+            action="BANNED",
+            reason=reason,
+            ips=ips
+        ))
+        
+        return {"success": True, "message": f"Successfully banned User {target_id_int}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/unban")
+async def admin_unban_user(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        target_id = payload.get("target_id")
+        if not target_id:
+            raise HTTPException(status_code=400, detail="Missing target_id")
+            
+        try:
+            target_id_int = int(target_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid target Telegram ID")
+            
+        arya_db = app.state.db
+        
+        # Find existing ban to log its name/details
+        ban_doc = await arya_db.db.premium_bans.find_one({"_id": target_id_int})
+        name = ban_doc.get("name", f"User {target_id_int}") if ban_doc else f"User {target_id_int}"
+        
+        # Remove ban from premium_bans collection
+        await arya_db.db.premium_bans.delete_one({"_id": target_id_int})
+        
+        # Remove ban from main bot users collection so they can use Delivery Bot again!
+        await arya_db.db.users.update_one(
+            {"id": target_id_int},
+            {"$set": {"ban_status": {"is_banned": False, "ban_reason": ""}}}
+        )
+        
+        # Clear in-memory abuse strike counts for clean state
+        try:
+            from plugins.share_bot import _abuse_strikes, _abuse_last_delivery
+            _abuse_strikes.pop(target_id_int, None)
+            _abuse_last_delivery.pop(target_id_int, None)
+        except Exception:
+            pass
+            
+        # Log to logs channel (Strictly No Emojis)
+        from utils_ban_logger import log_premium_ban_event
+        asyncio.create_task(log_premium_ban_event(
+            user_id=target_id_int,
+            name=name,
+            action="UNBANNED",
+            reason="Unbanned by administrator",
+            ips=[]
+        ))
+        
+        return {"success": True, "message": f"Successfully unbanned User {target_id_int}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.get("/admin/buyers")
 async def get_admin_buyers(telegram_id: str):
     from AryaPremium.config import Config
@@ -5351,6 +5510,148 @@ async def admin_logout(request: Request):
             {"$set": {"active": False}}
         )
     return {"success": True, "message": "Logged out"}
+
+@app.middleware("http")
+async def ban_guard_middleware(request: Request, call_next):
+    path = request.url.path
+    
+    # Guard all API / context routes
+    is_api = path.startswith("/api/") or path.startswith("/stories") or ("/app-context" in path)
+    is_auth_endpoint = "/admin/auth/" in path
+    
+    if is_api and not is_auth_endpoint:
+        db = getattr(app.state, "db", None)
+        if db:
+            ip = _client_ip_from_request(request)
+            ip = ip.strip() if ip else ""
+            
+            # Resolve Telegram ID
+            tg_id = None
+            tg_id_str = request.query_params.get("telegram_id")
+            if tg_id_str:
+                try:
+                    tg_id = int(tg_id_str)
+                except ValueError:
+                    pass
+                    
+            if not tg_id and request.method in ("POST", "PUT", "DELETE"):
+                try:
+                    body = await request.body()
+                    async def receive():
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    request._receive = receive
+                    
+                    import json
+                    payload = json.loads(body.decode("utf-8"))
+                    tg_id_str = payload.get("telegram_id")
+                    if tg_id_str:
+                        tg_id = int(tg_id_str)
+                except Exception:
+                    pass
+            
+            # Check blocked status by IP (skip private/local IPs for safety)
+            is_local = not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172."))
+            banned_by_ip = None
+            if not is_local:
+                banned_by_ip = await db.db.premium_bans.find_one({"ips": ip, "status": {"$in": ["banned", "flagged"]}})
+                
+            # Check blocked status by Telegram ID
+            banned_by_tg = None
+            if tg_id:
+                banned_by_tg = await db.db.premium_bans.find_one({"_id": tg_id, "status": {"$in": ["banned", "flagged"]}})
+                
+            # Enforce block if either matches
+            if banned_by_ip or banned_by_tg:
+                reason = "Access denied"
+                target_tg_id = tg_id or (banned_by_ip["_id"] if banned_by_ip else None)
+                user_name = "Banned User"
+                
+                # Rule A: Banned user changing IP (VPN Evasion)
+                if banned_by_tg and not banned_by_ip and not is_local:
+                    reason = banned_by_tg.get("reason", "Banned by administrator")
+                    user_name = banned_by_tg.get("name", f"User {tg_id}")
+                    await db.db.premium_bans.update_one(
+                        {"_id": tg_id},
+                        {"$addToSet": {"ips": ip}}
+                    )
+                    from utils_ban_logger import log_premium_ban_activity
+                    asyncio.create_task(log_premium_ban_activity(
+                        user_id=tg_id,
+                        name=user_name,
+                        ip=ip,
+                        action=f"App Open ({path})",
+                        reason=f"VPN Evasion caught: User on new IP {ip} (added to blocklist)"
+                    ))
+                    
+                # Rule B: New/unbanned Telegram ID on blocked IP (Alt account)
+                elif banned_by_ip and tg_id and not banned_by_tg:
+                    reason = f"Auto-ban: Alternative account detected on blocked IP {ip}"
+                    user_name = f"Alt of User {banned_by_ip['_id']}"
+                    # Auto-flag this Telegram ID
+                    await db.db.premium_bans.update_one(
+                        {"_id": tg_id},
+                        {"$set": {
+                            "ips": [ip],
+                            "reason": reason,
+                            "status": "flagged",
+                            "banned_at": datetime.now(timezone.utc),
+                            "name": user_name
+                        }},
+                        upsert=True
+                    )
+                    # Propagate to Delivery Bot ban list
+                    await db.db.users.update_one(
+                        {"id": tg_id},
+                        {"$set": {"ban_status": {"is_banned": True, "ban_reason": reason}}},
+                        upsert=True
+                    )
+                    from utils_ban_logger import log_premium_ban_activity
+                    asyncio.create_task(log_premium_ban_activity(
+                        user_id=tg_id,
+                        name=user_name,
+                        ip=ip,
+                        action=f"App Open ({path})",
+                        reason=f"Alt account caught on blocked IP {ip} (Telegram ID banned automatically)"
+                    ))
+                    
+                # Default Block Logging
+                else:
+                    ref_doc = banned_by_tg or banned_by_ip
+                    reason = ref_doc.get("reason", "Banned by administrator")
+                    user_name = ref_doc.get("name", f"User {target_tg_id}")
+                    from utils_ban_logger import log_premium_ban_activity
+                    asyncio.create_task(log_premium_ban_activity(
+                        user_id=target_tg_id,
+                        name=user_name,
+                        ip=ip,
+                        action=f"App Open ({path})",
+                        reason=f"Blocked request from banned user/IP: {reason}"
+                    ))
+                    
+                # Save blocked access log in database
+                await db.db.premium_ban_activity.insert_one({
+                    "telegram_id": target_tg_id,
+                    "ip": ip,
+                    "timestamp": datetime.now(timezone.utc),
+                    "action": f"App Open ({path})",
+                    "reason": reason,
+                    "name": user_name
+                })
+                
+                # Return custom 503 JSON payload
+                import json
+                return Response(
+                    content=json.dumps({
+                        "banned": True,
+                        "reason": reason,
+                        "detail": "BANNED"
+                    }),
+                    status_code=503,
+                    media_type="application/json"
+                )
+                
+    response = await call_next(request)
+    return response
 
 @app.middleware("http")
 async def admin_auth_middleware(request: Request, call_next):

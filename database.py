@@ -27,6 +27,8 @@ class Database:
         self.stats = self.db.global_stats
         self.share_links = self.db.share_links
         self.share_config = self.db.share_config  # global share bot settings
+        self.premium_bans = self.db.premium_bans
+        self.premium_ban_activity = self.db.premium_ban_activity
         
     async def set_share_bot_token(self, token: str):
         # Migrated: now handles multiple bots via array push, preserving backwards compatibility for singles initially if desired, or just override.
