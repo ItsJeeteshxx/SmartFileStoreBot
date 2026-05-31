@@ -111,14 +111,43 @@ async def ban_user_cmd(client: Client, message: Message):
 
     await db.ban_user(uid, ban_reason=reason)
 
+    # Also propagate to premium_bans collection so mini app ban guard works too
+    try:
+        await db.db.premium_bans.update_one(
+            {"_id": uid},
+            {"$set": {
+                "reason": reason,
+                "status": "banned",
+                "name": name,
+                "banned_at": __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+            }},
+            upsert=True
+        )
+    except Exception as _e:
+        logger.warning(f"[BanCmd] Could not sync premium_bans for {uid}: {_e}")
+
     # Notify across all share bots too
     _notify_share_bots_ban(uid)
+
+    # Log to premium ban logs channel
+    try:
+        import asyncio as _aio
+        from utils_ban_logger import log_premium_ban_event
+        _aio.create_task(log_premium_ban_event(
+            user_id=uid,
+            name=name,
+            action="BANNED",
+            reason=reason,
+            ips=[]
+        ))
+    except Exception as _le:
+        logger.warning(f"[BanCmd] Log notification failed: {_le}")
 
     await message.reply_text(
         f"🚫 <b>Uꜱᴇʀ Bᴀɴɴᴇᴅ Sᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ</b>\n\n"
         f"👤 <b>User:</b> <code>{uid}</code> ({name})\n"
         f"📝 <b>Reason:</b> {reason}\n\n"
-        f"<i>This user is now blocked from the main bot AND all delivery bots.</i>"
+        f"<i>This user is now blocked from the main bot, delivery bots, and mini app.</i>"
     )
 
 # ── /unban command ────────────────────────────────────────────────────────────
@@ -143,6 +172,12 @@ async def unban_user_cmd(client: Client, message: Message):
         return
 
     await db.remove_ban(uid)
+    # Also remove from premium_bans collection so mini app ban guard lifts
+    try:
+        await db.db.premium_bans.delete_one({"_id": uid})
+    except Exception as _e:
+        logger.warning(f"[UnbanCmd] Could not remove from premium_bans for {uid}: {_e}")
+
     # Safely clear strikes too
     try:
         from plugins.share_bot import _abuse_strikes, _abuse_last_delivery
@@ -150,10 +185,25 @@ async def unban_user_cmd(client: Client, message: Message):
         _abuse_last_delivery.pop(uid, None)
     except Exception:
         pass
+
+    # Log to premium ban logs channel
+    try:
+        import asyncio as _aio
+        from utils_ban_logger import log_premium_ban_event
+        _aio.create_task(log_premium_ban_event(
+            user_id=uid,
+            name=name,
+            action="UNBANNED",
+            reason="Unbanned by administrator via management bot",
+            ips=[]
+        ))
+    except Exception as _le:
+        logger.warning(f"[UnbanCmd] Log notification failed: {_le}")
+
     await message.reply_text(
         f"🔓 <b>Uꜱᴇʀ Uɴʙᴀɴɴᴇᴅ Sᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ</b>\n\n"
         f"👤 <b>User:</b> <code>{uid}</code> ({name})\n\n"
-        f"<i>This user has been unbanned, and their anti-abuse strike counts have been cleared.</i>"
+        f"<i>This user has been fully unbanned from all bots and the mini app. Strike counts cleared.</i>"
     )
 
 # ── /banlist command & Interactive UI ──────────────────────────────────────────

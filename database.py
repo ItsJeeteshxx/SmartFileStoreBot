@@ -446,9 +446,9 @@ class Database:
         if user and user.get('ban_status', {}).get('is_banned'):
             return user.get('ban_status', default)
             
-        # 2. Check cross-database premium bans in 'forward-bot' DB
+        # 2. Check premium_bans collection (same 'arya' DB — used by mini app admin panel)
         try:
-            prem_ban = await self._client['forward-bot'].premium_bans.find_one({'_id': user_id_int})
+            prem_ban = await self.db.premium_bans.find_one({'_id': user_id_int})
             if prem_ban and prem_ban.get('status') in ('banned', 'flagged'):
                 return {
                     'is_banned': True,
