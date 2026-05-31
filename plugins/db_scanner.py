@@ -307,10 +307,10 @@ async def _scan_flow(bot, user_id: int):
         chat_id = picked["chat_id"]
         markup2 = ReplyKeyboardMarkup([["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
 
-        # Check if existing index
-        existing = await db.get_channel_index(chat_id)
+        # Check if existing index (only fetch metadata to prevent socket timeout on large documents)
+        existing = await db.get_channel_index_meta(chat_id)
         if existing:
-            n = existing.get('count', len(existing.get('entries', [])))
+            n = existing.get('count', 0)
             ts = existing.get('scanned_at', 0)
             dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
             opt_kb = [
@@ -525,8 +525,8 @@ async def _try_auto_index(client, message):
             if chat_id in _ignored_channels:
                 return
             if chat_id not in _indexed_channels:
-                # Check DB once
-                existing = await db.get_channel_index(chat_id)
+                # Check DB once (only fetch metadata to prevent socket timeout on large documents)
+                existing = await db.get_channel_index_meta(chat_id)
                 if not existing:
                     _ignored_channels.add(chat_id)
                     # Clear negative cache after 60s in case user adds channel

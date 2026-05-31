@@ -286,6 +286,10 @@ class Database:
         """Return the stored index doc for this channel, or None."""
         return await self.share_config.find_one({'_id': f'ch_index_{chat_id}'})
 
+    async def get_channel_index_meta(self, chat_id: int):
+        """Return only the index metadata doc without loading the huge entries array."""
+        return await self.share_config.find_one({'_id': f'ch_index_{chat_id}'}, {'entries': 0})
+
     async def delete_channel_index(self, chat_id: int):
         """Remove the index for a channel."""
         await self.share_config.delete_one({'_id': f'ch_index_{chat_id}'})
