@@ -30,38 +30,11 @@ def _get_env_or_config(key: str, default="") -> str:
     return default
 
 def _get_target_channel() -> str:
-    """Resolves the logs channel ID for premium bans, falling back to other logs channels."""
-    # Priority: PREMIUM_BAN_LOGS_CHANNEL > ARYA_LOGS_CHANNEL > ch_bans from DB > fallback to env
+    """Resolves the logs channel ID strictly for premium bans, avoiding fallback to other logs channels."""
     ch = _get_env_or_config("PREMIUM_BAN_LOGS_CHANNEL")
     if ch:
         return ch
-    ch = _get_env_or_config("ARYA_LOGS_CHANNEL")
-    if ch:
-        return ch
-    ch = _get_env_or_config("DELIVERY_LOGS_CHANNEL")
-    if ch:
-        return ch
-    
-    # Try to load from logs_config inside DB
-    try:
-        from database import db
-        # Quick non-blocking sync check or run in executor if needed
-        import asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If running in loop, try to get configs
-            async def get_ch():
-                cfg = await db.get_logs_config()
-                return cfg.get("ch_bans") or cfg.get("ch_errors")
-                
-            future = asyncio.run_coroutine_threadsafe(get_ch(), loop)
-            val = future.result(timeout=2.0)
-            if val:
-                return str(val)
-    except Exception:
-        pass
-        
-    return _get_env_or_config("BOT_OWNER_ID") or _get_env_or_config("OWNER_IDS", "").split()[0]
+    return ""
 
 async def _send_plain_text_log(text: str) -> None:
     """Sends log text to the resolved channel. Safely falls back to direct HTTP requests."""
