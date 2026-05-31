@@ -56,6 +56,16 @@ class Bot(Client):
         text = "**๏[-ิ_•ิ]๏ bot restarted !**"
         logging.info(text)
 
+        # ── Register this bot instance with arya_logger ──────────────────────
+        # This must happen immediately after start() so all 6 log channels work.
+        # Without this, arya_logger had no bot reference and all logs silently failed.
+        try:
+            from plugins.arya_logger import register_bot as _register_bot
+            _register_bot(self)
+        except Exception as _rbe:
+            logging.warning(f"[Startup] arya_logger.register_bot failed: {_rbe}")
+
+
         # Check if database URI is default broken one
         if "mongodb+srv://chhjgjkkjhkjhkjh@cluster0.xowzpr4.mongodb.net/" in Config.DATABASE_URI:
              logging.error("You have not set the DATABASE environment variable. The bot will not function correctly.")

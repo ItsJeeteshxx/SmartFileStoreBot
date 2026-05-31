@@ -28,6 +28,43 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Direct bot reference — set via register_bot() called from bot.py start() ──
+# This avoids the fragile sys.modules lookup that was causing all logs to silently fail.
+_BOT_REF = None   # type: ignore
+
+def register_bot(bot_instance) -> None:
+    """
+    Called once from bot.py's start() to register the main bot client.
+    After this, all log channels are reachable.
+    """
+    global _BOT_REF
+    _BOT_REF = bot_instance
+    logger.info("[AryaLog] Bot registered successfully — log channels are now active.")
+
+
+def _get_bot():
+    """
+    Returns the best available bot client for sending log messages.
+    Priority: main bot → any running share/delivery bot client.
+    """
+    global _BOT_REF
+    if _BOT_REF and getattr(_BOT_REF, 'is_connected', False):
+        return _BOT_REF
+
+    # Fallback: use any running delivery bot (share_clients)
+    try:
+        from plugins.share_bot import share_clients
+        for cli in share_clients.values():
+            if cli and getattr(cli, 'is_connected', False):
+                return cli
+    except Exception:
+        pass
+
+    # Last resort: return _BOT_REF even if not confirmed connected
+    # (Pyrogram's send_message will raise if truly disconnected)
+    return _BOT_REF
+
+
 # ── Internal: cache logs config in memory to avoid DB hit per log call ─────
 _cfg_cache: dict = {}
 _cfg_ts: float = 0.0
@@ -71,50 +108,26 @@ async def _send(text: str, ch_key: str) -> None:
                         'ch_live', 'ch_cleaner', 'ch_errors'.
     Silently skips if channel is not configured (0 or missing).
     """
-    import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime())
     try:
         cfg = await _get_cfg()
         ch_id = cfg.get(ch_key, 0)
-        
-        with open("debug_logger.log", "a", encoding="utf-8") as df:
-            df.write(f"[{ts}] _send called for {ch_key}. Configured ch_id: {ch_id}\n")
 
         if not ch_id:
-            return   # This log type's channel not configured — skip silently
+            # Channel not configured — skip silently
+            logger.debug(f"[AryaLog] ch_key='{ch_key}' has no channel configured (value={ch_id!r}), skipping.")
+            return
 
-        # Get the main bot client dynamically using sys.modules lookup for safety
-        import sys
-        bot = None
-        if 'bot' in sys.modules:
-            bot = getattr(sys.modules['bot'], 'BOT_INSTANCE', None)
+        bot = _get_bot()
         if not bot:
-            try:
-                import bot as _bot
-                bot = getattr(_bot, 'BOT_INSTANCE', None)
-            except Exception as ie_err:
-                with open("debug_logger.log", "a", encoding="utf-8") as df:
-                    df.write(f"[{ts}] Import bot fallback failed: {ie_err}\n")
+            logger.warning(f"[AryaLog] No bot client available yet — cannot send log to {ch_key} ({ch_id}). "
+                           "Ensure register_bot() is called from bot.py start().")
+            return
 
-        with open("debug_logger.log", "a", encoding="utf-8") as df:
-            df.write(f"[{ts}] Resolved bot client: {bot} (is_connected: {getattr(bot, 'is_connected', None) if bot else 'N/A'})\n")
-
-        if not bot:
-            logger.warning(f"[AryaLog] BOT_INSTANCE is None! Cannot send log to {ch_key} ({ch_id}) yet.")
-            return   # Not yet initialized
-
-        # Safely parse the chat ID (support usernames and integer IDs)
-        target_chat_id = str(ch_id).strip()
-        if target_chat_id.startswith('-') or target_chat_id.startswith('+'):
-            is_digit = target_chat_id[1:].isdigit()
-        else:
-            is_digit = target_chat_id.isdigit()
-        
-        if is_digit:
-            target_chat_id = int(target_chat_id)
-
-        from pyrogram.errors import PeerIdInvalid, ChannelInvalid
-        from plugins.utils import safe_resolve_peer
+        # Parse channel ID (support integer IDs and @usernames)
+        target_chat_id: any = str(ch_id).strip()
+        stripped = target_chat_id.lstrip('+-')
+        if stripped.isdigit():
+            target_chat_id = int(str(ch_id).strip())
 
         try:
             await bot.send_message(
@@ -123,38 +136,29 @@ async def _send(text: str, ch_key: str) -> None:
                 parse_mode='html',
                 disable_web_page_preview=True,
             )
-            with open("debug_logger.log", "a", encoding="utf-8") as df:
-                df.write(f"[{ts}] Successfully sent log to {target_chat_id}!\n")
-        except (PeerIdInvalid, ChannelInvalid) as p_err:
-            with open("debug_logger.log", "a", encoding="utf-8") as df:
-                df.write(f"[{ts}] Send failed with {type(p_err).__name__}. Trying safe_resolve_peer...\n")
-            # Warm up Pyrogram peer cache if unresolved and retry once
-            try:
-                await safe_resolve_peer(bot, target_chat_id)
-                await bot.send_message(
-                    chat_id=target_chat_id,
-                    text=text,
-                    parse_mode='html',
-                    disable_web_page_preview=True,
-                )
-                with open("debug_logger.log", "a", encoding="utf-8") as df:
-                    df.write(f"[{ts}] Successfully resolved peer and sent log on retry!\n")
-            except Exception as e2:
-                logger.error(f"[AryaLog] Retry send failed to channel {target_chat_id}: {e2}")
-                with open("debug_logger.log", "a", encoding="utf-8") as df:
-                    df.write(f"[{ts}] Retry failed: {e2}\n")
-        except Exception as general_send_err:
-            with open("debug_logger.log", "a", encoding="utf-8") as df:
-                df.write(f"[{ts}] Send failed with error: {general_send_err}\n")
-            raise general_send_err
+            logger.debug(f"[AryaLog] Log sent to {ch_key} ({target_chat_id})")
+        except Exception as send_err:
+            err_str = str(send_err).upper()
+            # PeerIdInvalid / ChannelInvalid → warm peer cache and retry once
+            if any(k in err_str for k in ("PEER_ID_INVALID", "CHANNEL_INVALID", "CHAT_NOT_FOUND")):
+                logger.warning(f"[AryaLog] Peer not in cache for {target_chat_id}, warming and retrying...")
+                try:
+                    from plugins.utils import safe_resolve_peer
+                    await safe_resolve_peer(bot, target_chat_id)
+                    await bot.send_message(
+                        chat_id=target_chat_id,
+                        text=text,
+                        parse_mode='html',
+                        disable_web_page_preview=True,
+                    )
+                    logger.info(f"[AryaLog] Retry succeeded for {ch_key} ({target_chat_id})")
+                except Exception as retry_err:
+                    logger.error(f"[AryaLog] Retry also failed for {ch_key} ({target_chat_id}): {retry_err}")
+            else:
+                logger.error(f"[AryaLog] Send failed for {ch_key} ({target_chat_id}): {send_err}")
 
-    except Exception as e:
-        logger.error(f"[AryaLog] Log send failed to channel {ch_id} (key: {ch_key}): {e}", exc_info=True)
-        try:
-            with open("debug_logger.log", "a", encoding="utf-8") as df:
-                df.write(f"[{ts}] Outer except caught: {e}\n")
-        except Exception:
-            pass
+    except Exception as outer_err:
+        logger.error(f"[AryaLog] Unexpected error in _send({ch_key}): {outer_err}", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,7 +173,7 @@ async def log_ban(
     bot_id: str,
     reason: str = "Rapid bulk file requests"
 ) -> None:
-    """Send a ban log entry to the Bans topic."""
+    """Send a ban log entry to the Bans & Warnings channel."""
     import time as _t
     ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
     text = (
@@ -177,7 +181,7 @@ async def log_ban(
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>User:</b> <a href='tg://user?id={user_id}'>{_esc(user_name)}</a>  "
         f"[<code>{user_id}</code>]\n"
-        f"<b>Strike:</b> {strike_count} (auto-ban on strike 3)\n"
+        f"<b>Strike:</b> {strike_count} (auto-ban on strike {strike_count})\n"
         f"<b>Reason:</b> {_esc(reason)}\n"
         f"<b>Detected by:</b> {_esc(bot_name)} (<code>{bot_id}</code>)\n"
         f"<b>Time:</b> <code>{ts}</code>\n"
@@ -195,7 +199,7 @@ async def log_warn(
     bot_name: str,
     bot_id: str,
 ) -> None:
-    """Send a warning log entry (strike 1 or 2) to the Bans topic."""
+    """Send a warning log entry (strike 1 or 2) to the Bans & Warnings channel."""
     import time as _t
     ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
     text = (
@@ -246,13 +250,14 @@ async def log_batch_link(
     story_line = f"<b>Story:</b> {_esc(story)}\n" if story else ""
     range_line  = f"<b>Range:</b> {_esc(ep_range)}\n" if ep_range else ""
     text = (
-        f"<b>\U0001f517 Batch Link Created</b>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"<b>🔗 Batch Link Created</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{story_line}"
         f"{range_line}"
         f"<b>UUID:</b> <code>{uuid}</code>\n"
         f"<b>Source Chat:</b> <code>{source_chat}</code>\n"
         f"<b>File Count:</b> {len(msg_ids)}\n"
+        f"<b>Bot:</b> {_esc(bot_name)}\n"
         f"<b>Time:</b> <code>{ts}</code>"
     )
     await _send(text, 'ch_batch')
@@ -269,14 +274,14 @@ async def log_live_job(
     ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
     uid_line = f"<b>Owner:</b> <a href='tg://user?id={user_id}'>{user_id}</a>\n" if user_id else ""
     text = (
-        f"<b>\u26a1 Live Job Active</b>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"<b>⚡ Live Job Active</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Job ID:</b> <code>{_esc(job_id)}</code>\n"
         f"<b>Source:</b> <code>{_esc(source)}</code>\n"
         f"<b>Dest:</b> <code>{_esc(dest)}</code>\n"
         f"{uid_line}"
         f"<b>Time:</b> <code>{ts}</code>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"<i>Job has completed batch phase and is now monitoring for new messages.</i>"
     )
     await _send(text, 'ch_live')
@@ -295,17 +300,17 @@ async def log_cleaner_job(
     import time as _t
     ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
     STATUS_ICON = {
-        "started":   "\U0001f504",
-        "completed": "\u2705",
-        "failed":    "\u274c",
-        "paused":    "\u23f8",
+        "started":   "🔄",
+        "completed": "✅",
+        "failed":    "❌",
+        "paused":    "⏸",
     }
-    icon = STATUS_ICON.get(status, "\u2753")
+    icon = STATUS_ICON.get(status, "❓")
     uid_line = f"<b>Owner:</b> <a href='tg://user?id={user_id}'>{user_id}</a>\n" if user_id else ""
     err_line = f"<b>Error:</b> <code>{_esc(str(error)[:200])}</code>\n" if error else ""
     text = (
         f"<b>{icon} Cleaner Job {status.title()}</b>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Job ID:</b> <code>{_esc(job_id)}</code>\n"
         f"<b>Name:</b> {_esc(base_name)}\n"
         f"<b>Progress:</b> {files_done}/{total_files} files\n"
