@@ -5515,6 +5515,12 @@ async def admin_logout(request: Request):
 async def ban_guard_middleware(request: Request, call_next):
     path = request.url.path
     
+    # Exempt admin and analytics routes from visitor ban guard so admins don't lock themselves out of unbanning
+    is_admin_path = ("/admin/" in path) or ("/analytics/" in path)
+    if is_admin_path:
+        response = await call_next(request)
+        return response
+        
     # Guard all API / context routes
     is_api = path.startswith("/api/") or path.startswith("/stories") or ("/app-context" in path)
     is_auth_endpoint = "/admin/auth/" in path
@@ -5548,6 +5554,12 @@ async def ban_guard_middleware(request: Request, call_next):
                         tg_id = int(tg_id_str)
                 except Exception:
                     pass
+            
+            # Exempt bot owners from being blocked so they can manage the console under all conditions
+            from config import Config
+            if tg_id and Config.OWNER_IDS and tg_id in Config.OWNER_IDS:
+                response = await call_next(request)
+                return response
             
             # Check blocked status by IP (skip private/local IPs for safety)
             is_local = not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172."))
