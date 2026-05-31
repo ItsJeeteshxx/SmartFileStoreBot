@@ -96,8 +96,65 @@ async def main():
     try:
         from plugins.userbot.market_seller import market_clients, _process_start, _process_screenshot, _process_callback, _process_text, _process_media, _process_my_stories, _process_chat_member
         from pyrogram.handlers import MessageHandler, CallbackQueryHandler, ChatMemberUpdatedHandler
+        from pyrogram.errors import UserNotParticipant
+        from pyrogram import StopPropagation
         from utils import setup_ask_router
-        
+
+        # ── Premium Ban Interceptor ──────────────────────────────────────────
+        # Runs at group=-999 (highest priority) on ALL messages/callbacks
+        # Checks ALL ban sources across both databases:
+        #   1. forward-bot.premium_bans  (AryaPremium ban system)
+        #   2. arya.premium_bans         (Main bot admin panel ban)
+        #   3. arya.users.ban_status     (Main bot /ban command ban)
+        async def _premium_ban_interceptor(client, update):
+            try:
+                user = getattr(update, 'from_user', None)
+                if not user:
+                    return
+                user_id = user.id
+
+                # Skip owners
+                if Config.OWNER_IDS and user_id in Config.OWNER_IDS:
+                    return
+
+                is_blocked = False
+
+                # 1. Check forward-bot.premium_bans (AryaPremium's own ban system)
+                prem_ban = await db.db.premium_bans.find_one({"_id": user_id})
+                if prem_ban and prem_ban.get("status") in ("banned", "flagged"):
+                    is_blocked = True
+
+                # 2 & 3. Check arya database (main bot bans) — uses same MongoDB cluster
+                if not is_blocked:
+                    try:
+                        arya_db_ref = db.client["arya"]
+                        # 2. arya.premium_bans (admin panel ban)
+                        arya_prem_ban = await arya_db_ref.premium_bans.find_one({"_id": user_id})
+                        if arya_prem_ban and arya_prem_ban.get("status") in ("banned", "flagged"):
+                            is_blocked = True
+                        # 3. arya.users.ban_status (main bot /ban command)
+                        if not is_blocked:
+                            arya_user = await arya_db_ref.users.find_one({"id": user_id})
+                            if arya_user and arya_user.get("ban_status", {}).get("is_banned"):
+                                is_blocked = True
+                    except Exception:
+                        pass  # Cross-DB check failed — fall through (don't block on error)
+
+                if is_blocked:
+                    # Silently drop — do NOT tell user they're banned
+                    if hasattr(update, 'answer'):
+                        try:
+                            await update.answer("⛔ Access denied.", show_alert=False)
+                        except Exception:
+                            pass
+                    raise StopPropagation
+
+            except StopPropagation:
+                raise
+            except Exception:
+                pass  # Never block on unexpected errors
+
+
         bots = await db.db.premium_bots.find().to_list(length=None)
         
         for b in bots:
@@ -113,6 +170,12 @@ async def main():
                 in_memory=False
             )
             setup_ask_router(cli)
+
+            # ── Register ban interceptor FIRST (group=-999) ──────────────────
+            cli.add_handler(MessageHandler(_premium_ban_interceptor, filters.private), group=-999)
+            cli.add_handler(CallbackQueryHandler(_premium_ban_interceptor, filters.all), group=-999)
+
+            # ── Register all normal handlers ──────────────────────────────────
             cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private))
             cli.add_handler(MessageHandler(_process_my_stories, filters.command(["mystories", "stories"]) & filters.private))
             # Media handler (feedback + screenshot) — must come before _process_screenshot
@@ -124,6 +187,7 @@ async def main():
             apps.append(cli)
     except Exception as e:
          logger.error(f"Failed loading connected bots: {e}")
+
 
     if not apps:
         logger.error("No bots to run. Exiting.")
