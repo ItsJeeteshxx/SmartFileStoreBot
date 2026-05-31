@@ -856,7 +856,7 @@ async def settings_query(bot, query):
      bot_id = type.split('_')[1]
      await db.set_active_bot(user_id, bot_id)
      await query.answer("Account set as ACTIVE!", show_alert=True)
-         buttons = [[InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#accounts")]]
+     buttons = [[InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#accounts")]]
      await query.message.edit_text("<b>Successfully changed active account.</b>", reply_markup=InlineKeyboardMarkup(buttons))
 
   elif type == "sharebot":
@@ -901,131 +901,131 @@ async def settings_query(bot, query):
      return await settings_query(bot, query)
 
 
-   # ──────────────────────────────────────────────────────────────────────────
-   # Anti-Abuse Settings Panel
-   # ──────────────────────────────────────────────────────────────────────────
-   elif type == "sb_anti_abuse":
-     abuse_cfg    = await db.get_anti_abuse_config()
-     enabled      = abuse_cfg.get('enabled', True)
-     cooldown     = abuse_cfg.get('cooldown_secs', 60)
-     max_strikes  = abuse_cfg.get('max_strikes', 5)
-     toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
-     status_icon  = "🟢" if enabled else "🔴"
-     buttons = [
-         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_abuse_toggle")],
-         [
-             InlineKeyboardButton(f"⏱ Cooldown: {cooldown}s",      callback_data="settings#sb_abuse_cd"),
-             InlineKeyboardButton(f"⚠️ Max Strikes: {max_strikes}",  callback_data="settings#sb_abuse_ms"),
-         ],
-         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
-     ]
-     await query.message.edit_text(
-         f"<b>🛡 ANTI-ABUSE SYSTEM</b>\n"
-         f"────────────────────\n"
-         f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
-         f"<b>Cooldown:</b> <code>{cooldown}s</code> — re-requests within this window count as a strike\n"
-         f"<b>Max Strikes:</b> <code>{max_strikes}</code> — after this many, user gets silently auto-banned\n"
-         f"────────────────────\n"
-         f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
-         f"When a user requests files faster than the cooldown window, each request adds a strike. "
-         f"After <b>{max_strikes} strikes</b> the user is <b>silently auto-banned</b> with no message sent. "
-         f"Owners, co-owners, and whitelisted users are always exempt regardless of this setting.</blockquote>",
-         reply_markup=InlineKeyboardMarkup(buttons)
-     )
+  # ──────────────────────────────────────────────────────────────────────────
+  # Anti-Abuse Settings Panel
+  # ──────────────────────────────────────────────────────────────────────────
+  elif type == "sb_anti_abuse":
+    abuse_cfg    = await db.get_anti_abuse_config()
+    enabled      = abuse_cfg.get('enabled', True)
+    cooldown     = abuse_cfg.get('cooldown_secs', 60)
+    max_strikes  = abuse_cfg.get('max_strikes', 5)
+    toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
+    status_icon  = "🟢" if enabled else "🔴"
+    buttons = [
+        [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_abuse_toggle")],
+        [
+            InlineKeyboardButton(f"⏱ Cooldown: {cooldown}s",      callback_data="settings#sb_abuse_cd"),
+            InlineKeyboardButton(f"⚠️ Max Strikes: {max_strikes}",  callback_data="settings#sb_abuse_ms"),
+        ],
+        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
+    ]
+    await query.message.edit_text(
+        f"<b>🛡 ANTI-ABUSE SYSTEM</b>\n"
+        f"────────────────────\n"
+        f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
+        f"<b>Cooldown:</b> <code>{cooldown}s</code> — re-requests within this window count as a strike\n"
+        f"<b>Max Strikes:</b> <code>{max_strikes}</code> — after this many, user gets silently auto-banned\n"
+        f"────────────────────\n"
+        f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
+        f"When a user requests files faster than the cooldown window, each request adds a strike. "
+        f"After <b>{max_strikes} strikes</b> the user is <b>silently auto-banned</b> with no message sent. "
+        f"Owners, co-owners, and whitelisted users are always exempt regardless of this setting.</blockquote>",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
-   elif type == "sb_abuse_toggle":
-     abuse_cfg = await db.get_anti_abuse_config()
-     new_state = not abuse_cfg.get('enabled', True)
-     await db.set_anti_abuse_config(enabled=new_state)
-     try:
-         await query.answer(f"🛡 Anti-Abuse {'ENABLED ✅' if new_state else 'DISABLED ❌'}!", show_alert=True)
-     except Exception:
-         pass
-     query.data = "settings#sb_anti_abuse"
-     return await settings_query(bot, query)
+  elif type == "sb_abuse_toggle":
+    abuse_cfg = await db.get_anti_abuse_config()
+    new_state = not abuse_cfg.get('enabled', True)
+    await db.set_anti_abuse_config(enabled=new_state)
+    try:
+        await query.answer(f"🛡 Anti-Abuse {'ENABLED ✅' if new_state else 'DISABLED ❌'}!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_anti_abuse"
+    return await settings_query(bot, query)
 
-   elif type == "sb_abuse_cd":
-     await query.message.delete()
-     ask = await bot.send_message(
-         user_id,
-         "<b>⏱ Set Anti-Abuse Cooldown</b>\n\n"
-         "Enter cooldown in <b>seconds</b>.\n"
-         "Re-requests within this window after a delivery count as a rapid re-request strike.\n\n"
-         "<b>Recommended:</b> <code>60</code> (1 minute)\n"
-         "<b>Range:</b> 10 – 3600 seconds\n\n"
-         "Send /cancel to abort."
-     )
-     try:
-         resp = await _ask(bot, user_id, timeout=120)
-         if getattr(resp, 'text', None) and '/cancel' in resp.text:
-             await resp.delete()
-             return await ask.edit_text(
-                 "<i>Cancelled.</i>",
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
-             )
-         val = int((resp.text or '').strip())
-         if not (10 <= val <= 3600):
-             raise ValueError('out of range')
-         await db.set_anti_abuse_config(cooldown_secs=val)
-         await resp.delete()
-         await ask.edit_text(
-             f"✅ Cooldown set to <code>{val}s</code>.",
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
-         )
-     except ValueError:
-         await ask.edit_text(
-             "❌ Invalid value. Must be a number between 10 and 3600.",
-             reply_markup=InlineKeyboardMarkup([[
-                 InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_abuse_cd"),
-                 InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")
-             ]])
-         )
-     except Exception:
-         await ask.edit_text(
-             "Timeout or error.",
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
-         )
+  elif type == "sb_abuse_cd":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>⏱ Set Anti-Abuse Cooldown</b>\n\n"
+        "Enter cooldown in <b>seconds</b>.\n"
+        "Re-requests within this window after a delivery count as a rapid re-request strike.\n\n"
+        "<b>Recommended:</b> <code>60</code> (1 minute)\n"
+        "<b>Range:</b> 10 – 3600 seconds\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+            )
+        val = int((resp.text or '').strip())
+        if not (10 <= val <= 3600):
+            raise ValueError('out of range')
+        await db.set_anti_abuse_config(cooldown_secs=val)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Cooldown set to <code>{val}s</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+        )
+    except ValueError:
+        await ask.edit_text(
+            "❌ Invalid value. Must be a number between 10 and 3600.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_abuse_cd"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")
+            ]])
+        )
+    except Exception:
+        await ask.edit_text(
+            "Timeout or error.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+        )
 
-   elif type == "sb_abuse_ms":
-     await query.message.delete()
-     ask = await bot.send_message(
-         user_id,
-         "<b>⚠️ Set Max Strikes Before Auto-Ban</b>\n\n"
-         "Enter the number of rapid-request strikes before a user is silently auto-banned.\n\n"
-         "<b>Recommended:</b> <code>5</code>\n"
-         "<b>Range:</b> 1 – 20 strikes\n\n"
-         "Send /cancel to abort."
-     )
-     try:
-         resp = await _ask(bot, user_id, timeout=120)
-         if getattr(resp, 'text', None) and '/cancel' in resp.text:
-             await resp.delete()
-             return await ask.edit_text(
-                 "<i>Cancelled.</i>",
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
-             )
-         val = int((resp.text or '').strip())
-         if not (1 <= val <= 20):
-             raise ValueError('out of range')
-         await db.set_anti_abuse_config(max_strikes=val)
-         await resp.delete()
-         await ask.edit_text(
-             f"✅ Max strikes set to <code>{val}</code>.",
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
-         )
-     except ValueError:
-         await ask.edit_text(
-             "❌ Invalid value. Must be a number between 1 and 20.",
-             reply_markup=InlineKeyboardMarkup([[
-                 InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_abuse_ms"),
-                 InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")
-             ]])
-         )
-     except Exception:
-         await ask.edit_text(
-             "Timeout or error.",
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
-         )
+  elif type == "sb_abuse_ms":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>⚠️ Set Max Strikes Before Auto-Ban</b>\n\n"
+        "Enter the number of rapid-request strikes before a user is silently auto-banned.\n\n"
+        "<b>Recommended:</b> <code>5</code>\n"
+        "<b>Range:</b> 1 – 20 strikes\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+            )
+        val = int((resp.text or '').strip())
+        if not (1 <= val <= 20):
+            raise ValueError('out of range')
+        await db.set_anti_abuse_config(max_strikes=val)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Max strikes set to <code>{val}</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+        )
+    except ValueError:
+        await ask.edit_text(
+            "❌ Invalid value. Must be a number between 1 and 20.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_abuse_ms"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")
+            ]])
+        )
+    except Exception:
+        await ask.edit_text(
+            "Timeout or error.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+        )
 
   elif type == "sbt_manage":
       bots = await db.get_share_bots()
