@@ -436,10 +436,28 @@ class Database:
             is_banned=False,
             ban_reason=''
         )
-        user = await self.col.find_one({'id':int(id)})
-        if not user:
+        try:
+            user_id_int = int(id)
+        except (ValueError, TypeError):
             return default
-        return user.get('ban_status', default)
+            
+        # 1. Check local bot collection ban status in 'arya' DB
+        user = await self.col.find_one({'id': user_id_int})
+        if user and user.get('ban_status', {}).get('is_banned'):
+            return user.get('ban_status', default)
+            
+        # 2. Check cross-database premium bans in 'forward-bot' DB
+        try:
+            prem_ban = await self._client['forward-bot'].premium_bans.find_one({'_id': user_id_int})
+            if prem_ban and prem_ban.get('status') in ('banned', 'flagged'):
+                return {
+                    'is_banned': True,
+                    'ban_reason': prem_ban.get('reason', 'Banned by administrator')
+                }
+        except Exception:
+            pass
+            
+        return default
 
     async def get_all_users(self):
         return self.col.find({})
