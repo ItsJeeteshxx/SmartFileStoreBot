@@ -388,20 +388,25 @@ async def _lb_run_job(job_id: str):
                 prog_id = job.get("prog_id")
                 if not prog_id:
                     try:
-                        p = await sb_client.send_message(target, 
-                            f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n\n"
+                        _thresh = job.get('threshold', 5)
+                        _prog_txt = (
+                            f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n"
+                            f"────────────────────\n"
                             f"✅ <b>Auto-Generated Blocks:</b> <code>{fwd_count}</code>\n"
-                            f"»  <b>Last updated:</b> <code>{time.strftime('%H:%M:%S')}</code>\n\n"
-                            f"ℹ️ <b>यह कैसे काम करता है? (How it works?)</b>\n"
-                            f"यह Live Auto-Generator system background में काम करता है। "
-                            f"जब भी Admin <b>Live Monitoring</b> में फ़ाइलें सिलेक्ट या अपलोड करते हैं, "
-                            f"बोट उन्हें ट्रैक करता है। जैसे ही आपकी सिलेक्टेड फ़ाइलों का थ्रेशोल्ड लिमिट "
-                            f"(जैसे: <b>{job.get('threshold', 5)} files</b>) पूरा होता है, बोट तुरंत एक "
-                            f"सुंदर Batch Link block (inline buttons के साथ) ऑटो-पोस्ट कर देता है।\n\n"
-                            f"📝 <b>Example:</b>\n"
-                            f"जैसे ही <code>5 files</code> सिलेक्ट होंगी, बोट पोस्ट कर देगा और "
-                            f"<b>[ Live Job File Number auto post ]</b> aapko itne me yaha mil jaygi (buttons के रूप में)।\n\n"
-                            f"<i>This message updates every 60s. Arya Bot</i>",
+                            f"⏳ <b>Buffer:</b> <code>{len(job.get('buffer_mids', []))}/{_thresh}</code> files\n"
+                            f"🕐 <b>Last Updated:</b> <code>{time.strftime('%H:%M:%S')}</code>\n"
+                            f"────────────────────\n"
+                            f"<blockquote expandable>ℹ️ <b>यह कैसे काम करता है?</b>\n\n"
+                            f"यह Live Auto-Generator background में काम करता है। Admin जब भी "
+                            f"Database channel में files upload करते हैं, बोट उन्हें track करता है।\n\n"
+                            f"जैसे ही <b>{_thresh} files</b> का threshold पूरा होता है — बोट तुरंत "
+                            f"एक Batch Link block (inline buttons के साथ) auto-post कर देता है।\n\n"
+                            f"📝 <b>Example:</b> जैसे ही <code>{_thresh} files</code> detect होंगी, "
+                            f"नीचे एक नया Episode button block automatically post हो जाएगा।\n\n"
+                            f"<i>This message auto-updates every 60s • Arya Bot</i></blockquote>"
+                        )
+                        p = await sb_client.send_message(
+                            target, _prog_txt,
                             reply_to_message_id=job.get('target_topic_id')
                         )
                         prog_id = p.id
@@ -563,21 +568,25 @@ async def _lb_run_job(job_id: str):
                 up_time = job.get("last_prog_update", 0)
                 if prog_id and (now_t - up_time) > 60:
                     try:
-                        await sb_client.edit_message_text(target, prog_id,
-                            f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n\n"
+                        _thresh = job.get('threshold', 5)
+                        _buf_now = len((await _lb_get_job(job_id) or {}).get('buffer_mids', []))
+                        _edit_txt = (
+                            f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n"
+                            f"────────────────────\n"
                             f"✅ <b>Auto-Generated Blocks:</b> <code>{fwd_count}</code>\n"
-                            f"»  <b>Last updated:</b> <code>{time.strftime('%H:%M:%S')}</code>\n\n"
-                            f"ℹ️ <b>यह कैसे काम करता है? (How it works?)</b>\n"
-                            f"यह Live Auto-Generator system background में काम करता है। "
-                            f"जब भी Admin <b>Live Monitoring</b> में फ़ाइलें सिलेक्ट या अपलोड करते हैं, "
-                            f"बोट उन्हें ट्रैक करता. जैसे ही आपकी सिलेक्टेड फ़ाइलों का थ्रेशोल्ड लिमिट "
-                            f"(जैसे: <b>{job.get('threshold', 5)} files</b>) पूरा होता है, बोट तुरंत एक "
-                            f"सुंदर Batch Link block (inline buttons के साथ) ऑटो-पोस्ट कर देता है।\n\n"
-                            f"📝 <b>Example:</b>\n"
-                            f"जैसे ही <code>5 files</code> सिलेक्ट होंगी, बोट पोस्ट कर देगा और "
-                            f"<b>[ Live Job File Number auto post ]</b> aapko itne me yaha mil jaygi (buttons के रूप में)।\n\n"
-                            f"<i>This message updates every 60s. Arya Bot</i>"
+                            f"⏳ <b>Buffer:</b> <code>{_buf_now}/{_thresh}</code> files\n"
+                            f"🕐 <b>Last Updated:</b> <code>{time.strftime('%H:%M:%S')}</code>\n"
+                            f"────────────────────\n"
+                            f"<blockquote expandable>ℹ️ <b>यह कैसे काम करता है?</b>\n\n"
+                            f"यह Live Auto-Generator background में काम करता है। Admin जब भी "
+                            f"Database channel में files upload करते हैं, बोट उन्हें track करता है।\n\n"
+                            f"जैसे ही <b>{_thresh} files</b> का threshold पूरा होता है — बोट तुरंत "
+                            f"एक Batch Link block (inline buttons के साथ) auto-post कर देता है।\n\n"
+                            f"📝 <b>Example:</b> जैसे ही <code>{_thresh} files</code> detect होंगी, "
+                            f"नीचे एक नया Episode button block automatically post हो जाएगा।\n\n"
+                            f"<i>This message auto-updates every 60s • Arya Bot</i></blockquote>"
                         )
+                        await sb_client.edit_message_text(target, prog_id, _edit_txt)
                         await _lb_update_job(job_id, {"last_prog_update": now_t})
                     except: pass
 
