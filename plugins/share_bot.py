@@ -408,6 +408,16 @@ async def _fsub_record_jr(client, request):
 async def _process_start(client, message):
     """Handle /start [uuid] deep-link — deliver files to user."""
     user_id = message.from_user.id
+    
+    # Strict ban check double-guard to prevent any delivery bot bypasses
+    try:
+        ban_status = await db.get_ban_status(user_id)
+        if ban_status.get('is_banned'):
+            logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
+            return
+    except Exception:
+        pass
+        
     args = message.command
     bot_id = str(client.me.id) if client.me else None
 
@@ -909,6 +919,15 @@ async def _send_about(client, query_or_msg, bot_id: str = None, edit: bool = Tru
 
 async def _process_delivery_button(client, query):
     """Handle inline buttons on the welcome/help/about messages."""
+    user_id = query.from_user.id
+    try:
+        ban_status = await db.get_ban_status(user_id)
+        if ban_status.get('is_banned'):
+            await query.answer("⛔ Operation not allowed.", show_alert=True)
+            return
+    except Exception:
+        pass
+        
     cmd = query.data.split('#')[1] if '#' in query.data else ''
     bot_id = str(client.me.id) if client.me else None
     msg = query.message
