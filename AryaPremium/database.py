@@ -112,7 +112,7 @@ class PremiumDatabase:
                 "tc_accepted": False,
                 "purchases": [],
                 "used_channels": [],
-                "subscribed": True,
+                "subscribed": False,   # OFF by default — user must explicitly opt-in
                 "joined_date": datetime.now(timezone.utc),
             }
             if update_fields:
@@ -134,8 +134,9 @@ class PremiumDatabase:
         await self.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": story_id}}, upsert=True)
 
     async def get_subscribed_users(self):
-        """Returns list of all users who have subscribed=True (or missing subscribed key defaulting to True)."""
-        cursor = self.users.find({"subscribed": {"$ne": False}})
+        """Returns list of all users who have explicitly opted in (subscribed=True).
+        Users with missing key or False are excluded — subscriptions are OFF by default."""
+        cursor = self.users.find({"subscribed": True})
         return await cursor.to_list(length=None)
 
     # ─────────────────────────────────────────────────────────────────
