@@ -2052,7 +2052,11 @@ async def settings_query(bot, query):
           raw_id = resp.text.strip()
           await resp.delete()
           try:
-              ch_obj = await bot.get_chat(raw_id)
+              raw_id_int = int(raw_id)
+          except ValueError:
+              raw_id_int = raw_id
+          try:
+              ch_obj = await bot.get_chat(raw_id_int)
           except Exception as e:
               err_str = str(e).lower()
               if "private" in err_str or "peer_id_invalid" in err_str or "channel_invalid" in err_str:
@@ -2187,7 +2191,11 @@ async def settings_query(bot, query):
               )
           # Resolve and validate
           try:
-              ch_info = await bot.get_chat(txt)
+              txt_int = int(txt)
+          except ValueError:
+              txt_int = txt
+          try:
+              ch_info = await bot.get_chat(txt_int)
               ch_id_int = ch_info.id
               ch_title = ch_info.title or str(ch_id_int)
           except Exception as e:
