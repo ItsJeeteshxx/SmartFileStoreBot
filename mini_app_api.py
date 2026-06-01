@@ -546,11 +546,18 @@ async def calculate_promo_discount(
             if user_target == "new_only":
                 if orders_count > 0:
                     return 0.0, "Promo code is only valid for new users (with 0 purchases)"
-                    
             elif user_target == "existing_only":
                 if orders_count == 0:
                     return 0.0, "Promo code is only valid for existing buyers"
-                    
+            elif user_target == "1_purchase":
+                if orders_count != 1:
+                    return 0.0, "Promo code is only valid for users with exactly 1 purchase"
+            elif user_target == "2_purchases":
+                if orders_count != 2:
+                    return 0.0, "Promo code is only valid for users with exactly 2 purchases"
+            elif user_target == "3_plus_purchases":
+                if orders_count < 3:
+                    return 0.0, "Promo code is only valid for users with 3 or more purchases"
             elif user_target == "inactive_only":
                 if orders_count > 0:
                     return 0.0, "Promo code is only valid for users with 0 purchases"
@@ -723,6 +730,60 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
     except Exception as e:
         logger.error(f"Error validating promo code: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AvailablePromosRequest(BaseModel):
+    telegram_id: Optional[Union[str, int]] = None
+    story_ids: list[str] = []
+
+@api_router.post("/promo-codes/available")
+async def get_available_promos(data: AvailablePromosRequest):
+    """Returns a list of valid promo codes for the current cart/user."""
+    try:
+        arya_db = app.state.db
+        if not arya_db:
+            return {"success": False, "promos": []}
+            
+        promos = await arya_db.db.premium_promo_codes.find({"active": True}).to_list(length=100)
+        
+        from bson.objectid import ObjectId
+        valid_stories = []
+        for sid in data.story_ids:
+            s = None
+            try:
+                s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
+            except Exception:
+                pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                except Exception:
+                    pass
+            if s:
+                valid_stories.append(s)
+                
+        subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+        
+        available = []
+        for promo in promos:
+            discount, err = await calculate_promo_discount(
+                arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
+            )
+            if not err and discount > 0:
+                available.append({
+                    "code": promo.get("code"),
+                    "type": promo.get("type"),
+                    "value": promo.get("value"),
+                    "description": promo.get("description", ""),
+                    "discount_amount": discount,
+                    "auto_apply": promo.get("auto_apply", False)
+                })
+                
+        available.sort(key=lambda x: x["discount_amount"], reverse=True)
+        return {"success": True, "promos": available}
+    except Exception as e:
+        logger.error(f"Error fetching available promos: {e}")
+        return {"success": False, "promos": []}
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /create-payment-link
