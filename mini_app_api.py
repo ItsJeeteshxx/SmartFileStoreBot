@@ -2099,6 +2099,7 @@ async def get_admin_stories(telegram_id: str):
                 cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
                 
             s["poster_url"] = cover
+            s["status"] = s.get("status") or "available"
 
             result.append({**s, "_id": _id_str, "story_id": story_id})
         return {"success": True, "data": result}
