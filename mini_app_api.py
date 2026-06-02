@@ -2516,7 +2516,7 @@ async def get_admin_support(telegram_id: str):
         arya_db = app.state.db
         cursor = arya_db.db.premium_feedback.find({
             "status": {"$ne": "resolved"},
-            "text": {"$not": {"$regex": "^\\[REQUEST\\]", "$options": "i"}}
+            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
         }).sort("created_at", -1).limit(100)
         tickets = []
         async for doc in cursor:
@@ -2535,6 +2535,34 @@ async def get_admin_support(telegram_id: str):
         return {"success": True, "data": tickets}
     except Exception as e:
         logger.error(f"Error fetching support: {e}")
+        return {"success": False, "data": []}
+
+@api_router.get("/admin/feedback")
+async def get_admin_feedback(telegram_id: str):
+    from AryaPremium.config import Config
+    try:
+        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        cursor = arya_db.db.premium_feedback.find({
+            "text": {"$regex": "^\\[FEEDBACK\\]", "$options": "i"}
+        }).sort("created_at", -1).limit(200)
+        feedbacks = []
+        async for doc in cursor:
+            feedbacks.append({
+                "id": str(doc["_id"]),
+                "user_id": doc.get("user_id"),
+                "username": doc.get("username", "Unknown"),
+                "first_name": doc.get("user_name", doc.get("first_name", "Unknown")),
+                "text": doc.get("text", ""),
+                "status": doc.get("status", "open"),
+                "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+            })
+        return {"success": True, "data": feedbacks}
+    except Exception as e:
+        logger.error(f"Error fetching feedback: {e}")
         return {"success": False, "data": []}
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
