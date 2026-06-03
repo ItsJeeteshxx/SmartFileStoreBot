@@ -178,19 +178,23 @@ def _build_cl_info(job: dict) -> str:
 
 # ─── FFmpeg: TURBO (dynaudnorm = single-pass, 10× faster than loudnorm) ──────
 async def _ffmpeg_async(cmd: list) -> tuple:
-    """Runs FFmpeg asynchronously and safely cleans up if cancelled."""
+    """Runs FFmpeg asynchronously and safely cleans up if cancelled. Uses TempFile to prevent memory explosion."""
+    import tempfile
     async with _cl_ff_sem:
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL
-            )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2700)
-            if process.returncode != 0:
-                return False, stderr.decode('utf-8', 'ignore')[:500]
-            return True, ""
+            with tempfile.TemporaryFile() as temp_err:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=temp_err,
+                    stdin=asyncio.subprocess.DEVNULL
+                )
+                await asyncio.wait_for(process.wait(), timeout=2700)
+                if process.returncode != 0:
+                    temp_err.seek(0)
+                    # Read only the first 500 bytes to avoid large strings
+                    return False, temp_err.read(500).decode('utf-8', 'ignore')
+                return True, ""
         except asyncio.TimeoutError:
             try:
                 process.kill()
@@ -205,7 +209,8 @@ async def _ffmpeg_async(cmd: list) -> tuple:
             raise
         except Exception as e:
             try:
-                process.kill()
+                if 'process' in locals():
+                    process.kill()
             except Exception:
                 pass
             return False, str(e)
