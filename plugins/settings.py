@@ -2042,6 +2042,7 @@ async def settings_query(bot, query):
       ask = await bot.send_message(user_id,
           "<b>Send the Channel/Group ID or @username</b>\n"
           "Example: <code>-1001234567890</code> or <code>@mychannel</code>\n\n"
+          "<i>Tip: You can also forward any message from your private channel here!</i>\n\n"
           "/cancel to abort"
       )
       try:
@@ -2049,21 +2050,39 @@ async def settings_query(bot, query):
           if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
               await resp.delete()
               return await ask.edit_text("<i>Process Cancelled Successfully!</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
-          raw_id = resp.text.strip()
+          
+          if resp.forward_from_chat:
+              raw_id_int = resp.forward_from_chat.id
+          else:
+              raw_id = (resp.text or "").strip()
+              if "t.me/" in raw_id or "http" in raw_id:
+                  await resp.delete()
+                  return await ask.edit_text(
+                      "<b>‣  Invalid Input!</b>\n\nPlease send the Channel ID (e.g. <code>-100...</code>) or a public username (<code>@mychannel</code>), <b>NOT an invite link</b>.\n\n"
+                      "<i>Tip: If it's a private channel, simply forward any message from that channel to me!</i>",
+                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
+                  )
+              try:
+                  raw_id_int = int(raw_id)
+              except ValueError:
+                  raw_id_int = raw_id
+                  
           await resp.delete()
-          try:
-              raw_id_int = int(raw_id)
-          except ValueError:
-              raw_id_int = raw_id
           try:
               ch_obj = await bot.get_chat(raw_id_int)
           except Exception as e:
               err_str = str(e).lower()
-              if "private" in err_str or "peer_id_invalid" in err_str or "channel_invalid" in err_str:
+              if "username_invalid" in err_str:
+                  msg = (
+                      "<b>‣  Invalid ID or Username.</b>\n"
+                      "If you are trying to add a private channel, please send its numerical ID (starts with <code>-100</code>) or forward a message from it."
+                  )
+              elif "private" in err_str or "peer_id_invalid" in err_str or "channel_invalid" in err_str:
                   msg = "<b>‣  Cannot access this channel.</b>\nMake sure the Main Bot is admin."
               else:
                   msg = f"<b>‣  Error:</b> <code>{e}</code>"
               return await ask.edit_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
+          
           try:
               invite = await bot.export_chat_invite_link(ch_obj.id)
           except Exception:
@@ -2274,19 +2293,41 @@ async def settings_query(bot, query):
              user_id,
              "<b>Send the Channel/Group ID or @username</b>\n"
              "Example: <code>-1001234567890</code> or <code>@mychannel</code>\n\n"
+             "<i>Tip: You can also forward any message from your private channel here!</i>\n\n"
              "/cancel to abort"
          )
          resp = await bot.listen(chat_id=user_id, timeout=120)
          if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
              await resp.delete()
              return await ask.edit_text("<i>Process Cancelled Successfully!</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sharefsub")]]))
-         raw_id = resp.text.strip()
+         
+         if resp.forward_from_chat:
+             raw_id_int = resp.forward_from_chat.id
+         else:
+             raw_id = (resp.text or "").strip()
+             if "t.me/" in raw_id or "http" in raw_id:
+                 await resp.delete()
+                 return await ask.edit_text(
+                     "<b>‣  Invalid Input!</b>\n\nPlease send the Channel ID (e.g. <code>-100...</code>) or a public username (<code>@mychannel</code>), <b>NOT an invite link</b>.\n\n"
+                     "<i>Tip: If it's a private channel, simply forward any message from that channel to me!</i>",
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sharefsub")]])
+                 )
+             try:
+                 raw_id_int = int(raw_id)
+             except ValueError:
+                 raw_id_int = raw_id
+                 
          await resp.delete()
          try:
-             ch_obj = await bot.get_chat(raw_id)
+             ch_obj = await bot.get_chat(raw_id_int)
          except Exception as e:
              err_str = str(e).lower()
-             if "private" in err_str or "peer_id_invalid" in err_str or "channel_invalid" in err_str:
+             if "username_invalid" in err_str:
+                 msg = (
+                     "<b>‣  Invalid ID or Username.</b>\n"
+                     "If you are trying to add a private channel, please send its numerical ID (starts with <code>-100</code>) or forward a message from it."
+                 )
+             elif "private" in err_str or "peer_id_invalid" in err_str or "channel_invalid" in err_str:
                  msg = (
                      "<b>‣  Cannot access this channel.</b>\n\n"
                      "This is a <b>private channel/group</b>. Make sure:\n"
