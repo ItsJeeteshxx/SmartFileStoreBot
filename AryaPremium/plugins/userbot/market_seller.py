@@ -4278,7 +4278,7 @@ async def _process_callback(client, query):
 
             t = T[lang]
 
-            subscribed = user.get("subscribed", False)   # Default OFF
+            subscribed = user.get("alerts_subscribed", False)   # Default OFF
 
             if lang == 'hi':
 
@@ -4564,11 +4564,11 @@ async def _process_callback(client, query):
 
         u = await db.get_user(user_id, from_user=query.from_user)
 
-        current_sub = u.get("subscribed", False)   # Default OFF
+        current_sub = u.get("alerts_subscribed", False)   # Default OFF
 
         new_sub = not current_sub
 
-        await db.update_user(user_id, {"subscribed": new_sub})
+        await db.update_user(user_id, {"alerts_subscribed": new_sub})
 
 
 

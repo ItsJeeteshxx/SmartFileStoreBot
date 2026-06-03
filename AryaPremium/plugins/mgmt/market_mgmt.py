@@ -2321,7 +2321,7 @@ async def _add_story_flow(client, user_id):
             async def _send_sub_alert():
                 # Only users who explicitly turned notifications ON
                 all_users = await db.db.users.find(
-                    {"subscribed": True},
+                    {"alerts_subscribed": True},
                     {"id": 1, "lang": 1}
                 ).to_list(length=None)
 
