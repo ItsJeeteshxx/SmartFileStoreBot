@@ -177,24 +177,38 @@ def _build_cl_info(job: dict) -> str:
 
 
 # ─── FFmpeg: TURBO (dynaudnorm = single-pass, 10× faster than loudnorm) ──────
-def _run_ffmpeg_sync(cmd: list) -> tuple:
-    """Blocking FFmpeg call — runs in ThreadPoolExecutor thread."""
-    try:
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=2700)
-        if r.returncode != 0:
-            return False, r.stderr.decode('utf-8', 'ignore')[:500]
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "FFmpeg timeout (45m)"
-    except Exception as e:
-        return False, str(e)
-
-
 async def _ffmpeg_async(cmd: list) -> tuple:
-    """Runs _run_ffmpeg_sync in thread pool so event loop stays free for downloads."""
-    loop = asyncio.get_event_loop()
+    """Runs FFmpeg asynchronously and safely cleans up if cancelled."""
     async with _cl_ff_sem:
-        return await loop.run_in_executor(_FFMPEG_POOL, _run_ffmpeg_sync, cmd)
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2700)
+            if process.returncode != 0:
+                return False, stderr.decode('utf-8', 'ignore')[:500]
+            return True, ""
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            return False, "FFmpeg timeout (45m)"
+        except asyncio.CancelledError:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            raise
+        except Exception as e:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            return False, str(e)
 
 
 def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clean: bool = False, force_reencode: bool = False) -> list:
@@ -930,14 +944,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     import random as _rnd_inj, math as _rnd_math, re as _re_inj
                     _inj_loop = asyncio.get_event_loop()
 
-                    def _probe_dur_sync(_ppath):
+                    async def _probe_dur_async(_ppath):
                         try:
-                            _pr = __import__("subprocess").run(
-                                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                 "-of", "default=noprint_wrappers=1:nokey=1", _ppath],
-                                capture_output=True, text=True, timeout=60, stdin=__import__("subprocess").DEVNULL
+                            _pr = await asyncio.create_subprocess_exec(
+                                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1", _ppath,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                stdin=asyncio.subprocess.DEVNULL
                             )
-                            return float(_pr.stdout.strip() or "0")
+                            stdout, _ = await asyncio.wait_for(_pr.communicate(), timeout=60)
+                            return float(stdout.decode('utf-8').strip() or "0")
                         except Exception:
                             return 0.0
 
@@ -989,7 +1006,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         # ALL ad positions and concatenates them in one FFmpeg call.
                         # Replaces N sequential FFmpeg calls (each re-encoding the
                         # growing file) with a single decode+encode pass → ~8× faster.
-                        _dur = await _inj_loop.run_in_executor(_FFMPEG_POOL, _probe_dur_sync, out_path)
+                        _dur = await _probe_dur_async(out_path)
                         _n_inj = len(_inj_types)
 
                         # Calculate all split points relative to total duration

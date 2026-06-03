@@ -127,13 +127,13 @@ async def optimize_image(url: str):
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
             
-        # Resize if extremely large (e.g., > 1200px) to save bandwidth, else keep original resolution
-        max_size = (1200, 1200)
+        # Resize to thumbnail size since these are mostly used in small cards
+        max_size = (400, 400)
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
         
         # Save as WebP
         output = io.BytesIO()
-        img.save(output, format="WEBP", quality=85, method=6) # method=6 is max compression effort
+        img.save(output, format="WEBP", quality=80, method=2) # faster compression
         optimized_bytes = output.getvalue()
         
         # Manage cache size
@@ -199,9 +199,9 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
             img = Image.open(io.BytesIO(img_data))
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGBA")
-            img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+            img.thumbnail((400, 400), Image.Resampling.LANCZOS)
             output = io.BytesIO()
-            img.save(output, format="WEBP", quality=85, method=6)
+            img.save(output, format="WEBP", quality=80, method=2)
             return output.getvalue()
             
         optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
