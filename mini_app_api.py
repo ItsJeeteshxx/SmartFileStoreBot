@@ -529,6 +529,12 @@ async def calculate_promo_discount(
     if not promo.get("active", True):
         return 0.0, "Promo code is inactive"
         
+    # Check minimum cart items
+    min_cart_items = promo.get("min_cart_items")
+    if min_cart_items is not None and isinstance(min_cart_items, int) and min_cart_items > 0:
+        if len(story_ids) < min_cart_items:
+            return 0.0, f"You need at least {min_cart_items} items in your cart to use this promo code"
+            
     # Check target audience
     user_target = promo.get("user_target", "all")
     if user_target != "all" and telegram_id is not None:
@@ -586,7 +592,7 @@ async def calculate_promo_discount(
 
     # Check user-specific limit
     user_limit = promo.get("user_limit")
-    if user_limit is not None and telegram_id is not None:
+    if user_limit is not None and isinstance(user_limit, int) and telegram_id is not None:
         tg_id_str = str(telegram_id).strip()
         if tg_id_str:
             tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
@@ -619,19 +625,21 @@ async def calculate_promo_discount(
                 
     # Check usage limit
     usage_limit = promo.get("usage_limit")
-    if usage_limit is not None:
+    if usage_limit is not None and isinstance(usage_limit, int):
         usage_count = promo.get("usage_count", 0)
         if usage_count >= usage_limit:
             return 0.0, "Promo code usage limit reached"
             
-    # Check story applicability
-    story_id_target = promo.get("story_id")
-    if story_id_target and story_id_target != "global":
-        # Check if the target story_id matches any of the stories in the cart
-        # (either matching the custom story_id OR matching the _id of the story document)
+    # Check story applicability (handle both story_id and target_story_ids for backward compatibility)
+    target_story_ids = promo.get("target_story_ids", [])
+    legacy_story_id = promo.get("story_id")
+    if legacy_story_id and legacy_story_id != "global" and legacy_story_id not in target_story_ids:
+        target_story_ids.append(legacy_story_id)
+        
+    if target_story_ids:
         from bson.objectid import ObjectId
-        applicable_in_cart = False
         applicable_story_price = 0.0
+        applicable_in_cart = False
         
         for sid in story_ids:
             s = None
@@ -645,26 +653,14 @@ async def calculate_promo_discount(
             if s:
                 s_custom_id = s.get("story_id")
                 s_db_id = str(s.get("_id"))
-                if story_id_target == s_custom_id or story_id_target == s_db_id:
+                if s_custom_id in target_story_ids or s_db_id in target_story_ids:
                     applicable_in_cart = True
-                    applicable_story_price = float(s.get("price", 0) or 0)
-                    break
-                
+                    applicable_story_price += float(s.get("price", 0) or 0)
+                    
         if not applicable_in_cart:
-            target_story = None
-            try:
-                target_story = await db.db.premium_stories.find_one({
-                    "$or": [
-                        {"story_id": story_id_target},
-                        {"_id": ObjectId(story_id_target) if len(story_id_target) == 24 else None}
-                    ]
-                })
-            except Exception:
-                pass
-            story_name = target_story.get("story_name_en") if target_story else story_id_target
-            return 0.0, f"Promo code is only valid for story: {story_name}"
+            return 0.0, "Promo code is not applicable to any stories in your cart"
             
-        # Calculate discount restricted to target story
+        # Calculate discount restricted to target stories' combined price
         ptype = promo.get("type", "percentage")
         pval = float(promo.get("value", 0))
         if ptype == "percentage":
@@ -4714,7 +4710,12 @@ async def get_admin_settings(telegram_id: str):
                 "expires_at": p.get("expires_at"),
                 "usage_limit": p.get("usage_limit"),
                 "usage_count": p.get("usage_count", 0),
-                "description": p.get("description", "")
+                "description": p.get("description", ""),
+                "auto_apply": bool(p.get("auto_apply", False)),
+                "min_cart_items": p.get("min_cart_items"),
+                "user_target": p.get("user_target", "all"),
+                "user_limit": p.get("user_limit"),
+                "target_story_ids": p.get("target_story_ids", [])
             })
             
         return {
@@ -4790,7 +4791,12 @@ async def update_admin_settings(payload: dict):
                             "story_id": str(pc.get("story_id", "global")).strip() if pc.get("story_id") else "global",
                             "expires_at": str(pc.get("expires_at")).strip() if pc.get("expires_at") else None,
                             "usage_limit": int(pc["usage_limit"]) if pc.get("usage_limit") is not None and str(pc["usage_limit"]).isdigit() else None,
-                            "description": str(pc.get("description", "")).strip()
+                            "description": str(pc.get("description", "")).strip(),
+                            "auto_apply": bool(pc.get("auto_apply", False)),
+                            "min_cart_items": int(pc["min_cart_items"]) if pc.get("min_cart_items") is not None and str(pc["min_cart_items"]).isdigit() else None,
+                            "user_target": str(pc.get("user_target", "all")),
+                            "user_limit": int(pc["user_limit"]) if pc.get("user_limit") is not None and str(pc["user_limit"]).isdigit() else None,
+                            "target_story_ids": pc.get("target_story_ids", []) if isinstance(pc.get("target_story_ids"), list) else []
                         })
             
             # Fetch existing codes to merge
@@ -4817,7 +4823,12 @@ async def update_admin_settings(payload: dict):
                             "story_id": p["story_id"],
                             "expires_at": p["expires_at"],
                             "usage_limit": p["usage_limit"],
-                            "description": p["description"]
+                            "description": p["description"],
+                            "auto_apply": p["auto_apply"],
+                            "min_cart_items": p["min_cart_items"],
+                            "user_target": p["user_target"],
+                            "user_limit": p["user_limit"],
+                            "target_story_ids": p["target_story_ids"]
                         }}
                     )
                 else:
@@ -4988,7 +4999,12 @@ async def get_public_settings():
                 "expires_at": p.get("expires_at"),
                 "usage_limit": p.get("usage_limit"),
                 "usage_count": p.get("usage_count", 0),
-                "description": p.get("description", "")
+                "description": p.get("description", ""),
+                "auto_apply": bool(p.get("auto_apply", False)),
+                "min_cart_items": p.get("min_cart_items"),
+                "user_target": p.get("user_target", "all"),
+                "user_limit": p.get("user_limit"),
+                "target_story_ids": p.get("target_story_ids", [])
             })
             
         return {
