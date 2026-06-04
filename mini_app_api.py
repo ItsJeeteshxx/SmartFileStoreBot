@@ -766,18 +766,30 @@ async def get_available_promos(data: AvailablePromosRequest):
         
         available = []
         for promo in promos:
-            discount, err = await calculate_promo_discount(
-                arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
-            )
-            if not err and discount > 0:
+            if not data.story_ids:
+                # If requested for homepage banner (empty cart), return all active promos
                 available.append({
                     "code": promo.get("code"),
                     "type": promo.get("type"),
                     "value": promo.get("value"),
                     "description": promo.get("description", ""),
-                    "discount_amount": discount,
+                    "discount_amount": 0,
                     "auto_apply": promo.get("auto_apply", False)
                 })
+            else:
+                discount, err = await calculate_promo_discount(
+                    arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
+                )
+                if not err and discount > 0:
+                    available.append({
+                        "code": promo.get("code"),
+                        "type": promo.get("type"),
+                        "value": promo.get("value"),
+                        "description": promo.get("description", ""),
+                        "discount_amount": discount,
+                        "auto_apply": promo.get("auto_apply", False)
+                    })
+                
                 
         available.sort(key=lambda x: x["discount_amount"], reverse=True)
         return {"success": True, "promos": available}
