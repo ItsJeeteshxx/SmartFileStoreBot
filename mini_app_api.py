@@ -553,11 +553,11 @@ async def calculate_promo_discount(
                 if orders_count == 0:
                     return 0.0, "This promo code rewards our existing buyers. You need at least 1 past purchase to use it."
             elif user_target == "1_purchase":
-                if orders_count != 1:
-                    return 0.0, f"This promo code is for users with exactly 1 purchased story. You currently have {orders_count}."
+                if orders_count < 1:
+                    return 0.0, "This promo code requires at least 1 purchased story. You currently have 0."
             elif user_target == "2_purchases":
-                if orders_count != 2:
-                    return 0.0, f"This promo code is exclusively for users with exactly 2 purchased stories. You currently have {orders_count}."
+                if orders_count < 2:
+                    return 0.0, f"This promo code requires at least 2 purchased stories. You currently have {orders_count}."
             elif user_target == "3_plus_purchases":
                 if orders_count < 3:
                     return 0.0, f"This special promo code unlocks after your 3rd purchase! You currently have {orders_count} purchased stories."
