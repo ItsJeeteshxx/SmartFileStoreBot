@@ -541,35 +541,30 @@ async def calculate_promo_discount(
         tg_id_str = str(telegram_id).strip()
         if tg_id_str:
             tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
-            query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
             
-            # Query completed orders
-            orders_count = await db.db.orders.count_documents({
-                "user_id": {"$in": query_user},
-                "status": "paid"
-            })
+            # Retrieve user doc to count purchased stories and check registration date
+            user_doc = await db.db.users.find_one({"id": tg_id_int}) if tg_id_int else None
+            orders_count = len(user_doc.get("purchases", [])) if user_doc else 0
             
             if user_target == "new_only":
                 if orders_count > 0:
-                    return 0.0, "Promo code is only valid for new users (with 0 purchases)"
+                    return 0.0, "This promo code is exclusively for new users who haven't made a purchase yet."
             elif user_target == "existing_only":
                 if orders_count == 0:
-                    return 0.0, "Promo code is only valid for existing buyers"
+                    return 0.0, "This promo code rewards our existing buyers. You need at least 1 past purchase to use it."
             elif user_target == "1_purchase":
                 if orders_count != 1:
-                    return 0.0, "Promo code is only valid for users with exactly 1 purchase"
+                    return 0.0, f"This promo code is for users with exactly 1 purchased story. You currently have {orders_count}."
             elif user_target == "2_purchases":
                 if orders_count != 2:
-                    return 0.0, "Promo code is only valid for users with exactly 2 purchases"
+                    return 0.0, f"This promo code is exclusively for users with exactly 2 purchased stories. You currently have {orders_count}."
             elif user_target == "3_plus_purchases":
                 if orders_count < 3:
-                    return 0.0, "Promo code is only valid for users with 3 or more purchases"
+                    return 0.0, f"This special promo code unlocks after your 3rd purchase! You currently have {orders_count} purchased stories."
             elif user_target == "inactive_only":
                 if orders_count > 0:
-                    return 0.0, "Promo code is only valid for users with 0 purchases"
+                    return 0.0, "This promo code is only valid for non-buyers."
                     
-                # Check registration date
-                user_doc = await db.db.users.find_one({"id": tg_id_int}) if tg_id_int else None
                 joined_date = None
                 if user_doc:
                     joined_date = user_doc.get("joined_date") or user_doc.get("created_at")
@@ -579,16 +574,14 @@ async def calculate_promo_discount(
                             joined_date = doc_id.generation_time
                 
                 if not joined_date:
-                    # Fallback: if user doc doesn't exist yet, we can't assume they are old
-                    return 0.0, "Promo code is only valid for inactive non-buyers (registered >= 7 days ago)"
+                    return 0.0, "This promo code is for older users. Please try another code."
                     
-                # Compare dates
                 now = datetime.now(timezone.utc)
                 if joined_date.tzinfo is None:
                     joined_date = joined_date.replace(tzinfo=timezone.utc)
                     
                 if (now - joined_date).days < 7:
-                    return 0.0, "Promo code is only valid for older users who haven't made a purchase yet (registered >= 7 days ago)"
+                    return 0.0, "This promo code is a welcome back gift for users registered 7+ days ago."
 
     # Check user-specific limit
     user_limit = promo.get("user_limit")
@@ -776,17 +769,16 @@ async def get_available_promos(data: AvailablePromosRequest):
                 discount, err = await calculate_promo_discount(
                     arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
                 )
-                if not err and discount > 0:
-                    available.append({
-                        "code": promo.get("code"),
-                        "type": promo.get("type"),
-                        "value": promo.get("value"),
-                        "description": promo.get("description", ""),
-                        "discount_amount": discount,
-                        "auto_apply": promo.get("auto_apply", False)
-                    })
-                
-                
+                # Include the promo even if there's an error so the user can see the offer in "View Offers".
+                # If they try to apply it and their cart doesn't qualify, they will see the specific error.
+                available.append({
+                    "code": promo.get("code"),
+                    "type": promo.get("type"),
+                    "value": promo.get("value"),
+                    "description": promo.get("description", ""),
+                    "discount_amount": discount if not err else 0,
+                    "auto_apply": promo.get("auto_apply", False) if not err else False
+                })
         available.sort(key=lambda x: x["discount_amount"], reverse=True)
         return {"success": True, "promos": available}
     except Exception as e:
