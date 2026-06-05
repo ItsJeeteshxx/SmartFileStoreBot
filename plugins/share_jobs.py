@@ -122,7 +122,7 @@ new_share_job = {}
 
 async def _create_share_flow(bot, user_id, force_live=False):
     try:
-        new_share_job[user_id] = {}
+        new_share_job[user_id] = {'is_force_live': force_live}
         share_bots = await db.get_share_bots()
         
         if not share_bots:
@@ -1298,6 +1298,8 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         for b_s, b_e, mids in _buckets_to_use:
             if not mids:
                 continue
+            if sj.get('is_force_live'):
+                continue
             uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
             await db.save_share_link(
                 uuid_str, mids, source_chat_id,
@@ -1455,15 +1457,24 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         #  FINAL REPORT 
         mode_str = "🗂 Grouped files (1 button/file)" if GROUPED_MODE else f"📑 Individual (batch size: {batch_size})"
 
-        report_lines = [
-            f"<b>»  Share Links Generated!</b>",
-            f"\n<blockquote expandable>",
-            f"»  <b>Files processed:</b> {total_count}",
-            f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
-            f"»  <b>Link buttons created:</b> {len(raw_buttons)}",
-            f"»  <b>Posts sent to channel:</b> {post_count}",
-            f"»  <b>Mode:</b> {mode_str}",
-        ]
+        if sj.get('is_force_live'):
+            report_lines = [
+                f"<b>»  Live Batch Job Configured!</b>",
+                f"\n<blockquote expandable>",
+                f"»  <b>Files queued for Live Daemon:</b> {total_count}",
+                f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
+                f"»  <b>Mode:</b> {mode_str}",
+            ]
+        else:
+            report_lines = [
+                f"<b>»  Share Links Generated!</b>",
+                f"\n<blockquote expandable>",
+                f"»  <b>Files processed:</b> {total_count}",
+                f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
+                f"»  <b>Link buttons created:</b> {len(raw_buttons)}",
+                f"»  <b>Posts sent to channel:</b> {post_count}",
+                f"»  <b>Mode:</b> {mode_str}",
+            ]
 
         if grouped_files:
             gf_preview = ", ".join(grouped_files[:8])
@@ -1863,7 +1874,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     "merge_size": sj.get('merge_size', 10),
                     "buttons_per_post": sj.get('buttons_per_post', 10),
                     "protect": True,
-                    "last_seen_id": int(sj.get('end_id') or 0),
+                    "last_seen_id": int(sj.get('start_id', 1) - 1) if sj.get('is_force_live') else int(sj.get('end_id') or 0),
                     "buffer_mids": [],
                     "forwarded": 0
                 }
