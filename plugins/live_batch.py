@@ -177,14 +177,85 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 "text": _sc(btn_text),
                 "url": url,
                 "ep_start": b_s,
-                "ep_end": b_e
+                "ep_end": b_e,
+                "mids": mids
             })
             
         buttons_per_post = int(job.get("buttons_per_post", 10))
+        merge_size = int(job.get("merge_size", 10))
         all_buttons = job.get("all_buttons", [])
-        
         prev_total = len(all_buttons)
+        
         all_buttons.extend(raw_buttons)
+        
+        # --- ADAPTIVE BATCH MERGING ---
+        optimized_buttons = []
+        i = 0
+        merged_any = False
+        while i < len(all_buttons):
+            btn_mids = all_buttons[i].get("mids", [])
+            if not btn_mids or len(btn_mids) >= merge_size:
+                optimized_buttons.append(all_buttons[i])
+                i += 1
+                continue
+                
+            accum_mids = []
+            accum_btns = []
+            merged = False
+            for j in range(i, len(all_buttons)):
+                curr_mids = all_buttons[j].get("mids", [])
+                if not curr_mids:
+                    break
+                accum_mids.extend(curr_mids)
+                accum_btns.append(all_buttons[j])
+                
+                if len(accum_mids) >= merge_size:
+                    if j == len(all_buttons) - 1:
+                        break # Too close to the end, don't merge to keep latest batch separate
+                        
+                    b_starts = [int(b["ep_start"]) for b in accum_btns if str(b["ep_start"]).isdigit()]
+                    b_ends = [int(b["ep_end"]) for b in accum_btns if str(b["ep_end"]).isdigit()]
+                    m_start = min(b_starts) if b_starts else "?"
+                    m_end = max(b_ends) if b_ends else "?"
+                    m_text = str(m_start) if m_start == m_end else f"{m_start}–{m_end}"
+                    
+                    m_uuid = str(uuid.uuid4()).replace('-', '')[:16]
+                    await db.save_share_link(m_uuid, accum_mids, job["source"], protect=protect, access_hash=None)
+                    m_url = f"https://t.me/{bot_usr}?start={m_uuid}"
+                    
+                    shortener = job.get("shortener")
+                    if shortener:
+                        try:
+                            import aiohttp
+                            s_apis = await db.get_shortener_apis()
+                            api_key = s_apis.get(shortener)
+                            if api_key:
+                                s_url = f"https://{shortener}.com/api?api={api_key}&url={m_url}"
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.get(s_url) as resp:
+                                        data = await resp.json()
+                                        if data.get("status") == "success":
+                                            m_url = data["shortenedUrl"]
+                        except Exception: pass
+                        
+                    merged_btn = {
+                        "text": _sc(m_text),
+                        "url": m_url,
+                        "ep_start": m_start,
+                        "ep_end": m_end,
+                        "mids": accum_mids
+                    }
+                    optimized_buttons.append(merged_btn)
+                    i = j + 1
+                    merged = True
+                    merged_any = True
+                    break
+                    
+            if not merged:
+                optimized_buttons.append(all_buttons[i])
+                i += 1
+                
+        all_buttons = optimized_buttons
         
         old_mids = job.get("posted_mids", [])
         new_mids = list(old_mids)
@@ -192,12 +263,7 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
         for i in range(0, len(all_buttons), buttons_per_post):
             blocks.append(all_buttons[i : i + buttons_per_post])
             
-        # Determine from which block index we need to start updating.
-        # If the previous last block was perfectly full, start from the new block.
-        # Otherwise, start from the previously incomplete block.
-        changed_idx = prev_total // buttons_per_post
-        if prev_total > 0 and prev_total % buttons_per_post == 0:
-            changed_idx = prev_total // buttons_per_post
+        changed_idx = 0 if merged_any else (prev_total // buttons_per_post)
             
         for idx in range(changed_idx, len(blocks)):
             block = blocks[idx]
@@ -261,6 +327,27 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                         new_mids[idx] = m.id
                     else:
                         new_mids.append(m.id)
+                        
+                    # Send Public Log if configured
+                    log_ch = os.environ.get("PUBLIC_LOG_CHANNEL_ID")
+                    if log_ch and m and getattr(m, 'link', None):
+                        try:
+                            log_ch_int = int(log_ch) if log_ch.lstrip('-').isdigit() else log_ch
+                            ep_str = str(first_ep) if first_ep == last_ep else f"{first_ep}-{last_ep}"
+                            s_name = job.get('story', 'Story')
+                            
+                            log_txt = (
+                                f"<b><a href='{m.link}'>{s_name}</a></b> Latest Eps <b>{ep_str}</b> Have been Added.\n"
+                                f"<b><a href='{m.link}'>{s_name}</a></b> के लेटेस्ट एपिसोड्स <b>{ep_str}</b> ऐड हो गए हैं。\n\n"
+                                f"<a href='https://t.me/UseAryaBot/apminibyarya'>Sponsored By 𝘼𝘳𝙮𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢</a>"
+                            )
+                                
+                            from bot import BOT_INSTANCE
+                            if BOT_INSTANCE:
+                                await BOT_INSTANCE.send_message(log_ch_int, log_txt, disable_web_page_preview=True)
+                        except Exception as log_err:
+                            logger.error(f"Failed to send public log to {log_ch}: {log_err}")
+                            
                     break
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 2)
@@ -268,6 +355,18 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                     logger.warning(f"Live Batch Post TG Send Error: {tg_err}")
                     await asyncio.sleep(5)
             
+        # Clean up any orphaned messages if merging shrunk the total block count
+        while len(new_mids) > len(blocks):
+            extra_mid = new_mids.pop()
+            for d_attempt in range(5):
+                try:
+                    await sb_client.delete_messages(target_ch, extra_mid)
+                    break
+                except FloodWait as dfw:
+                    await asyncio.sleep(dfw.value + 2)
+                except Exception:
+                    break
+                    
         # ── Record successful post for Duplicate Handling ──
         try:
             # Extract all numbers from all files in this entire batch call
@@ -804,7 +903,8 @@ async def _lb_callbacks(bot, update: CallbackQuery):
         # ── Change Source button — available when job is running or paused ──
         if st in ("running", "queued", "paused"):
             kb.append([
-                InlineKeyboardButton("✏️ Cʜᴀɴɢᴇ Sᴏᴜʀᴄᴇ", callback_data=f"lb#change_src#{jid}")
+                InlineKeyboardButton("✏️ Cʜᴀɴɢᴇ Sᴏᴜʀᴄᴇ", callback_data=f"lb#change_src#{jid}"),
+                InlineKeyboardButton("🧩 Mᴇʀɢᴇ Sɪᴢᴇ", callback_data=f"lb#change_merge#{jid}")
             ])
         
         buf = len(job.get("buffer_mids", []))
@@ -827,12 +927,41 @@ async def _lb_callbacks(bot, update: CallbackQuery):
             f"<b>ℹ️ Sᴛᴀᴛᴜs:</b> <code>{st.upper()}</code>\n"
             f"<b>🔄 Dᴜᴘʟɪᴄᴀᴛᴇ Hᴀɴᴅʟɪɴɢ:</b> <code>{dup_st}</code>\n"
             f"<b>🎯 Tʜʀᴇsʜᴏʟᴅ:</b> Wait for {trgt} files\n"
+            f"<b>🧩 Mᴇʀɢᴇ Sɪᴢᴇ:</b> <code>{job.get('merge_size', 10)}</code> files\n"
             f"<b>📦 Cᴜʀʀᴇɴᴛ Bᴜғғᴇʀ:</b> <code>{buf} / {trgt}</code>\n"
             f"<b>✅ Tᴏᴛᴀʟ Fᴏʀᴡᴀʀᴅᴇᴅ:</b> <code>{job.get('forwarded', 0)}</code>\n\n"
             f"<i>Auto-checks source database continuously.</i>"
         )
         try: await update.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
         except: pass
+
+    elif action == "change_merge":
+        jid = data[2]
+        job = await _lb_get_job(jid)
+        if not job: return await update.answer("Job not found.", show_alert=True)
+        
+        try:
+            ask_msg = await bot.ask(
+                uid,
+                "🧩 <b>Eɴᴛᴇʀ Nᴇᴡ Mᴇʀɢᴇ Sɪᴢᴇ</b>\n\n"
+                "Enter the target size for merging old buttons (e.g., <code>10</code>).\n"
+                "When older batches accumulate this many episodes, they will merge into a single button.\n\n"
+                "<i>Send ⛔ to cancel.</i>",
+                timeout=120
+            )
+            text = (ask_msg.text or "").strip()
+            if not text or "⛔" in text or text.lower() == "cancel":
+                await bot.send_message(uid, "<i>Cancelled.</i>")
+            elif text.isdigit() and int(text) > 0:
+                await _lb_update_job(jid, {"merge_size": int(text)})
+                await bot.send_message(uid, f"✅ <b>Merge Size updated to {text}!</b>")
+            else:
+                await bot.send_message(uid, "❌ <b>Invalid size. Must be a positive number.</b>")
+        except asyncio.TimeoutError:
+            await bot.send_message(uid, "<i>⏱ Timed out.</i>")
+            
+        update.data = f"lb#view#{jid}"
+        return await _lb_callbacks(bot, update)
 
     elif action == "pause":
         jid = data[2]

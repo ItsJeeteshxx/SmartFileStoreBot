@@ -8,7 +8,7 @@ Centralized helpers for:
 Feature keys (used in DB + UI):
   live_job   — Live Job forwarding
   multi_job  — Multi Job batch forwarding
-  merger     — Merger (audio/video merge)
+  merger     — Merger (audio merge)
   cleaner    — Cleaner Job
   batch_links — Batch Links / Share Bot delivery
 """

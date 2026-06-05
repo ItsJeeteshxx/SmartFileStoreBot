@@ -2066,7 +2066,6 @@ async def mg_cb(bot, query):
         text = "<b>❪ Mᴇʀɢᴇʀ Sʏsᴛᴇᴍ ❫</b>\n\nChoose which type of merger you want to use:"
         btns = InlineKeyboardMarkup([
             [InlineKeyboardButton("Mᴇʀɢᴇ Aᴜᴅɪᴏ", callback_data="mg#audio_list")],
-            [InlineKeyboardButton("Mᴇʀɢᴇ Vɪᴅᴇᴏ", callback_data="mg#video_list")],
             [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
         ])
         return await query.message.edit_text(text, reply_markup=btns)
@@ -2579,118 +2578,75 @@ async def _create_flow(bot, uid, mtype="audio"):
         outro_cover_path = None
 
         if mtype == "audio":
-            # Check YouTube channels first
-            from plugins.youtube import get_all_youtube_channels
-            yt_channels = await get_all_youtube_channels()
+            msg = await _mg_ask(bot, uid,
+                "<b>Step 6c/9:</b> Create an <b>MP4 Video</b> from this audio?\n\n"
+                "<i>Choose if you want to convert this audio to a video (for Telegram or YouTube), or skip to get MP3 only.</i>",
+                reply_markup=ReplyKeyboardMarkup([
+                    ["🖼 Yes (Image Background)"],
+                    ["🎥 Yes (30s Video Background)"],
+                    ["🎧 Skip (MP3 only)"],
+                    ["⛔ Cᴀɴᴄᴇʟ"]
+                ], resize_keyboard=True, one_time_keyboard=True))
             
-            # 1. Ask YouTube Upload first
-            if not yt_channels:
-                # No channel authorized, ask if they want to make video for Telegram
-                msg = await _mg_ask(bot, uid,
-                    "<b>Step 6c/9:</b> Create an <b>MP4 Video</b> for Telegram?\n\n"
-                    "⚠️ <i>No authorized YouTube channels found. Run /ytauth first to connect a channel.</i>",
-                    reply_markup=ReplyKeyboardMarkup([
-                        ["🖼 Yes (Image Background)"],
-                        ["🎥 Yes (30s Video Background)"],
-                        ["⏭ Skip (MP3 only)"],
-                        ["⛔ Cᴀɴᴄᴇʟ"]
-                    ], resize_keyboard=True, one_time_keyboard=True))
-                
-                reply_txt = (msg.text or "").strip().lower()
-                if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
-                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                
-                if "image background" in reply_txt:
-                    make_video = True
-                    video_bg_type = "image"
-                elif "video background" in reply_txt:
-                    make_video = True
-                    video_bg_type = "video"
-                else:
-                    make_video = False
+            reply_txt = (msg.text or "").strip().lower()
+            if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            
+            if "skip" in reply_txt or "mp3 only" in reply_txt or "🎧" in reply_txt:
+                make_video = False
+            elif "image background" in reply_txt:
+                make_video = True
+                video_bg_type = "image"
+            elif "video background" in reply_txt:
+                make_video = True
+                video_bg_type = "video"
             else:
-                # Ask YouTube Channel to upload
-                buttons_markup = []
-                for ch in yt_channels:
-                    buttons_markup.append([KeyboardButton(f"🎥 {ch.get('title', 'Unknown')}")])
-                buttons_markup.append([KeyboardButton("⏭ Skip (No YouTube Upload)")])
-                buttons_markup.append([KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
+                make_video = False
+
+            if make_video:
+                # Check YouTube channels
+                from plugins.youtube import get_all_youtube_channels
+                yt_channels = await get_all_youtube_channels()
                 
-                msg = await _mg_ask(bot, uid,
-                    "<b>Step 6c/9:</b> Choose a <b>YouTube Channel</b> to auto-upload the merged video:\n\n"
-                    "Select one of your authorized channels below, or skip to keep it on Telegram.",
-                    reply_markup=ReplyKeyboardMarkup(buttons_markup, resize_keyboard=True, one_time_keyboard=True)
-                )
-                
-                reply_txt = (msg.text or "").strip()
-                if any(x in reply_txt.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
-                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                
-                if "skip" in reply_txt.lower() or "⏭" in reply_txt:
-                    upload_to_yt = False
-                    # Since they skipped YouTube, ask if they want MP4 video for Telegram
-                    msg = await _mg_ask(bot, uid,
-                        "<b>Step 6d/9:</b> Create an <b>MP4 Video</b> for Telegram?\n\n"
-                        "Choose the type of background or skip to get MP3 only.",
-                        reply_markup=ReplyKeyboardMarkup([
-                            ["🖼 Yes (Image Background)"],
-                            ["🎥 Yes (30s Video Background)"],
-                            ["⏭ Skip (MP3 only)"],
-                            ["⛔ Cᴀɴᴄᴇʟ"]
-                        ], resize_keyboard=True, one_time_keyboard=True))
+                if yt_channels:
+                    buttons_markup = []
+                    for ch in yt_channels:
+                        buttons_markup.append([KeyboardButton(f"🎥 {ch.get('title', 'Unknown')}")])
+                    buttons_markup.append([KeyboardButton("⏭ Skip (Telegram only)")])
+                    buttons_markup.append([KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
                     
-                    reply_txt = (msg.text or "").strip().lower()
-                    if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+                    msg = await _mg_ask(bot, uid,
+                        "<b>Step 6d/9:</b> Choose a <b>YouTube Channel</b> to auto-upload the merged video:\n\n"
+                        "Select one of your authorized channels below, or skip to keep the video on Telegram only.",
+                        reply_markup=ReplyKeyboardMarkup(buttons_markup, resize_keyboard=True, one_time_keyboard=True)
+                    )
+                    
+                    reply_txt = (msg.text or "").strip()
+                    if any(x in reply_txt.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
                         return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
                     
-                    if "image background" in reply_txt:
-                        make_video = True
-                        video_bg_type = "image"
-                    elif "video background" in reply_txt:
-                        make_video = True
-                        video_bg_type = "video"
+                    if "skip" in reply_txt.lower() or "⏭" in reply_txt:
+                        upload_to_yt = False
                     else:
-                        make_video = False
-                else:
-                    matched_ch = None
-                    cleaned_reply = reply_txt.replace("🎥", "").strip().lower()
-                    for ch in yt_channels:
-                        title_clean = ch.get('title', '').strip().lower()
-                        if title_clean == cleaned_reply or cleaned_reply in title_clean or title_clean in cleaned_reply:
-                            matched_ch = ch
-                            break
-                    
-                    if not matched_ch:
-                        if len(yt_channels) == 1:
-                            matched_ch = yt_channels[0]
-                        else:
-                            await bot.send_message(uid, "⚠️ Invalid option selected. Skipping YouTube upload.", reply_markup=ReplyKeyboardRemove())
-                            upload_to_yt = False
-                            
-                    if matched_ch:
-                        upload_to_yt = True
-                        make_video = True
-                        yt_channel_id = matched_ch["_id"]
-                        yt_channel_title = matched_ch.get("title", "Unknown")
+                        matched_ch = None
+                        cleaned_reply = reply_txt.replace("🎥", "").strip().lower()
+                        for ch in yt_channels:
+                            title_clean = ch.get('title', '').strip().lower()
+                            if title_clean == cleaned_reply or cleaned_reply in title_clean or title_clean in cleaned_reply:
+                                matched_ch = ch
+                                break
                         
-                        # Since they are uploading to YouTube, video is required. Ask background type:
-                        msg = await _mg_ask(bot, uid,
-                            f"<b>Step 6d/9:</b> Choose background type for YouTube video:\n\n"
-                            f"Uploading to YouTube: <b>{yt_channel_title}</b>",
-                            reply_markup=ReplyKeyboardMarkup([
-                                ["🖼 Image Background"],
-                                ["🎥 30s Video Background"],
-                                ["⛔ Cᴀɴᴄᴇʟ"]
-                            ], resize_keyboard=True, one_time_keyboard=True))
-                        
-                        reply_txt = (msg.text or "").strip().lower()
-                        if any(x in reply_txt for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
-                            return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                        
-                        if "video background" in reply_txt:
-                            video_bg_type = "video"
-                        else:
-                            video_bg_type = "image"
+                        if not matched_ch:
+                            if len(yt_channels) == 1:
+                                matched_ch = yt_channels[0]
+                            else:
+                                await bot.send_message(uid, "⚠️ Invalid option selected. Skipping YouTube upload.", reply_markup=ReplyKeyboardRemove())
+                                upload_to_yt = False
+                                
+                        if matched_ch:
+                            upload_to_yt = True
+                            yt_channel_id = matched_ch["_id"]
+                            yt_channel_title = matched_ch.get("title", "Unknown")
 
             # 2. Collect image or video background based on selection
             if make_video:

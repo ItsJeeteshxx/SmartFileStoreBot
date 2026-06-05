@@ -2594,27 +2594,14 @@ async def _create_job_flow(bot, user_id: int):
     if to_thread == "cancelled":
         return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
-    # ── Step 5: Second Destination (Optional) ─────────────────────
-    to_chat_2, to_title_2, cancelled2 = await _ask_dest(bot, user_id, channels,
-        "<b>Step 5/7 — Second Destination (Optional)</b>\n\n"
-        "Messages will be sent to <b>both</b> destinations when a new message arrives.\n"
-        "Press Skip if you only need one destination.",
-        optional=True)
-    if cancelled2 is True:
-        return
-
+    to_chat_2 = None
+    to_title_2 = None
     to_thread_2 = None
-    if to_chat_2:
-        to_thread_2 = await _ask_topic(bot, user_id, "Second Destination")
-        if to_thread_2 == "cancelled":
-            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if to_thread_2 == "cancelled":
-            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
     # ── Step 6: Batch Mode ────────────────────────────────────────
     while True:
         batch_r = await _ask(bot, user_id,
-            "<b>Step 6/7 — Batch Mode (Copy Old Messages First)</b>\n\n"
+            "<b>Step 5/8 — Batch Mode (Copy Old Messages First)</b>\n\n"
             "Do you want to copy existing (old) messages before going live?\n\n"
             "<blockquote expandable>"
             "• <b>ON</b> — first copies old messages, then watches for new ones.\n"
@@ -2667,7 +2654,7 @@ async def _create_job_flow(bot, user_id: int):
             if _undo(range_r.text):
                 # redo batch on/off
                 batch_r2 = await _ask(bot, user_id,
-                    "<b>↩️ Redo — Step 6/7: Batch Mode</b>\n\nON or OFF?",
+                    "<b>↩️ Redo — Step 5/8: Batch Mode</b>\n\nON or OFF?",
                     reply_markup=ReplyKeyboardMarkup(
                         [[KeyboardButton("✅ ON (Copy old messages first)")],
                          [KeyboardButton("❌ OFF (Live only)")], [CANCEL_BTN]],
@@ -2692,9 +2679,9 @@ async def _create_job_flow(bot, user_id: int):
                 try: batch_start_id = int(rtext)
                 except Exception: pass
 
-    # ── Step 7A: Min Duration (default 50s) ─────────────────────────────
+    # ── Step 6A: Min Duration (default 50s) ─────────────────────────────
     _st7a = await _ask(bot, user_id,
-        "<b>Step 7/8 — Minimum Duration Filter</b>\n\n"
+        "<b>Step 6/8 — Minimum Duration Filter</b>\n\n"
         "Files <b>shorter</b> than this will be <b>automatically skipped</b>.\n"
         "<b>Default is 50 seconds</b> — protects against forwarding short voice notes or clips.\n\n"
         "Select or type custom seconds:",
@@ -2714,7 +2701,7 @@ async def _create_job_flow(bot, user_id: int):
     if _undo(_st7a.text):
         # redo batch mode
         batch_r3 = await _ask(bot, user_id,
-            "<b>↩️ Redo — Step 6/8: Batch Mode</b>\n\nON or OFF?",
+            "<b>↩️ Redo — Step 5/8: Batch Mode</b>\n\nON or OFF?",
             reply_markup=ReplyKeyboardMarkup(
                 [[KeyboardButton("✅ ON")], [KeyboardButton("❌ OFF")], [CANCEL_BTN]],
                 resize_keyboard=True, one_time_keyboard=True))
@@ -2723,7 +2710,7 @@ async def _create_job_flow(bot, user_id: int):
         batch_mode = "on" in batch_r3.text.lower()
         # Re-ask this step
         _st7a = await _ask(bot, user_id,
-            "<b>Step 7/8 — Minimum Duration Filter</b>\n\nSelect or type custom seconds:",
+            "<b>Step 6/8 — Minimum Duration Filter</b>\n\nSelect or type custom seconds:",
             reply_markup=ReplyKeyboardMarkup(
                 [
                     [KeyboardButton("✅ 50 seconds (Recommended)")],
@@ -2752,9 +2739,9 @@ async def _create_job_flow(bot, user_id: int):
         try: min_duration_s = max(0, int(_t7a.split()[0]))
         except: min_duration_s = 50  # fallback to safe default
 
-    # ── Step 7B: Max File Size ──────────────────────────────────────────
+    # ── Step 6B: Max File Size ──────────────────────────────────────────
     _st7b = await _ask(bot, user_id,
-        "<b>Step 7B/8 — Maximum File Size</b>\n\n"
+        "<b>Step 6B/8 — Maximum File Size</b>\n\n"
         "Files <b>larger</b> than this will be skipped.\n"
         "Select a preset or type custom MB:",
         reply_markup=ReplyKeyboardMarkup(
@@ -2785,10 +2772,10 @@ async def _create_job_flow(bot, user_id: int):
     # Max duration kept at 0 (no upper limit) — user can change later via Edit Limits
     max_duration_s = 0
 
-    # ── Step 8: Skip Duplicates ─────────────────────────────
+    # ── Step 7: Skip Duplicates ─────────────────────────────
     while True:
         dupe_r = await _ask(bot, user_id,
-            "<b>Step 8/8 — Skip Duplicates?</b>\n\n"
+            "<b>Step 7/8 — Skip Duplicates?</b>\n\n"
             "If the source uploads a file that already exists in your target (based on exact file content / unique ID), "
             "should the bot silently skip it?\n\n"
             "<blockquote expandable>"
@@ -2806,7 +2793,7 @@ async def _create_job_flow(bot, user_id: int):
         if _undo(dupe_r.text):
             # redo limits
             limit_r2 = await _ask(bot, user_id,
-                "<b>↩️ Redo — Step 7/8: Size / Duration Limits</b>\n\n"
+                "<b>↩️ Redo — Step 6/8: Size / Duration Limits</b>\n\n"
                 "Format: max_mb : max_seconds : min_seconds (or 0 for none):",
                 reply_markup=ReplyKeyboardMarkup(
                     [[KeyboardButton("0 (No limit)")], [CANCEL_BTN]],
@@ -2828,10 +2815,10 @@ async def _create_job_flow(bot, user_id: int):
 
     skip_dupelicates = "yes" in (dupe_r.text or "").lower() or "✅" in (dupe_r.text or "")
 
-    # ── Step 9/9: Smart Order ─────────────────────────────
+    # ── Step 8/8: Smart Order ─────────────────────────────
     while True:
         smart_r = await _ask(bot, user_id,
-            "<b>Step 9/9 — Smart Order?</b>\n\n"
+            "<b>Step 8/8 — Smart Order?</b>\n\n"
             "Should the bot automatically buffer and sort messages naturally (e.g. Ep 1, Ep 2, Part 1, Part 2) to correct any out-of-order uploads?\n\n"
             "<blockquote expandable>"
             "• <b>ON</b> — Sorts episodes/parts before forwarding\n"
@@ -2849,7 +2836,7 @@ async def _create_job_flow(bot, user_id: int):
         if _undo(smart_r.text):
             # redo skip duplicates
             dupe_r2 = await _ask(bot, user_id,
-                "<b>↩️ Redo — Step 8/8: Skip Duplicates?</b>\n\n"
+                "<b>↩️ Redo — Step 7/8: Skip Duplicates?</b>\n\n"
                 "ON or OFF?",
                 reply_markup=ReplyKeyboardMarkup(
                     [[KeyboardButton("✅ YES (Skip duplicates)")],

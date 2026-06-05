@@ -181,37 +181,54 @@ async def _create_share_flow(bot, user_id, force_live=False):
             
         new_share_job[user_id]['target'] = int(picked['chat_id'])
 
+        markup_mode = ReplyKeyboardMarkup([["🧪 Test Mode", "✅ Real Mode"], ["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
+        msg_mode = await _ask(bot, user_id, "<b>❪ STEP 3.1: MODE SELECTION ❫</b>\n\nIs this a Test Mode or Real Mode?", reply_markup=markup_mode)
+        if getattr(msg_mode, 'text', None) and any(x in msg_mode.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        
+        is_test_mode = "test mode" in (getattr(msg_mode, "text", "") or "").lower()
+        new_share_job[user_id]['is_test_mode'] = is_test_mode
+
+        if is_test_mode:
+            import random
+            new_share_job[user_id]['target_topic_id'] = None
+            new_share_job[user_id]['is_completed'] = True
+            new_share_job[user_id]['story'] = f"Arya Test Story {random.randint(1000, 9999)}"
+            new_share_job[user_id]['is_topic'] = False
+            new_share_job[user_id]['account_id'] = None
+            is_topic = False
+
         # STEP 3.5: Target Group Topic
-        markup_tt = ReplyKeyboardMarkup([["Skip"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
-        msg_tt = await _ask(bot, user_id,
-            "<b>❪ STEP 3.5: TARGET GROUP TOPIC ❫</b>\n\nIf the destination is a Group with Topics enabled, please send the <b>Topic ID</b> (a number). Otherwise, just press <b>Skip</b>.\n\n<i>(To find it, copy a message link from the topic. The middle number is the Topic ID. e.g. /c/1234/<b>56</b>/78)</i>",
-            reply_markup=markup_tt
-        )
-        if getattr(msg_tt, 'text', None) and any(x in msg_tt.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_tt, "text", None) and any(x in msg_tt.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            # Go back to Step 3
-            msg3 = await _ask(bot, user_id, 
-                "<b>❪ STEP 3 (REDO): TARGET PUBLIC CHANNEL ❫</b>\n\nWhere should I post the Share Links?", 
-                reply_markup=ReplyKeyboardMarkup(ch_kb + [["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
-            )
-            if not msg3.text or (getattr(msg3, "text", None) and any(x in msg3.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
-                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            title3 = msg3.text.replace("»  ", "").strip()
-            ch3 = next((c for c in chans if c["title"] == title3), None)
-            if ch3:
-                new_share_job[user_id]['target'] = int(ch3['chat_id'])
-            # re-ask topic
+        if not is_test_mode:
+            markup_tt = ReplyKeyboardMarkup([["Skip"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
             msg_tt = await _ask(bot, user_id,
-                "<b>❪ STEP 3.5: TARGET GROUP TOPIC ❫</b>\n\nIf the destination is a Group with Topics enabled, please send the <b>Topic ID</b>. Otherwise, press <b>Skip</b>.",
+                "<b>❪ STEP 3.5: TARGET GROUP TOPIC ❫</b>\n\nIf the destination is a Group with Topics enabled, please send the <b>Topic ID</b> (a number). Otherwise, just press <b>Skip</b>.\n\n<i>(To find it, copy a message link from the topic. The middle number is the Topic ID. e.g. /c/1234/<b>56</b>/78)</i>",
                 reply_markup=markup_tt
             )
             if getattr(msg_tt, 'text', None) and any(x in msg_tt.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            if getattr(msg_tt, "text", None) and any(x in msg_tt.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                # Go back to Step 3
+                msg3 = await _ask(bot, user_id, 
+                    "<b>❪ STEP 3 (REDO): TARGET PUBLIC CHANNEL ❫</b>\n\nWhere should I post the Share Links?", 
+                    reply_markup=ReplyKeyboardMarkup(ch_kb + [["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
+                )
+                if not msg3.text or (getattr(msg3, "text", None) and any(x in msg3.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
+                    return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                title3 = msg3.text.replace("»  ", "").strip()
+                ch3 = next((c for c in chans if c["title"] == title3), None)
+                if ch3:
+                    new_share_job[user_id]['target'] = int(ch3['chat_id'])
+                # re-ask topic
+                msg_tt = await _ask(bot, user_id,
+                    "<b>❪ STEP 3.5: TARGET GROUP TOPIC ❫</b>\n\nIf the destination is a Group with Topics enabled, please send the <b>Topic ID</b>. Otherwise, press <b>Skip</b>.",
+                    reply_markup=markup_tt
+                )
+                if getattr(msg_tt, 'text', None) and any(x in msg_tt.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
-        tt_text = (msg_tt.text or msg_tt.caption or "").strip()
-        if tt_text.lower() == "skip" or not tt_text.isdigit():
-            new_share_job[user_id]['target_topic_id'] = None
-        else:
-            new_share_job[user_id]['target_topic_id'] = int(tt_text)
+            tt_text = (msg_tt.text or msg_tt.caption or "").strip()
+            if tt_text.lower() == "skip" or not tt_text.isdigit():
+                new_share_job[user_id]['target_topic_id'] = None
+            else:
+                new_share_job[user_id]['target_topic_id'] = int(tt_text)
 
         markup = ReplyKeyboardMarkup([[KeyboardButton("↩️ Uɴᴅᴏ"), KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]], resize_keyboard=True, one_time_keyboard=True)
             
@@ -226,122 +243,123 @@ async def _create_share_flow(bot, user_id, force_live=False):
                 if parts[-1].isdigit(): return int(parts[-1])
             raise ValueError("Invalid Message ID or Link (must be forwarded or contain ID)")
             
-        markup_status = ReplyKeyboardMarkup([["»  Completed", "»  Ongoing"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
-        msg_status = await _ask(bot, user_id, 
-            "<b>❪ STEP 4: STORY STATUS ❫</b>\n\nIs this story Completed or Ongoing?", 
-            reply_markup=markup_status
-        )
-        if getattr(msg_status, 'text', None) and any(x in msg_status.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_status, "text", None) and any(x in msg_status.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            # Go back to Step 3
-            msg3 = await _ask(bot, user_id,
-                "<b>❪ STEP 3 (REDO): TARGET PUBLIC CHANNEL ❫</b>\n\nWhere should I post the Share Links?",
-                reply_markup=ReplyKeyboardMarkup(ch_kb + [["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
-            )
-            if not msg3.text or (getattr(msg3, "text", None) and any(x in msg3.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
-                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            title3 = msg3.text.replace("»  ", "").strip()
-            ch3 = next((c for c in chans if c["title"] == title3), None)
-            if ch3:
-                new_share_job[user_id]['target'] = int(ch3['chat_id'])
-            msg_status = await _ask(bot, user_id,
-                "<b>❪ STEP 4: STORY STATUS ❫</b>\n\nIs this story Completed or Ongoing?",
+        if not is_test_mode:
+            markup_status = ReplyKeyboardMarkup([["»  Completed", "»  Ongoing"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
+            msg_status = await _ask(bot, user_id, 
+                "<b>❪ STEP 4: STORY STATUS ❫</b>\n\nIs this story Completed or Ongoing?", 
                 reply_markup=markup_status
             )
             if getattr(msg_status, 'text', None) and any(x in msg_status.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        is_completed = "completed" in (msg_status.text or "").lower()
-        new_share_job[user_id]['is_completed'] = is_completed
+            if getattr(msg_status, "text", None) and any(x in msg_status.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                # Go back to Step 3
+                msg3 = await _ask(bot, user_id,
+                    "<b>❪ STEP 3 (REDO): TARGET PUBLIC CHANNEL ❫</b>\n\nWhere should I post the Share Links?",
+                    reply_markup=ReplyKeyboardMarkup(ch_kb + [["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
+                )
+                if not msg3.text or (getattr(msg3, "text", None) and any(x in msg3.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
+                    return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                title3 = msg3.text.replace("»  ", "").strip()
+                ch3 = next((c for c in chans if c["title"] == title3), None)
+                if ch3:
+                    new_share_job[user_id]['target'] = int(ch3['chat_id'])
+                msg_status = await _ask(bot, user_id,
+                    "<b>❪ STEP 4: STORY STATUS ❫</b>\n\nIs this story Completed or Ongoing?",
+                    reply_markup=markup_status
+                )
+                if getattr(msg_status, 'text', None) and any(x in msg_status.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            is_completed = "completed" in (msg_status.text or "").lower()
+            new_share_job[user_id]['is_completed'] = is_completed
 
-        msg_story = await _ask(bot, user_id, 
-            "<b>❪ STEP 5: STORY NAME ❫</b>\n\nEnter the clean name of the Series/Story (e.g. <code>TDMB</code>):", 
-            reply_markup=markup
-        )
-        if getattr(msg_story, 'text', None) and any(x in msg_story.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_story, "text", None) and any(x in msg_story.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            # Re-ask Step 4
-            msg_status2 = await _ask(bot, user_id,
-                "<b>❪ STEP 4 (REDO): STORY STATUS ❫</b>\n\nIs this story Completed or Ongoing?",
-                reply_markup=markup_status
-            )
-            if getattr(msg_status2, 'text', None) and any(x in msg_status2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            new_share_job[user_id]['is_completed'] = "completed" in (msg_status2.text or "").lower()
-            msg_story = await _ask(bot, user_id,
-                "<b>❪ STEP 5: STORY NAME ❫</b>\n\nEnter the clean name of the Series/Story (e.g. <code>TDMB</code>):",
+            msg_story = await _ask(bot, user_id, 
+                "<b>❪ STEP 5: STORY NAME ❫</b>\n\nEnter the clean name of the Series/Story (e.g. <code>TDMB</code>):", 
                 reply_markup=markup
             )
             if getattr(msg_story, 'text', None) and any(x in msg_story.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        new_share_job[user_id]['story'] = (msg_story.text or msg_story.caption or "").strip()
-        
-        markup_source = ReplyKeyboardMarkup([["»  Regular Channel", "»  Group Topic"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
-        msg_stype = await _ask(bot, user_id, 
-            "<b>❪ STEP 6: SOURCE STRUCTURE ❫</b>\n\nAre the files in a normal Channel (requires start/end IDs)\nor inside a specific Group Topic (auto-scans entire topic)?", 
-            reply_markup=markup_source
-        )
-        if getattr(msg_stype, 'text', None) and any(x in msg_stype.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_stype, "text", None) and any(x in msg_stype.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            # Re-ask story name
-            msg_story2 = await _ask(bot, user_id,
-                "<b>❪ STEP 5 (REDO): STORY NAME ❫</b>\n\nEnter story name:",
-                reply_markup=markup
-            )
-            if getattr(msg_story2, 'text', None) and any(x in msg_story2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            new_share_job[user_id]['story'] = (msg_story2.text or "").strip()
-            msg_stype = await _ask(bot, user_id,
-                "<b>❪ STEP 6: SOURCE STRUCTURE ❫</b>\n\nChannel or Group Topic?",
+            if getattr(msg_story, "text", None) and any(x in msg_story.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                # Re-ask Step 4
+                msg_status2 = await _ask(bot, user_id,
+                    "<b>❪ STEP 4 (REDO): STORY STATUS ❫</b>\n\nIs this story Completed or Ongoing?",
+                    reply_markup=markup_status
+                )
+                if getattr(msg_status2, 'text', None) and any(x in msg_status2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                new_share_job[user_id]['is_completed'] = "completed" in (msg_status2.text or "").lower()
+                msg_story = await _ask(bot, user_id,
+                    "<b>❪ STEP 5: STORY NAME ❫</b>\n\nEnter the clean name of the Series/Story (e.g. <code>TDMB</code>):",
+                    reply_markup=markup
+                )
+                if getattr(msg_story, 'text', None) and any(x in msg_story.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            new_share_job[user_id]['story'] = (msg_story.text or msg_story.caption or "").strip()
+            
+            markup_source = ReplyKeyboardMarkup([["»  Regular Channel", "»  Group Topic"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
+            msg_stype = await _ask(bot, user_id, 
+                "<b>❪ STEP 6: SOURCE STRUCTURE ❫</b>\n\nAre the files in a normal Channel (requires start/end IDs)\nor inside a specific Group Topic (auto-scans entire topic)?", 
                 reply_markup=markup_source
             )
             if getattr(msg_stype, 'text', None) and any(x in msg_stype.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        is_topic = "topic" in (msg_stype.text or "").lower()
-        new_share_job[user_id]['is_topic'] = is_topic
-
-        #  STEP 6.5: SELECT ACCOUNT 
-        if is_topic:
-            accounts = await db.get_bots(user_id)
-            if not accounts:
-                return await bot.send_message(user_id, "<b>❌ No accounts found. Add one in /settings → Accounts first.</b>")
-                
-            userbots = [a for a in accounts if not a.get("is_bot", True)]
-            if not userbots:
-                return await bot.send_message(user_id, "<b>❌ You selected 'Group Topic', but you have no Userbot added!</b>\nBots cannot scan Group Topics. Please go to /settings → Accounts and add a Userbot first.")
-            valid_accounts = userbots
-                
-            acc_kb = [[KeyboardButton(f"»  Userbot: {a.get('name', '?')}")] for a in valid_accounts]
-            acc_kb.append([KeyboardButton("↩️ Uɴᴅᴏ"), KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
-            
-            msg_acc = await _ask(bot, user_id,
-                "<b>❪ STEP 6.5: SCANNING ACCOUNT ❫</b>\n\nChoose the Userbot to use for reading files from the Group Topic:\n"
-                "<i>(⚠️ NOTE: Group Topics MUST be scanned by a Userbot.)</i>",
-                reply_markup=ReplyKeyboardMarkup(acc_kb, resize_keyboard=True, one_time_keyboard=True)
-            )
-            if not msg_acc.text or (getattr(msg_acc, "text", None) and any(x in msg_acc.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
-                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            if getattr(msg_acc, "text", None) and any(x in msg_acc.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-                # Re-ask source structure
-                msg_stype2 = await _ask(bot, user_id,
-                    "<b>❪ STEP 6 (REDO): SOURCE STRUCTURE ❫</b>\n\nChannel or Group Topic?",
+            if getattr(msg_stype, "text", None) and any(x in msg_stype.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                # Re-ask story name
+                msg_story2 = await _ask(bot, user_id,
+                    "<b>❪ STEP 5 (REDO): STORY NAME ❫</b>\n\nEnter story name:",
+                    reply_markup=markup
+                )
+                if getattr(msg_story2, 'text', None) and any(x in msg_story2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                new_share_job[user_id]['story'] = (msg_story2.text or "").strip()
+                msg_stype = await _ask(bot, user_id,
+                    "<b>❪ STEP 6: SOURCE STRUCTURE ❫</b>\n\nChannel or Group Topic?",
                     reply_markup=markup_source
                 )
-                if getattr(msg_stype2, 'text', None) and any(x in msg_stype2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                is_topic = "topic" in (msg_stype2.text or "").lower()
-                new_share_job[user_id]['is_topic'] = is_topic
-                if not is_topic:
-                    new_share_job[user_id]['account_id'] = None
-                else:
-                    msg_acc = await _ask(bot, user_id,
-                        "<b>❪ STEP 6.5: SCANNING ACCOUNT ❫</b>\n\nChoose Userbot:",
-                        reply_markup=ReplyKeyboardMarkup(acc_kb, resize_keyboard=True, one_time_keyboard=True)
-                    )
-                    if not msg_acc.text or (getattr(msg_acc, "text", None) and any(x in msg_acc.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
-                        return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                if getattr(msg_stype, 'text', None) and any(x in msg_stype.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            is_topic = "topic" in (msg_stype.text or "").lower()
+            new_share_job[user_id]['is_topic'] = is_topic
 
+            #  STEP 6.5: SELECT ACCOUNT 
             if is_topic:
-                acc_name = msg_acc.text.split(": ", 1)[-1].strip()
-                sel_acc = next((a for a in valid_accounts if a.get("name") == acc_name), None)
-                if not sel_acc:
-                    return await bot.send_message(user_id, "<b>‣ Account not found.</b>", reply_markup=ReplyKeyboardRemove())
-                new_share_job[user_id]['account_id'] = sel_acc['id']
-        else:
-            new_share_job[user_id]['account_id'] = None  # Default to Main Bot for normal channels.
+                accounts = await db.get_bots(user_id)
+                if not accounts:
+                    return await bot.send_message(user_id, "<b>❌ No accounts found. Add one in /settings → Accounts first.</b>")
+                    
+                userbots = [a for a in accounts if not a.get("is_bot", True)]
+                if not userbots:
+                    return await bot.send_message(user_id, "<b>❌ You selected 'Group Topic', but you have no Userbot added!</b>\nBots cannot scan Group Topics. Please go to /settings → Accounts and add a Userbot first.")
+                valid_accounts = userbots
+                    
+                acc_kb = [[KeyboardButton(f"»  Userbot: {a.get('name', '?')}")] for a in valid_accounts]
+                acc_kb.append([KeyboardButton("↩️ Uɴᴅᴏ"), KeyboardButton("⛔ Cᴀɴᴄᴇʟ")])
+                
+                msg_acc = await _ask(bot, user_id,
+                    "<b>❪ STEP 6.5: SCANNING ACCOUNT ❫</b>\n\nChoose the Userbot to use for reading files from the Group Topic:\n"
+                    "<i>(⚠️ NOTE: Group Topics MUST be scanned by a Userbot.)</i>",
+                    reply_markup=ReplyKeyboardMarkup(acc_kb, resize_keyboard=True, one_time_keyboard=True)
+                )
+                if not msg_acc.text or (getattr(msg_acc, "text", None) and any(x in msg_acc.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
+                    return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                if getattr(msg_acc, "text", None) and any(x in msg_acc.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                    # Re-ask source structure
+                    msg_stype2 = await _ask(bot, user_id,
+                        "<b>❪ STEP 6 (REDO): SOURCE STRUCTURE ❫</b>\n\nChannel or Group Topic?",
+                        reply_markup=markup_source
+                    )
+                    if getattr(msg_stype2, 'text', None) and any(x in msg_stype2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                    is_topic = "topic" in (msg_stype2.text or "").lower()
+                    new_share_job[user_id]['is_topic'] = is_topic
+                    if not is_topic:
+                        new_share_job[user_id]['account_id'] = None
+                    else:
+                        msg_acc = await _ask(bot, user_id,
+                            "<b>❪ STEP 6.5: SCANNING ACCOUNT ❫</b>\n\nChoose Userbot:",
+                            reply_markup=ReplyKeyboardMarkup(acc_kb, resize_keyboard=True, one_time_keyboard=True)
+                        )
+                        if not msg_acc.text or (getattr(msg_acc, "text", None) and any(x in msg_acc.text.lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"])): 
+                            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if is_topic:
+                    acc_name = msg_acc.text.split(": ", 1)[-1].strip()
+                    sel_acc = next((a for a in valid_accounts if a.get("name") == acc_name), None)
+                    if not sel_acc:
+                        return await bot.send_message(user_id, "<b>‣ Account not found.</b>", reply_markup=ReplyKeyboardRemove())
+                    new_share_job[user_id]['account_id'] = sel_acc['id']
+            else:
+                new_share_job[user_id]['account_id'] = None  # Default to Main Bot for normal channels.
 
         if is_topic:
             msg_topic = await _ask(bot, user_id, 
@@ -409,6 +427,7 @@ async def _create_share_flow(bot, user_id, force_live=False):
         # Set placeholder defaults for now; _build_share_links will override them.
         new_share_job[user_id].setdefault('batch_size', 20)
         new_share_job[user_id].setdefault('buttons_per_post', 10)
+        new_share_job[user_id].setdefault('merge_size', 10)
         new_share_job[user_id].setdefault('live_threshold', 0)
 
         sj = new_share_job[user_id]
@@ -1146,7 +1165,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 sj['font'] = font_choice
 
             # Step 11: Live monitoring (only for non-force-live)
-            if not sj.get('live_threshold'):
+            if not sj.get('live_threshold') and not sj.get('is_test_mode'):
                 _m11 = await _ask(bot, user_id,
                     "<b>❪ STEP 11: LIVE MONITORING ❫</b>\n\nHow many new episodes should trigger auto-posting?\n"
                     "Send <code>0</code> or <code>Skip</code> to disable.\nExample: <code>10</code>",
@@ -1841,6 +1860,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     "font": sj.get('font'),
                     "threshold": sj['live_threshold'],
                     "batch_size": sj.get('batch_size', 10),
+                    "merge_size": sj.get('merge_size', 10),
                     "buttons_per_post": sj.get('buttons_per_post', 10),
                     "protect": True,
                     "last_seen_id": int(sj.get('end_id') or 0),

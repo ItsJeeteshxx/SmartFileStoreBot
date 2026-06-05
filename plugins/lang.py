@@ -29,17 +29,17 @@ _S["START_TXT"] = {
     "en": (
         "<i>Hello </i><a href='tg://user?id={}'>{}</a>\n"
         "\n"
-        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (video & audio), batch link generation, and bulk message cleaning.</i>\n"
+        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.</i>\n"
     ),
     "hi": (
         "<i>Hello </i><a href='tg://user?id={}'>{}</a>\n"
         "\n"
-        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (video & audio), batch link generation, and bulk message cleaning.</i>\n"
+        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.</i>\n"
     ),
     "hinglish": (
         "<i>Hello </i><a href='tg://user?id={}'>{}</a>\n"
         "\n"
-        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (video & audio), batch link generation, and bulk message cleaning.</i>\n"
+        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.</i>\n"
     ),
 }
 

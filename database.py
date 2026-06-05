@@ -29,6 +29,7 @@ class Database:
         self.share_config = self.db.share_config  # global share bot settings
         self.premium_bans = self.db.premium_bans
         self.premium_ban_activity = self.db.premium_ban_activity
+        self.share_deliveries = self.db.share_deliveries
         
     async def set_share_bot_token(self, token: str):
         # Migrated: now handles multiple bots via array push, preserving backwards compatibility for singles initially if desired, or just override.
@@ -986,5 +987,27 @@ class Database:
         )
         return True   # first time on this bot
 
+    # ── Share Bot Delivery Tracker (For Purging) ──────────────────────────────
+    async def track_delivery(self, bot_id: str, user_id: int, msg_ids: list):
+        if not bot_id or not msg_ids: return
+        import time
+        doc = {
+            'bot_id': str(bot_id),
+            'user_id': int(user_id),
+            'msg_ids': msg_ids,
+            'timestamp': time.time()
+        }
+        await self.share_deliveries.insert_one(doc)
+
+    async def get_deliveries(self, bot_id: str):
+        cursor = self.share_deliveries.find({'bot_id': str(bot_id)})
+        return [doc async for doc in cursor]
+
+    async def remove_delivery_record(self, doc_id):
+        from bson.objectid import ObjectId
+        await self.share_deliveries.delete_one({'_id': ObjectId(doc_id) if isinstance(doc_id, str) else doc_id})
+
+    async def clear_all_deliveries(self, bot_id: str):
+        await self.share_deliveries.delete_many({'bot_id': str(bot_id)})
 
 db = Database(Config.DATABASE_URI, Config.DATABASE_NAME)

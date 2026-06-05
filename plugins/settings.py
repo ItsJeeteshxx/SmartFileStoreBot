@@ -282,7 +282,7 @@ async def owners_cb(bot, query):
         if data == "routing":
             # List of configurable backend tasks
             tasks = {
-                "merger": "Vɪᴅᴇᴏ/Aᴜᴅɪᴏ Mᴇʀɢᴇʀ",
+                "merger": "Aᴜᴅɪᴏ Mᴇʀɢᴇʀ",
                 "cleaner": "Mᴇᴅɪᴀ Cʟᴇᴀɴᴇʀ",
                 "multijob": "Mᴜʟᴛɪ-Jᴏʙ (Bᴀᴛᴄʜ)",
             }
@@ -1130,6 +1130,7 @@ async def settings_query(bot, query):
               InlineKeyboardButton('Sᴛᴀᴛs',           callback_data=f"settings#sb_stats_{b_id}"),
               InlineKeyboardButton('Bʀᴏᴀᴅᴄᴀsᴛ',       callback_data=f"settings#sb_broadcast_{b_id}")
           ],
+          [InlineKeyboardButton('🧹 Pᴜʀɢᴇ DM Fɪʟᴇs',      callback_data=f"settings#sb_purge_{b_id}")],
           [InlineKeyboardButton('Rᴇᴍᴏᴠᴇ Bᴏᴛ',      callback_data=f"settings#sb_remove_{b_id}")],
           [InlineKeyboardButton('❮ Bᴀᴄᴋ',               callback_data="settings#sharebot")],
       ]
@@ -1141,6 +1142,82 @@ async def settings_query(bot, query):
           "<i>All settings below are specific to this bot.</i>",
           reply_markup=InlineKeyboardMarkup(buttons)
       )
+
+  elif type.startswith("sb_purge_") and not type.startswith("sb_purge_confirm_"):
+      b_id = type.split("sb_purge_")[1]
+      buttons = [
+          [InlineKeyboardButton("✅ Yᴇs, Pᴜʀɢᴇ Aʟʟ", callback_data=f"settings#sb_purge_confirm_{b_id}")],
+          [InlineKeyboardButton("❌ Cᴀɴᴄᴇʟ", callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      await query.message.edit_text(
+          "<b>⚠️ WARNING: MASS PURGE</b>\n\n"
+          "This will delete <b>ALL files</b> that this Share Bot has ever delivered to any user's DM. "
+          "The deletion process will run in the background.\n\n"
+          "<b>Are you sure you want to proceed?</b>",
+          reply_markup=InlineKeyboardMarkup(buttons)
+      )
+
+  elif type.startswith("sb_purge_confirm_"):
+      b_id = type.split("sb_purge_confirm_")[1]
+      
+      # Fetch all deliveries
+      deliveries = await db.get_deliveries(b_id)
+      if not deliveries:
+          return await query.answer("No delivered files found for this bot!", show_alert=True)
+          
+      await query.answer("Started mass purge in background!", show_alert=False)
+      query.data = f"settings#sb_view_{b_id}"
+      await settings_query(bot, query)
+      
+      # Background Task
+      async def _do_purge(b_id, deliveries, admin_id):
+          import asyncio
+          from pyrogram.errors import FloodWait
+          from plugins.share_bot import share_clients
+          
+          sb_client = share_clients.get(str(b_id))
+          temp_client = None
+          if not sb_client:
+              bot_info = await db.get_bot(admin_id, b_id)
+              if bot_info:
+                  from config import Config
+                  import pyrogram
+                  try:
+                      temp_client = pyrogram.Client(f"temp_purge_{b_id}", bot_token=bot_info['token'], api_id=Config.API_ID, api_hash=Config.API_HASH, in_memory=True)
+                      await temp_client.start()
+                      sb_client = temp_client
+                  except Exception as e:
+                      await bot.send_message(admin_id, f"<b>Purge Failed:</b> Could not start Share Bot client: {e}")
+                      return
+          
+          if not sb_client:
+              return
+              
+          total_deleted = 0
+          for doc in deliveries:
+              try:
+                  await sb_client.delete_messages(chat_id=doc['user_id'], message_ids=doc['msg_ids'])
+                  total_deleted += len(doc['msg_ids'])
+                  await db.remove_delivery_record(doc['_id'])
+              except FloodWait as e:
+                  await asyncio.sleep(e.value + 1)
+                  try:
+                      await sb_client.delete_messages(chat_id=doc['user_id'], message_ids=doc['msg_ids'])
+                      total_deleted += len(doc['msg_ids'])
+                      await db.remove_delivery_record(doc['_id'])
+                  except Exception:
+                      pass
+              except Exception:
+                  await db.remove_delivery_record(doc['_id'])
+              await asyncio.sleep(0.5)
+              
+          if temp_client:
+              await temp_client.stop()
+              
+          await bot.send_message(admin_id, f"✅ <b>Mass Purge Complete</b>\nSuccessfully deleted {total_deleted} files from user DMs for Share Bot ID: {b_id}")
+
+      import asyncio
+      asyncio.create_task(_do_purge(b_id, deliveries, user_id))
 
   elif type.startswith("sb_donation_"):
       b_id = type.split("sb_donation_")[1]

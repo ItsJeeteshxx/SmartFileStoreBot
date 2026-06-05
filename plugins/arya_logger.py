@@ -25,6 +25,7 @@ Usage:
 import logging
 import time
 from typing import Optional
+from pyrogram import enums
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ async def _send(text: str, ch_key: str) -> None:
             await bot.send_message(
                 chat_id=target_chat_id,
                 text=text,
-                parse_mode='html',
+                parse_mode=enums.ParseMode.HTML,
                 disable_web_page_preview=True,
             )
             logger.debug(f"[AryaLog] Log sent to {ch_key} ({target_chat_id})")
@@ -148,7 +149,7 @@ async def _send(text: str, ch_key: str) -> None:
                     await bot.send_message(
                         chat_id=target_chat_id,
                         text=text,
-                        parse_mode='html',
+                        parse_mode=enums.ParseMode.HTML,
                         disable_web_page_preview=True,
                     )
                     logger.info(f"[AryaLog] Retry succeeded for {ch_key} ({target_chat_id})")

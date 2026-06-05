@@ -619,7 +619,8 @@ async def _process_start(client, message):
             if formatted_cap:
                 kwargs["caption"] = formatted_cap
             sent = await client.copy_message(**kwargs)
-            sent_ids.append(sent.id)
+            if sent:
+                sent_ids.append(sent.id)
                         
         except Exception as copy_err:
             logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
@@ -645,6 +646,13 @@ async def _process_start(client, message):
         await sts.delete()
     except Exception:
         pass
+
+    # ── Track delivery in DB for global Purge ───────────────
+    if sent_ids and bot_id:
+        try:
+            await db.track_delivery(bot_id, user_id, sent_ids)
+        except Exception as e:
+            logger.error(f"Failed to track delivery for purge: {e}")
 
     total = len(sent_ids)
     if total == 0:
