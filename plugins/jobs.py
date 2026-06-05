@@ -160,7 +160,7 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
                 pass
 
             new_client = _CLIENT.client(acc) if acc else client
-            client = await start_clone_bot(new_client, force_restart=True)
+            client = await start_clone_bot(new_client, force_restart=False)
             # After restart, check Pyrogram's own state first
             try:
                 if getattr(client, 'is_connected', None) and client.is_connected:
