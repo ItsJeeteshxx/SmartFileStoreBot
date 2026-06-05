@@ -1895,7 +1895,7 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
         ])
     else:
         # Pagination constants
-        PAGE_SIZE = 10
+        PAGE_SIZE = 30
         total_jobs = len(jobs)
         total_pages = (total_jobs + PAGE_SIZE - 1) // PAGE_SIZE
         page = max(1, min(page, total_pages))
@@ -1934,16 +1934,10 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             st  = j.get("status", "stopped")
             jid = j["job_id"]
             short = jid[-6:]
-            row = []
-            if st == "running":
-                row.append(InlineKeyboardButton(f"⏹ Sᴛᴏᴘ [{short}]", callback_data=f"job#stop#{jid}"))
-            else:
-                row.append(InlineKeyboardButton(f"Sᴛᴀʀᴛ [{short}]", callback_data=f"job#start#{jid}"))
-                row.append(InlineKeyboardButton(f"🔁 Rᴇsᴇᴛ [{short}]", callback_data=f"job#reset#{jid}"))
-            row.append(InlineKeyboardButton(f"Iɴғᴏ [{short}]", callback_data=f"job#info#{jid}"))
-            row.append(InlineKeyboardButton(f"⚙️ Sᴇᴛᴛɪɴɢs [{short}]", callback_data=f"job#settings#{jid}"))
-            row.append(InlineKeyboardButton(f"Dᴇʟ [{short}]",  callback_data=f"job#del#{jid}"))
-            btns_list.append(row)
+            job_name = j.get("name", f"Job {short}")
+            icon = "🟢" if st == "running" else ("🔴" if st == "error" else "⏸")
+            # Only one button per job to prevent hitting the 100 button limit per message
+            btns_list.append([InlineKeyboardButton(f"{icon} {job_name}", callback_data=f"job#info#{jid}")])
 
         # Pagination controls row
         nav_row = []
@@ -2072,9 +2066,24 @@ async def job_info_cb(bot, query):
     if job.get("error"):
         text += f"\n<b>Error:</b>\n<blockquote><code>{job['error']}</code></blockquote>"
 
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
-        InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="job#list")
-    ]]))
+    btns = []
+    st  = job.get("status", "stopped")
+    
+    row1 = []
+    if st == "running":
+        row1.append(InlineKeyboardButton("⏹ Sᴛᴏᴘ Jᴏʙ", callback_data=f"job#stop#{job_id}"))
+    else:
+        row1.append(InlineKeyboardButton("▶️ Sᴛᴀʀᴛ Jᴏʙ", callback_data=f"job#start#{job_id}"))
+        row1.append(InlineKeyboardButton("🔁 Rᴇsᴇᴛ Jᴏʙ", callback_data=f"job#reset#{job_id}"))
+    btns.append(row1)
+    
+    btns.append([
+        InlineKeyboardButton("⚙️ Sᴇᴛᴛɪɴɢs", callback_data=f"job#settings#{job_id}"),
+        InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ",  callback_data=f"job#del#{job_id}")
+    ])
+    btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ ᴛᴏ Lɪsᴛ", callback_data="job#list")])
+
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
 
 
 @Client.on_callback_query(filters.regex(r'^job#settings#'))
