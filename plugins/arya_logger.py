@@ -166,6 +166,12 @@ async def _send(text: str, ch_key: str) -> None:
 # Public log functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _ist_str() -> str:
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist).strftime("%Y-%m-%d %I:%M:%S %p IST")
+
 async def log_ban(
     user_id: int,
     user_name: str,
@@ -176,7 +182,7 @@ async def log_ban(
 ) -> None:
     """Send a ban log entry to the Bans & Warnings channel."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     text = (
         f"<b>🚫 SILENT BAN — Abuse Detected</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -202,7 +208,7 @@ async def log_warn(
 ) -> None:
     """Send a warning log entry (strike 1 or 2) to the Bans & Warnings channel."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     text = (
         f"<b>⚠️ ABUSE WARNING — Strike {strike_count}/{max_strikes}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -225,7 +231,7 @@ async def log_new_user(
 ) -> None:
     """Send a new-user log when a user starts any delivery bot for the first time."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     text = (
         f"<b>👤 New User</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -247,7 +253,7 @@ async def log_batch_link(
 ) -> None:
     """Log when a new share/batch link is created and saved to DB."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     story_line = f"<b>Story:</b> {_esc(story)}\n" if story else ""
     range_line  = f"<b>Range:</b> {_esc(ep_range)}\n" if ep_range else ""
     text = (
@@ -272,7 +278,7 @@ async def log_live_job(
 ) -> None:
     """Log when a Live Forward job enters its live-polling phase."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     uid_line = f"<b>Owner:</b> <a href='tg://user?id={user_id}'>{user_id}</a>\n" if user_id else ""
     text = (
         f"<b>⚡ Live Job Active</b>\n"
@@ -299,7 +305,7 @@ async def log_cleaner_job(
 ) -> None:
     """Log cleaner job lifecycle events (started, completed, failed)."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     STATUS_ICON = {
         "started":   "🔄",
         "completed": "✅",
@@ -329,7 +335,7 @@ async def log_error(
 ) -> None:
     """Log an unexpected error from anywhere in the ecosystem."""
     import time as _t
-    ts = _t.strftime("%Y-%m-%d %H:%M:%S UTC", _t.gmtime())
+    ts = _ist_str()
     text = (
         f"<b>❌ Error</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -356,3 +362,46 @@ def _esc(text: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+async def log_share_delivery(
+    user_id: int,
+    user_name: str,
+    bot_name: str,
+    bot_id: str,
+    file_name: str,
+) -> None:
+    """Log when a Share Bot delivers a file to a user."""
+    ts = _ist_str()
+    text = (
+        f"<b>📤 File Delivered</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>User:</b> <a href='tg://user?id={user_id}'>{_esc(user_name)}</a>  "
+        f"[<code>{user_id}</code>]\n"
+        f"<b>File:</b> {_esc(file_name)}\n"
+        f"<b>Bot:</b> {_esc(bot_name)} (<code>{bot_id}</code>)\n"
+        f"<b>Time:</b> <code>{ts}</code>"
+    )
+    await _send(text, 'ch_share')
+
+
+
+async def log_live_batch_post(
+    job_id: str,
+    files_in_batch: int,
+    total_forwarded: int,
+    source: str,
+) -> None:
+    """Log when a Live Job successfully processes a batch of files."""
+    ts = _ist_str()
+    text = (
+        f"<b>⚡ Live Job Progress</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Job ID:</b> <code>{_esc(job_id)}</code>\n"
+        f"<b>Source:</b> <code>{_esc(source)}</code>\n"
+        f"<b>Status:</b> Just processed a batch of <b>{files_in_batch}</b> files.\n"
+        f"<b>Total Forwarded:</b> <code>{total_forwarded}</code>\n"
+        f"<b>Time:</b> <code>{ts}</code>"
+    )
+    await _send(text, 'ch_live')
+

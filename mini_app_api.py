@@ -298,6 +298,7 @@ def _format_story(s: dict) -> dict | None:
                             (s.get("status", "") == "Completed")),
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "is_must_have":  bool(s.get("is_must_have", False)),
+        "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
     }
 
 

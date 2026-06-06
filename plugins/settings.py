@@ -864,7 +864,7 @@ async def settings_query(bot, query):
      protect = await db.get_share_protect_global()
      ptxt = "»  ON" if protect else "‣  OFF"
      logs_cfg = await db.get_logs_config()
-     configured_count = sum(1 for k in ['ch_bans', 'ch_new_users', 'ch_batch', 'ch_live', 'ch_cleaner', 'ch_errors'] if logs_cfg.get(k, 0))
+     configured_count = sum(1 for k in ['ch_bans', 'ch_new_users', 'ch_batch', 'ch_live', 'ch_cleaner', 'ch_errors', 'ch_share'] if logs_cfg.get(k, 0))
      logs_lbl = f"»  {configured_count}/6 configured" if configured_count else "‣  None Set"
 
      # Anti-Abuse status for display
@@ -2201,6 +2201,7 @@ async def settings_query(bot, query):
           ('ch_live',      "⚡ Live Jobs"),
           ('ch_cleaner',   "🧹 Cleaner Jobs"),
           ('ch_errors',    "❌ Error Alerts"),
+          ('ch_share',     "📤 Share Logs"),
       ]
 
       text = (
@@ -2232,6 +2233,7 @@ async def settings_query(bot, query):
           'ch_live':      "⚡ Live Jobs",
           'ch_cleaner':   "🧹 Cleaner Jobs",
           'ch_errors':    "❌ Error Alerts",
+          'ch_share':     "📤 Share Logs",
       }
       label = CH_MAP.get(ch_key, ch_key)
       logs_cfg = await db.get_logs_config()
@@ -2263,6 +2265,7 @@ async def settings_query(bot, query):
           'ch_live':      "⚡ Live Jobs",
           'ch_cleaner':   "🧹 Cleaner Jobs",
           'ch_errors':    "❌ Error Alerts",
+          'ch_share':     "📤 Share Logs",
       }
       label = CH_MAP.get(ch_key, ch_key)
       await query.message.delete()
@@ -2324,6 +2327,7 @@ async def settings_query(bot, query):
           'ch_live':      "⚡ Live Jobs",
           'ch_cleaner':   "🧹 Cleaner Jobs",
           'ch_errors':    "❌ Error Alerts",
+          'ch_share':     "📤 Share Logs",
       }
       label = CH_MAP.get(ch_key, ch_key)
       await db.set_logs_config(**{ch_key: 0})
