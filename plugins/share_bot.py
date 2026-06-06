@@ -606,28 +606,46 @@ async def _process_start(client, message):
                  await db.get_share_text("custom_caption", "")
     formatted_cap = format_msg(cap_tpl, message.from_user) if cap_tpl else None
 
+    from pyrogram.errors import FloodWait
     for msg_id in msg_ids:
         if dl_id not in active_downloads:
             break  # cancel handler already edited the status
-        try:
-            kwargs = {
-                "chat_id": user_id,
-                "from_chat_id": source_chat,
-                "message_id": msg_id,
-                "protect_content": protect_flag,
-            }
-            if formatted_cap:
-                kwargs["caption"] = formatted_cap
-            sent = await client.copy_message(**kwargs)
-            if sent:
-                sent_ids.append(sent.id)
-                        
-        except Exception as copy_err:
-            logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
-            fail_count += 1
+        
+        retry_count = 0
+        while retry_count < 3:
+            try:
+                kwargs = {
+                    "chat_id": user_id,
+                    "from_chat_id": source_chat,
+                    "message_id": msg_id,
+                    "protect_content": protect_flag,
+                }
+                if formatted_cap:
+                    kwargs["caption"] = formatted_cap
+                sent = await client.copy_message(**kwargs)
+                if sent:
+                    sent_ids.append(sent.id)
+                break  # Success
+                            
+            except FloodWait as fw:
+                logger.warning(f"FloodWait for {fw.value}s inside share delivery for user {user_id}")
+                try:
+                    await message.reply_text(f"<i>⏳ Telegram Rate Limit Reached! Waiting {fw.value} seconds to deliver remaining files...</i>")
+                except: pass
+                await asyncio.sleep(fw.value + 1)
+                retry_count += 1
+                
+            except BaseException as copy_err:
+                logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
+                fail_count += 1
+                break  # Skip to next message on non-flood errors
+                
         await asyncio.sleep(0.02)
 
-    active_downloads.discard(dl_id)
+    try:
+        active_downloads.discard(dl_id)
+    except:
+        pass
 
     # ── Record delivery timestamp for 3-strike abuse detection ───────────────
     import time as _ab_time
@@ -1363,8 +1381,19 @@ def register_share_handlers(app: Client):
     ))
     # Auto-approve join requests for JR channels so users get instant access
     app.add_handler(ChatJoinRequestHandler(_fsub_record_jr))
+    async def safe_process_start(client, message):
+        try:
+            await _process_start(client, message)
+        except BaseException as e:
+            import traceback
+            import datetime
+            with open("bot_crash.log", "a", encoding="utf-8") as f:
+                f.write(f"\n[{datetime.datetime.now()}] Exception in _process_start:\n")
+                f.write(traceback.format_exc() + "\n")
+            raise
+
     app.add_handler(MessageHandler(
-        _process_start,
+        safe_process_start,
         filters.private & filters.command("start")
     ))
 
