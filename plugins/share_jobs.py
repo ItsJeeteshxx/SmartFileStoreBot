@@ -1744,12 +1744,17 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             # Send to admin DM — independent of channel
             try:
-                await bot.send_document(
+                sent_doc_dm = await bot.send_document(
                     user_id, report_bytes,
-                    caption=dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name,
                     reply_markup=report_markup
                 )
+                if dm_cap:
+                    await sent_doc_dm.reply_text(
+                        dm_cap, 
+                        parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
             except Exception as dm_err:
                 logger.error(f"[Report] DM send failed: {dm_err}", exc_info=True)
 
@@ -1765,13 +1770,18 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             try:
                 report_bytes.seek(0)
-                await poster.send_document(
+                sent_doc_ch = await poster.send_document(
                     sj['target'], report_bytes,
-                    caption=ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name,
                     reply_to_message_id=sj.get('target_topic_id'),
                     reply_markup=report_markup
                 )
+                if ch_cap:
+                    await sent_doc_ch.reply_text(
+                        ch_cap,
+                        parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
             except Exception as ch_err:
                 logger.error(f"[Report] Channel send failed: {ch_err}", exc_info=True)
 
