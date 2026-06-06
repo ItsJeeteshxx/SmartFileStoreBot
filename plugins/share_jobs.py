@@ -1242,21 +1242,48 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             # We have the real answer now, so rebuild with the correct value.
             batch_size     = sj['batch_size']
             buttons_per_post = sj['buttons_per_post']
+            skip_duplicates = (sj.get('duplicate_handling', 'no') == 'yes')
+
+            # Fetch already posted episodes from DB to prevent sending duplicate batch posts
+            already_posted_nums = set()
+            if skip_duplicates:
+                try:
+                    posted_doc = await db.db["live_batch_posted_eps"].find_one({
+                        "target": int(sj['target']),
+                        "story": story
+                    })
+                    if posted_doc and "nums" in posted_doc:
+                        already_posted_nums.update(posted_doc["nums"])
+                except Exception as e:
+                    logger.error(f"Error fetching already_posted_nums: {e}")
 
             import uuid as _uuid_mod
             # Rebuild buckets
             if GROUPED_MODE:
-                buckets_final = buckets  # grouped mode doesn't depend on batch_size
+                if skip_duplicates and already_posted_nums:
+                    buckets_final = []
+                    for b_s, b_e, b_mids in buckets:
+                        # For grouped mode, skip if the base episode is already posted
+                        if b_s != "Extra" and b_s in already_posted_nums:
+                            continue
+                        buckets_final.append([b_s, b_e, b_mids])
+                else:
+                    buckets_final = buckets
             else:
                 msg_to_ep  = {m.id: ep for m, ep, _, _ in parsed_msgs}
                 msg_to_end = {m.id: ep_e for m, _, ep_e, _ in parsed_msgs}
                 
                 # Keep track of true duplicates so we can SKIP them completely
                 duplicate_mids = set()
-                for _, mids in ep_to_msgs.items():
+                for ep, mids in ep_to_msgs.items():
                     if len(mids) > 1:
+                        # Always skip duplicate files for the same episode within source
                         for duplicate in mids[1:]:
                             duplicate_mids.add(duplicate)
+                    # If skipping duplicates, ALSO skip files that were already posted to the destination!
+                    if skip_duplicates and ep in already_posted_nums:
+                        for mid in mids:
+                            duplicate_mids.add(mid)
 
                 b_s2 = None; b_e2 = None; b_mids2 = []; pending2 = []
                 buckets_final = []
@@ -1370,6 +1397,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         #  PHASE 3: Post to target channel 
         post_count = 0
+        all_posted_ep_nums = set()
         for i in range(0, len(raw_buttons), buttons_per_post):
             chunk = raw_buttons[i : i + buttons_per_post]
             first_ep = chunk[0]["ep_start"]
@@ -1473,7 +1501,33 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             else:
                 return await safe_edit("‣  Posting aborted after 6 retries due to FloodWait.")
             post_count += 1
+            
+            # Track posted episodes to avoid duplicates later
+            if sj.get('post_format') != "missing":
+                for btn in chunk:
+                    try:
+                        s_ep = int(btn["ep_start"])
+                        e_ep = int(btn["ep_end"])
+                        all_posted_ep_nums.update(range(s_ep, e_ep + 1))
+                    except:
+                        pass
+            
             await asyncio.sleep(1)
+
+        # Record posted episodes to DB
+        if all_posted_ep_nums:
+            try:
+                import time
+                await db.db["live_batch_posted_eps"].update_one(
+                    {"target": int(sj['target']), "story": story},
+                    {
+                        "$addToSet": {"nums": {"$each": list(all_posted_ep_nums)}},
+                        "$set": {"at": time.time()}
+                    },
+                    upsert=True
+                )
+            except Exception as e:
+                logger.error(f"Error saving posted eps: {e}")
 
         #  FINAL REPORT 
         mode_str = "🗂 Grouped files (1 button/file)" if GROUPED_MODE else f"📑 Individual (batch size: {batch_size})"
