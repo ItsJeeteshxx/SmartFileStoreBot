@@ -568,7 +568,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     estr = str(e)
                     is_conn = any(k in estr.lower() for k in (
                         "not been started", "not connected", "disconnected",
-                        "connectionerror", "connection", "reset"
+                        "connectionerror", "connection", "reset", "broken pipe", "errno 32"
                     ))
                     logger.warning(f"[Cleaner {job_id}] cache fill attempt {attempt+1} err ({'conn' if is_conn else 'other'}): {e}")
                     if is_conn:
@@ -689,7 +689,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     # Connection errors: reconnect and retry download once before raising
                     is_conn_err = any(k in estr_lower for k in (
                         "not been started", "not connected", "disconnected",
-                        "connectionerror", "connection reset", "connection refused"
+                        "connectionerror", "connection reset", "connection refused", "broken pipe", "errno 32"
                     ))
                     if is_conn_err:
                         logger.warning(f"[Cleaner {job_id}] mid={m.id}: connection error during download, reconnecting...")

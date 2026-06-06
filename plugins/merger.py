@@ -1302,7 +1302,7 @@ async def _run_job(jid, uid, bot):
                     except Exception as e:
                         estr = str(e)
                         is_transient = any(k in estr for k in (
-                            "Timeout", "Connection", "Read", "reset",
+                            "Timeout", "Connection", "Read", "reset", "broken pipe", "errno 32",
                             "not been started", "not connected", "disconnected"
                         ))
                         if is_transient:

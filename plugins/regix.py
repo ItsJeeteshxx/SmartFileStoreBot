@@ -154,7 +154,7 @@ async def pub_(bot, message):
                       continue
                   except Exception as e:
                       err_msg = str(e).upper()
-                      if "TIMEOUT" in err_msg or "CONNECTION" in err_msg:
+                      if "TIMEOUT" in err_msg or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err_msg:
                           await asyncio.sleep(5)
                           continue # Retry sending
                       
@@ -587,7 +587,7 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
                          await asyncio.sleep(fw.value + 2)
                      except Exception as dl_e:
                          err_dl = str(dl_e).upper()
-                         if "TIMEOUT" in err_dl or "CONNECTION" in err_dl:
+                         if "TIMEOUT" in err_dl or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err_dl:
                              await asyncio.sleep(5)
                              continue
                          break
@@ -640,7 +640,7 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
              await copy(bot, msg, m, sts, download, attempt, seq_index, upload_queue)
          except Exception as e2:
              f_err = str(e2).upper()
-             if "TIMEOUT" in f_err or "CONNECTION" in f_err:
+             if "TIMEOUT" in f_err or "CONNECTION" in f_err or "BROKEN PIPE" in f_err or "ERRNO 32" in f_err:
                  if attempt < 3:
                      await asyncio.sleep(5)
                      return await copy(bot, msg, m, sts, download, attempt + 1, seq_index, upload_queue)

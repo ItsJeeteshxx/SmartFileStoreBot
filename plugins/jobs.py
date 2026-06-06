@@ -513,7 +513,7 @@ async def _forward_message(
                 if "RESTRICTED" in err or "PROTECTED" in err or "FALLBACK" in err:
                     is_restricted = True
                     break
-                if "TIMEOUT" in err or "CONNECTION" in err:
+                if "TIMEOUT" in err or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err:
                     await asyncio.sleep(5)
                     continue 
                 if attempt < 2:
@@ -543,7 +543,7 @@ async def _forward_message(
                         except FloodWait as fw:
                             await asyncio.sleep(fw.value + 2)
                         except Exception as dl_e:
-                            if "TIMEOUT" in str(dl_e).upper() or "CONNECTION" in str(dl_e).upper():
+                            if "TIMEOUT" in str(dl_e).upper() or "CONNECTION" in str(dl_e).upper() or "BROKEN PIPE" in str(dl_e).upper() or "ERRNO 32" in str(dl_e).upper():
                                 await asyncio.sleep(5)
                                 continue
                             if dl_attempt < 4:
@@ -577,7 +577,7 @@ async def _forward_message(
                 continue
             except Exception as e2:
                 f_err = str(e2).upper()
-                if "TIMEOUT" in f_err or "CONNECTION" in f_err:
+                if "TIMEOUT" in f_err or "CONNECTION" in f_err or "BROKEN PIPE" in f_err or "ERRNO 32" in f_err:
                     await asyncio.sleep(5)
                     continue 
                 if attempt < 4:
@@ -1475,7 +1475,7 @@ async def _run_job(job_id: str, user_id: int):
                     raise  # Bubble up to outer handler which alerts owner
 
                 is_conn_err = any(k in err_up for k in (
-                    "TIMEOUT", "CONNECTION", "NOT BEEN STARTED", "NOT CONNECTED",
+                    "TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "NOT BEEN STARTED", "NOT CONNECTED",
                     "DISCONNECTED", "RESET", "NETWORK", "SOCKET", "PING",
                     "FLOOD_WAIT"
                 ))
@@ -1630,7 +1630,7 @@ async def _run_job(job_id: str, user_id: int):
                     fwd_up = fwd_err.upper()
                     is_conn_err = any(k in fwd_up for k in (
                         "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
-                        "CONNECTION", "TIMEOUT", "RESET"
+                        "CONNECTION", "BROKEN PIPE", "ERRNO 32", "TIMEOUT", "RESET"
                     ))
                     if is_conn_err:
                         logger.warning(f"[Job {job_id}] Connection error during forward: {fwd_err}. Healing...")
@@ -1699,7 +1699,7 @@ async def _run_job(job_id: str, user_id: int):
         
         # Define all known transient/connection error signatures
         _TRANSIENT_KEYS = (
-            "CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
+            "CONNECTION", "BROKEN PIPE", "ERRNO 32", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
             "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
             "CONNECTION LOST", "FLOOD_WAIT",
             "LIVEJOB_RECONNECT_FAILED",   # raised by _lj_ensure_client_alive

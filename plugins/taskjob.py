@@ -203,7 +203,7 @@ async def _dl_worker(worker_id, dl_queue, up_queue, client, to_chat, thread_id):
                 except Exception as e:
                     err = str(e).upper()
                     if "RESTRICTED" not in err and "PROTECTED" not in err and "FALLBACK" not in err:
-                        if "TIMEOUT" in err or "CONNECTION" in err:
+                        if "TIMEOUT" in err or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err:
                             await asyncio.sleep(5)
                             continue 
                         # Immediate retry for unknown temporary error
@@ -230,7 +230,7 @@ async def _dl_worker(worker_id, dl_queue, up_queue, client, to_chat, thread_id):
                             except FloodWait as fw:
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as e2:
-                                if "TIMEOUT" in str(e2).upper() or "CONNECTION" in str(e2).upper():
+                                if "TIMEOUT" in str(e2).upper() or "CONNECTION" in str(e2).upper() or "BROKEN PIPE" in str(e2).upper() or "ERRNO 32" in str(e2).upper():
                                     await asyncio.sleep(5)
                                     continue
                                 if dl_attempt < 4:
@@ -528,7 +528,7 @@ async def _run_task_job(job_id: str, user_id: int):
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as eup:
                                 eup_err = str(eup).upper()
-                                if "TIMEOUT" in eup_err or "CONNECTION" in eup_err:
+                                if "TIMEOUT" in eup_err or "CONNECTION" in eup_err or "BROKEN PIPE" in eup_err or "ERRNO 32" in eup_err:
                                     await asyncio.sleep(5)
                                     continue
                                 print(f"Upload fail for {expected_seq}: {eup}")

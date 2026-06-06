@@ -261,7 +261,7 @@ async def _mj_forward(
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as dl_e:
                                     err_dl = str(dl_e).upper()
-                                    if "TIMEOUT" in err_dl or "CONNECTION" in err_dl or "DISCONNECT" in err_dl:
+                                    if "TIMEOUT" in err_dl or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err_dl or "DISCONNECT" in err_dl:
                                         await asyncio.sleep(5)
                                         continue
                                     break
@@ -286,7 +286,7 @@ async def _mj_forward(
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as ul_e:
                                     err_ul = str(ul_e).upper()
-                                    if any(x in err_ul for x in ["TIMEOUT", "CONNECTION", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECT", "NOT CONNECTED", "PING", "FLOOD"]):
+                                    if any(x in err_ul for x in ["TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECT", "NOT CONNECTED", "PING", "FLOOD"]):
                                         await asyncio.sleep(5)
                                         continue
                                     break
@@ -305,7 +305,7 @@ async def _mj_forward(
                         return False
 
                 # If transient, try to heal before retrying
-                is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED", "PING", "FLOOD"))
+                is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED", "PING", "FLOOD"))
                 if is_transient:
                     try:
                         pass 
@@ -750,7 +750,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     break
                     
                 is_transient = any(k in err_str for k in (
-                    "TIMEOUT", "CONNECTION", "READ", "RESET", "DISCONNECT",
+                    "TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "DISCONNECT",
                     "NOT BEEN STARTED", "NOT CONNECTED", "CLOSED DATABASE",
                     "NETWORK", "SOCKET", "PING", "MULTIJOB_RECONNECT_FAILED"
                 ))
@@ -936,7 +936,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
         err_str = str(e)
         err_upper = err_str.upper()
         _MJ_TRANSIENT = (
-            "CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
+            "CONNECTION", "BROKEN PIPE", "ERRNO 32", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
             "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
             "CONNECTION LOST", "CLOSED DATABASE",
             "MULTIJOB_RECONNECT_FAILED",   # raised by _mj_ensure_client_alive
