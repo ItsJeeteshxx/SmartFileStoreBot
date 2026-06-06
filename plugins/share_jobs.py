@@ -1435,8 +1435,8 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     story_display = story_text
                     sponsor_display = f"sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢"
 
-                hi_line = f"<blockquote>{story_display} के लेटेस्ट एपिसोड्स <b>{first_ep}-{last_ep}</b> ऐड हो गए हैं।</blockquote>"
-                en_line = f"<blockquote>{story_display} Latest Eps <b>{first_ep}-{last_ep}</b> Have been Added.</blockquote>"
+                hi_line = f"<blockquote>{story_display} <code>के लेटेस्ट एपिसोड्स</code> <b>{first_ep}-{last_ep}</b> <code>ऐड हो गए हैं।</code></blockquote>"
+                en_line = f"<blockquote>{story_display} <code>Latest Eps</code> <b>{first_ep}-{last_ep}</b> <code>Have been Added.</code></blockquote>"
                 
                 txt = f"{hi_line}\n{en_line}\n\n{sponsor_display}"
 

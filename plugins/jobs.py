@@ -1560,7 +1560,7 @@ async def _run_job(job_id: str, user_id: int):
                 # Block forwarding if a file with the exact same name was already
                 # forwarded in this live session, regardless of skip_duplicates.
                 _fn_key = None
-                if msg.media:
+                if getattr(msg, 'media', None):
                     _media_attr = getattr(msg.media, 'value', str(msg.media))
                     _media_obj  = getattr(msg, _media_attr, None)
                     if _media_obj:
@@ -1569,7 +1569,10 @@ async def _run_job(job_id: str, user_id: int):
                             _fn_raw = getattr(_media_obj[-1], 'file_name', None)
                         if _fn_raw:
                             _fn_key = _fn_raw.strip().lower()
-                if _fn_key and _fn_key in _live_fn_seen:
+                
+                # Use DB state to survive server restarts!
+                seen_names_db = fresh.get("seen_file_names") or []
+                if _fn_key and (_fn_key in _live_fn_seen or _fn_key in seen_names_db):
                     logger.info(
                         f"[Job {job_id}] Blocking duplicate filename '{_fn_key}' "
                         f"(msg {msg.id}) — already forwarded in this session."
