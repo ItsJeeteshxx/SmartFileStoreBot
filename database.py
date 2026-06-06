@@ -891,7 +891,6 @@ class Database:
             'ch_live':      0,
             'ch_cleaner':   0,
             'ch_errors':    0,
-            'ch_share':     0,
         }
         if not doc:
             return defaults
@@ -906,7 +905,7 @@ class Database:
     async def set_logs_config(self, **kwargs) -> None:
         """Set one or more logs config keys (ch_bans, ch_new_users, etc.)."""
         # Only persist recognised keys to avoid storing old schema fields
-        _VALID = {'ch_bans', 'ch_new_users', 'ch_batch', 'ch_live', 'ch_cleaner', 'ch_errors', 'ch_share'}
+        _VALID = {'ch_bans', 'ch_new_users', 'ch_batch', 'ch_live', 'ch_cleaner', 'ch_errors'}
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
             return

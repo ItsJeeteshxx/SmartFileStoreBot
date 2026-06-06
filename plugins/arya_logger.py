@@ -364,25 +364,7 @@ def _esc(text: str) -> str:
     )
 
 
-async def log_share_delivery(
-    user_id: int,
-    user_name: str,
-    bot_name: str,
-    bot_id: str,
-    file_name: str,
-) -> None:
-    """Log when a Share Bot delivers a file to a user."""
-    ts = _ist_str()
-    text = (
-        f"<b>📤 File Delivered</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>User:</b> <a href='tg://user?id={user_id}'>{_esc(user_name)}</a>  "
-        f"[<code>{user_id}</code>]\n"
-        f"<b>File:</b> {_esc(file_name)}\n"
-        f"<b>Bot:</b> {_esc(bot_name)} (<code>{bot_id}</code>)\n"
-        f"<b>Time:</b> <code>{ts}</code>"
-    )
-    await _send(text, 'ch_share')
+
 
 
 

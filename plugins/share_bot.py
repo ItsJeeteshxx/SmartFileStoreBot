@@ -735,18 +735,6 @@ async def _process_start(client, message):
     full_name = f"{u_name}{last}"
     b_name = client.me.first_name if getattr(client, "me", None) else "this bot"
 
-    try:
-        import plugins.arya_logger as _alog
-        import asyncio
-        if total > 0:
-            file_desc = f"{total} file(s) via batch {uuid_str}"
-            asyncio.create_task(_alog.log_share_delivery(
-                user_id, full_name, b_name, str(bot_id or "bot"), file_desc
-            ))
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to log share delivery: {e}")
-
     pref = await db.get_share_bot_text(bot_id, "donation_lang") if bot_id else "both"
 
     if pref != "off":
