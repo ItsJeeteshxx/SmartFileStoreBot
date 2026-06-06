@@ -91,23 +91,22 @@ async def start_clone_bot(FwdBot, data=None, force_restart=False):
                _client_refcount[cache_key] = _client_refcount.get(cache_key, 1) + 1
                return existing   # ← return cached, skip new start entirely
            except Exception as e:
-               err_str = str(e).lower()
-               # If it's explicitly disconnected, we MUST drop it regardless of curr_refs
-               if "not been started" in err_str or "not connected" in err_str or "disconnected" in err_str:
-                   logger.warning(f"[ClientCache] Cached client {cache_key} explicitly dead ({e}). Dropping.")
-               elif isinstance(e, asyncio.TimeoutError) or "timeout" in err_str or curr_refs > 0:
-                   logger.warning(f"[ClientCache] Cached client {cache_key} failed ping ({e}) but assumed alive/in-use. Returning existing.")
-                   _client_refcount[cache_key] = _client_refcount.get(cache_key, 1) + 1
-                   return existing
-               
-               # Dead — clean up and fall through to start a fresh one
-               logger.warning(f"[ClientCache] Cached client {cache_key} dead ({e}), restarting.")
-               _client_cache.pop(cache_key, None)
-               _client_refcount.pop(cache_key, None)
-               try:
-                   await existing.stop()
-               except Exception:
-                   pass
+                logger.warning(f"[ClientCache] Cached client {cache_key} dead ({e}), restarting IN-PLACE.")
+                try:
+                    await existing.stop()
+                except Exception:
+                    pass
+                
+                try:
+                    await existing.start()
+                except Exception as start_err:
+                    logger.error(f"[ClientCache] In-place restart failed: {start_err}")
+                    _client_cache.pop(cache_key, None)
+                    _client_refcount.pop(cache_key, None)
+                    raise start_err
+                
+                _client_refcount[cache_key] = _client_refcount.get(cache_key, 0) + 1
+                return existing
 
        # Removed is_userbot registering share_handlers as it causes duplicate message 
        # bugs. Delivery requests should be exclusively managed by official Share Bots.

@@ -122,12 +122,7 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
     """
     sname = getattr(client, 'name', None) or str(id(client))
 
-    # ── Step 1: Trust Pyrogram's own connection state (fastest check) ────────
-    try:
-        if getattr(client, 'is_connected', None) and client.is_connected:
-            return client   # Pyrogram says connected — trust it ✔️
-    except Exception:
-        pass
+    # ── Step 1: Removed (Do not trust Pyrogram's is_connected blindly if we were asked to heal) ────────
 
     # ── Step 2: Attempt ping + restart up to 5 times ─────────────────────────
     BACKOFFS = [2, 5, 15, 30, 60]
@@ -151,24 +146,25 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
 
         await asyncio.sleep(backoff)
 
-        # Try to bring the session back up
+        # Try to bring the session back up in-place
         try:
-            # Try release first to clear stale state (ignore errors)
-            try:
-                await release_client(sname)
-            except Exception:
-                pass
-
-            new_client = _CLIENT.client(acc) if acc else client
-            client = await start_clone_bot(new_client, force_restart=False)
-            # After restart, check Pyrogram's own state first
-            try:
-                if getattr(client, 'is_connected', None) and client.is_connected:
-                    logger.info(f"[LiveJob] Client reconnected (is_connected) on attempt {attempt+1}")
+            from plugins.test import _get_cache_lock
+            lock = _get_cache_lock()
+            async with lock:
+                # Double check if another job already healed it while we were waiting for the lock
+                if await _lj_ping_client(client):
+                    logger.info(f"[LiveJob] Client {sname} already healed by another job.")
                     return client
-            except Exception:
-                pass
-            # Confirm with ping
+
+                logger.info(f"[LiveJob] Healing client {sname} in-place...")
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+                
+                await client.start()
+
+            # Confirm with ping outside lock
             if await _lj_ping_client(client):
                 logger.info(f"[LiveJob] Client reconnected (ping) on attempt {attempt+1}")
                 return client
