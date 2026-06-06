@@ -1250,10 +1250,21 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             else:
                 msg_to_ep  = {m.id: ep for m, ep, _, _ in parsed_msgs}
                 msg_to_end = {m.id: ep_e for m, _, ep_e, _ in parsed_msgs}
+                
+                # Keep track of true duplicates so we can SKIP them completely
+                duplicate_mids = set()
+                for _, mids in ep_to_msgs.items():
+                    if len(mids) > 1:
+                        for duplicate in mids[1:]:
+                            duplicate_mids.add(duplicate)
+
                 b_s2 = None; b_e2 = None; b_mids2 = []; pending2 = []
                 buckets_final = []
                 for m in sorted(all_valid_msgs, key=lambda x: x.id):
                     mid = m.id
+                    if mid in duplicate_mids:
+                        continue  # Skip duplicates entirely
+                        
                     if mid in msg_to_ep:
                         ep = msg_to_ep[mid]
                         math_start2 = ((ep - 1) // batch_size) * batch_size + 1
@@ -1417,7 +1428,17 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     f"Comment Below 👇 I'll Add Missing Episodes As Soon As Possible</blockquote>"
                 )
             else:
-                txt = f"{story_text} {eps_word} {ep_range}"
+                if buy_link and buy_link != '#':
+                    story_display = f"<a href='{buy_link}'>{story_text}</a>"
+                    sponsor_display = f"<a href='{buy_link}'>sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢</a>"
+                else:
+                    story_display = story_text
+                    sponsor_display = f"sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢"
+
+                hi_line = f"<blockquote>{story_display} के नए एपिसोड <b>{first_ep}-{last_ep}</b> जोड़ दिए गए हैं।</blockquote>"
+                en_line = f"<blockquote>{story_display} Latest Eps <b>{first_ep}-{last_ep}</b> Have been Added.</blockquote>"
+                
+                txt = f"{hi_line}\n{en_line}\n\n{sponsor_display}"
 
             keyboard = []
             for j in range(0, len(chunk), 2):
