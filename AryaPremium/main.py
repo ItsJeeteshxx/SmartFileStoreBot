@@ -196,29 +196,41 @@ async def main():
     logger.info("Starting up Premium Ecosystem and Warming Cache...")
     from pyrogram import idle
 
+    started_apps = []
     for app in apps:
-        await app.start()
-        
-        # Background task to warm up cache completely on any fresh restart/VPS migration
-        async def warm(client):
-            try:
-                from pyrogram.errors import FloodWait
-                async for _ in client.get_dialogs(limit=500):
-                    pass
-                logger.info(f"[{client.name}] Successfully warmed up peer cache!")
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-            except Exception as e:
-                logger.debug(f"[{client.name}] Dialogs warmup interrupted: {e}")
-                
-        asyncio.create_task(warm(app))
+        try:
+            await app.start()
+            started_apps.append(app)
+            
+            # Background task to warm up cache completely on any fresh restart/VPS migration
+            async def warm(client):
+                try:
+                    from pyrogram.errors import FloodWait
+                    async for _ in client.get_dialogs(limit=30):
+                        pass
+                    logger.info(f"[{client.name}] Successfully warmed up peer cache!")
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+                except Exception as e:
+                    logger.debug(f"[{client.name}] Dialogs warmup interrupted: {e}")
+                    
+            asyncio.create_task(warm(app))
+        except Exception as e:
+            logger.error(f"Failed to start app {getattr(app, 'name', 'Unknown')}: {e}")
+
+    if not started_apps:
+        logger.error("No apps successfully started. Exiting.")
+        return
 
     # Keep bots running
     await idle()
 
     # Graceful shutdown
-    for app in apps:
-        await app.stop()
+    for app in started_apps:
+        try:
+            await app.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
