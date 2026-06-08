@@ -1415,7 +1415,18 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     f"Comment Below 👇 I'll Add Missing Episodes As Soon As Possible</blockquote>"
                 )
             else:
-                txt = f"{story_text} {eps_word} {ep_range}"
+                if buy_link and buy_link != '#':
+                    story_display = f"<a href='{buy_link}'>{story_text}</a>"
+                    sponsor_display = f"<a href='{buy_link}'>sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢</a>"
+                else:
+                    story_display = story_text
+                    sponsor_display = f"sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢"
+
+                hi_line = f"<blockquote>{story_display} <code>के लेटेस्ट एपिसोड्स</code> <b>{first_ep}-{last_ep}</b> <code>ऐड हो गए हैं।</code></blockquote>"
+                en_line = f"<blockquote>{story_display} <code>Latest Eps</code> <b>{first_ep}-{last_ep}</b> <code>Have been Added.</code></blockquote>"
+                
+                txt = f"{hi_line}\n{en_line}\n\n{sponsor_display}"
+
 
             keyboard = []
             for j in range(0, len(chunk), 2):
