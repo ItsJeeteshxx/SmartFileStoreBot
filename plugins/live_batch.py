@@ -329,7 +329,8 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                         new_mids.append(m.id)
                         
                     # Send Public Log if configured
-                    log_ch = os.environ.get("PUBLIC_LOG_CHANNEL_ID")
+                    from config import _env
+                    log_ch = _env("ARYA_LOGS_CHANNEL") or os.environ.get("PUBLIC_LOG_CHANNEL_ID")
                     if log_ch and m and getattr(m, 'link', None):
                         try:
                             log_ch_int = int(log_ch) if log_ch.lstrip('-').isdigit() else log_ch
