@@ -255,6 +255,18 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
     from database import db
     if not getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or not db.mgmt_client: return
     try:
+        if order_id:
+            try:
+                res = await db.db.orders.find_one_and_update(
+                    {"order_id": order_id, "payment_log_sent": {"$ne": True}},
+                    {"$set": {"payment_log_sent": True}}
+                )
+                if not res:
+                    import logging; logging.getLogger(__name__).info(f"Payment log already sent or sending for order {order_id}, skipping duplicate log request.")
+                    return
+            except Exception as e:
+                import logging; logging.getLogger(__name__).warning(f"Error checking order de-duplication in log_payment: {e}")
+
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
@@ -266,9 +278,39 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             "manual_upi":"🏦 Manual UPI",
         }.get(method.lower(), method.capitalize())
 
-        uname_line = f"@{username}" if username else "—"
+        # Clean username helper
+        def clean_username(uname: str) -> str:
+            if not uname:
+                return ""
+            uname_lower = uname.strip().lower()
+            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
+                return ""
+            if uname.startswith("@"):
+                return uname[1:].strip()
+            return uname.strip()
+
+        cleaned_username = clean_username(username)
+
+        # Clean name helper
+        def clean_name(first: str, last: str) -> str:
+            name = f"{first or ''} {last or ''}".strip()
+            name_lower = name.lower()
+            if not name or name_lower in ("unknown", "none", "null", "undefined"):
+                return "User"
+            return name
+
+        def escape_html(text: str) -> str:
+            if not isinstance(text, str):
+                return str(text) if text is not None else ""
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
         tg_link = f"tg://user?id={user_id}"
-        full_name = f"{user_first_name} {user_last_name}".strip()
+
+        if cleaned_username:
+            user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})'
+        else:
+            user_display = f'<a href="{tg_link}">{full_name_esc}</a>'
 
         link_line = ""
         if pay_link and "razorpay" in method.lower():
@@ -278,10 +320,10 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             f"<b>✅ PAYMENT CONFIRMED</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Order ID:</b> <code>{order_id or 'N/A'}</code>\n"
-            f"<b>❖ User:</b> <a href=\"{tg_link}\">{full_name}</a> ({uname_line})\n"
+            f"<b>❖ User:</b> {user_display}\n"
             f"<b>❖ Telegram ID:</b> <code>{user_id}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>❖ Story:</b> {s_name}\n"
+            f"<b>❖ Story:</b> {escape_html(s_name)}\n"
             f"<b>❖ Amount Paid:</b> ₹{amount}\n"
             f"<b>❖ Method:</b> {method_badge}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -306,18 +348,48 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
         ist = timezone(timedelta(hours=5, minutes=30))
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
         
-        uname_line = f"@{username}" if username else "—"
-        full_name = f"{user_first_name} {user_last_name}".strip()
+        # Clean username helper
+        def clean_username(uname: str) -> str:
+            if not uname:
+                return ""
+            uname_lower = uname.strip().lower()
+            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
+                return ""
+            if uname.startswith("@"):
+                return uname[1:].strip()
+            return uname.strip()
+
+        cleaned_username = clean_username(username)
+
+        # Clean name helper
+        def clean_name(first: str, last: str) -> str:
+            name = f"{first or ''} {last or ''}".strip()
+            name_lower = name.lower()
+            if not name or name_lower in ("unknown", "none", "null", "undefined"):
+                return "User"
+            return name
+
+        def escape_html(text: str) -> str:
+            if not isinstance(text, str):
+                return str(text) if text is not None else ""
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
         tg_link = f"tg://user?id={user_id}"
+
+        if cleaned_username:
+            user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})'
+        else:
+            user_display = f'<a href="{tg_link}">{full_name_esc}</a>'
 
         text = (
             f"<b>📦 DELIVERY EVENT</b>\n"
             f"────────────────────\n"
             f"<b>Order ID:</b> <code>{order_id or 'N/A'}</code>\n"
             f"<b>Store Bot:</b> @{bot_username or 'Unknown'}\n"
-            f"<b>User:</b> <a href=\"{tg_link}\">{full_name}</a> ({uname_line})\n"
+            f"<b>User:</b> {user_display}\n"
             f"<b>Telegram ID:</b> <code>{user_id}</code>\n"
-            f"<b>Story:</b> {s_name}\n"
+            f"<b>Story:</b> {escape_html(s_name)}\n"
             f"<b>Method:</b> {d_type.upper()}\n"
             f"<b>Status:</b> {status}\n"
             f"<b>Date:</b> {time_str}"
@@ -336,9 +408,42 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
 
         username = user_info.get("username", "")
-        uname_line = f"@{username}" if username else "—"
-        full_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip() or "Unknown"
+        user_first_name = user_info.get("first_name", "")
+        user_last_name = user_info.get("last_name", "")
+
+        # Clean username helper
+        def clean_username(uname: str) -> str:
+            if not uname:
+                return ""
+            uname_lower = uname.strip().lower()
+            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
+                return ""
+            if uname.startswith("@"):
+                return uname[1:].strip()
+            return uname.strip()
+
+        cleaned_username = clean_username(username)
+
+        # Clean name helper
+        def clean_name(first: str, last: str) -> str:
+            name = f"{first or ''} {last or ''}".strip()
+            name_lower = name.lower()
+            if not name or name_lower in ("unknown", "none", "null", "undefined"):
+                return "User"
+            return name
+
+        def escape_html(text: str) -> str:
+            if not isinstance(text, str):
+                return str(text) if text is not None else ""
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
         tg_link = f"tg://user?id={user_id}"
+
+        if cleaned_username:
+            user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})'
+        else:
+            user_display = f'<a href="{tg_link}">{full_name_esc}</a>'
 
         joined = user_info.get("joined_date", time_str)
         if isinstance(joined, datetime):
@@ -349,7 +454,7 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         text = (
             f"<b>🛡️ ARYA CORE LOG | {event_type}</b>\n"
             f"────────────────────\n"
-            f"<b>User:</b> <a href=\"{tg_link}\">{full_name}</a> ({uname_line})\n"
+            f"<b>User:</b> {user_display}\n"
             f"<b>Telegram ID:</b> <code>{user_id}</code>\n"
             f"<b>Joined:</b> {joined}\n"
             f"────────────────────\n"

@@ -100,7 +100,7 @@ IMAGE_CACHE = {}
 MAX_CACHE_ITEMS = 500
 
 @api_router.get("/image")
-async def optimize_image(url: str):
+async def optimize_image(url: str, w: int = 400, h: int = 400):
     """
     Acts as an Image Proxy: Fetches external image (like Catbox), converts to WebP,
     compresses to maintain visual quality without large file size, and caches it.
@@ -109,7 +109,8 @@ async def optimize_image(url: str):
         raise HTTPException(status_code=400, detail="Invalid URL")
 
     # Check cache
-    url_hash = hashlib.md5(url.encode()).hexdigest()
+    cache_key = f"{url}_{w}_{h}"
+    url_hash = hashlib.md5(cache_key.encode()).hexdigest()
     if url_hash in IMAGE_CACHE:
         return Response(content=IMAGE_CACHE[url_hash], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
@@ -127,13 +128,15 @@ async def optimize_image(url: str):
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
             
-        # Resize to thumbnail size since these are mostly used in small cards
-        max_size = (400, 400)
+        # Resize to requested dimensions
+        max_size = (w, h)
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
         
         # Save as WebP
         output = io.BytesIO()
-        img.save(output, format="WEBP", quality=80, method=2) # faster compression
+        # For larger images (like banners), use higher quality (85)
+        quality = 85 if w > 600 else 80
+        img.save(output, format="WEBP", quality=quality, method=2) # faster compression
         optimized_bytes = output.getvalue()
         
         # Manage cache size
@@ -154,7 +157,7 @@ async def optimize_image(url: str):
         return Response(status_code=302, headers={"Location": url})
 
 @api_router.get("/tg-image")
-async def tg_image_proxy(file_id: str, bot_id: str = None):
+async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int = 400):
     """Fetches image directly from Telegram using a file_id, optimizes to WebP and caches it."""
     from AryaPremium.config import Config
     
@@ -174,8 +177,9 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
     if not token:
         raise HTTPException(status_code=500, detail="No bot token available")
         
-    if file_id in IMAGE_CACHE:
-        return Response(content=IMAGE_CACHE[file_id], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    cache_key = f"{file_id}_{w}_{h}"
+    if cache_key in IMAGE_CACHE:
+        return Response(content=IMAGE_CACHE[cache_key], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
         
     try:
         async with aiohttp.ClientSession() as session:
@@ -199,9 +203,10 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
             img = Image.open(io.BytesIO(img_data))
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGBA")
-            img.thumbnail((400, 400), Image.Resampling.LANCZOS)
+            img.thumbnail((w, h), Image.Resampling.LANCZOS)
             output = io.BytesIO()
-            img.save(output, format="WEBP", quality=80, method=2)
+            quality = 85 if w > 600 else 80
+            img.save(output, format="WEBP", quality=quality, method=2)
             return output.getvalue()
             
         optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
@@ -209,7 +214,7 @@ async def tg_image_proxy(file_id: str, bot_id: str = None):
         if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
             IMAGE_CACHE.clear()
             
-        IMAGE_CACHE[file_id] = optimized_bytes
+        IMAGE_CACHE[cache_key] = optimized_bytes
         
         return Response(
             content=optimized_bytes, 
@@ -1866,7 +1871,7 @@ async def get_my_purchases(telegram_id: str):
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         
         # In AryaPremium, purchases are in user.purchases
-        user = await arya_db.users.find_one({"id": user_id_int})
+        user = await arya_db.db.users.find_one({"id": user_id_int})
         if not user:
             return {"success": True, "data": []}
             
@@ -5202,6 +5207,19 @@ async def trigger_payment_log_from_order(order: dict):
         if not arya_db:
             return
 
+        order_id = order.get("order_id")
+        if not order_id:
+            logger.warning("Order has no order_id, cannot de-duplicate payment log")
+            return
+
+        res = await arya_db.db.orders.find_one_and_update(
+            {"order_id": order_id, "payment_log_sent": {"$ne": True}},
+            {"$set": {"payment_log_sent": True}}
+        )
+        if not res:
+            logger.info(f"Payment log already sent or sending for order {order_id}, skipping duplicate log request.")
+            return
+
         tg_id = order.get("user_id")
         if not tg_id:
             return
@@ -5220,15 +5238,41 @@ async def trigger_payment_log_from_order(order: dict):
             user_last_name = resolved.get("last_name") or ""
             username = resolved.get("username") or username
         elif tg_id_int:
-            user_doc = await arya_db.users.find_one({"id": tg_id_int})
+            user_doc = await arya_db.db.users.find_one({"id": tg_id_int})
             if user_doc:
                 if not username:
                     username = user_doc.get("username", "")
                 user_first_name = user_doc.get("first_name") or user_first_name
                 user_last_name = user_doc.get("last_name") or ""
 
-        if not user_first_name:
-            user_first_name = "User"
+        # Clean username helper
+        def clean_username(uname: str) -> str:
+            if not uname:
+                return ""
+            uname_lower = uname.strip().lower()
+            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
+                return ""
+            if uname.startswith("@"):
+                return uname[1:].strip()
+            return uname.strip()
+
+        cleaned_username = clean_username(username)
+
+        # Clean name helper
+        def clean_name(first: str, last: str) -> str:
+            name = f"{first or ''} {last or ''}".strip()
+            name_lower = name.lower()
+            if not name or name_lower in ("unknown", "none", "null", "undefined"):
+                return "User"
+            return name
+
+        full_name = escape_html(clean_name(user_first_name, user_last_name))
+        tg_link = f"tg://user?id={tg_id}"
+
+        if cleaned_username:
+            user_display = f'<a href="{tg_link}">{full_name}</a> (@{escape_html(cleaned_username)})'
+        else:
+            user_display = f'<a href="{tg_link}">{full_name}</a>'
 
         # Join story names
         story_names = order.get("story_names", [])
@@ -5243,6 +5287,7 @@ async def trigger_payment_log_from_order(order: dict):
                 except Exception:
                     pass
         story_names_str = ", ".join(story_names) if story_names else "N/A"
+        story_names_str = escape_html(story_names_str)
 
         # Payment details
         amount = order.get("total") or order.get("amount_paid", 0)
@@ -5265,11 +5310,6 @@ async def trigger_payment_log_from_order(order: dict):
             "manual_admin": "👑 Manual Admin",
         }.get(method.lower(), method.capitalize())
 
-        uname_line = f"@{escape_html(username)}" if username else "—"
-        tg_link = f"tg://user?id={tg_id}"
-        full_name = escape_html(f"{user_first_name} {user_last_name}".strip())
-        story_names_str = escape_html(story_names_str)
-
         receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or ""
 
         from datetime import datetime, timezone, timedelta
@@ -5285,7 +5325,7 @@ async def trigger_payment_log_from_order(order: dict):
             f"<b>✅ PAYMENT CONFIRMED (MINI APP)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Order ID:</b> <code>{order.get('order_id') or 'N/A'}</code>\n"
-            f"<b>❖ User:</b> <a href=\"{tg_link}\">{full_name}</a> ({uname_line})\n"
+            f"<b>❖ User:</b> {user_display}\n"
             f"<b>❖ Telegram ID:</b> <code>{tg_id}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Story:</b> {story_names_str}\n"

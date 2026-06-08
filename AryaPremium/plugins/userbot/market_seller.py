@@ -7546,31 +7546,23 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
 
 
-        if purchase and "dm" not in logged_deliveries:
-
-            await db.db.premium_purchases.update_one({"_id": purchase["_id"]}, {"$addToSet": {"logged_deliveries": "dm"}})
-
-            asyncio.create_task(log_delivery(
-
-                bot_username=client.me.username,
-
-                user_id=user_id,
-
-                user_first_name=user_obj.first_name if user_obj else "Unknown",
-
-                s_name=s_name,
-
-                d_type="dm",
-
-                status=f"Sent {sent_count}, Failed {failed_count}",
-
-                username=username,
-
-                order_id=order_id,
-
-                user_last_name=last_name
-
-            ))
+        if purchase:
+            res = await db.db.premium_purchases.update_one(
+                {"_id": purchase["_id"], "logged_deliveries": {"$ne": "dm"}},
+                {"$addToSet": {"logged_deliveries": "dm"}}
+            )
+            if res.modified_count > 0:
+                asyncio.create_task(log_delivery(
+                    bot_username=client.me.username,
+                    user_id=user_id,
+                    user_first_name=user_obj.first_name if user_obj else "Unknown",
+                    s_name=s_name,
+                    d_type="dm",
+                    status=f"Sent {sent_count}, Failed {failed_count}",
+                    username=username,
+                    order_id=order_id,
+                    user_last_name=last_name
+                ))
 
 
 
@@ -7776,31 +7768,23 @@ async def _do_channel_delivery(client, user_id, story, status_msg=None):
 
 
 
-        if purchase and "channel" not in logged_deliveries:
-
-            await db.db.premium_purchases.update_one({"_id": purchase["_id"]}, {"$addToSet": {"logged_deliveries": "channel"}})
-
-            asyncio.create_task(log_delivery(
-
-                bot_username=client.me.username,
-
-                user_id=user_id,
-
-                user_first_name=user_obj.first_name if user_obj else "Unknown",
-
-                s_name=s_name_h,
-
-                d_type="channel",
-
-                status=f"Link created (Channel ID: {channel_id})",
-
-                username=username,
-
-                order_id=order_id,
-
-                user_last_name=last_name
-
-            ))
+        if purchase:
+            res = await db.db.premium_purchases.update_one(
+                {"_id": purchase["_id"], "logged_deliveries": {"$ne": "channel"}},
+                {"$addToSet": {"logged_deliveries": "channel"}}
+            )
+            if res.modified_count > 0:
+                asyncio.create_task(log_delivery(
+                    bot_username=client.me.username,
+                    user_id=user_id,
+                    user_first_name=user_obj.first_name if user_obj else "Unknown",
+                    s_name=s_name_h,
+                    d_type="channel",
+                    status=f"Link created (Channel ID: {channel_id})",
+                    username=username,
+                    order_id=order_id,
+                    user_last_name=last_name
+                ))
 
 
 
