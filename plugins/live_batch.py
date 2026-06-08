@@ -329,8 +329,7 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                         new_mids.append(m.id)
                         
                     # Send Public Log if configured
-                    from config import _env
-                    log_ch = _env("ARYA_LOGS_CHANNEL") or _env("PUBLIC_LOG_CHANNEL_ID")
+                    log_ch = os.environ.get("PUBLIC_LOG_CHANNEL_ID")
                     if log_ch and m and getattr(m, 'link', None):
                         try:
                             log_ch_int = int(log_ch) if log_ch.lstrip('-').isdigit() else log_ch
@@ -660,11 +659,6 @@ async def _lb_run_job(job_id: str):
                             await _lb_update_job(job_id, update_dict)
                             job = await _lb_get_job(job_id)
                             logger.info(f"[LiveBatch] Posted batch of {len(chunk_ids)} files. Buffer remaining: {len(buffer_mids)}")
-                            try:
-                                import plugins.arya_logger as _alog
-                                asyncio.create_task(_alog.log_live_batch_post(job_id, len(chunk_ids), fwd_count, str(job.get("source"))))
-                            except Exception as e:
-                                logger.error(f"Failed to send live batch post log: {e}")
                         else:
                             logger.warning(f"[LiveBatch] Post failed, will retry next cycle.")
                             break

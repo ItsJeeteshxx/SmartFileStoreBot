@@ -122,7 +122,7 @@ new_share_job = {}
 
 async def _create_share_flow(bot, user_id, force_live=False):
     try:
-        new_share_job[user_id] = {'is_force_live': force_live}
+        new_share_job[user_id] = {}
         share_bots = await db.get_share_bots()
         
         if not share_bots:
@@ -1242,62 +1242,18 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             # We have the real answer now, so rebuild with the correct value.
             batch_size     = sj['batch_size']
             buttons_per_post = sj['buttons_per_post']
-            skip_duplicates = (sj.get('duplicate_handling', 'no') == 'yes')
-
-            # Fetch already posted episodes from DB to prevent sending duplicate batch posts
-            already_posted_nums = set()
-            if skip_duplicates:
-                try:
-                    posted_doc = await db.db["live_batch_posted_eps"].find_one({
-                        "target": int(sj['target']),
-                        "story": story
-                    })
-                    if posted_doc and "nums" in posted_doc:
-                        already_posted_nums.update(posted_doc["nums"])
-                except Exception as e:
-                    logger.error(f"Error fetching already_posted_nums: {e}")
 
             import uuid as _uuid_mod
-            
-            skipped_mids_from_db = set()
-            
             # Rebuild buckets
             if GROUPED_MODE:
-                if skip_duplicates and already_posted_nums:
-                    buckets_final = []
-                    for b_s, b_e, b_mids in buckets:
-                        # For grouped mode, skip if the base episode is already posted
-                        if b_s != "Extra" and b_s in already_posted_nums:
-                            for mid in b_mids:
-                                skipped_mids_from_db.add(mid)
-                            continue
-                        buckets_final.append([b_s, b_e, b_mids])
-                else:
-                    buckets_final = buckets
+                buckets_final = buckets  # grouped mode doesn't depend on batch_size
             else:
                 msg_to_ep  = {m.id: ep for m, ep, _, _ in parsed_msgs}
                 msg_to_end = {m.id: ep_e for m, _, ep_e, _ in parsed_msgs}
-                
-                # Keep track of true duplicates so we can SKIP them completely
-                duplicate_mids = set()
-                for ep, mids in ep_to_msgs.items():
-                    if len(mids) > 1:
-                        # Always skip duplicate files for the same episode within source
-                        for duplicate in mids[1:]:
-                            duplicate_mids.add(duplicate)
-                    # If skipping duplicates, ALSO skip files that were already posted to the destination!
-                    if skip_duplicates and ep in already_posted_nums:
-                        for mid in mids:
-                            duplicate_mids.add(mid)
-                            skipped_mids_from_db.add(mid)
-
                 b_s2 = None; b_e2 = None; b_mids2 = []; pending2 = []
                 buckets_final = []
                 for m in sorted(all_valid_msgs, key=lambda x: x.id):
                     mid = m.id
-                    if mid in duplicate_mids:
-                        continue  # Skip duplicates entirely
-                        
                     if mid in msg_to_ep:
                         ep = msg_to_ep[mid]
                         math_start2 = ((ep - 1) // batch_size) * batch_size + 1
@@ -1341,8 +1297,6 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         _buckets_to_use = buckets_final if 'buckets_final' in locals() else buckets
         for b_s, b_e, mids in _buckets_to_use:
             if not mids:
-                continue
-            if sj.get('is_force_live'):
                 continue
             uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
             await db.save_share_link(
@@ -1403,8 +1357,6 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         #  PHASE 3: Post to target channel 
         post_count = 0
-        all_posted_ep_nums = set()
-        skipped_count = len(skipped_mids_from_db) if 'skipped_mids_from_db' in locals() else 0
         for i in range(0, len(raw_buttons), buttons_per_post):
             chunk = raw_buttons[i : i + buttons_per_post]
             first_ep = chunk[0]["ep_start"]
@@ -1463,17 +1415,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     f"Comment Below 👇 I'll Add Missing Episodes As Soon As Possible</blockquote>"
                 )
             else:
-                if buy_link and buy_link != '#':
-                    story_display = f"<a href='{buy_link}'>{story_text}</a>"
-                    sponsor_display = f"<a href='{buy_link}'>sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢</a>"
-                else:
-                    story_display = story_text
-                    sponsor_display = f"sᴘᴏɴsᴏʀᴇᴅ ʙʏ 𝘼𝘳𝘺𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢"
-
-                hi_line = f"<blockquote>{story_display} <code>के लेटेस्ट एपिसोड्स</code> <b>{first_ep}-{last_ep}</b> <code>ऐड हो गए हैं।</code></blockquote>"
-                en_line = f"<blockquote>{story_display} <code>Latest Eps</code> <b>{first_ep}-{last_ep}</b> <code>Have been Added.</code></blockquote>"
-                
-                txt = f"{hi_line}\n{en_line}\n\n{sponsor_display}"
+                txt = f"{story_text} {eps_word} {ep_range}"
 
             keyboard = []
             for j in range(0, len(chunk), 2):
@@ -1508,55 +1450,20 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             else:
                 return await safe_edit("‣  Posting aborted after 6 retries due to FloodWait.")
             post_count += 1
-            
-            # Track posted episodes to avoid duplicates later
-            if sj.get('post_format') != "missing":
-                for btn in chunk:
-                    try:
-                        s_ep = int(btn["ep_start"])
-                        e_ep = int(btn["ep_end"])
-                        all_posted_ep_nums.update(range(s_ep, e_ep + 1))
-                    except:
-                        pass
-            
             await asyncio.sleep(1)
-
-        # Record posted episodes to DB
-        if all_posted_ep_nums:
-            try:
-                import time
-                await db.db["live_batch_posted_eps"].update_one(
-                    {"target": int(sj['target']), "story": story},
-                    {
-                        "$addToSet": {"nums": {"$each": list(all_posted_ep_nums)}},
-                        "$set": {"at": time.time()}
-                    },
-                    upsert=True
-                )
-            except Exception as e:
-                logger.error(f"Error saving posted eps: {e}")
 
         #  FINAL REPORT 
         mode_str = "🗂 Grouped files (1 button/file)" if GROUPED_MODE else f"📑 Individual (batch size: {batch_size})"
 
-        if sj.get('is_force_live'):
-            report_lines = [
-                f"<b>»  Live Batch Job Configured!</b>",
-                f"\n<blockquote expandable>",
-                f"»  <b>Files queued for Live Daemon:</b> {total_count}",
-                f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
-                f"»  <b>Mode:</b> {mode_str}",
-            ]
-        else:
-            report_lines = [
-                f"<b>»  Share Links Generated!</b>",
-                f"\n<blockquote expandable>",
-                f"»  <b>Files processed:</b> {total_count}",
-                f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
-                f"»  <b>Link buttons created:</b> {len(raw_buttons)}",
-                f"»  <b>Posts sent to channel:</b> {post_count}",
-                f"»  <b>Mode:</b> {mode_str}",
-            ]
+        report_lines = [
+            f"<b>»  Share Links Generated!</b>",
+            f"\n<blockquote expandable>",
+            f"»  <b>Files processed:</b> {total_count}",
+            f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
+            f"»  <b>Link buttons created:</b> {len(raw_buttons)}",
+            f"»  <b>Posts sent to channel:</b> {post_count}",
+            f"»  <b>Mode:</b> {mode_str}",
+        ]
 
         if grouped_files:
             gf_preview = ", ".join(grouped_files[:8])
@@ -1584,9 +1491,6 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             )
         elif unassigned_count == 0:
             report_lines.append(f"✅ <b>No missing episodes</b> — all {last_ep_num - first_ep_num + 1} slots accounted for!")
-
-        if skipped_count > 0:
-            report_lines.append(f"⚠️ <b>Skipped {skipped_count} files</b> because they were already posted to the destination (Duplicate Handling is ON).")
 
         report_lines.append("</blockquote>")
         report_lines.append(f"")
@@ -1829,28 +1733,12 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             # Send to admin DM — independent of channel
             try:
-                # Try to send with caption attached
-                try:
-                    sent_doc_dm = await bot.send_document(
-                        user_id, report_bytes,
-                        file_name=report_bytes.name,
-                        caption=dm_cap,
-                        parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
-                        reply_markup=report_markup
-                    )
-                except ValueError:
-                    # Caption too long, fallback to separate message
-                    sent_doc_dm = await bot.send_document(
-                        user_id, report_bytes,
-                        file_name=report_bytes.name,
-                        reply_markup=report_markup
-                    )
-                    if dm_cap:
-                        await sent_doc_dm.reply_text(
-                            dm_cap, 
-                            parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
-                            disable_web_page_preview=True
-                        )
+                await bot.send_document(
+                    user_id, report_bytes,
+                    caption=dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    file_name=report_bytes.name,
+                    reply_markup=report_markup
+                )
             except Exception as dm_err:
                 logger.error(f"[Report] DM send failed: {dm_err}", exc_info=True)
 
@@ -1866,29 +1754,13 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             try:
                 report_bytes.seek(0)
-                try:
-                    sent_doc_ch = await poster.send_document(
-                        sj['target'], report_bytes,
-                        file_name=report_bytes.name,
-                        caption=ch_cap,
-                        parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
-                        reply_to_message_id=sj.get('target_topic_id'),
-                        reply_markup=report_markup
-                    )
-                except ValueError:
-                    # Caption too long, fallback
-                    sent_doc_ch = await poster.send_document(
-                        sj['target'], report_bytes,
-                        file_name=report_bytes.name,
-                        reply_to_message_id=sj.get('target_topic_id'),
-                        reply_markup=report_markup
-                    )
-                    if ch_cap:
-                        await sent_doc_ch.reply_text(
-                            ch_cap,
-                            parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
-                            disable_web_page_preview=True
-                        )
+                await poster.send_document(
+                    sj['target'], report_bytes,
+                    caption=ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    file_name=report_bytes.name,
+                    reply_to_message_id=sj.get('target_topic_id'),
+                    reply_markup=report_markup
+                )
             except Exception as ch_err:
                 logger.error(f"[Report] Channel send failed: {ch_err}", exc_info=True)
 
@@ -1991,7 +1863,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     "merge_size": sj.get('merge_size', 10),
                     "buttons_per_post": sj.get('buttons_per_post', 10),
                     "protect": True,
-                    "last_seen_id": int(sj.get('start_id', 1) - 1) if sj.get('is_force_live') else int(sj.get('end_id') or 0),
+                    "last_seen_id": int(sj.get('end_id') or 0),
                     "buffer_mids": [],
                     "forwarded": 0
                 }
