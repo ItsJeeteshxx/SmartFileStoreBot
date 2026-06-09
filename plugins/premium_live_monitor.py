@@ -100,26 +100,50 @@ async def start_premium_live_monitor(bot: Client):
                     continue
                     
                 try:
+                    channel_id = int(channel_id)
+                except ValueError:
+                    pass
+                    
+                if not channel_id:
+                    continue
+                    
+                try:
                     end_id = int(end_id) if end_id else 0
                 except ValueError:
                     end_id = 0
                     
-                if end_id == 0:
-                    try:
-                        # Fallback for stories that haven't been manually updated
-                        # Fetch the absolute latest message ID in the channel
-                        async for last_msg in bot.get_chat_history(channel_id, limit=1):
-                            # Start checking from up to 100 messages ago to catch recent uploads
-                            end_id = max(0, last_msg.id - 100)
-                    except Exception as e:
-                        logger.warning(f"[Premium Monitor] Error getting history for {channel_id}: {e}")
-                        continue
-                        
-                if end_id == 0:
+                # 1. Find the absolute latest message ID in the channel
+                channel_last_id = 0
+                try:
+                    async for last_msg in bot.get_chat_history(channel_id, limit=1):
+                        channel_last_id = last_msg.id
+                        break
+                except Exception as e:
+                    logger.warning(f"[Premium Monitor] Error getting history for {channel_id}: {e}")
                     continue
                     
-                # Fetch next 100 messages after end_id
-                ids_to_fetch = list(range(end_id + 1, end_id + 101))
+                if channel_last_id == 0:
+                    continue
+                    
+                # 2. Fast-forward if end_id is missing or 0
+                if end_id == 0:
+                    end_id = max(0, channel_last_id - 100)
+                    
+                # 3. Check if there are actually any new messages to process
+                if channel_last_id <= end_id:
+                    # No new files uploaded in this 5-minute window!
+                    # Check if this story has a pending announcement
+                    if story_id in _PENDING_NOTIFICATIONS:
+                        pending_info = _PENDING_NOTIFICATIONS[story_id]
+                        if pending_info["end_id"] == end_id:
+                            await send_announcement(bot, pending_info)
+                            logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
+                            del _PENDING_NOTIFICATIONS[story_id]
+                    continue
+                    
+                # 4. Fetch the next chunk of messages (up to 100)
+                fetch_end = min(end_id + 100, channel_last_id)
+                ids_to_fetch = list(range(end_id + 1, fetch_end + 1))
                 
                 try:
                     msgs = await bot.get_messages(channel_id, ids_to_fetch)
@@ -130,14 +154,11 @@ async def start_premium_live_monitor(bot: Client):
                     logger.warning(f"[Premium Monitor] Error fetching msgs for channel {channel_id}: {e}")
                     continue
                 
-                highest_valid_id = end_id
                 highest_ep_num = -1
                 
                 for msg in msgs:
                     if msg.empty:
                         continue
-                        
-                    highest_valid_id = max(highest_valid_id, msg.id)
                         
                     if not msg.audio and not msg.document and not msg.voice:
                         continue
@@ -150,42 +171,37 @@ async def start_premium_live_monitor(bot: Client):
                     if ep_num and ep_num > highest_ep_num:
                         highest_ep_num = ep_num
                         
-                if highest_valid_id > end_id:
-                    # New files were uploaded! Update DB immediately.
-                    update_data = {
-                        "end_id": highest_valid_id, 
-                        "end_message_id": highest_valid_id
-                    }
-                    if highest_ep_num > -1:
-                        update_data["episodes"] = str(highest_ep_num)
-                        
-                    await db.db.premium_stories.update_one(
-                        {"_id": story["_id"]},
-                        {"$set": update_data}
-                    )
+                # We can safely advance end_id to fetch_end because we bounded it by channel_last_id
+                new_end_id = fetch_end
+                
+                # 5. Update DB immediately
+                update_data = {
+                    "end_id": new_end_id, 
+                    "end_message_id": new_end_id
+                }
+                if highest_ep_num > -1:
+                    update_data["episodes"] = str(highest_ep_num)
                     
-                    story_name = story.get("story_name_en") or story.get("story_name") or story.get("title") or "Story"
-                    
-                    # Mark as pending. We will NOT send the announcement yet.
+                await db.db.premium_stories.update_one(
+                    {"_id": story["_id"]},
+                    {"$set": update_data}
+                )
+                
+                story_name = story.get("story_name_en") or story.get("story_name") or story.get("title") or "Story"
+                
+                # Mark as pending for delayed announcement ONLY if we found audio episodes
+                if highest_ep_num > -1:
                     _PENDING_NOTIFICATIONS[story_id] = {
-                        "end_id": highest_valid_id,
+                        "end_id": new_end_id,
                         "highest_ep_num": highest_ep_num,
                         "story_name": story_name
                     }
-                    logger.info(f"[Premium Monitor] Updated DB for '{story_name}' -> end_id: {highest_valid_id}. Queued for announcement.")
-                    
+                    logger.info(f"[Premium Monitor] Updated DB for '{story_name}' -> end_id: {new_end_id}. Queued for announcement.")
                 else:
-                    # No new files uploaded in this 5-minute window!
-                    # Check if this story has a pending announcement
+                    # If we only scanned text/deleted messages, we carry over pending if it exists
                     if story_id in _PENDING_NOTIFICATIONS:
-                        pending_info = _PENDING_NOTIFICATIONS[story_id]
-                        # If the DB's end_id matches our pending end_id, it means
-                        # no new files arrived since our last update 5 mins ago. 
-                        # Time to send the announcement!
-                        if pending_info["end_id"] == end_id:
-                            await send_announcement(bot, pending_info)
-                            logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
-                            del _PENDING_NOTIFICATIONS[story_id]
+                        _PENDING_NOTIFICATIONS[story_id]["end_id"] = new_end_id
+                    logger.info(f"[Premium Monitor] Updated DB for '{story_name}' -> end_id: {new_end_id} (No audio found).")
                     
             # Clear FastAPI cache so UI updates instantly
             try:
