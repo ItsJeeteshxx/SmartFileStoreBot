@@ -20,8 +20,8 @@ async def run_diagnostic():
     await db.connect()
     
     # We must use the exact session string or token as the main bot
-    print(f"Starting Pyrogram Client for Bot ID: {Config.BOT_TOKEN.split(':')[0]}...")
-    bot = Client("AryaPremiumDiagnostic", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.BOT_TOKEN, in_memory=True)
+    print(f"Starting Pyrogram Client for Bot ID: {Config.MGMT_BOT_TOKEN.split(':')[0]}...")
+    bot = Client("AryaPremiumDiagnostic", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.MGMT_BOT_TOKEN, in_memory=True)
     await bot.start()
     me = await bot.get_me()
     print(f"Bot authenticated successfully as: @{me.username}")
