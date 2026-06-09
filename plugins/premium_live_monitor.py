@@ -96,12 +96,26 @@ async def start_premium_live_monitor(bot: Client):
                 channel_id = story.get("channel_id")
                 end_id = story.get("end_id") or story.get("end_message_id")
                 
-                if not channel_id or not end_id:
+                if not channel_id:
                     continue
                     
                 try:
-                    end_id = int(end_id)
+                    end_id = int(end_id) if end_id else 0
                 except ValueError:
+                    end_id = 0
+                    
+                if end_id == 0:
+                    try:
+                        # Fallback for stories that haven't been manually updated
+                        # Fetch the absolute latest message ID in the channel
+                        async for last_msg in bot.get_chat_history(channel_id, limit=1):
+                            # Start checking from up to 100 messages ago to catch recent uploads
+                            end_id = max(0, last_msg.id - 100)
+                    except Exception as e:
+                        logger.warning(f"[Premium Monitor] Error getting history for {channel_id}: {e}")
+                        continue
+                        
+                if end_id == 0:
                     continue
                     
                 # Fetch next 100 messages after end_id
