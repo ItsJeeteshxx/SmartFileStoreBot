@@ -20,16 +20,26 @@ async def _extract_episode_number(file_name: str, caption: str):
     if not text:
         return None
         
-    # Match patterns like "Episode 12", "Ep 12", "E 12", "Episode-12", "Ep. 12", "E12"
-    match = re.search(r'(?:[eE]p(?:isode)?[\.\-\s_]*|[eE][\.\-\s_]*)(\d+)', text)
+    # 1. Match explicit episode labels (English and Hindi)
+    # e.g., "Episode 3062", "Ep 3062", "एपिसोड 3062", "भाग 3062", "Part 3062", "Ch 3062", "E3062"
+    match = re.search(r'(?:[eE]p(?:isode)?|एपिसोड|भाग|part|ch(?:apter)?|कड़ी|kadi)[\.\-\s_:]*(\d+)', text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+        
+    # 2. Match "E 3062" or "E-3062" specifically
+    match = re.search(r'\b[eE][\.\-\s_]+(\d+)\b', text)
     if match:
         return int(match.group(1))
     
-    # Fallback: Just extract the last standalone number found in the name
+    # 3. Fallback: extract standalone numbers
     numbers = re.findall(r'\b\d+\b', text)
     if numbers:
-        return int(numbers[-1])
-        
+        # Filter out insanely large numbers (like 693759, which are likely IDs/hashes)
+        valid_eps = [int(n) for n in numbers if int(n) < 50000]
+        if valid_eps:
+            # Return the last valid number (usually closest to the extension)
+            return valid_eps[-1]
+            
     return None
 
 async def send_announcement(bot: Client, pending_info: dict):
@@ -110,10 +120,10 @@ async def start_premium_live_monitor(bot: Client):
                 except ValueError:
                     end_id = 0
                     
-                # 1. Fetch the next chunk of messages (up to 100)
-                # Since bots cannot use get_chat_history, we blindly fetch the next 100 IDs.
+                # 1. Fetch the next chunk of messages (up to 200 max allowed by Pyrogram)
+                # We use 200 to ensure we skip over any long chains of text/deleted messages
                 fetch_start = end_id + 1
-                fetch_end = end_id + 100
+                fetch_end = end_id + 200
                 ids_to_fetch = list(range(fetch_start, fetch_end + 1))
                 
                 try:
@@ -126,17 +136,18 @@ async def start_premium_live_monitor(bot: Client):
                     continue
                 
                 highest_ep_num = -1
-                max_valid_id = -1
+                last_audio_id = -1
                 
                 for msg in msgs:
                     if msg.empty:
                         continue
                         
-                    if msg.id > max_valid_id:
-                        max_valid_id = msg.id
-                        
                     if not msg.audio and not msg.document and not msg.voice:
                         continue
+                        
+                    # ONLY advance ID for actual media files (so we don't point end_id to a text message)
+                    if msg.id > last_audio_id:
+                        last_audio_id = msg.id
                         
                     fname = getattr(msg.audio or msg.document or msg.voice, "file_name", "")
                     caption = msg.caption or ""
@@ -146,8 +157,9 @@ async def start_premium_live_monitor(bot: Client):
                     if ep_num and ep_num > highest_ep_num:
                         highest_ep_num = ep_num
                         
-                # If no valid messages were found in this 100-ID chunk, we assume we hit the end.
-                if max_valid_id == -1:
+                # If no audio messages were found in this chunk, we assume we hit the end
+                # (or we hit a massive wall of text messages, which we will just retry next poll)
+                if last_audio_id == -1:
                     # Check if this story has a pending announcement that we can now safely send
                     if story_id in _PENDING_NOTIFICATIONS:
                         pending_info = _PENDING_NOTIFICATIONS[story_id]
@@ -157,8 +169,8 @@ async def start_premium_live_monitor(bot: Client):
                             del _PENDING_NOTIFICATIONS[story_id]
                     continue
                         
-                # We advance end_id to the max_valid_id we found.
-                new_end_id = max_valid_id
+                # We advance end_id to the last_audio_id we found.
+                new_end_id = last_audio_id
                 
                 # 5. Update DB immediately
                 update_data = {
