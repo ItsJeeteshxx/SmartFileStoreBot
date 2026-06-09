@@ -222,6 +222,14 @@ async def main():
         logger.error("No apps successfully started. Exiting.")
         return
 
+    # Start Premium Live Monitor on Mgmt Bot (which is Admin in source channels)
+    if 'mgmt_bot' in locals():
+        try:
+            from plugins.premium_live_monitor import start_premium_live_monitor
+            asyncio.create_task(start_premium_live_monitor(mgmt_bot))
+        except Exception as e:
+            logger.warning(f"Could not start Premium Live Monitor: {e}")
+
     # Keep bots running
     await idle()
 

@@ -211,12 +211,7 @@ async def main():
     except Exception as e:
         logging.warning(f"Could not start system monitor: {e}")
 
-    # Start Premium Stories Live Monitor (polling)
-    try:
-        from plugins.premium_live_monitor import start_premium_live_monitor
-        asyncio.create_task(start_premium_live_monitor(bot))
-    except Exception as e:
-        logging.warning(f"Could not start Premium Live Monitor: {e}")
+
 
     # ── Staggered job resumption (prevents FloodWait on restart) ────────────
     async def _staggered_resume():
