@@ -10,13 +10,13 @@ logger = logging.getLogger(__name__)
 # Track pending notifications: story_id -> { "end_id": int, "highest_ep_num": int, "story_name": str }
 _PENDING_NOTIFICATIONS = {}
 
-async def _extract_episode_number(file_name: str, caption: str):
+async def _extract_episode_number(file_name: str, caption: str, title: str = ""):
     # Strip file extension if present to avoid matching '.mp3' as a number
     fname = ""
     if file_name:
         fname, _ = os.path.splitext(file_name)
         
-    text = f"{fname} {caption or ''}".strip()
+    text = f"{fname} {title or ''} {caption or ''}".strip()
     if not text:
         return None
         
@@ -152,7 +152,11 @@ async def start_premium_live_monitor(bot: Client):
                     fname = getattr(msg.audio or msg.document or msg.voice, "file_name", "")
                     caption = msg.caption or ""
                     
-                    ep_num = await _extract_episode_number(fname, caption)
+                    # Audio files have a specific 'title' attribute which is what Telegram displays in the player.
+                    # We MUST include this because often 'Ep 123' is in the title, while file_name is a raw ID.
+                    title = getattr(msg.audio, "title", "") if msg.audio else ""
+                    
+                    ep_num = await _extract_episode_number(fname, caption, title)
                     
                     if ep_num and ep_num > highest_ep_num:
                         highest_ep_num = ep_num
