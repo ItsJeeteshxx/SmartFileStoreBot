@@ -65,6 +65,9 @@ class Config:
     # How many rapid strikes before a silent permanent ban is issued
     ABUSE_MAX_STRIKES   = int(_env("ABUSE_MAX_STRIKES", "5"))
 
+    # -------- PREMIUM ANNOUNCEMENTS --------
+    PREMIUM_UPDATES_CHANNEL = _env("PREMIUM_UPDATES_CHANNEL", "")
+
 
 class temp(object):
     lock = {}
