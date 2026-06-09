@@ -43,9 +43,10 @@ async def send_announcement(bot: Client, pending_info: dict):
     except ValueError:
         channel_id = channel_id_str
 
-    story_name = pending_info["story_name"]
+    import html
+    story_name = html.escape(str(pending_info["story_name"]))
     ep_num = pending_info["highest_ep_num"]
-    total_eps = ep_num # Assuming the latest episode number is the total count
+    total_eps = str(ep_num) # Assuming the latest episode number is the total count
     
     # If we couldn't extract an episode number, we skip announcement (or say "New")
     if ep_num == -1:
