@@ -87,24 +87,21 @@ async def start_premium_live_monitor(bot: Client):
             query = {
                 "status": {"$ne": "Completed"},
                 "is_completed": {"$ne": True},
-                "channel_id": {"$exists": True, "$ne": None}
+                "source": {"$exists": True, "$ne": None}
             }
             stories = await db.db.premium_stories.find(query).to_list(length=None)
             
             for story in stories:
                 story_id = str(story["_id"])
-                channel_id = story.get("channel_id")
+                source_id = story.get("source")
                 end_id = story.get("end_id") or story.get("end_message_id")
                 
-                if not channel_id:
-                    continue
-                    
                 try:
-                    channel_id = int(channel_id)
-                except ValueError:
+                    source_id = int(source_id)
+                except (ValueError, TypeError):
                     pass
                     
-                if not channel_id:
+                if not source_id:
                     continue
                     
                 try:
@@ -115,11 +112,11 @@ async def start_premium_live_monitor(bot: Client):
                 # 1. Find the absolute latest message ID in the channel
                 channel_last_id = 0
                 try:
-                    async for last_msg in bot.get_chat_history(channel_id, limit=1):
+                    async for last_msg in bot.get_chat_history(source_id, limit=1):
                         channel_last_id = last_msg.id
                         break
                 except Exception as e:
-                    logger.warning(f"[Premium Monitor] Error getting history for {channel_id}: {e}")
+                    logger.warning(f"[Premium Monitor] Error getting history for {source_id}: {e}")
                     continue
                     
                 if channel_last_id == 0:
@@ -146,12 +143,12 @@ async def start_premium_live_monitor(bot: Client):
                 ids_to_fetch = list(range(end_id + 1, fetch_end + 1))
                 
                 try:
-                    msgs = await bot.get_messages(channel_id, ids_to_fetch)
+                    msgs = await bot.get_messages(source_id, ids_to_fetch)
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value)
                     continue
                 except Exception as e:
-                    logger.warning(f"[Premium Monitor] Error fetching msgs for channel {channel_id}: {e}")
+                    logger.warning(f"[Premium Monitor] Error fetching msgs for channel {source_id}: {e}")
                     continue
                 
                 highest_ep_num = -1
