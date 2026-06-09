@@ -134,9 +134,9 @@ async def optimize_image(url: str, w: int = 400, h: int = 400):
         
         # Save as WebP
         output = io.BytesIO()
-        # For larger images (like banners), use higher quality (85)
-        quality = 85 if w > 600 else 80
-        img.save(output, format="WEBP", quality=quality, method=2) # faster compression
+        # For larger images (like banners), use very high quality (98) to prevent blur
+        quality = 98 if w > 600 else 85
+        img.save(output, format="WEBP", quality=quality, method=4) # higher method for better compression vs quality
         optimized_bytes = output.getvalue()
         
         # Manage cache size
@@ -416,12 +416,12 @@ async def get_trending(limit: int = 10):
         ]
         purchases_agg = await arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None)
         
-        # 2. Aggregate views (clicks on story card) over the last 7 days
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        # 2. Aggregate views (clicks on story card) over the last 3 days
+        three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
         views_pipeline = [
             {"$match": {
                 "type": "view_story",
-                "timestamp": {"$gte": seven_days_ago}
+                "timestamp": {"$gte": three_days_ago}
             }},
             {"$project": {
                 "story_id": {
@@ -450,7 +450,8 @@ async def get_trending(limit: int = 10):
 
         for v in views_agg:
             sid = str(v["_id"])
-            scores[sid] = scores.get(sid, 0.0) + float(v.get("views", 0)) * 1.0
+            # Weight views heavily down (0.1) so they don't overpower recent purchases
+            scores[sid] = scores.get(sid, 0.0) + float(v.get("views", 0)) * 0.1
 
         # Sort by score descending
         sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -2978,26 +2979,20 @@ async def get_banners():
 @api_router.get("/popular")
 async def get_popular():
     """
-    Returns the top 10 most purchased stories.
+    Returns the top 10 most purchased stories over the last 60 days.
     """
     try:
         arya_db = app.state.db
         from bson.objectid import ObjectId
         
-        user_counts = []
         order_counts = []
         try:
-            pipeline_users = [
-                {"$unwind": "$purchases"},
-                {"$group": {"_id": "$purchases", "count": {"$sum": 1}}}
-            ]
-            user_counts = await arya_db.db.users.aggregate(pipeline_users).to_list(None)
-        except Exception as e:
-            logger.warning(f"Failed to aggregate users: {e}")
-            
-        try:
+            sixty_days_ago = datetime.now(timezone.utc) - timedelta(days=60)
             pipeline_orders = [
-                {"$match": {"status": "paid"}},
+                {"$match": {
+                    "status": {"$in": ["paid", "delivered"]},
+                    "created_at": {"$gte": sixty_days_ago}
+                }},
                 {"$unwind": "$story_ids"},
                 {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}}
             ]
@@ -3007,15 +3002,11 @@ async def get_popular():
             
         # Combine counts
         counts_map = {}
-        for item in user_counts:
-            sid = str(item.get("_id"))
-            counts_map[sid] = counts_map.get(sid, 0) + item.get("count", 0)
-            
         for item in order_counts:
             sid = str(item.get("_id"))
             counts_map[sid] = counts_map.get(sid, 0) + item.get("count", 0)
             
-        sorted_counts = sorted(counts_map.items(), key=lambda x: x[1], reverse=True)[:9]
+        sorted_counts = sorted(counts_map.items(), key=lambda x: x[1], reverse=True)[:10]
         
         result = []
         for sid, count in sorted_counts:
