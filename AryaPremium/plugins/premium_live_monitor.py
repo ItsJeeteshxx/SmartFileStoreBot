@@ -110,38 +110,11 @@ async def start_premium_live_monitor(bot: Client):
                 except ValueError:
                     end_id = 0
                     
-                # 1. Find the absolute latest message ID in the channel
-                channel_last_id = 0
-                try:
-                    async for last_msg in bot.get_chat_history(source_id, limit=1):
-                        channel_last_id = last_msg.id
-                        break
-                except Exception as e:
-                    logger.warning(f"[Premium Monitor] Error getting history for {source_id}: {e}")
-                    continue
-                    
-                if channel_last_id == 0:
-                    continue
-                    
-                # 2. Fast-forward if end_id is missing or 0
-                if end_id == 0:
-                    end_id = max(0, channel_last_id - 100)
-                    
-                # 3. Check if there are actually any new messages to process
-                if channel_last_id <= end_id:
-                    # No new files uploaded in this 5-minute window!
-                    # Check if this story has a pending announcement
-                    if story_id in _PENDING_NOTIFICATIONS:
-                        pending_info = _PENDING_NOTIFICATIONS[story_id]
-                        if pending_info["end_id"] == end_id:
-                            await send_announcement(bot, pending_info)
-                            logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
-                            del _PENDING_NOTIFICATIONS[story_id]
-                    continue
-                    
-                # 4. Fetch the next chunk of messages (up to 100)
-                fetch_end = min(end_id + 100, channel_last_id)
-                ids_to_fetch = list(range(end_id + 1, fetch_end + 1))
+                # 1. Fetch the next chunk of messages (up to 100)
+                # Since bots cannot use get_chat_history, we blindly fetch the next 100 IDs.
+                fetch_start = end_id + 1
+                fetch_end = end_id + 100
+                ids_to_fetch = list(range(fetch_start, fetch_end + 1))
                 
                 try:
                     msgs = await bot.get_messages(source_id, ids_to_fetch)
@@ -153,10 +126,14 @@ async def start_premium_live_monitor(bot: Client):
                     continue
                 
                 highest_ep_num = -1
+                max_valid_id = -1
                 
                 for msg in msgs:
                     if msg.empty:
                         continue
+                        
+                    if msg.id > max_valid_id:
+                        max_valid_id = msg.id
                         
                     if not msg.audio and not msg.document and not msg.voice:
                         continue
@@ -169,8 +146,19 @@ async def start_premium_live_monitor(bot: Client):
                     if ep_num and ep_num > highest_ep_num:
                         highest_ep_num = ep_num
                         
-                # We can safely advance end_id to fetch_end because we bounded it by channel_last_id
-                new_end_id = fetch_end
+                # If no valid messages were found in this 100-ID chunk, we assume we hit the end.
+                if max_valid_id == -1:
+                    # Check if this story has a pending announcement that we can now safely send
+                    if story_id in _PENDING_NOTIFICATIONS:
+                        pending_info = _PENDING_NOTIFICATIONS[story_id]
+                        if pending_info["end_id"] == end_id:
+                            await send_announcement(bot, pending_info)
+                            logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
+                            del _PENDING_NOTIFICATIONS[story_id]
+                    continue
+                        
+                # We advance end_id to the max_valid_id we found.
+                new_end_id = max_valid_id
                 
                 # 5. Update DB immediately
                 update_data = {
