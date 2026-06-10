@@ -1247,6 +1247,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                             await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                     break
                             except FloodWait as fw:
+                                logger.warning(f"[Cleaner bg-up {job_id}] FloodWait {fw.value}s during upload (att={att})")
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as ue:
                                 if att >= 3: return False, str(ue), c_mid
