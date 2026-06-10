@@ -41,9 +41,9 @@ _cl_bot_ref: dict[str, object] = {}
 _cl_cancel_users: set = set()
 MAX_CONCURRENT = 100  # Allow up to 100 jobs to run visibly without artificial blocks
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-_cl_dl_sem = asyncio.Semaphore(12)  # 12 concurrent downloads across all jobs
-_cl_ul_sem = asyncio.Semaphore(12)
-_cl_ff_sem = asyncio.Semaphore(2)   # 2 parallel FFmpeg processes
+_cl_dl_sem = asyncio.Semaphore(6)
+_cl_ff_sem = asyncio.Semaphore(4)
+_cl_ul_sem = asyncio.Semaphore(3)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
