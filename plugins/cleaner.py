@@ -1167,8 +1167,9 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         raise Exception(f"Upload task failed (mid={up_mid}): {up_err}")
 
                 # 2. Kick off CURRENT file upload in background!
-                out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
-                bg_up = _bot if (_bot and out_size < 50 * 1024 * 1024 and not repl_mode) else client
+                out_size = os.path.getsize(out_path)
+                # ALWAYS use Userbot (client) for Cleaner uploads to avoid Main Bot FloodWaits caused by Share Bot
+                bg_up = client
                 bg_th = local_cover if (local_cover and os.path.exists(local_cover)) else None
                 import re as _fn_re
                 if job.get("ad_inject_only"):
