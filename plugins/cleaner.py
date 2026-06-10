@@ -1249,8 +1249,22 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     break
                             except FloodWait as fw:
                                 logger.warning(f"[Cleaner bg-up {job_id}] FloodWait {fw.value}s during upload (att={att})")
+                                try:
+                                    import plugins.arya_logger as arya_log
+                                    asyncio.create_task(arya_log.log_admin_dm(
+                                        "Cleaner FloodWait", 
+                                        f"Job {job_id}\nBot/Userbot got FloodWait for {fw.value} seconds."
+                                    ))
+                                except: pass
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as ue:
+                                try:
+                                    import plugins.arya_logger as arya_log
+                                    asyncio.create_task(arya_log.log_admin_dm(
+                                        "Cleaner Upload Error", 
+                                        f"Job {job_id}\nError: {repr(ue)}"
+                                    ))
+                                except: pass
                                 if att >= 3: return False, str(ue), c_mid
                                 logger.warning(f"[Cleaner bg-up {job_id}] retry {att}: {repr(ue)}")
                                 u_cli = client

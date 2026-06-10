@@ -387,3 +387,48 @@ async def log_live_batch_post(
     )
     await _send(text, 'ch_live')
 
+# ---------- ADMIN DM ALERTS ----------
+_admin_dm_cache = {}
+
+async def log_admin_dm(error_type: str, details: str) -> None:
+    """
+    Sends a direct message to the bot owners/admins for critical errors like FloodWait.
+    Uses an in-memory cache to prevent spamming the same error type within 10 minutes.
+    """
+    global _admin_dm_cache
+    now = time.time()
+    
+    # Rate limit: max 1 DM per error_type every 10 minutes
+    if error_type in _admin_dm_cache and (now - _admin_dm_cache[error_type]) < 600:
+        return
+        
+    _admin_dm_cache[error_type] = now
+
+    bot = _get_bot()
+    if not bot:
+        return
+
+    try:
+        from AryaPremium.config import Config
+        owners = getattr(Config, 'OWNER_IDS', [])
+        if not owners:
+            return
+            
+        ts = _ist_str()
+        text = (
+            f"⚠️ <b>CRITICAL ADMIN ALERT</b> ⚠️\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Type:</b> <code>{_esc(error_type)}</code>\n"
+            f"<b>Details:</b> <code>{_esc(details[:800])}</code>\n"
+            f"<b>Time:</b> <code>{ts}</code>"
+        )
+        
+        for owner_id in owners:
+            try:
+                await bot.send_message(chat_id=owner_id, text=text)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[AryaLog] Failed to send admin DM: {e}")
+
+
