@@ -1240,17 +1240,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                                     else:
                                         if is_ff or is_aud:
-                                            await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=300)
+                                            await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
                                         elif is_vid:
-                                            await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=300)
+                                            await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                         else:
-                                            await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=300)
+                                            await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                     break
                             except FloodWait as fw:
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as ue:
                                 if att >= 3: return False, str(ue), c_mid
-                                logger.warning(f"[Cleaner bg-up {job_id}] retry {att}: {ue}")
+                                logger.warning(f"[Cleaner bg-up {job_id}] retry {att}: {repr(ue)}")
                                 u_cli = client
                                 await asyncio.sleep(3 * (att + 1))
 
