@@ -12,6 +12,27 @@ from contextvars import ContextVar
 
 admin_authenticated_session: ContextVar[bool] = ContextVar("admin_authenticated_session", default=False)
 
+import hmac
+import hashlib
+
+def verify_telegram_web_app_data(init_data: str, bot_token: str) -> dict:
+    if not init_data or not bot_token:
+        return {}
+    try:
+        parsed = urllib.parse.parse_qsl(init_data)
+        data_dict = {k: v for k, v in parsed}
+        if "hash" not in data_dict:
+            return {}
+        received_hash = data_dict.pop("hash")
+        data_check_string = "\n".join(f"{k}={data_dict[k]}" for k in sorted(data_dict.keys()))
+        secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        if calculated_hash == received_hash:
+            return data_dict
+    except Exception as e:
+        logger.error(f"initData verification failed: {e}")
+    return {}
+
 def is_admin(telegram_id: str = "") -> bool:
     if admin_authenticated_session.get():
         return True
@@ -3182,15 +3203,19 @@ async def admin_ban_user(payload: dict):
             
         arya_db = app.state.db
         
-        # Get historical IPs of target_id
+        # Get historical IPs and Device IDs of target_id
         historical_ips = await arya_db.db.mini_app_analytics.distinct("ip", {"user_id": target_id_int})
         ips = [ip for ip in historical_ips if ip and ip not in ("unknown", "127.0.0.1", "::1") and not ip.startswith(("192.168.", "10.", "172."))]
+        
+        historical_device_ids = await arya_db.db.mini_app_analytics.distinct("fingerprint_id", {"user_id": target_id_int})
+        device_ids = [d for d in historical_device_ids if d]
         
         # Save ban in premium_bans collection
         await arya_db.db.premium_bans.update_one(
             {"_id": target_id_int},
             {"$set": {
                 "ips": list(set(ips)),
+                "device_ids": list(set(device_ids)),
                 "reason": reason,
                 "status": "banned",
                 "banned_at": datetime.now(timezone.utc),
@@ -5672,6 +5697,10 @@ async def ban_guard_middleware(request: Request, call_next):
         if db:
             ip = _client_ip_from_request(request)
             ip = ip.strip() if ip else ""
+            device_id = request.headers.get("X-Device-Id", "").strip()
+            
+            # Read initData
+            init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
             
             # Resolve Telegram ID
             tg_id = None
@@ -5697,8 +5726,45 @@ async def ban_guard_middleware(request: Request, call_next):
                 except Exception:
                     pass
             
-            # Exempt bot owners from being blocked so they can manage the console under all conditions
-            from config import Config
+            # Cryptographic Validation of initData
+            from AryaPremium.config import Config
+            bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            
+            if tg_id and init_data and bot_token:
+                valid_data = verify_telegram_web_app_data(init_data, bot_token)
+                if not valid_data:
+                    # Invalid signature!
+                    import json
+                    return Response(
+                        content=json.dumps({"banned": True, "reason": "Invalid Telegram Signature. Refresh the Mini App.", "detail": "UNAUTHORIZED"}),
+                        status_code=401,
+                        media_type="application/json"
+                    )
+                # Ensure the telegram_id in request matches the validated initData!
+                import json
+                try:
+                    user_data = json.loads(valid_data.get("user", "{}"))
+                    validated_id = user_data.get("id")
+                    if validated_id and int(validated_id) != tg_id:
+                        return Response(
+                            content=json.dumps({"banned": True, "reason": "ID mismatch. Tampering detected.", "detail": "UNAUTHORIZED"}),
+                            status_code=401,
+                            media_type="application/json"
+                        )
+                except Exception:
+                    pass
+            elif tg_id and not init_data:
+                # Require initData strictly, unless it's a legacy route/admin testing
+                # For maximum security, we should reject.
+                if not getattr(Config, "ALLOW_UNVERIFIED_REQUESTS", False):
+                    import json
+                    return Response(
+                        content=json.dumps({"banned": True, "reason": "Missing Telegram Signature (initData). Please use the official Mini App.", "detail": "UNAUTHORIZED"}),
+                        status_code=401,
+                        media_type="application/json"
+                    )
+
+            # Exempt bot owners from being blocked
             if tg_id and Config.OWNER_IDS and tg_id in Config.OWNER_IDS:
                 response = await call_next(request)
                 return response
@@ -5709,13 +5775,18 @@ async def ban_guard_middleware(request: Request, call_next):
             if not is_local:
                 banned_by_ip = await db.db.premium_bans.find_one({"ips": ip, "status": {"$in": ["banned", "flagged"]}})
                 
+            # Check blocked status by Device ID
+            banned_by_device = None
+            if device_id:
+                banned_by_device = await db.db.premium_bans.find_one({"device_ids": device_id, "status": {"$in": ["banned", "flagged"]}})
+                
             # Check blocked status by Telegram ID
             banned_by_tg = None
             if tg_id:
                 banned_by_tg = await db.db.premium_bans.find_one({"_id": tg_id, "status": {"$in": ["banned", "flagged"]}})
                 
-            # Enforce block if either matches
-            if banned_by_ip or banned_by_tg:
+            # Enforce block if any matches
+            if banned_by_ip or banned_by_tg or banned_by_device:
                 reason = "Access denied"
                 target_tg_id = tg_id or (banned_by_ip["_id"] if banned_by_ip else None)
                 user_name = "Banned User"
