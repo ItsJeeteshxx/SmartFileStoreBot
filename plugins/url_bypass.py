@@ -143,21 +143,12 @@ async def _load_ub(user_id: int, bot_id: str):
         logger.error(f"[Bypass] No session for userbot {bot_id}")
         return None
     try:
-        from pyrogram import Client as _C
-        ub = _C(
-            f"bypass_{bot_id}",
-            api_id=Config.API_ID,
-            api_hash=Config.API_HASH,
-            session_string=session,
-            in_memory=True,
-            no_updates=False,
-        )
-        await asyncio.wait_for(ub.start(), timeout=30)
+        from plugins.test import CLIENT, start_clone_bot
+        _c_mgr = CLIENT()
+        _fresh_ub = _c_mgr.client(target)
+        ub = await start_clone_bot(_fresh_ub, data=target)
         logger.info(f"[Bypass] Userbot {bot_id} connected")
         return ub
-    except asyncio.TimeoutError:
-        logger.error(f"[Bypass] Userbot {bot_id} connect timed out")
-        return None
     except Exception as e:
         logger.error(f"[Bypass] Userbot {bot_id} start failed: {e}")
         return None
@@ -754,7 +745,9 @@ async def _ub_run_job(job_id: str):
     finally:
         _ub_tasks.pop(job_id, None)
         if ub:
-            try: await asyncio.wait_for(ub.stop(), timeout=10)
+            try:
+                from plugins.test import release_client
+                await release_client(ub.name)
             except: pass
 
 # ── Stop ──────────────────────────────────────────────────────────────────────
