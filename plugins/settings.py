@@ -1193,21 +1193,37 @@ async def settings_query(bot, query):
           if not sb_client:
               return
               
+          from pyrogram.raw import functions
           total_deleted = 0
           for doc in deliveries:
-              try:
-                  await sb_client.delete_messages(chat_id=doc['user_id'], message_ids=doc['msg_ids'])
-                  total_deleted += len(doc['msg_ids'])
+              msg_ids = doc.get('msg_ids', [])
+              if not msg_ids:
                   await db.remove_delivery_record(doc['_id'])
-              except FloodWait as e:
-                  await asyncio.sleep(e.value + 1)
+                  continue
+                  
+              chunks = [msg_ids[i:i + 100] for i in range(0, len(msg_ids), 100)]
+              success = True
+              
+              for chunk in chunks:
                   try:
-                      await sb_client.delete_messages(chat_id=doc['user_id'], message_ids=doc['msg_ids'])
-                      total_deleted += len(doc['msg_ids'])
-                      await db.remove_delivery_record(doc['_id'])
-                  except Exception:
-                      pass
-              except Exception:
+                      await sb_client.invoke(functions.messages.DeleteMessages(id=chunk, revoke=True))
+                      total_deleted += len(chunk)
+                      await asyncio.sleep(0.5)
+                  except FloodWait as e:
+                      await asyncio.sleep(e.value + 1)
+                      try:
+                          await sb_client.invoke(functions.messages.DeleteMessages(id=chunk, revoke=True))
+                          total_deleted += len(chunk)
+                      except Exception as ex:
+                          import logging
+                          logging.getLogger(__name__).error(f"Purge retry error for {doc.get('user_id')}: {ex}")
+                          success = False
+                  except Exception as e:
+                      import logging
+                      logging.getLogger(__name__).error(f"Purge error for {doc.get('user_id')}: {e}")
+                      success = False
+              
+              if success:
                   await db.remove_delivery_record(doc['_id'])
               await asyncio.sleep(0.5)
               
