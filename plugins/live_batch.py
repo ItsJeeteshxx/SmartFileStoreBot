@@ -333,19 +333,20 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                     log_ch = _env("ARYA_LOGS_CHANNEL") or os.environ.get("PUBLIC_LOG_CHANNEL_ID")
                     if log_ch and m and getattr(m, 'link', None):
                         try:
+                            import plugins.arya_logger as _alog; bot_inst = _alog._get_bot()
                             log_ch_int = int(log_ch) if log_ch.lstrip('-').isdigit() else log_ch
                             ep_str = str(first_ep) if first_ep == last_ep else f"{first_ep}-{last_ep}"
                             s_name = job.get('story', 'Story')
+                            safe_s_name = _alog._esc(s_name)
                             
                             log_txt = (
-                                f"<b><a href='{m.link}'>{s_name}</a></b> Latest Eps <b>{ep_str}</b> Have been Added.\n"
-                                f"<b><a href='{m.link}'>{s_name}</a></b> के लेटेस्ट एपिसोड्स <b>{ep_str}</b> ऐड हो गए हैं。\n\n"
+                                f"<b><a href='{m.link}'>{safe_s_name}</a></b> Latest Eps <b>{ep_str}</b> Have been Added.\n"
+                                f"<b><a href='{m.link}'>{safe_s_name}</a></b> के लेटेस्ट एपिसोड्स <b>{ep_str}</b> ऐड हो गए हैं。\n\n"
                                 f"<a href='https://t.me/UseAryaBot/apminibyarya'>Sponsored By 𝘼𝘳𝙮𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢</a>"
                             )
                                 
-                            from bot import BOT_INSTANCE
-                            if BOT_INSTANCE:
-                                await BOT_INSTANCE.send_message(log_ch_int, log_txt, disable_web_page_preview=True)
+                            if bot_inst:
+                                await bot_inst.send_message(log_ch_int, log_txt, disable_web_page_preview=True)
                         except Exception as log_err:
                             logger.error(f"Failed to send public log to {log_ch}: {log_err}")
                             
@@ -438,7 +439,7 @@ async def _lb_run_job(job_id: str):
                 if prot_err:
                     await _lb_update_job(job_id, {"status": "error", "error": prot_err})
                     try:
-                        await BOT_INSTANCE.send_message(job["user_id"], prot_err)
+                        await bot_inst.send_message(job["user_id"], prot_err)
                     except Exception:
                         pass
                     return
