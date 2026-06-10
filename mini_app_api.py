@@ -5730,32 +5730,30 @@ async def ban_guard_middleware(request: Request, call_next):
             from AryaPremium.config import Config
             bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
             
-            if tg_id and init_data and bot_token:
+            if init_data and bot_token:
                 valid_data = verify_telegram_web_app_data(init_data, bot_token)
                 if not valid_data:
-                    # Invalid signature!
                     import json
                     return Response(
                         content=json.dumps({"banned": True, "reason": "Invalid Telegram Signature. Refresh the Mini App.", "detail": "UNAUTHORIZED"}),
                         status_code=401,
                         media_type="application/json"
                     )
-                # Ensure the telegram_id in request matches the validated initData!
                 import json
                 try:
                     user_data = json.loads(valid_data.get("user", "{}"))
                     validated_id = user_data.get("id")
-                    if validated_id and int(validated_id) != tg_id:
+                    if tg_id and validated_id and int(validated_id) != tg_id:
                         return Response(
                             content=json.dumps({"banned": True, "reason": "ID mismatch. Tampering detected.", "detail": "UNAUTHORIZED"}),
                             status_code=401,
                             media_type="application/json"
                         )
+                    if not tg_id and validated_id:
+                        tg_id = int(validated_id)
                 except Exception:
                     pass
-            elif tg_id and not init_data:
-                # Require initData strictly, unless it's a legacy route/admin testing
-                # For maximum security, we should reject.
+            else:
                 if not getattr(Config, "ALLOW_UNVERIFIED_REQUESTS", False):
                     import json
                     return Response(
