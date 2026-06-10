@@ -26,6 +26,9 @@ _ub_tasks: dict[str, asyncio.Task] = {}
 _ub_paused: dict[str, asyncio.Event] = {}
 _last_edits: dict[int, float] = {}
 
+_active_ubs: dict = {}
+_ub_refcounts: dict = {}
+
 async def _save_bypass_job(job: dict):
     await db.db[UB_COLL].replace_one({"job_id": job["job_id"]}, job, upsert=True)
 
@@ -94,9 +97,9 @@ def _progress_bar(done: int, total: int, width: int = 10) -> str:
     bar = '█' * filled + '░' * (width - filled)
     return f"[{bar}] {done}/{total} ({int(pct*100)}%)"
 
-async def _upd(bot, user_id: int, chat_id: int, text: str):
+async def _upd(bot, job_id: str, chat_id: int, text: str):
     """Edit status message; fallback to send-new if edit fails. Rate-limited."""
-    old = _status_msgs.get(user_id)
+    old = _status_msgs.get(job_id)
     if old:
         c_id, msg_id = old
         last_t = _last_edits.get(msg_id, 0)
@@ -122,7 +125,7 @@ async def _upd(bot, user_id: int, chat_id: int, text: str):
         sent = await bot.send_message(
             chat_id, text, parse_mode=PM, disable_web_page_preview=True
         )
-        _status_msgs[user_id] = (chat_id, sent.id)
+        _status_msgs[job_id] = (chat_id, sent.id)
         _last_edits[sent.id] = time.time()
     except Exception as e:
         logger.warning(f"[Bypass] _upd failed: {e}")
@@ -130,7 +133,13 @@ async def _upd(bot, user_id: int, chat_id: int, text: str):
 
 # ── Userbot loader ────────────────────────────────────────────────────────────
 async def _load_ub(user_id: int, bot_id: str):
-    """Start a fresh independent userbot client for bypass."""
+    """Start a fresh independent userbot client for bypass, or reuse active."""
+    bot_id = str(bot_id)
+    if bot_id in _active_ubs and _active_ubs[bot_id].is_connected:
+        _ub_refcounts[bot_id] = _ub_refcounts.get(bot_id, 0) + 1
+        logger.info(f"[Bypass] Reusing Userbot {bot_id} (Refs: {_ub_refcounts[bot_id]})")
+        return _active_ubs[bot_id]
+        
     from config import Config
     bots     = await db.get_bots(user_id)
     userbots = [b for b in bots if not b.get('is_bot', True)]
@@ -147,7 +156,10 @@ async def _load_ub(user_id: int, bot_id: str):
         _c_mgr = CLIENT()
         _fresh_ub = _c_mgr.client(target)
         ub = await start_clone_bot(_fresh_ub, data=target)
-        logger.info(f"[Bypass] Userbot {bot_id} connected")
+        
+        _active_ubs[bot_id] = ub
+        _ub_refcounts[bot_id] = 1
+        logger.info(f"[Bypass] Userbot {bot_id} connected (Refs: 1)")
         return ub
     except Exception as e:
         logger.error(f"[Bypass] Userbot {bot_id} start failed: {e}")
@@ -204,10 +216,10 @@ def _resolve_channel(txt: str, fwd_chat=None):
 
 
 # ── Channel scanner ───────────────────────────────────────────────────────────
-async def _scan(bot, user_id, chat_id, ub, channel_id, order, start_id, end_id, allowed_buttons) -> list:
+async def _scan(bot, job_id, chat_id, ub, channel_id, order, start_id, end_id, allowed_buttons) -> list:
     all_links = []
     scanned   = 0
-    await _upd(bot, user_id, chat_id, "<b>»  Scanning channel messages...</b>")
+    await _upd(bot, job_id, chat_id, "<b>»  Scanning channel messages...</b>")
     try:
         async for msg in ub.get_chat_history(channel_id):
             mid = msg.id
@@ -218,7 +230,7 @@ async def _scan(bot, user_id, chat_id, ub, channel_id, order, start_id, end_id, 
             if links:
                 all_links.append((msg.id, links))
             if scanned % 100 == 0:
-                await _upd(bot, user_id, chat_id,
+                await _upd(bot, job_id, chat_id,
                     f"<b>»  Scanning...</b>\n\n"
                     f"»  Scanned: <code>{scanned}</code> messages\n"
                     f"»  Posts with links: <code>{len(all_links)}</code>")
@@ -234,35 +246,64 @@ async def _scan(bot, user_id, chat_id, ub, channel_id, order, start_id, end_id, 
 
 
 # ── Bypass Jobs Command ───────────────────────────────────────────────────────
-@Client.on_message(filters.private & filters.command(['bypass_jobs']))
-@require_feature("url_bypass")
-async def bypass_jobs_cmd(bot, message):
-    uid = message.from_user.id
+async def _send_bypass_menu(bot, uid, chat_id, mid=None):
     jobs = await _get_all_bypass_jobs(uid)
     jobs = [j for j in jobs if j.get("status") not in ("completed", "stopped")]
+    
     if not jobs:
-        return await message.reply_text("ℹ️ No active bypass jobs.")
-    for j in jobs:
+        txt = "ℹ️ <b>No active bypass jobs.</b>\nUse /bypass to start a new one."
+        kb = [[InlineKeyboardButton("➕ Start New Bypass Job", callback_data="ub#bypass")]]
+        if mid:
+            try: return await bot.edit_message_text(chat_id, mid, txt, reply_markup=InlineKeyboardMarkup(kb))
+            except: pass
+        return await bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(kb))
+        
+    txt = f"<b>\U0001f504 URL Bypass Multi-Job Menu</b>\n<i>You have {len(jobs)} active bypass jobs.</i>\n\n"
+    kb = []
+    
+    for i, j in enumerate(jobs, 1):
         jid = j["job_id"]
         status = j.get("status", "running")
         ev = _ub_paused.get(jid)
         if status == "running" and ev and not ev.is_set():
             status = "paused"
             
-        txt = (
-            f"<b>\U0001f504 Bypass Job</b>\n"
-            f"»  <b>Channel:</b> {j.get('channel_title', '?')}\n"
-            f"»  <b>Progress:</b> {j.get('done', 0)} / {len(j.get('queue', []))}\n"
-            f"»  <b>Status:</b> <code>{status.upper()}</code>\n"
-        )
-        kb = []
-        if status == "running":
-            kb.append([InlineKeyboardButton("⏸ Pause", callback_data=f"ub_pause:{jid}")])
-        elif status == "paused":
-            kb.append([InlineKeyboardButton("▶️ Resume", callback_data=f"ub_resume:{jid}")])
-        kb.append([InlineKeyboardButton("🛑 Stop", callback_data=f"ub_stop:{jid}")])
+        done = j.get('done', 0)
+        total = len(j.get('queue', []))
+        pct = int(done / total * 100) if total else 0
         
-        await message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=PM)
+        txt += f"<b>{i}. {j.get('channel_title', '?')}</b>\n"
+        txt += f"   Status: <code>{status.upper()}</code>\n"
+        txt += f"   Progress: {done}/{total} ({pct}%)\n\n"
+        
+        row = [InlineKeyboardButton(f"{i}", callback_data="noop")]
+        if status == "running":
+            row.append(InlineKeyboardButton("⏸ Pause", callback_data=f"ub_pause:{jid}"))
+        elif status == "paused":
+            row.append(InlineKeyboardButton("▶️ Resume", callback_data=f"ub_resume:{jid}"))
+        row.append(InlineKeyboardButton("🛑 Stop", callback_data=f"ub_stop:{jid}"))
+        kb.append(row)
+        
+    kb.append([
+        InlineKeyboardButton("🔄 Refresh", callback_data="ub_menu_refresh"),
+        InlineKeyboardButton("➕ Start New", callback_data="ub#bypass")
+    ])
+    
+    if mid:
+        try: return await bot.edit_message_text(chat_id, mid, txt, reply_markup=InlineKeyboardMarkup(kb))
+        except: pass
+    return await bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(kb))
+
+
+@Client.on_message(filters.private & filters.command(['bypass_jobs', 'bypass_menu']))
+@require_feature("url_bypass")
+async def bypass_jobs_cmd(bot, message):
+    await _send_bypass_menu(bot, message.from_user.id, message.chat.id)
+
+@Client.on_callback_query(filters.regex(r'^ub_menu_refresh$'))
+async def bypass_menu_refresh_cb(bot, query):
+    await query.answer()
+    await _send_bypass_menu(bot, query.from_user.id, query.message.chat.id, query.message.id)
 
 @Client.on_callback_query(filters.regex(r'^ub_(pause|resume|stop):(.+)$'))
 async def bypass_action_cb(bot, query):
@@ -277,8 +318,6 @@ async def bypass_action_cb(bot, query):
         if jid in _ub_paused: _ub_paused[jid].clear()
         await _update_bypass_job(jid, {"status": "paused"})
         await query.answer("Job paused.")
-        try: await query.message.edit_text(query.message.text.replace("RUNNING", "PAUSED"), reply_markup=query.message.reply_markup)
-        except: pass
         
     elif action == "resume":
         await _update_bypass_job(jid, {"status": "running"})
@@ -289,15 +328,13 @@ async def bypass_action_cb(bot, query):
         else:
             if jid in _ub_paused: _ub_paused[jid].set()
         await query.answer("Job resumed.")
-        try: await query.message.edit_text(query.message.text.replace("PAUSED", "RUNNING"), reply_markup=query.message.reply_markup)
-        except: pass
         
     elif action == "stop":
         await _update_bypass_job(jid, {"status": "stopped"})
         if jid in _ub_tasks: _ub_tasks[jid].cancel()
         await query.answer("Job stopped.")
-        try: await query.message.delete()
-        except: pass
+        
+    await _send_bypass_menu(bot, query.from_user.id, query.message.chat.id, query.message.id)
 
 
 # ── Entry points ──────────────────────────────────────────────────────────────
@@ -532,7 +569,7 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
         f"⏳ Connecting userbot...",
         parse_mode=PM, reply_markup=ReplyKeyboardRemove()
     )
-    _status_msgs[user_id] = (chat_id, status_msg.id)
+    _status_msgs[job_id] = (chat_id, status_msg.id)
     
     task = asyncio.create_task(_ub_run_job(job_id))
     _ub_tasks[job_id] = task
@@ -553,9 +590,9 @@ async def _ub_run_job(job_id: str):
         ub = await _load_ub(user_id, job["bot_id"])
         if not ub:
             await _update_bypass_job(job_id, {"status": "failed", "error": "Userbot connect fail"})
-            return await _upd(BOT_INSTANCE, user_id, chat_id, "<b>»  Failed to connect userbot!</b>")
+            return await _upd(BOT_INSTANCE, job_id, chat_id, "<b>»  Failed to connect userbot!</b>")
 
-        await _upd(BOT_INSTANCE, user_id, chat_id, "✅ Connected! Checking queue...")
+        await _upd(BOT_INSTANCE, job_id, chat_id, "✅ Connected! Checking queue...")
         
         queue = job.get("queue", [])
         if not queue:
@@ -565,10 +602,10 @@ async def _ub_run_job(job_id: str):
                 await asyncio.wait_for(ub.join_chat(channel_id), timeout=20)
             except: pass
             
-            queue = await _scan(BOT_INSTANCE, user_id, chat_id, ub, channel_id, job["order"], job["scan_start"], job["scan_end"], job["allowed_buttons"])
+            queue = await _scan(BOT_INSTANCE, job_id, chat_id, ub, channel_id, job["order"], job["scan_start"], job["scan_end"], job["allowed_buttons"])
             if not queue:
                 await _update_bypass_job(job_id, {"status": "completed"})
-                return await _upd(BOT_INSTANCE, user_id, chat_id, "<b>»  No Shortener Links Found!</b>")
+                return await _upd(BOT_INSTANCE, job_id, chat_id, "<b>»  No Shortener Links Found!</b>")
             job["queue"] = queue
             await _update_bypass_job(job_id, {"queue": queue})
         
@@ -593,7 +630,7 @@ async def _ub_run_job(job_id: str):
             post_id, label, short_url = queue[done]
 
             bar = _progress_bar(done, total)
-            await _upd(BOT_INSTANCE, user_id, chat_id,
+            await _upd(BOT_INSTANCE, job_id, chat_id,
                 f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
                 f"<code>{bar}</code>\n\n"
                 f"<b>\u00bb  Pᴏsᴛ ID  :</b> <code>{post_id}</code>\n"
@@ -609,7 +646,15 @@ async def _ub_run_job(job_id: str):
                 bypassed = short_url
             else:
                 try:
-                    await ub.send_message(BYPASS_BOT, short_url)
+                    await asyncio.wait_for(ub.send_message(BYPASS_BOT, short_url), timeout=20)
+                except FloodWait as fw:
+                    from plugins.arya_logger import log_admin_dm
+                    asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Send NickBot"))
+                    failed.append((label, f"FloodWait {fw.value}s"))
+                    done += 1
+                    await _update_bypass_job(job_id, {"done": done, "failed": failed})
+                    await asyncio.sleep(fw.value + 1)
+                    continue
                 except Exception as e:
                     failed.append((label, f"Send failed: {e}"))
                     done += 1
@@ -629,8 +674,12 @@ async def _ub_run_job(job_id: str):
                             if c and c != short_url:
                                 bypassed = c; break
                         if bypassed: break
-                    except Exception:
-                        pass
+                    except FloodWait as fw:
+                        from plugins.arya_logger import log_admin_dm
+                        asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Check NickBot"))
+                        await asyncio.sleep(fw.value)
+                    except Exception as e:
+                        logger.warning(f"Error checking NickBot: {e}")
 
             if not bypassed:
                 failed.append((label, "No bypass reply"))
@@ -647,7 +696,7 @@ async def _ub_run_job(job_id: str):
                 await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
                 continue
 
-            await _upd(BOT_INSTANCE, user_id, chat_id,
+            await _upd(BOT_INSTANCE, job_id, chat_id,
                 f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
                 f"<code>{bar}</code>\n\n"
                 f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{done+1} / {total}</code>\n"
@@ -656,7 +705,15 @@ async def _ub_run_job(job_id: str):
             )
 
             try:
-                await ub.send_message(bot_uname, f"/start {param}")
+                await asyncio.wait_for(ub.send_message(bot_uname, f"/start {param}"), timeout=20)
+            except FloodWait as fw:
+                from plugins.arya_logger import log_admin_dm
+                asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, f"URL Bypass Start @{bot_uname}"))
+                failed.append((label, f"FloodWait {fw.value}s"))
+                done += 1
+                await _update_bypass_job(job_id, {"done": done, "failed": failed})
+                await asyncio.sleep(fw.value + 1)
+                continue
             except Exception as e:
                 failed.append((label, f"/start failed: {e}"))
                 done += 1
@@ -685,15 +742,19 @@ async def _ub_run_job(job_id: str):
                         # Intelligent Timer Logic
                         adaptive = BASE_IDLE_SEC + int(files * 0.7) # Extra 0.7s per file
                         
-                except Exception:
-                    pass
+                except FloodWait as fw:
+                    from plugins.arya_logger import log_admin_dm
+                    asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Fetch Files"))
+                    await asyncio.sleep(fw.value)
+                except Exception as e:
+                    logger.warning(f"Error fetching files: {e}")
                     
                 idle   = time.time() - last_file
                 waited = time.time() - wait_since
                 if got_file and idle >= adaptive: break
                 if not got_file and waited > 90:  break
                 
-                await _upd(BOT_INSTANCE, user_id, chat_id,
+                await _upd(BOT_INSTANCE, job_id, chat_id,
                     f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
                     f"<code>{_progress_bar(done, total)}</code>\n\n"
                     f"<b>\u00bb  Lɪɴᴋ      :</b> <code>{done+1} / {total}</code>\n"
@@ -707,7 +768,7 @@ async def _ub_run_job(job_id: str):
             
             if pacing > 0 and done < total:
                 wait_sec = pacing * 60
-                await _upd(BOT_INSTANCE, user_id, chat_id,
+                await _upd(BOT_INSTANCE, job_id, chat_id,
                     f"⏳ <b>Pacing Delay:</b> Waiting {pacing} min for Live Job synchronization...\n"
                     f"<i>Job will resume automatically. /bypass_jobs to manage.</i>"
                 )
@@ -728,7 +789,7 @@ async def _ub_run_job(job_id: str):
             if failed:
                 lines = '\n'.join(f"  \u2022 {lb[:25]}: {rs[:40]}" for lb, rs in failed[:8])
                 fail_txt = f"\n\n<b>\u00bb  Fᴀɪʟᴇᴅ ({len(failed)}):</b>\n{lines}"
-            await _upd(BOT_INSTANCE, user_id, chat_id,
+            await _upd(BOT_INSTANCE, job_id, chat_id,
                 f"\u2705 <b>URL Bʏᴘᴀss Cᴏᴍᴘʟᴇᴛᴇ!</b>\n"
                 f"<code>{_progress_bar(total, total)}</code>\n\n"
                 f"<b>\u00bb  Tᴏᴛᴀʟ   :</b> <code>{total}</code>\n"
@@ -744,11 +805,20 @@ async def _ub_run_job(job_id: str):
         logger.error(f"[Bypass] job error: {e}", exc_info=True)
     finally:
         _ub_tasks.pop(job_id, None)
-        if ub:
-            try:
-                from plugins.test import release_client
-                await release_client(ub.name)
-            except: pass
+        if ub and job and "bot_id" in job:
+            bot_id = str(job["bot_id"])
+            if bot_id in _ub_refcounts:
+                _ub_refcounts[bot_id] -= 1
+                logger.info(f"[Bypass] Job {job_id[:8]} released Userbot {bot_id} (Refs: {_ub_refcounts[bot_id]})")
+                if _ub_refcounts[bot_id] <= 0:
+                    try:
+                        from plugins.test import release_client
+                        await release_client(ub.name)
+                        logger.info(f"[Bypass] Fully stopped Userbot {bot_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to release ub {bot_id}: {e}")
+                    _active_ubs.pop(bot_id, None)
+                    _ub_refcounts.pop(bot_id, None)
 
 # ── Stop ──────────────────────────────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command(['stopbypass', 'bypass_stop']))
