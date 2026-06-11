@@ -5682,9 +5682,9 @@ async def admin_logout(request: Request):
 async def ban_guard_middleware(request: Request, call_next):
     path = request.url.path
     
-    # Exempt admin and analytics routes from visitor ban guard so admins don't lock themselves out of unbanning
-    is_admin_path = ("/admin/" in path) or ("/analytics/" in path)
-    if is_admin_path:
+    # Exempt admin, analytics, and webhook routes from visitor ban guard
+    is_admin_or_webhook = ("/admin/" in path) or ("/analytics/" in path) or ("/webhook" in path) or ("/razorpay-callback" in path)
+    if is_admin_or_webhook:
         response = await call_next(request)
         return response
         
@@ -5808,33 +5808,17 @@ async def ban_guard_middleware(request: Request, call_next):
                     
                 # Rule B: New/unbanned Telegram ID on blocked IP (Alt account)
                 elif banned_by_ip and tg_id and not banned_by_tg:
-                    reason = f"Auto-ban: Alternative account detected on blocked IP {ip}"
+                    reason = f"Blocked: Request from blocked IP {ip} (Alt account suspected)"
                     user_name = f"Alt of User {banned_by_ip['_id']}"
-                    # Auto-flag this Telegram ID
-                    await db.db.premium_bans.update_one(
-                        {"_id": tg_id},
-                        {"$set": {
-                            "ips": [ip],
-                            "reason": reason,
-                            "status": "flagged",
-                            "banned_at": datetime.now(timezone.utc),
-                            "name": user_name
-                        }},
-                        upsert=True
-                    )
-                    # Propagate to Delivery Bot ban list
-                    await db.db.users.update_one(
-                        {"id": tg_id},
-                        {"$set": {"ban_status": {"is_banned": True, "ban_reason": reason}}},
-                        upsert=True
-                    )
+                    # Note: We do NOT insert this new TG ID into the bans collection.
+                    # This prevents permanently locking a legitimate user who happens to share a public IP.
                     from utils_ban_logger import log_premium_ban_activity
                     asyncio.create_task(log_premium_ban_activity(
                         user_id=tg_id,
                         name=user_name,
                         ip=ip,
                         action=f"App Open ({path})",
-                        reason=f"Alt account caught on blocked IP {ip} (Telegram ID banned automatically)"
+                        reason=reason
                     ))
                     
                 # Default Block Logging
