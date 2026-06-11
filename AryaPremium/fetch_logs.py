@@ -2,8 +2,8 @@ import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 import sys
 
-# Import config from AryaPremium to get the correct database URL
-from AryaPremium.config import Config
+# Import config to get the correct database URL
+from config import Config
 
 async def fetch_logs():
     mongo_uri = getattr(Config, "MONGO_URI", None) or "mongodb://localhost:27017"
