@@ -2,8 +2,13 @@ import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 import sys
 
+# Import config from AryaPremium to get the correct database URL
+from AryaPremium.config import Config
+
 async def fetch_logs():
-    client = AsyncIOMotorClient("mongodb://localhost:27017")
+    mongo_uri = getattr(Config, "MONGO_URI", None) or "mongodb://localhost:27017"
+    print(f"Connecting to MongoDB at: {mongo_uri}")
+    client = AsyncIOMotorClient(mongo_uri)
     db = client.pocket_arya_store
     
     print("--- AUTOMATIC BANS (FLAGGED USERS) ---")
