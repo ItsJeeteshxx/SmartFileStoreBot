@@ -1,4 +1,32 @@
 import os
+import random
+import string
+import logging
+import base64
+
+# ── CRITICAL: Load .env into os.environ BEFORE importing Config ───
+# This must use __file__ (absolute script path), NOT the current working dir.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
+
+def _inject_env(filepath):
+    """Read a .env file and inject values into os.environ (only if key not already set)."""
+    try:
+        with open(filepath, "r") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip("'").strip('"')
+                    os.environ.setdefault(_k, _v)
+    except Exception:
+        pass
+
+# Load parent .env first (has DATABASE), then local .env (may override)
+_inject_env(os.path.join(_PARENT_DIR, ".env"))
+_inject_env(os.path.join(_SCRIPT_DIR, ".env"))
+
 import uuid
 import httpx
 import logging
