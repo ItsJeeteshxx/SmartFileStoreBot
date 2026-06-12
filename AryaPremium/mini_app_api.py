@@ -5395,6 +5395,196 @@ async def trigger_payment_log_from_order(order: dict):
     except Exception as e:
         logger.error(f"Failed to send payment log via Telegram API: {e}", exc_info=True)
 
+async def ban_guard_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+        
+    path = request.url.path
+    
+    # Exempt admin, analytics, and webhook routes from visitor ban guard
+    is_admin_or_webhook = ("/admin/" in path) or ("/analytics/" in path) or ("/webhook" in path) or ("/razorpay-callback" in path)
+    if is_admin_or_webhook:
+        response = await call_next(request)
+        return response
+        
+    # Guard all API / context routes
+    is_api = path.startswith("/api/") or path.startswith("/stories") or ("/app-context" in path)
+    is_auth_endpoint = "/admin/auth/" in path
+    
+    if is_api and not is_auth_endpoint:
+        db = getattr(app.state, "db", None)
+        if db:
+            ip = _client_ip_from_request(request)
+            ip = ip.strip() if ip else ""
+            device_id = request.headers.get("X-Device-Id", "").strip()
+            
+            # Read initData
+            init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
+            
+            # Resolve Telegram ID
+            tg_id = None
+            tg_id_str = request.query_params.get("telegram_id")
+            if tg_id_str:
+                try:
+                    tg_id = int(tg_id_str)
+                except ValueError:
+                    pass
+                    
+            if not tg_id and request.method in ("POST", "PUT", "DELETE"):
+                try:
+                    body = await request.body()
+                    async def receive():
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    request._receive = receive
+                    
+                    import json
+                    payload = json.loads(body.decode("utf-8"))
+                    tg_id_str = payload.get("telegram_id")
+                    if tg_id_str:
+                        tg_id = int(tg_id_str)
+                except Exception:
+                    pass
+                    
+            from AryaPremium.config import Config
+            bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            
+            # Crypto validation logic
+            if init_data and bot_token:
+                valid_data = verify_telegram_web_app_data(init_data, bot_token)
+                if not valid_data:
+                    import json
+                    return Response(
+                        content=json.dumps({"detail": "Invalid Telegram Signature. Reload App."}),
+                        status_code=401,
+                        media_type="application/json"
+                    )
+                import json
+                try:
+                    user_data = json.loads(valid_data.get("user", "{}"))
+                    validated_id = user_data.get("id")
+                    if not tg_id and validated_id:
+                        tg_id = int(validated_id)
+                except Exception:
+                    pass
+            else:
+                if not getattr(Config, "ALLOW_UNVERIFIED_REQUESTS", False):
+                    import json
+                    return Response(
+                        content=json.dumps({"detail": "Missing Telegram Signature. Reload App."}),
+                        status_code=401,
+                        media_type="application/json"
+                    )
+
+            # 1. SUPREME OWNER EXEMPTION
+            if tg_id and Config.OWNER_IDS and tg_id in Config.OWNER_IDS:
+                response = await call_next(request)
+                return response
+            
+            # 2. CHECK BLOCKED STATUS
+            is_local = not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172."))
+            banned_by_ip = None
+            if not is_local:
+                banned_by_ip = await db.db.premium_bans.find_one({"ips": ip, "status": {"$in": ["banned", "flagged"]}})
+                
+            banned_by_device = None
+            if device_id:
+                banned_by_device = await db.db.premium_bans.find_one({"device_ids": device_id, "status": {"$in": ["banned", "flagged"]}})
+                
+            banned_by_tg = None
+            if tg_id:
+                banned_by_tg = await db.db.premium_bans.find_one({"_id": tg_id, "status": {"$in": ["banned", "flagged"]}})
+                
+            # 3. ENFORCE BLOCKS
+            if banned_by_ip or banned_by_tg or banned_by_device:
+                reason = "Access denied"
+                target_tg_id = tg_id or (banned_by_ip["_id"] if banned_by_ip else None)
+                user_name = "Banned User"
+                
+                # Rule A: Banned user changing IP (VPN Evasion)
+                if banned_by_tg and not banned_by_ip and not is_local:
+                    reason = banned_by_tg.get("reason", "Banned by administrator")
+                    user_name = banned_by_tg.get("name", f"User {tg_id}")
+                    await db.db.premium_bans.update_one(
+                        {"_id": tg_id},
+                        {"$addToSet": {"ips": ip}}
+                    )
+                    from utils_ban_logger import log_premium_ban_activity
+                    asyncio.create_task(log_premium_ban_activity(
+                        user_id=tg_id,
+                        name=user_name,
+                        ip=ip,
+                        action=f"App Open ({path})",
+                        reason=f"VPN Evasion caught: User on new IP {ip} (added to blocklist)"
+                    ))
+                    
+                # Rule B: New/unbanned Telegram ID on blocked IP (Alt account)
+                elif banned_by_ip and tg_id and not banned_by_tg:
+                    reason = f"Auto-ban: Alternative account detected on blocked IP {ip}"
+                    user_name = f"Alt of User {banned_by_ip['_id']}"
+                    # Auto-flag this Telegram ID
+                    await db.db.premium_bans.update_one(
+                        {"_id": tg_id},
+                        {"$set": {
+                            "ips": [ip],
+                            "reason": reason,
+                            "status": "flagged",
+                            "banned_at": datetime.now(timezone.utc),
+                            "name": user_name
+                        }},
+                        upsert=True
+                    )
+                    # Propagate to Delivery Bot ban list
+                    await db.db.users.update_one(
+                        {"id": tg_id},
+                        {"$set": {"ban_status": {"is_banned": True, "ban_reason": reason}}},
+                        upsert=True
+                    )
+                    from utils_ban_logger import log_premium_ban_activity
+                    asyncio.create_task(log_premium_ban_activity(
+                        user_id=tg_id,
+                        name=user_name,
+                        ip=ip,
+                        action=f"App Open ({path})",
+                        reason=f"Alt account caught on blocked IP {ip} (Telegram ID banned automatically)"
+                    ))
+                    
+                # Default Block Logging
+                else:
+                    ref_doc = banned_by_tg or banned_by_ip or banned_by_device
+                    reason = ref_doc.get("reason", "Banned by administrator")
+                    user_name = ref_doc.get("name", f"User {target_tg_id}")
+                    from utils_ban_logger import log_premium_ban_activity
+                    asyncio.create_task(log_premium_ban_activity(
+                        user_id=target_tg_id,
+                        name=user_name,
+                        ip=ip,
+                        action=f"App Open ({path})",
+                        reason=f"Blocked request from banned user/IP/Device: {reason}"
+                    ))
+                    
+                # Save blocked access log in database
+                await db.db.premium_ban_activity.insert_one({
+                    "telegram_id": target_tg_id,
+                    "ip": ip,
+                    "timestamp": datetime.now(timezone.utc),
+                    "action": f"App Open ({path})",
+                    "reason": reason,
+                    "name": user_name
+                })
+                
+                import json
+                return Response(
+                    content=json.dumps({
+                        "banned": True,
+                        "reason": reason,
+                        "detail": "BANNED"
+                    }),
+                    status_code=503,
+                    media_type="application/json"
+                )
+
+    return await call_next(request)
+
 async def record_purchased_stories(order: dict):
     """
     Creates premium_purchases audit records for all stories in the order.
