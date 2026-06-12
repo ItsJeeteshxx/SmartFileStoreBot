@@ -198,3 +198,19 @@ async def _do_payment(bot: Client, query, story_id: str, story: dict):
     except Exception:
         await bot.send_message(query.message.chat.id, "Error notifying admins. Please contact support.")
 
+
+
+@Client.on_callback_query(filters.regex(r'^mb#'))
+async def forward_mb_callbacks(bot: Client, query):
+    from plugins.userbot.market_seller import _process_callback
+    return await _process_callback(bot, query)
+
+@Client.on_message((filters.photo | filters.video | filters.document) & filters.private)
+async def forward_media(bot: Client, message):
+    from plugins.userbot.market_seller import _process_media
+    return await _process_media(bot, message)
+
+@Client.on_message(filters.text & filters.private)
+async def forward_text(bot: Client, message):
+    from plugins.userbot.market_seller import _process_text
+    return await _process_text(bot, message)
