@@ -30,6 +30,9 @@ async def user_start(bot: Client, message):
                 f"Please contact admin to complete your payment and instantly get your files!"
             )
             return
+        elif arg.startswith("story_") or arg.startswith("buy_") or arg.startswith("demo_"):
+            from plugins.userbot.market_seller import _process_start
+            return await _process_start(bot, message)
     # ----------------------------
 
     text = (
