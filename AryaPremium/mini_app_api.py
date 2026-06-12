@@ -5805,16 +5805,26 @@ async def ban_guard_middleware(request: Request, call_next):
             if banned_by_ip or banned_by_tg or banned_by_device:
                 reason = "Access denied"
                 target_tg_id = tg_id or (banned_by_ip["_id"] if banned_by_ip else None)
+                if not target_tg_id and banned_by_device:
+                    target_tg_id = banned_by_device["_id"]
                 user_name = "Banned User"
                 
-                # Rule A: Banned user changing IP (VPN Evasion)
+                # We will update the corresponding database document to add any new IPs or Device IDs they try to use.
+                update_fields = {}
+                if ip and not is_local:
+                    update_fields["ips"] = ip
+                if device_id:
+                    update_fields["device_ids"] = device_id
+                
+                # Rule A: Banned user changing IP/Device (VPN Evasion)
                 if banned_by_tg and not banned_by_ip and not is_local:
                     reason = banned_by_tg.get("reason", "Banned by administrator")
                     user_name = banned_by_tg.get("name", f"User {tg_id}")
-                    await db.db.premium_bans.update_one(
-                        {"_id": tg_id},
-                        {"$addToSet": {"ips": ip}}
-                    )
+                    if update_fields:
+                        await db.db.premium_bans.update_one(
+                            {"_id": tg_id},
+                            {"$addToSet": update_fields}
+                        )
                     from utils_ban_logger import log_premium_ban_activity
                     asyncio.create_task(log_premium_ban_activity(
                         user_id=tg_id,
@@ -5824,20 +5834,23 @@ async def ban_guard_middleware(request: Request, call_next):
                         reason=f"VPN Evasion caught: User on new IP {ip} (added to blocklist)"
                     ))
                     
-                # Rule B: New/unbanned Telegram ID on blocked IP (Alt account)
-                elif banned_by_ip and tg_id and not banned_by_tg:
-                    reason = f"Auto-ban: Alternative account detected on blocked IP {ip}"
-                    user_name = f"Alt of User {banned_by_ip['_id']}"
+                # Rule B: New/unbanned Telegram ID on blocked IP or Device (Alt account)
+                elif (banned_by_ip or banned_by_device) and tg_id and not banned_by_tg:
+                    reason = f"Auto-ban: Alternative account detected on blocked IP/Device"
+                    if banned_by_device:
+                        user_name = f"Alt of User {banned_by_device['_id']}"
+                    else:
+                        user_name = f"Alt of User {banned_by_ip['_id']}"
+                        
                     # Auto-flag this Telegram ID
                     await db.db.premium_bans.update_one(
                         {"_id": tg_id},
                         {"$set": {
-                            "ips": [ip],
                             "reason": reason,
                             "status": "flagged",
                             "banned_at": datetime.now(timezone.utc),
                             "name": user_name
-                        }},
+                        }, "$addToSet": update_fields if update_fields else {"ips": ip}},
                         upsert=True
                     )
                     # Propagate to Delivery Bot ban list
@@ -5852,7 +5865,7 @@ async def ban_guard_middleware(request: Request, call_next):
                         name=user_name,
                         ip=ip,
                         action=f"App Open ({path})",
-                        reason=f"Alt account caught on blocked IP {ip} (Telegram ID banned automatically)"
+                        reason=f"Alt account caught on blocked IP/Device (Telegram ID banned automatically)"
                     ))
                     
                 # Default Block Logging
@@ -5860,6 +5873,13 @@ async def ban_guard_middleware(request: Request, call_next):
                     ref_doc = banned_by_tg or banned_by_ip or banned_by_device
                     reason = ref_doc.get("reason", "Banned by administrator")
                     user_name = ref_doc.get("name", f"User {target_tg_id}")
+                    
+                    if target_tg_id and update_fields:
+                        await db.db.premium_bans.update_one(
+                            {"_id": target_tg_id},
+                            {"$addToSet": update_fields}
+                        )
+                        
                     from utils_ban_logger import log_premium_ban_activity
                     asyncio.create_task(log_premium_ban_activity(
                         user_id=target_tg_id,
