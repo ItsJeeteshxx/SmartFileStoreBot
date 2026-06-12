@@ -2283,9 +2283,7 @@ async def _process_start(client, message):
             
 
         if not story:
-
             story = await db.db.premium_stories.find_one({"story_id": story_id})
-        logger.error(f"DEBUG_START_PRINT: story found: {story is not None}")
 
             
 
@@ -2323,8 +2321,6 @@ async def _process_start(client, message):
             story_id = args[1][4:].strip()
         else:
             story_id = args[1][6:].strip()
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"DEBUG_START_PRINT: extracted story_id: '{story_id}' from args: {args}")
 
         from bson.objectid import ObjectId
@@ -2360,8 +2356,6 @@ async def _process_start(client, message):
             story = await db.db.premium_stories.find_one({"story_id": story_id})
             
         if not story:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"DEBUG: Story not found in DB for ID: {story_id}")
             return await message.reply_text("❌ <b>Story not found!</b>\n\nIt seems this story has been removed from the database, or the link is invalid.")
             
