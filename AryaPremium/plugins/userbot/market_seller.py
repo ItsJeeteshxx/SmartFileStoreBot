@@ -2356,13 +2356,15 @@ async def _process_start(client, message):
             
 
         if not story:
-
             # Fallback 2: Story might be stored with story_id field
-
             story = await db.db.premium_stories.find_one({"story_id": story_id})
-
             
-
+        if not story:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"DEBUG: Story not found in DB for ID: {story_id}")
+            return await message.reply_text("❌ <b>Story not found!</b>\n\nIt seems this story has been removed from the database, or the link is invalid.")
+            
         if story:
 
             has_paid = await db.has_purchase(user_id, story_id)
