@@ -111,6 +111,11 @@ def _cfg_list(cfg: dict, key: str):
 
 @Client.on_message(filters.command("start") & filters.private)
 async def mgmt_start(client, message):
+    args = message.command
+    if len(args) > 1 and (args[1].startswith("story_") or args[1].startswith("buy_") or args[1].startswith("demo_")):
+        from plugins.userbot.market_seller import _process_start
+        return await _process_start(client, message)
+
     user_id = message.from_user.id
     if await _deny_if_not_owner(client, user_id):
         return
@@ -3431,3 +3436,21 @@ async def _msg_all_buyers_flow(client, admin_id: int):
 
     except asyncio.TimeoutError:
         await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r'^mb#'))
+async def forward_mb_callbacks(client, query):
+    from plugins.userbot.market_seller import _process_callback
+    return await _process_callback(client, query)
+
+@Client.on_message(filters.text & filters.private)
+async def forward_text(client, message):
+    from plugins.userbot.market_seller import _process_text
+    return await _process_text(client, message)
+
+@Client.on_message((filters.photo | filters.video | filters.document) & filters.private, group=-1)
+async def forward_media(client, message):
+    user_id = message.from_user.id
+    if _is_owner(user_id) and message.photo and user_id in BANNER_AWAIT_USERS:
+        return # Let group 0 handle it
+    from plugins.userbot.market_seller import _process_media
+    return await _process_media(client, message)
