@@ -2285,7 +2285,7 @@ async def _process_start(client, message):
         if not story:
 
             story = await db.db.premium_stories.find_one({"story_id": story_id})
-        logger.warning(f"DEBUG_START: story found: {story is not None}")
+        print(f"DEBUG_START_PRINT: story found: {story is not None}")
 
             
 
@@ -2325,7 +2325,7 @@ async def _process_start(client, message):
             story_id = args[1][6:].strip()
         import logging
         logger = logging.getLogger(__name__)
-        logger.warning(f"DEBUG_START: extracted story_id: '{story_id}' from args: {args}")
+        print(f"DEBUG_START_PRINT: extracted story_id: '{story_id}' from args: {args}")
 
         from bson.objectid import ObjectId
 
