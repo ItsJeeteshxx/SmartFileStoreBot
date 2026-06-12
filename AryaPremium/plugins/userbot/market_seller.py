@@ -2316,9 +2316,9 @@ async def _process_start(client, message):
 
 
 
-    if len(args) > 1 and args[1].startswith("buy_"):
+    if len(args) > 1 and (args[1].startswith("buy_") or args[1].startswith("story_")):
 
-        story_id = args[1].replace("buy_", "").strip()
+        story_id = args[1].replace("buy_", "").replace("story_", "").strip()
 
         from bson.objectid import ObjectId
 

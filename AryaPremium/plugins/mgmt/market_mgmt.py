@@ -1385,7 +1385,8 @@ async def market_callback(client, query):
                  InlineKeyboardButton(f"{rzp_icon} Razorpay", callback_data=f"mk#st_pay_methods_{s_id}_razorpay")],
                 # Forwarding toggle
                 [InlineKeyboardButton(f"{fwd_icon} Forwarding: {fwd_label}", callback_data=f"mk#st_fwd_toggle_{s_id}")],
-                [InlineKeyboardButton("Remove Story", callback_data=f"mk#st_confirm_rm_{s_id}")],
+                [InlineKeyboardButton("🔗 Get Share Link", callback_data=f"mk#st_link_{s_id}"),
+                 InlineKeyboardButton("Remove Story", callback_data=f"mk#st_confirm_rm_{s_id}")],
                 [InlineKeyboardButton("« Back", callback_data="mk#ms_list_0")],
             ]
             await query.message.edit_text(detail_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -1434,6 +1435,27 @@ async def market_callback(client, query):
             await _safe_answer(query, f"Forwarding set to {status_txt}", show_alert=True)
             query.data = f"mk#st_view_{s_id}"
             return await market_callback(client, query)
+
+        elif cmd.startswith("st_link_"):
+            s_id = cmd.split("_")[2]
+            from bson.objectid import ObjectId
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            if not story: return await _safe_answer(query, "Story not found!", show_alert=True)
+            
+            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+            
+            bot_un = story.get("bot_username", "Bot")
+            if _mini_app_on:
+                deep_link = f"https://t.me/{bot_un}/apminibyarya?startapp=story_{s_id}"
+                msg_txt = "📱 **Mini App Link:**\n"
+            else:
+                deep_link = f"https://t.me/{bot_un}?start=buy_{s_id}"
+                msg_txt = "🤖 **Bot Only Link:**\n"
+                
+            await client.send_message(user_id, f"{msg_txt}<code>{deep_link}</code>\n\n<i>Tap link to copy.</i>")
+            await _safe_answer(query)
+            return
 
         elif cmd == "pending":
             await _safe_answer(query)
@@ -2310,7 +2332,12 @@ async def _add_story_flow(client, user_id):
         sj.setdefault("forwarding_enabled", True)
         result = await db.db.premium_stories.insert_one(sj)
         story_id = str(result.inserted_id)
-        deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
+        _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+        if _mini_app_on:
+            deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
+        else:
+            deep_link = f"https://t.me/{sj['bot_username']}?start=buy_{story_id}"
         
         await client.send_message(user_id, f"✅ **Story successfully added to Storefront!**\n\nThe Connected bot `@{(sj['bot_username'])}` is now actively selling `{sj['story_name_en']}` for ₹{sj['price']}!\n\n🔗 **Direct Purchase Link:**\n`{deep_link}`", reply_markup=ReplyKeyboardRemove())
 
@@ -2449,7 +2476,12 @@ async def _edit_story_flow(client, user_id, s_id, action):
                                 f"<i>🛒 Click the button below to buy now at the updated price!</i>"
                             )
                             
-                            buy_link = f"https://t.me/{story.get('bot_username')}/apminibyarya?startapp=story_{s_id}"
+                            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+                            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+                            if _mini_app_on:
+                                buy_link = f"https://t.me/{story.get('bot_username')}/apminibyarya?startapp=story_{s_id}"
+                            else:
+                                buy_link = f"https://t.me/{story.get('bot_username')}?start=buy_{s_id}"
                             kb_buy = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ VIEW & BUY STORY", url=buy_link)]])
 
                             sent = 0
