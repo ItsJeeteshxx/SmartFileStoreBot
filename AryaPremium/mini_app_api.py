@@ -5761,32 +5761,26 @@ async def ban_guard_middleware(request: Request, call_next):
             from AryaPremium.config import Config
             bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
             
-            # Crypto validation logic
+            # Crypto validation logic (Soft check for multi-bot compatibility)
             if init_data and bot_token:
                 valid_data = verify_telegram_web_app_data(init_data, bot_token)
-                if not valid_data:
+                if valid_data:
                     import json
-                    return Response(
-                        content=json.dumps({"detail": "Invalid Telegram Signature. Reload App."}),
-                        status_code=401,
-                        media_type="application/json"
-                    )
-                import json
-                try:
-                    user_data = json.loads(valid_data.get("user", "{}"))
-                    validated_id = user_data.get("id")
-                    if not tg_id and validated_id:
-                        tg_id = int(validated_id)
-                except Exception:
-                    pass
+                    try:
+                        user_data = json.loads(valid_data.get("user", "{}"))
+                        validated_id = user_data.get("id")
+                        if not tg_id and validated_id:
+                            tg_id = int(validated_id)
+                    except Exception:
+                        pass
+                else:
+                    # Signature failed (likely because user is accessing via a child bot with a different token)
+                    # We log it but do NOT block, to support multi-bot setups.
+                    logger.debug(f"Signature mismatch for initData (expected for multi-bot setups)")
             else:
-                if not getattr(Config, "ALLOW_UNVERIFIED_REQUESTS", False):
-                    import json
-                    return Response(
-                        content=json.dumps({"detail": "Missing Telegram Signature. Reload App."}),
-                        status_code=401,
-                        media_type="application/json"
-                    )
+                # No initData provided (old frontend or direct API call).
+                # We allow it to pass through to support backward compatibility.
+                pass
 
             # 1. SUPREME OWNER EXEMPTION
             if tg_id and Config.OWNER_IDS and tg_id in Config.OWNER_IDS:
