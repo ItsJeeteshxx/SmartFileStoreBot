@@ -2315,6 +2315,87 @@ async def _process_start(client, message):
 
 
 
+    # ── Mini App Fast-Delivery: skip "Access Granted" screen, go straight to episode selection ──
+    if len(args) > 1 and args[1].startswith("madeliver_"):
+
+        story_id = args[1][10:].strip()  # strip "madeliver_" prefix (10 chars)
+        logger.error(f"DEBUG_MADELIVER: extracted story_id: '{story_id}' from args: {args}")
+
+        from bson.objectid import ObjectId
+        from bson.errors import InvalidId
+
+        story = None
+        try:
+            o_id = ObjectId(story_id)
+            story = await db.db.premium_stories.find_one({"_id": o_id})
+        except InvalidId:
+            pass
+
+        if not story:
+            story = await db.db.premium_stories.find_one({"_id": story_id})
+        if not story:
+            story = await db.db.premium_stories.find_one({"story_id": story_id})
+        if not story:
+            return await message.reply_text("❌ <b>Story not found!</b>\n\nThe link is invalid or this story has been removed.", parse_mode=enums.ParseMode.HTML)
+
+        has_paid = await db.has_purchase(user_id, story_id)
+        if not has_paid:
+            # User doesn't actually own it — redirect to normal purchase flow
+            return await message.reply_text(
+                "❌ <b>Purchase not found.</b>\n\nPlease open the Mini App to purchase this story.",
+                parse_mode=enums.ParseMode.HTML
+            )
+
+        # ── FAST PATH: directly trigger DM episode selection (no "Access Granted" screen) ──
+        start_id = story.get('start_id')
+        end_id   = story.get('end_id')
+        total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
+        s_id_str = str(story['_id'])
+
+        if total_files > 40:
+            # Build episode/chunk selection keyboard
+            if total_files > 300: chunk = 100
+            elif total_files > 100: chunk = 50
+            else: chunk = 30
+
+            kb = []
+            row = []
+            for i in range(0, total_files, chunk):
+                f_start = i + 1
+                f_end   = min(i + chunk, total_files)
+                lbl = f"Files {f_start} - {f_end}" if lang != "hi" else f"फ़ाइलें {f_start} - {f_end}"
+                row.append(lbl)
+                if len(row) == 2:
+                    kb.append(row)
+                    row = []
+            if row:
+                kb.append(row)
+
+            full_btn   = "Full Delivery (All Files)" if lang != "hi" else "Full Delivery (सभी फ़ाइलें)"
+            cancel_btn = "Cancel" if lang != "hi" else "रद्द करें"
+            kb.append([full_btn])
+            kb.append([cancel_btn])
+
+            await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id_str}})
+
+            if lang == "hi":
+                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
+            else:
+                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
+
+            return await message.reply_text(p_text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+
+        else:
+            # Small story — deliver all files directly
+            if lang == "hi":
+                wait_txt = "<i>⏳ डिलीवरी शुरू हो रही है... आपकी फाइलें तैयार हो रही हैं।</i>"
+            else:
+                wait_txt = "<i>⏳ Initializing DM Delivery... Preparing your files.</i>"
+
+            wait_msg = await message.reply_text(wait_txt, parse_mode=enums.ParseMode.HTML)
+            asyncio.create_task(_do_dm_delivery(client, user_id, story, wait_msg, start_id, end_id))
+            return
+
     if len(args) > 1 and (args[1].startswith("buy_") or args[1].startswith("story_")):
 
         if args[1].startswith("buy_"):
