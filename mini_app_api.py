@@ -1951,7 +1951,26 @@ async def get_my_purchases(telegram_id: str):
                                 "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", ""))
                             }
                         else:
-                            formatted["order_details"] = None
+                            # Try to find in premium_purchases
+                            purchase_rec = None
+                            try:
+                                purchase_rec = await arya_db.db.premium_purchases.find_one({
+                                    "user_id": {"$in": [user_id_int, str(user_id_int)]},
+                                    "story_id": ObjectId(story_id)
+                                })
+                            except Exception:
+                                pass
+                                
+                            if purchase_rec:
+                                p_at = purchase_rec.get("purchased_at") or purchase_rec.get("created_at")
+                                formatted["order_details"] = {
+                                    "order_id": purchase_rec.get("order_id") or "",
+                                    "source": purchase_rec.get("source", "imported"),
+                                    "status": "paid",
+                                    "created_at": p_at.isoformat() if isinstance(p_at, datetime) else str(p_at or "")
+                                }
+                            else:
+                                formatted["order_details"] = None
 
                         purchased_items.append(formatted)
             except Exception:
