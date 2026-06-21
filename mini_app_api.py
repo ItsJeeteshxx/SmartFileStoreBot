@@ -2198,7 +2198,7 @@ async def get_my_purchases(telegram_id: str):
                     "created_at": {"$gte": five_minutes_ago}
                 },
                 {
-                    "status": {"$in": ["review_pending", "review_rejected"]},
+                    "status": {"$in": ["review_pending"]},
                     "created_at": {"$gte": seven_days_ago}
                 }
             ]
