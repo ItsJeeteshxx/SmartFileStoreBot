@@ -282,7 +282,9 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 def _format_story(s: dict) -> dict | None:
     # Filter out hidden stories in public endpoints
-    if s.get("visibility") == "hidden" or s.get("status") == "hidden":
+    vis = str(s.get("visibility") or "").strip().lower()
+    stat = str(s.get("status") or "").strip().lower()
+    if vis == "hidden" or stat == "hidden":
         return None
 
     # ID — never null
@@ -344,7 +346,7 @@ def _format_story(s: dict) -> dict | None:
         "platform":     s.get("platform") or "Pocket FM",
         "genre":        s.get("genre") or "Drama",
         "status":       s.get("status") or "Ongoing",
-        "visibility":   s.get("visibility") or "available",
+        "visibility":   s.get("visibility") or "Available",
         "bot_username":  s.get("bot_username") or "UseAryaBot",
         "episodes":     s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes":s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
