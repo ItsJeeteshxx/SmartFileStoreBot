@@ -3996,6 +3996,52 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             )
             return {"success": True, "message": "User wiped and banned."}
             
+        elif action == "remove_story":
+            story_id_str = payload.get("story_id")
+            if not story_id_str:
+                raise HTTPException(status_code=400, detail="Missing story_id")
+            
+            # 1. Pull the story_id from users collection purchases
+            await arya_db.db.users.update_one(
+                {"id": target_uid},
+                {"$pull": {"purchases": story_id_str}}
+            )
+            
+            # 2. Delete the record from premium_purchases
+            from bson.objectid import ObjectId
+            try:
+                target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
+                await arya_db.db.premium_purchases.delete_many({
+                    "user_id": {"$in": [target_uid, str(target_uid), target_uid_int]},
+                    "story_id": ObjectId(story_id_str)
+                })
+            except Exception as ex:
+                logger.error(f"Error deleting premium_purchases: {ex}")
+                
+            # 3. Pull/modify in orders collection to decrement trending/popular count
+            async for order in arya_db.db.orders.find({
+                "user_id": {"$in": [target_uid, str(target_uid)]},
+                "status": {"$in": ["paid", "delivered"]},
+                "story_ids": story_id_str
+            }):
+                new_story_ids = [sid for sid in order.get("story_ids", []) if sid != story_id_str]
+                if not new_story_ids:
+                    await arya_db.db.orders.update_one(
+                        {"_id": order["_id"]},
+                        {"$set": {"story_ids": [], "status": "failed"}}
+                    )
+                else:
+                    await arya_db.db.orders.update_one(
+                        {"_id": order["_id"]},
+                        {"$set": {"story_ids": new_story_ids}}
+                    )
+                    
+            # 4. Invalidate global stories cache so trending/popular counts update immediately
+            global _stories_cache
+            _stories_cache = None
+            
+            return {"success": True, "message": "Story removed successfully from user."}
+            
         raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
         logger.error(f"Buyer action error: {e}")
