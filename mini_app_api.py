@@ -1847,6 +1847,217 @@ async def submit_support(
         raise HTTPException(status_code=500, detail="Failed to submit support request")
 
 
+@api_router.post("/submit-order-review")
+async def submit_order_review(
+    order_id: str = Form(...),
+    telegram_id: str = Form(...),
+    message: str = Form(""),
+    file: UploadFile = File(...)
+):
+    """Submits a manual payment proof screenshot for review."""
+    message = message.strip()
+    arya_db = app.state.db
+    
+    # Check if order exists
+    order = await arya_db.db.orders.find_one({"order_id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    # Upload screenshot
+    screenshot_url = None
+    try:
+        file_contents = await file.read()
+        await file.seek(0)
+        
+        # Optimize and upload
+        screenshot_url = await optimize_and_upload_to_storage(file_contents)
+        if not screenshot_url:
+            screenshot_url = await upload_file_to_storage(file_contents, file.filename or "screenshot", file.content_type)
+            
+        if not screenshot_url:
+            raise HTTPException(status_code=500, detail="Failed to upload screenshot")
+    except Exception as e:
+        logger.error(f"Failed to upload order review screenshot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload proof")
+        
+    # Update order in DB
+    await arya_db.db.orders.update_one(
+        {"order_id": order_id},
+        {"$set": {
+            "status": "review_pending",
+            "review_screenshot": screenshot_url,
+            "review_message": message,
+            "review_submitted_at": datetime.now(timezone.utc)
+        }}
+    )
+    
+    # Notify admins via Telegram
+    try:
+        from AryaPremium.config import Config
+        import aiohttp
+        
+        user_name = order.get("username") or "User"
+        amount = order.get("total") or order.get("total_amount") or 0
+        story_names = ", ".join(order.get("story_names", []))
+        
+        admin_txt = (
+            f"🧾 <b>New Manual Payment Review</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Order ID:</b> <code>{order_id}</code>\n"
+            f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+            f"<b>Username:</b> @{user_name}\n"
+            f"<b>Amount:</b> ₹{amount}\n"
+            f"<b>Stories:</b> {story_names}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Message:</b>\n"
+            f"<blockquote>{message or '—'}</blockquote>\n"
+            f"<i>Manage this from the Admin Panel Orders Review section.</i>"
+        )
+        
+        token = Config.MGMT_BOT_TOKEN
+        if token and Config.OWNER_IDS:
+            async with aiohttp.ClientSession() as session:
+                for oid in Config.OWNER_IDS:
+                    try:
+                        # Send photo first
+                        form = aiohttp.FormData()
+                        form.add_field('chat_id', str(oid))
+                        form.add_field('caption', admin_txt)
+                        form.add_field('parse_mode', 'HTML')
+                        form.add_field('photo', file_contents, filename=file.filename or "screenshot")
+                        await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form, timeout=60)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin {oid} about review: {e}")
+    except Exception as notify_err:
+        logger.error(f"Failed to notify admin about review: {notify_err}")
+        
+    return {"success": True, "message": "Proof submitted successfully"}
+
+
+@api_router.get("/admin/pending-reviews")
+async def get_pending_reviews(telegram_id: str):
+    """Fetches all orders waiting for manual proof verification."""
+    if not is_admin(telegram_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    arya_db = app.state.db
+    orders = await arya_db.db.orders.find({"status": "review_pending"}).sort("review_submitted_at", -1).to_list(length=100)
+    
+    result = []
+    for o in orders:
+        result.append({
+            "order_id": o.get("order_id"),
+            "user_id": o.get("user_id"),
+            "username": o.get("username"),
+            "story_names": o.get("story_names", []),
+            "amount": o.get("total") or o.get("total_amount") or 0,
+            "review_screenshot": o.get("review_screenshot"),
+            "review_message": o.get("review_message"),
+            "created_at": o.get("created_at").isoformat() if isinstance(o.get("created_at"), datetime) else str(o.get("created_at")),
+            "review_submitted_at": o.get("review_submitted_at").isoformat() if isinstance(o.get("review_submitted_at"), datetime) else str(o.get("review_submitted_at"))
+        })
+    return {"success": True, "data": result}
+
+
+@api_router.post("/admin/resolve-order-review")
+async def resolve_order_review(payload: dict):
+    """Approves or rejects a manual payment proof review."""
+    telegram_id = str(payload.get("telegram_id", ""))
+    order_id = payload.get("order_id")
+    action = payload.get("action")  # "approve" or "reject"
+    reason = payload.get("reason", "")
+    
+    if not is_admin(telegram_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    if not order_id or action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Invalid request parameters")
+        
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"order_id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    user_id = order.get("user_id")
+    story_ids = order.get("story_ids", [])
+    
+    if action == "approve":
+        # Update order status to paid
+        await arya_db.db.orders.update_one(
+            {"order_id": order_id},
+            {"$set": {
+                "status": "paid",
+                "resolved_at": datetime.now(timezone.utc),
+                "resolved_by": telegram_id
+            }}
+        )
+        
+        # Grant purchases
+        if user_id:
+            for sid in story_ids:
+                try:
+                    await arya_db.add_purchase(user_id, sid)
+                except Exception as e:
+                    logger.error(f"add_purchase error for {sid}: {e}")
+                    
+        # Log and audit records
+        updated_order = {**order, "status": "paid"}
+        asyncio.create_task(trigger_payment_log_from_order(updated_order))
+        asyncio.create_task(record_purchased_stories(updated_order))
+        
+        # Send confirmation message to user via Telegram Bot (optional)
+        try:
+            from AryaPremium.config import Config
+            import aiohttp
+            token = Config.MGMT_BOT_TOKEN
+            if token and user_id:
+                async with aiohttp.ClientSession() as session:
+                    confirm_txt = (
+                        f"✅ <b>Order Approved!</b>\n"
+                        f"Your payment proof for order <code>{order_id}</code> has been verified and approved.\n"
+                        f"You can now access your stories from the Library!"
+                    )
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                        "chat_id": user_id, "text": confirm_txt, "parse_mode": "HTML"
+                    }, timeout=3)
+        except Exception:
+            pass
+            
+    else:
+        # Reject review
+        await arya_db.db.orders.update_one(
+            {"order_id": order_id},
+            {"$set": {
+                "status": "review_rejected",
+                "reject_reason": reason,
+                "resolved_at": datetime.now(timezone.utc),
+                "resolved_by": telegram_id
+            }}
+        )
+        
+        # Send rejection message to user via Telegram Bot (optional)
+        try:
+            from AryaPremium.config import Config
+            import aiohttp
+            token = Config.MGMT_BOT_TOKEN
+            if token and user_id:
+                async with aiohttp.ClientSession() as session:
+                    reject_txt = (
+                        f"❌ <b>Order Review Rejected</b>\n"
+                        f"Your payment proof for order <code>{order_id}</code> was rejected.\n"
+                        f"<b>Reason:</b> {reason or 'Invalid or unclear proof'}"
+                    )
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                        "chat_id": user_id, "text": reject_txt, "parse_mode": "HTML"
+                    }, timeout=3)
+        except Exception:
+            pass
+            
+    return {"success": True, "message": f"Order review {action}d successfully"}
+
+
+# ─────────────────────────────────────────────────────────────────
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /my-requests
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1922,10 +2133,7 @@ async def get_my_purchases(telegram_id: str):
         
         # In AryaPremium, purchases are in user.purchases
         user = await arya_db.db.users.find_one({"id": user_id_int})
-        if not user:
-            return {"success": True, "data": []}
-            
-        purchased_story_ids = user.get("purchases", [])
+        purchased_story_ids = user.get("purchases", []) if user else []
         
         purchased_items = []
         for story_id in purchased_story_ids:
@@ -1976,6 +2184,44 @@ async def get_my_purchases(telegram_id: str):
             except Exception:
                 pass
                 
+        # Also query for recent pending/failed/processing/review orders in the last 10 minutes
+        from datetime import timedelta
+        ten_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
+        recent_orders_cursor = arya_db.db.orders.find({
+            "user_id": {"$in": [user_id_int, str(user_id_int)]},
+            "status": {"$in": ["pending", "failed", "processing", "review_pending", "review_rejected"]},
+            "created_at": {"$gte": ten_minutes_ago}
+        })
+        
+        async for order in recent_orders_cursor:
+            story_ids = order.get("story_ids", [])
+            if isinstance(story_ids, str):
+                story_ids = [story_ids]
+            
+            for story_id in story_ids:
+                if story_id in purchased_story_ids:
+                    continue  # Already successfully purchased and shown
+                
+                try:
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+                    if story:
+                        formatted = _format_story(story)
+                        if formatted:
+                            formatted["story_id"] = formatted["id"]
+                            formatted["temp_order"] = True
+                            formatted["order_details"] = {
+                                "order_id": order.get("order_id") or str(order.get("_id")),
+                                "source": order.get("source", "miniapp"),
+                                "status": order.get("status", "pending"),
+                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
+                                "review_message": order.get("review_message"),
+                                "review_screenshot": order.get("review_screenshot"),
+                                "reject_reason": order.get("reject_reason")
+                            }
+                            purchased_items.append(formatted)
+                except Exception:
+                    pass
+
         return {"success": True, "data": purchased_items}
     except Exception as e:
         logger.error(f"Failed to fetch my-purchases: {e}")
