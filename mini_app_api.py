@@ -353,6 +353,7 @@ def _format_story(s: dict) -> dict | None:
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "is_must_have":  bool(s.get("is_must_have", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
+        "created_at":    s.get("created_at").isoformat() if isinstance(s.get("created_at"), datetime) else str(s.get("created_at") or ""),
     }
 
 
@@ -2156,7 +2157,8 @@ async def get_my_purchases(telegram_id: str):
                                 "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
                                 "source": order.get("source", "miniapp"),
                                 "status": order.get("status"),
-                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", ""))
+                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
+                                "resolved_by": order.get("resolved_by")
                             }
                         else:
                             # Try to find in premium_purchases
