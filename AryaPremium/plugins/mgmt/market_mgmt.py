@@ -53,6 +53,28 @@ async def _safe_answer(query, *args, **kwargs):
         return None
 
 
+async def resolve_seller_client(target_user_id, bot_id_or_str=None):
+    from plugins.userbot.market_seller import market_clients
+    seller_cli = None
+    try:
+        if bot_id_or_str and str(bot_id_or_str) != "mini_app" and str(bot_id_or_str) in market_clients:
+            seller_cli = market_clients[str(bot_id_or_str)]
+        
+        if not seller_cli and target_user_id:
+            user_doc = await db.db.users.find_one({"id": int(target_user_id)})
+            if user_doc and user_doc.get("bot_ids"):
+                for bid in user_doc["bot_ids"]:
+                    if str(bid) in market_clients:
+                        seller_cli = market_clients[str(bid)]
+                        break
+        
+        if not seller_cli and market_clients:
+            seller_cli = list(market_clients.values())[0]
+    except Exception as e:
+        logger.error(f"Error in resolve_seller_client: {e}")
+    return seller_cli
+
+
 async def _render_home(client, chat_id: int, *, edit_message=None):
     bots = await db.db.premium_bots.count_documents({})
     stories = await db.db.premium_stories.count_documents({})
@@ -1524,21 +1546,18 @@ async def market_callback(client, query):
                 if not order_id:
                     order_id = f"OD-{checkout['user_id']}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
 
-                from utils_invoice import send_invoice_to_user
-                
+                # Payment Receipt sending is DISABLED (user request)
+                # from utils_invoice import send_invoice_to_user
+                # if u_cli:
+                #     asyncio.create_task(send_invoice_to_user(
+                #         client=u_cli, user_id=checkout['user_id'],
+                #         order_id=order_id, amount=amount_int,
+                #         method="MANUAL UPI", story=st, checkout=checkout
+                #     ))
+
                 from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
                 u_cli = market_clients.get(str(checkout['bot_id']))
                 if u_cli:
-                    # Also send the invoice
-                    asyncio.create_task(send_invoice_to_user(
-                        client=u_cli, 
-                        user_id=checkout['user_id'], 
-                        order_id=order_id, 
-                        amount=amount_int, 
-                        method="MANUAL UPI", 
-                        story=st,
-                        checkout=checkout
-                    ))
                     try:
                         await u_cli.delete_messages(checkout['user_id'], checkout.get('status_msg_id', 0))
                     except Exception:

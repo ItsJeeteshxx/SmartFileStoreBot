@@ -6440,27 +6440,17 @@ async def _process_callback(client, query):
 
             
 
-            # Send premium invoice document
-
-            from utils_invoice import send_invoice_to_user
-
-            asyncio.create_task(send_invoice_to_user(
-
-                client=client, 
-
-                user_id=user_id, 
-
-                order_id=order_id, 
-
-                amount=checkout.get("amount", 0), 
-
-                method=method, 
-
-                story=story,
-
-                checkout=checkout
-
-            ))
+            # Payment Receipt sending is DISABLED (user request)
+            # from utils_invoice import send_invoice_to_user
+            # asyncio.create_task(send_invoice_to_user(
+            #     client=client,
+            #     user_id=user_id,
+            #     order_id=order_id,
+            #     amount=checkout.get("amount", 0),
+            #     method=method,
+            #     story=story,
+            #     checkout=checkout
+            # ))
 
             
 

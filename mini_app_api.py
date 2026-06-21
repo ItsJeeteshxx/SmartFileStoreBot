@@ -203,7 +203,49 @@ async def optimize_image(url: str, w: int = 400, h: int = 400):
     except Exception as e:
         logger.error(f"Image proxy error for {url}: {e}")
         # If optimization fails, we can redirect to the original URL
-        return Response(status_code=302, headers={"Location": url})
+async def get_customer_bot_token(user_id: int) -> str:
+    """Resolves the user-facing customer bot token for a user, falling back to the main BOT_TOKEN."""
+    from AryaPremium.config import Config
+    
+    # Try importing from the main config first
+    main_bot_token = None
+    try:
+        from config import Config as MainConfig
+        main_bot_token = getattr(MainConfig, "BOT_TOKEN", None)
+    except Exception:
+        pass
+    
+    if not main_bot_token:
+        main_bot_token = getattr(Config, "BOT_TOKEN", None)
+
+    token = None
+    try:
+        arya_db = app.state.db
+        user_doc = await arya_db.db.users.find_one({"id": int(user_id)})
+        if user_doc and user_doc.get("bot_ids"):
+            for bid in user_doc["bot_ids"]:
+                bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                if bot_doc and bot_doc.get("token"):
+                    token = bot_doc["token"]
+                    break
+    except Exception as e:
+        logger.error(f"Failed to resolve seller bot token: {e}")
+        
+    if not token:
+        try:
+            # Fallback to the first available premium bot from the DB
+            arya_db = app.state.db
+            bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
+            if bot_doc:
+                token = bot_doc["token"]
+        except Exception:
+            pass
+
+    if not token:
+        token = main_bot_token or getattr(Config, "MGMT_BOT_TOKEN", None)
+        
+    return token
+
 
 @api_router.get("/tg-image")
 async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int = 400):
@@ -2207,7 +2249,7 @@ async def get_my_purchases(telegram_id: str):
                     "created_at": {"$gte": five_minutes_ago}
                 },
                 {
-                    "status": {"$in": ["review_pending"]},
+                    "status": {"$in": ["review_pending", "review_rejected"]},
                     "created_at": {"$gte": seven_days_ago}
                 }
             ]
@@ -2631,6 +2673,18 @@ async def save_admin_story(request: Request):
                 logger.error(f"Failed to auto-outpaint story banner: {e}", exc_info=True)
 
         save_doc["updated_via"] = "mini_app_admin"
+
+        # ── Validate completion status ─────────────────────────────────────────
+        # Only 4 valid statuses allowed. Any other value (e.g. "available", etc.)
+        # gets normalised to "Ongoing" to keep the DB clean.
+        _valid_statuses = ("Ongoing", "Completed", "Unfinished", "Stucked")
+        raw_st = str(save_doc.get("status") or "").strip()
+        if raw_st not in _valid_statuses:
+            # Check is_completed flag as fallback
+            is_comp = bool(save_doc.get("is_completed") or raw_st.lower() == "completed")
+            save_doc["status"] = "Completed" if is_comp else "Ongoing"
+        # ──────────────────────────────────────────────────────────────────────
+
         arya_db = app.state.db
         await arya_db.save_story(save_doc)
 
