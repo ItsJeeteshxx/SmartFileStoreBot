@@ -3719,6 +3719,16 @@ async def get_admin_buyers(telegram_id: str):
                     except:
                         pass
                 
+                joined_val = None
+                if u:
+                    joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
+                if not joined_val:
+                    joined_val = c.get("created_at") or datetime.now(timezone.utc)
+                if isinstance(joined_val, datetime):
+                    joined_val = joined_val.isoformat()
+                else:
+                    joined_val = str(joined_val)
+
                 buyers_map[uid] = {
                     "user_id": uid,
                     "username": _uname,
@@ -3727,7 +3737,8 @@ async def get_admin_buyers(telegram_id: str):
                     "payments": [],
                     "total_amt": 0,
                     "date": c.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at", "")),
-                    "source": "bot"
+                    "source": "bot",
+                    "joined_at": joined_val
                 }
             
             story_id = c.get("story_id")
@@ -3792,6 +3803,16 @@ async def get_admin_buyers(telegram_id: str):
                     except:
                         pass
                 
+                joined_val = None
+                if u:
+                    joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
+                if not joined_val:
+                    joined_val = doc.get("created_at") or datetime.now(timezone.utc)
+                if isinstance(joined_val, datetime):
+                    joined_val = joined_val.isoformat()
+                else:
+                    joined_val = str(joined_val)
+
                 buyers_map[uid] = {
                     "user_id": uid,
                     "username": _uname,
@@ -3800,7 +3821,8 @@ async def get_admin_buyers(telegram_id: str):
                     "payments": [],
                     "total_amt": 0,
                     "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", "")),
-                    "source": doc.get("source", "miniapp")
+                    "source": doc.get("source", "miniapp"),
+                    "joined_at": joined_val
                 }
             else:
                 if buyers_map[uid]["source"] == "bot":
@@ -3863,7 +3885,8 @@ async def get_admin_buyers(telegram_id: str):
                 "status": user_status,
                 "source": data["source"],
                 "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
-                "date": data["date"]
+                "date": data["date"],
+                "joined_at": data.get("joined_at")
             })
             
         buyers.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
