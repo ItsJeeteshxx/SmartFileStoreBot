@@ -212,7 +212,12 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 accum_btns.append(all_buttons[j])
                 
                 if len(accum_mids) >= merge_size:
-                        
+                    # Determine if this button would be the last button of the post
+                    already_optimized_count = len(optimized_buttons)
+                    is_last_button_of_post = (already_optimized_count % buttons_per_post) == (buttons_per_post - 1)
+                    
+                    if j == len(all_buttons) - 1 and not is_last_button_of_post:
+                        break # Too close to the end, don't merge to keep latest batch separate
                     b_starts = [int(b["ep_start"]) for b in accum_btns if str(b["ep_start"]).isdigit()]
                     b_ends = [int(b["ep_end"]) for b in accum_btns if str(b["ep_end"]).isdigit()]
                     m_start = min(b_starts) if b_starts else "?"
