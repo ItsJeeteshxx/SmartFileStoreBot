@@ -2184,13 +2184,22 @@ async def get_my_purchases(telegram_id: str):
             except Exception:
                 pass
                 
-        # Also query for recent pending/failed/processing/review orders in the last 5 minutes
+        # Also query for recent pending/failed/processing/review orders (recent within 5m, under review/rejected within 7d)
         from datetime import timedelta
         five_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         recent_orders_cursor = arya_db.db.orders.find({
             "user_id": {"$in": [user_id_int, str(user_id_int)]},
-            "status": {"$in": ["pending", "failed", "processing", "review_pending", "review_rejected"]},
-            "created_at": {"$gte": five_minutes_ago}
+            "$or": [
+                {
+                    "status": {"$in": ["pending", "failed", "processing"]},
+                    "created_at": {"$gte": five_minutes_ago}
+                },
+                {
+                    "status": {"$in": ["review_pending", "review_rejected"]},
+                    "created_at": {"$gte": seven_days_ago}
+                }
+            ]
         })
         
         async for order in recent_orders_cursor:
