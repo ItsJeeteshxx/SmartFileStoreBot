@@ -3681,24 +3681,38 @@ async def get_admin_buyers(telegram_id: str):
             if oid:
                 story_cache_by_oid[str(oid)] = s
         
-        # 1. Fetch Bot checkouts
-        checkouts = await arya_db.db.premium_checkout.find({}).sort("_id", -1).limit(100).to_list(length=100)
+        # 1. Identify active user IDs from recent checkouts and orders
+        recent_checkouts = await arya_db.db.premium_checkout.find({}, {"user_id": 1}).sort("_id", -1).limit(100).to_list(length=100)
+        recent_orders = await arya_db.db.orders.find({}, {"user_id": 1}).sort("_id", -1).limit(100).to_list(length=100)
         
-        # Pre-fetch users and stories to optimize DB calls
-        uids = list(set([c.get("user_id") for c in checkouts] + [o.get("user_id") for o in await arya_db.db.orders.find({}).sort("_id", -1).limit(100).to_list(length=100)]))
+        uids = []
+        for c in recent_checkouts:
+            uid = c.get("user_id")
+            if uid is not None:
+                uids.append(uid)
+        for o in recent_orders:
+            uid = o.get("user_id")
+            if uid is not None:
+                uids.append(uid)
+                
         uids_clean = []
         for uid in uids:
-            if uid is not None:
-                uids_clean.append(uid)
-                try:
-                    uids_clean.append(int(uid))
-                except:
-                    pass
-                try:
-                    uids_clean.append(str(uid))
-                except:
-                    pass
-        user_docs_list = await arya_db.db.users.find({"id": {"$in": list(set(uids_clean))}}).to_list(length=500)
+            uids_clean.append(uid)
+            try:
+                uids_clean.append(int(uid))
+            except:
+                pass
+            try:
+                uids_clean.append(str(uid))
+            except:
+                pass
+        uids_clean = list(set(uids_clean))
+        
+        # 2. Fetch ALL checkouts and ALL orders for these specific active users
+        checkouts = await arya_db.db.premium_checkout.find({"user_id": {"$in": uids_clean}}).to_list(length=10000)
+        orders = await arya_db.db.orders.find({"user_id": {"$in": uids_clean}}).to_list(length=10000)
+        
+        user_docs_list = await arya_db.db.users.find({"id": {"$in": uids_clean}}).to_list(length=500)
         
         user_cache = {}
         for u in user_docs_list:
@@ -3739,7 +3753,7 @@ async def get_admin_buyers(telegram_id: str):
                                 "joined_date": datetime.now(timezone.utc),
                                 "purchases": [],
                                 "language": "en"
-                            }},
+                             }},
                             upsert=True
                         ))
                     except:
@@ -3798,8 +3812,7 @@ async def get_admin_buyers(telegram_id: str):
                 "source": "bot"
             })
             
-        # 2. Fetch Mini app orders
-        orders = await arya_db.db.orders.find({}).sort("created_at", -1).limit(100).to_list(length=100)
+        # 2. Iterate pre-fetched Mini app orders
         for doc in orders:
             uid = doc.get("user_id")
             if not uid: continue
