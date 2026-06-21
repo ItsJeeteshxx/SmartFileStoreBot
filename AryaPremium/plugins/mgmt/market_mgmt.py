@@ -2415,6 +2415,8 @@ async def _edit_story_flow(client, user_id, s_id, action):
         f"<blockquote><b>Story:</b> {sname}\n<b>Field:</b> {label}</blockquote>\n\n"
         f"<i>Send the new value for <b>{label}</b>. Type /cancel to abort.</i>"
     )
+    if action == "status":
+        prompt_txt += "\n\n💡 <i>Suggested Status values: <code>Ongoing</code>, <code>Completed</code>, <code>Unfinished</code>, <code>Stucked</code></i>"
     msg = await native_ask(client, user_id, prompt_txt, reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
     from pyrogram.types import CallbackQuery as _CQ
     _txt = getattr(msg, 'text', '') or getattr(msg, 'caption', '') or ''
@@ -2556,6 +2558,26 @@ async def _edit_story_flow(client, user_id, s_id, action):
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"genre": msg.text}})
         elif action == "episodes":
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"episodes": msg.text}})
+        elif action == "status":
+            val = (msg.text or "").strip()
+            lval = val.lower()
+            if lval == "ongoing":
+                val = "Ongoing"
+            elif lval == "completed":
+                val = "Completed"
+            elif lval == "unfinished":
+                val = "Unfinished"
+            elif lval == "stucked":
+                val = "Stucked"
+            else:
+                back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]])
+                return await client.send_message(
+                    user_id,
+                    "❌ <b>Invalid Status.</b> Status must be one of: <code>Ongoing</code>, <code>Completed</code>, <code>Unfinished</code>, <code>Stucked</code>.",
+                    reply_markup=back_kb,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"status": val}})
         await client.send_message(
             user_id,
             f"✅ <b>{label} updated successfully.</b>",

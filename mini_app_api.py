@@ -329,6 +329,13 @@ def _format_story(s: dict) -> dict | None:
         bot_id = s.get("bot_id")
         banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
 
+    raw_status = str(s.get("status") or "").strip()
+    if raw_status not in ("Ongoing", "Completed", "Unfinished", "Stucked"):
+        is_comp = bool(s.get("is_completed") or s.get("completed") or raw_status.lower() == "completed")
+        status_val = "Completed" if is_comp else "Ongoing"
+    else:
+        status_val = raw_status
+
     return {
         "id":           story_id,
         "title":        title,
@@ -345,14 +352,13 @@ def _format_story(s: dict) -> dict | None:
         "language":     s.get("language") or "Hindi",
         "platform":     s.get("platform") or "Pocket FM",
         "genre":        s.get("genre") or "Drama",
-        "status":       s.get("status") or "Ongoing",
+        "status":       status_val,
         "visibility":   s.get("visibility") or "Available",
         "bot_username":  s.get("bot_username") or "UseAryaBot",
         "episodes":     s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes":s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":         s.get("total_size") or s.get("size") or None,
-        "isCompleted":  bool(s.get("is_completed") or s.get("completed") or
-                            (s.get("status", "") == "Completed")),
+        "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "is_must_have":  bool(s.get("is_must_have", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
