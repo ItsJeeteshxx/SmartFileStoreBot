@@ -282,7 +282,7 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 def _format_story(s: dict) -> dict | None:
     # Filter out hidden stories in public endpoints
-    if s.get("status") == "hidden":
+    if s.get("visibility") == "hidden" or s.get("status") == "hidden":
         return None
 
     # ID — never null
@@ -343,7 +343,8 @@ def _format_story(s: dict) -> dict | None:
         "language":     s.get("language") or "Hindi",
         "platform":     s.get("platform") or "Pocket FM",
         "genre":        s.get("genre") or "Drama",
-        "status":       s.get("status") or "available",
+        "status":       s.get("status") or "Ongoing",
+        "visibility":   s.get("visibility") or "available",
         "bot_username":  s.get("bot_username") or "UseAryaBot",
         "episodes":     s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes":s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
@@ -2456,7 +2457,8 @@ class StoryUpdate(BaseModel):
     description: Optional[str] = ""
     description_hi: Optional[str] = ""
     episodes: Optional[str] = "1"
-    status: Optional[str] = "available"
+    status: Optional[str] = "Ongoing"
+    visibility: Optional[str] = "available"
     genre: Optional[str] = ""
     language: Optional[str] = "Hindi"
     price: Optional[int] = 0
