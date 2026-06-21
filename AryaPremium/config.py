@@ -59,6 +59,7 @@ class Config:
     PREMIUM_UPDATES_CHANNEL = _env("PREMIUM_UPDATES_CHANNEL", "")
 
     # Premium Configs
+    BOT_TOKEN       = _env("BOT_TOKEN", "")
     MGMT_BOT_TOKEN  = _env("MGMT_BOT_TOKEN", "")
     RAZORPAY_KEY            = _env("RAZORPAY_KEY", "")
     RAZORPAY_SECRET         = _env("RAZORPAY_SECRET", "")

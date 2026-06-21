@@ -130,7 +130,8 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             mids = [m.id for m in bucket]
             
             # Extract numbers logically for the label
-            eps = []
+            eps_start = []
+            eps_end = []
             for m in bucket:
                 media_obj = getattr(m, 'document', None) or getattr(m, 'audio', None) or getattr(m, 'video', None) or getattr(m, 'voice', None)
                 fname = getattr(media_obj, "file_name", "") or ""
@@ -142,11 +143,12 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 res = extract_ep_label_robust(combo_name)
                 extracted = (res["numbers"][0], res["numbers"][-1]) if res.get("numbers") else None
                 if extracted:
-                    eps.append(int(extracted[0]))
+                    eps_start.append(int(extracted[0]))
+                    eps_end.append(int(extracted[-1]))
             
-            if eps:
-                b_s = min(eps)
-                b_e = max(eps)
+            if eps_start and eps_end:
+                b_s = min(eps_start)
+                b_e = max(eps_end)
                 btn_text = str(b_s) if b_s == b_e else f"{b_s}–{b_e}"
             else:
                 # Absolute fallback if no numeric episodes are detected
@@ -210,8 +212,6 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 accum_btns.append(all_buttons[j])
                 
                 if len(accum_mids) >= merge_size:
-                    if j == len(all_buttons) - 1:
-                        break # Too close to the end, don't merge to keep latest batch separate
                         
                     b_starts = [int(b["ep_start"]) for b in accum_btns if str(b["ep_start"]).isdigit()]
                     b_ends = [int(b["ep_end"]) for b in accum_btns if str(b["ep_end"]).isdigit()]
@@ -263,7 +263,22 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
         for i in range(0, len(all_buttons), buttons_per_post):
             blocks.append(all_buttons[i : i + buttons_per_post])
             
-        changed_idx = 0 if merged_any else (prev_total // buttons_per_post)
+        # Find the first changed button index by comparing new and old button states
+        old_buttons = job.get("all_buttons", [])
+        changed_btn_idx = len(old_buttons)
+        for idx_btn in range(max(len(old_buttons), len(all_buttons))):
+            if idx_btn >= len(old_buttons) or idx_btn >= len(all_buttons):
+                changed_btn_idx = idx_btn
+                break
+            btn_old = old_buttons[idx_btn]
+            btn_new = all_buttons[idx_btn]
+            if (btn_old.get("text") != btn_new.get("text") or 
+                btn_old.get("url") != btn_new.get("url") or 
+                btn_old.get("mids") != btn_new.get("mids")):
+                changed_btn_idx = idx_btn
+                break
+        
+        changed_idx = changed_btn_idx // buttons_per_post
             
         for idx in range(changed_idx, len(blocks)):
             block = blocks[idx]
