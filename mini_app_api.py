@@ -3684,8 +3684,30 @@ async def get_admin_buyers(telegram_id: str):
         
         # Pre-fetch users and stories to optimize DB calls
         uids = list(set([c.get("user_id") for c in checkouts] + [o.get("user_id") for o in await arya_db.db.orders.find({}).sort("_id", -1).limit(100).to_list(length=100)]))
-        user_docs_list = await arya_db.db.users.find({"id": {"$in": [uid for uid in uids if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit())]}}).to_list(length=500)
-        user_cache = {u.get("id"): u for u in user_docs_list}
+        uids_clean = []
+        for uid in uids:
+            if uid is not None:
+                uids_clean.append(uid)
+                try:
+                    uids_clean.append(int(uid))
+                except:
+                    pass
+                try:
+                    uids_clean.append(str(uid))
+                except:
+                    pass
+        user_docs_list = await arya_db.db.users.find({"id": {"$in": list(set(uids_clean))}}).to_list(length=500)
+        
+        user_cache = {}
+        for u in user_docs_list:
+            u_id = u.get("id")
+            if u_id is not None:
+                user_cache[u_id] = u
+                user_cache[str(u_id)] = u
+                try:
+                    user_cache[int(u_id)] = u
+                except:
+                    pass
         
         for c in checkouts:
             uid = c.get("user_id")
@@ -3724,6 +3746,11 @@ async def get_admin_buyers(telegram_id: str):
                 joined_val = None
                 if u:
                     joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
+                    if not joined_val and "_id" in u:
+                        from bson.objectid import ObjectId
+                        doc_id = u["_id"]
+                        if isinstance(doc_id, ObjectId):
+                            joined_val = doc_id.generation_time
                 if not joined_val:
                     joined_val = c.get("created_at") or datetime.now(timezone.utc)
                 if isinstance(joined_val, datetime):
@@ -3808,6 +3835,11 @@ async def get_admin_buyers(telegram_id: str):
                 joined_val = None
                 if u:
                     joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
+                    if not joined_val and "_id" in u:
+                        from bson.objectid import ObjectId
+                        doc_id = u["_id"]
+                        if isinstance(doc_id, ObjectId):
+                            joined_val = doc_id.generation_time
                 if not joined_val:
                     joined_val = doc.get("created_at") or datetime.now(timezone.utc)
                 if isinstance(joined_val, datetime):
@@ -3861,13 +3893,13 @@ async def get_admin_buyers(telegram_id: str):
         for uid, data in buyers_map.items():
             payments = data["payments"]
             # Determine user status
-            has_paid = any(p["status"] == "paid" for p in payments)
+            has_paid = any(p["status"] in ["paid", "delivered"] for p in payments)
             has_pending_or_processing = any(p["status"] in ["pending", "processing"] for p in payments)
             
             if has_paid:
                 user_status = "paid"
-                # Only count paid orders amount for paid users
-                user_amount = sum(p["amount"] for p in payments if p["status"] == "paid")
+                # Only count paid/delivered orders amount for paid users
+                user_amount = sum(p["amount"] for p in payments if p["status"] in ["paid", "delivered"])
             elif has_pending_or_processing:
                 first_pending_or_proc = next((p for p in payments if p["status"] in ["pending", "processing"]), None)
                 user_status = first_pending_or_proc["status"] if first_pending_or_proc else "pending"
