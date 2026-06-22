@@ -487,15 +487,18 @@ async def _forward_message(
         is_restricted = False
         for attempt in range(3):
             try:
-                if forward_tag:
-                    await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
-                else:
-                    if is_text_replaced and not msg.media:
-                        if not new_text or not new_text.strip():
-                            return True # Silently skip since it's an empty text msg after stripping
-                        await client.send_message(chat_id=chat, text=new_text, **kw)
+                if not hasattr(client, '_network_lock'):
+                    client._network_lock = asyncio.Lock()
+                async with client._network_lock:
+                    if forward_tag:
+                        await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
                     else:
-                        await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
+                        if is_text_replaced and not msg.media:
+                            if not new_text or not new_text.strip():
+                                return True # Silently skip since it's an empty text msg after stripping
+                            await client.send_message(chat_id=chat, text=new_text, **kw)
+                        else:
+                            await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
                 return True
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 2)
@@ -532,7 +535,10 @@ async def _forward_message(
                     # Internal retry for download
                     for dl_attempt in range(5):
                         try:
-                            fp = await client.download_media(msg, file_name=safe_name)
+                            if not hasattr(client, '_network_lock'):
+                                client._network_lock = asyncio.Lock()
+                            async with client._network_lock:
+                                fp = await client.download_media(msg, file_name=safe_name)
                             if fp: 
                                 await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                                 break
@@ -552,13 +558,16 @@ async def _forward_message(
                     up_kw = {"chat_id": chat, "caption": new_caption if new_caption is not None else (msg.caption or "")}
                     if thread: up_kw["message_thread_id"] = thread
                     
-                    if getattr(msg, 'photo', None): await client.send_photo(photo=fp, **up_kw)
-                    elif getattr(msg, 'video', None): await client.send_video(video=fp, file_name=original_name, **up_kw)
-                    elif getattr(msg, 'document', None): await client.send_document(document=fp, file_name=original_name, **up_kw)
-                    elif getattr(msg, 'audio', None): await client.send_audio(audio=fp, file_name=original_name, **up_kw)
-                    elif getattr(msg, 'voice', None): await client.send_voice(voice=fp, **up_kw)
-                    elif getattr(msg, 'animation', None): await client.send_animation(animation=fp, **up_kw)
-                    elif getattr(msg, 'sticker', None): await client.send_sticker(sticker=fp, **up_kw)
+                    if not hasattr(client, '_network_lock'):
+                        client._network_lock = asyncio.Lock()
+                    async with client._network_lock:
+                        if getattr(msg, 'photo', None): await client.send_photo(photo=fp, **up_kw)
+                        elif getattr(msg, 'video', None): await client.send_video(video=fp, file_name=original_name, **up_kw)
+                        elif getattr(msg, 'document', None): await client.send_document(document=fp, file_name=original_name, **up_kw)
+                        elif getattr(msg, 'audio', None): await client.send_audio(audio=fp, file_name=original_name, **up_kw)
+                        elif getattr(msg, 'voice', None): await client.send_voice(voice=fp, **up_kw)
+                        elif getattr(msg, 'animation', None): await client.send_animation(animation=fp, **up_kw)
+                        elif getattr(msg, 'sticker', None): await client.send_sticker(sticker=fp, **up_kw)
                     
                     await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                     if os.path.exists(fp): os.remove(fp)
@@ -566,7 +575,10 @@ async def _forward_message(
                 else:
                     if not new_text or not new_text.strip():
                         return True
-                    await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
+                    if not hasattr(client, '_network_lock'):
+                        client._network_lock = asyncio.Lock()
+                    async with client._network_lock:
+                        await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
                     return True
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 2)

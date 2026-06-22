@@ -39,7 +39,7 @@ async def broadcast (bot, message):
 
 async def broadcast_messages(user_id, message, log):
     try:
-        await message.copy(chat_id=user_id)
+        await message.copy(chat_id=user_id, reply_markup=message.reply_markup)
         return True, "Success"
     except FloodWait as e:
         await asyncio.sleep(e.x)

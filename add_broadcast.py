@@ -35,7 +35,7 @@ async def _process_share_broadcast(client, message):
     
     async def copy_msg(user_id):
         try:
-            await b_msg.copy(chat_id=user_id)
+            await b_msg.copy(chat_id=user_id, reply_markup=b_msg.reply_markup)
             return True, "Success"
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)

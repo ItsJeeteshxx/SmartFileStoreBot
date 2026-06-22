@@ -2029,7 +2029,7 @@ async def _render_list(bot, uid, msg_or_q, mtype):
 
         btns_list.append([InlineKeyboardButton(f"➕ Cʀᴇᴀᴛᴇ{label}Mᴇʀɢᴇ", callback_data=f"mg#new_{mtype}")])
         btns_list.append([InlineKeyboardButton("🔄 Rᴇғʀᴇsʜ", callback_data=f"mg#{mtype}_list")])
-        btns_list.append([InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data="mg#main")])
+        btns_list.append([InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data="back")])
         btns = InlineKeyboardMarkup(btns_list)
 
     try:
@@ -2061,14 +2061,8 @@ async def mg_cb(bot, query):
     action = parts[1] if len(parts) > 1 else ""
     param = parts[2] if len(parts) > 2 else ""
 
-    # ── Main Menu ────────────────────────────────────────────────────────
     if action == "main":
-        text = "<b>❪ Mᴇʀɢᴇʀ Sʏsᴛᴇᴍ ❫</b>\n\nChoose which type of merger you want to use:"
-        btns = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Mᴇʀɢᴇ Aᴜᴅɪᴏ", callback_data="mg#audio_list")],
-            [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
-        ])
-        return await query.message.edit_text(text, reply_markup=btns)
+        return await _render_list(bot, uid, query, "audio")
 
     # ── List views ────────────────────────────────────────────────────────
     if action == "audio_list":

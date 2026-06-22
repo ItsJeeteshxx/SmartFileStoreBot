@@ -36,7 +36,7 @@ async def _get_bypass_job(jid: str):
     return await db.db[UB_COLL].find_one({"job_id": jid})
 
 async def _get_all_bypass_jobs(uid: int):
-    return [j async for j in db.db[UB_COLL].find({"user_id": uid})]
+    return [j async for j in db.db[UB_COLL].find({"user_id": uid}).sort("created_at", -1)]
 
 async def _delete_bypass_job(jid: str):
     await db.db[UB_COLL].delete_one({"job_id": jid})
@@ -168,26 +168,70 @@ async def _load_ub(user_id: int, bot_id: str):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _get_links(message, allowed_buttons=None) -> list:
-    """ALL (label, url) non-Telegram button URLs in order — agentic: no domain whitelist."""
+    """ALL unique (label, url) non-Telegram button and text/caption URLs in order."""
     out = []
-    if not message.reply_markup:
-        return out
-    idx = 1
-    for row in getattr(message.reply_markup, 'inline_keyboard', []):
-        for btn in row:
-            url = getattr(btn, 'url', None) or ''
-            # Skip empty, non-http, and known non-shortener domains
-            if not url or not url.startswith('http'):
-                continue
-            if allowed_buttons and idx not in allowed_buttons:
+    seen_urls = set()
+    
+    # 1. Inline buttons links
+    if message.reply_markup:
+        idx = 1
+        for row in getattr(message.reply_markup, 'inline_keyboard', []):
+            for btn in row:
+                url = getattr(btn, 'url', None) or ''
+                if not url or not url.startswith('http'):
+                    continue
+                if allowed_buttons and idx not in allowed_buttons:
+                    idx += 1
+                    continue
+                if SKIP_URL_RE.search(url):
+                    if not re.search(r'(?:t\.me|telegram\.me)/\w+\?start=', url, re.IGNORECASE):
+                        idx += 1
+                        continue
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    out.append(((btn.text or '').strip() or 'Link', url))
                 idx += 1
+
+    # 2. Text / Caption links (Entities & Regex fallback)
+    text = message.text or message.caption or ""
+    if text:
+        # Extract from entities first (robust and Telegram-native)
+        entities = getattr(message, 'entities', None) or getattr(message, 'caption_entities', None)
+        if entities:
+            for ent in entities:
+                url = None
+                ent_type = getattr(ent, 'type', None)
+                if ent_type in (enums.MessageEntityType.TEXT_LINK, "text_link"):
+                    url = getattr(ent, 'url', None)
+                elif ent_type in (enums.MessageEntityType.URL, "url"):
+                    offset = getattr(ent, 'offset', 0)
+                    length = getattr(ent, 'length', 0)
+                    url = text[offset : offset + length]
+                
+                if url:
+                    url = url.strip()
+                    if not url.startswith('http'):
+                        continue
+                    if SKIP_URL_RE.search(url):
+                        if not re.search(r'(?:t\.me|telegram\.me)/\w+\?start=', url, re.IGNORECASE):
+                            continue
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        out.append(('Link', url))
+
+        # Regex fallback to match raw text URLs that weren't parsed as entities
+        urls = re.findall(r'https?://\S+', text)
+        for url in urls:
+            url = url.strip().rstrip('.,;:!?)"\'}]')
+            if not url or not url.startswith('http'):
                 continue
             if SKIP_URL_RE.search(url):
                 if not re.search(r'(?:t\.me|telegram\.me)/\w+\?start=', url, re.IGNORECASE):
-                    idx += 1
                     continue
-            out.append(((btn.text or '').strip() or 'Link', url))
-            idx += 1
+            if url not in seen_urls:
+                seen_urls.add(url)
+                out.append(('Link', url))
+                
     return out
 
 def _parse_bypassed(text: str) -> Optional[str]:
@@ -246,19 +290,30 @@ async def _scan(bot, job_id, chat_id, ub, channel_id, order, start_id, end_id, a
 
 
 # ── Bypass Jobs Command ───────────────────────────────────────────────────────
+def _ub_emoji(status: str) -> str:
+    return {
+        "running": "🟢",
+        "paused": "⏸",
+        "stopped": "🔴",
+        "completed": "✅",
+        "failed": "❌"
+    }.get(status, "⭘")
+
 async def _send_bypass_menu(bot, uid, chat_id, mid=None):
     jobs = await _get_all_bypass_jobs(uid)
-    jobs = [j for j in jobs if j.get("status") not in ("completed", "stopped")]
     
     if not jobs:
-        txt = "ℹ️ <b>No active bypass jobs.</b>\nUse /bypass to start a new one."
-        kb = [[InlineKeyboardButton("➕ Start New Bypass Job", callback_data="ub#bypass")]]
+        txt = "ℹ️ <b>No URL Bypass jobs found.</b>\n\nUse the button below or send /bypass to start a new one."
+        kb = [
+            [InlineKeyboardButton("➕ Start New Bypass Job", callback_data="ub#new")],
+            [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
+        ]
         if mid:
             try: return await bot.edit_message_text(chat_id, mid, txt, reply_markup=InlineKeyboardMarkup(kb))
             except: pass
         return await bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(kb))
         
-    txt = f"<b>\U0001f504 URL Bypass Multi-Job Menu</b>\n<i>You have {len(jobs)} active bypass jobs.</i>\n\n"
+    txt = f"<b>🔗 URL Bypass Jobs Menu</b>\n<i>You have {len(jobs)} total jobs.</i>\n\n"
     kb = []
     
     for i, j in enumerate(jobs, 1):
@@ -272,21 +327,31 @@ async def _send_bypass_menu(bot, uid, chat_id, mid=None):
         total = len(j.get('queue', []))
         pct = int(done / total * 100) if total else 0
         
+        status_emoji = _ub_emoji(status)
         txt += f"<b>{i}. {j.get('channel_title', '?')}</b>\n"
-        txt += f"   Status: <code>{status.upper()}</code>\n"
-        txt += f"   Progress: {done}/{total} ({pct}%)\n\n"
+        txt += f"   Status: {status_emoji} <code>{status.upper()}</code>\n"
+        txt += f"   Progress: <code>{_progress_bar(done, total, width=8)}</code>\n\n"
         
-        row = [InlineKeyboardButton(f"{i}", callback_data="noop")]
+        row = []
         if status == "running":
-            row.append(InlineKeyboardButton("⏸ Pause", callback_data=f"ub_pause:{jid}"))
+            row.append(InlineKeyboardButton(f"⏸ Pause [{i}]", callback_data=f"ub_pause:{jid}"))
+            row.append(InlineKeyboardButton(f"🛑 Stop [{i}]", callback_data=f"ub_stop:{jid}"))
         elif status == "paused":
-            row.append(InlineKeyboardButton("▶️ Resume", callback_data=f"ub_resume:{jid}"))
-        row.append(InlineKeyboardButton("🛑 Stop", callback_data=f"ub_stop:{jid}"))
+            row.append(InlineKeyboardButton(f"▶️ Resume [{i}]", callback_data=f"ub_resume:{jid}"))
+            row.append(InlineKeyboardButton(f"🛑 Stop [{i}]", callback_data=f"ub_stop:{jid}"))
+        else:
+            row.append(InlineKeyboardButton(f"▶️ Start [{i}]", callback_data=f"ub_resume:{jid}"))
+            row.append(InlineKeyboardButton(f"🔁 Reset [{i}]", callback_data=f"ub_reset:{jid}"))
+            
+        row.append(InlineKeyboardButton(f"🗑 Delete [{i}]", callback_data=f"ub_del:{jid}"))
         kb.append(row)
         
     kb.append([
         InlineKeyboardButton("🔄 Refresh", callback_data="ub_menu_refresh"),
-        InlineKeyboardButton("➕ Start New", callback_data="ub#bypass")
+        InlineKeyboardButton("➕ Start New Job", callback_data="ub#new")
+    ])
+    kb.append([
+        InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")
     ])
     
     if mid:
@@ -295,7 +360,7 @@ async def _send_bypass_menu(bot, uid, chat_id, mid=None):
     return await bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(kb))
 
 
-@Client.on_message(filters.private & filters.command(['bypass_jobs', 'bypass_menu']))
+@Client.on_message(filters.private & filters.command(['bypass', 'bypass_jobs', 'bypass_menu']))
 @require_feature("url_bypass")
 async def bypass_jobs_cmd(bot, message):
     await _send_bypass_menu(bot, message.from_user.id, message.chat.id)
@@ -305,7 +370,7 @@ async def bypass_menu_refresh_cb(bot, query):
     await query.answer()
     await _send_bypass_menu(bot, query.from_user.id, query.message.chat.id, query.message.id)
 
-@Client.on_callback_query(filters.regex(r'^ub_(pause|resume|stop):(.+)$'))
+@Client.on_callback_query(filters.regex(r'^ub_(pause|resume|stop|reset|del):(.+)$'))
 async def bypass_action_cb(bot, query):
     action, jid = query.matches[0].groups()
     job = await _get_bypass_job(jid)
@@ -331,8 +396,29 @@ async def bypass_action_cb(bot, query):
         
     elif action == "stop":
         await _update_bypass_job(jid, {"status": "stopped"})
-        if jid in _ub_tasks: _ub_tasks[jid].cancel()
+        if jid in _ub_tasks:
+            _ub_tasks[jid].cancel()
+            _ub_tasks.pop(jid, None)
         await query.answer("Job stopped.")
+
+    elif action == "reset":
+        await _update_bypass_job(jid, {"status": "running", "done": 0, "failed": [], "queue": []})
+        if jid in _ub_tasks:
+            _ub_tasks[jid].cancel()
+            _ub_tasks.pop(jid, None)
+        _ub_paused[jid] = asyncio.Event()
+        _ub_paused[jid].set()
+        _ub_tasks[jid] = asyncio.create_task(_ub_run_job(jid))
+        await query.answer("Job reset and restarted.")
+
+    elif action == "del":
+        if jid in _ub_tasks:
+            _ub_tasks[jid].cancel()
+            _ub_tasks.pop(jid, None)
+        if jid in _ub_paused:
+            _ub_paused.pop(jid, None)
+        await _delete_bypass_job(jid)
+        await query.answer("Job deleted.")
         
     await _send_bypass_menu(bot, query.from_user.id, query.message.chat.id, query.message.id)
 
@@ -342,16 +428,17 @@ async def bypass_action_cb(bot, query):
 @require_feature("url_bypass")
 async def bypass_cb(bot, query):
     await query.answer()
+    await _send_bypass_menu(bot, query.from_user.id, query.message.chat.id, query.message.id)
+
+@Client.on_callback_query(filters.regex(r'^ub#new$'))
+@require_feature("url_bypass")
+async def bypass_new_cb(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     chat_id = query.message.chat.id
     try: await query.message.delete()
     except Exception: pass
     await _bypass_flow(bot, user_id, chat_id)
-
-@Client.on_message(filters.private & filters.command('bypass'))
-@require_feature("url_bypass")
-async def bypass_cmd(bot, message):
-    await _bypass_flow(bot, message.from_user.id, message.chat.id)
 
 
 # ── Setup flow ────────────────────────────────────────────────────────────────
@@ -556,7 +643,7 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
         "channel_id": channel_id, "channel_title": channel_title,
         "order": order, "scan_start": scan_start, "scan_end": scan_end,
         "allowed_buttons": allowed_buttons, "pacing_delay": pacing_delay,
-        "done": 0, "failed": [], "queue": []
+        "done": 0, "failed": [], "queue": [], "created_at": time.time()
     }
     await _save_bypass_job(job)
     _ub_paused[job_id] = asyncio.Event()

@@ -163,40 +163,38 @@ async def iter_messages(
     limit = limit if limit else getattr(self, "limit", getattr(self, "last_msg_id", 0))
 
     # 1. Determine REAL upper bound (top_id)
-    if limit > 0 and limit != 10000000:
-        top_id = limit
-    else:
-        # Binary search to find top message ID
-        lo, hi = 1, 9_999_999
-        for _ in range(25):
-            if hi - lo <= BATCH_SIZE:
-                break
-            mid = (lo + hi) // 2
-            try:
-                probe = await self.get_messages(chat_id, [mid])
-                if not isinstance(probe, list): probe = [probe]
-                if any(m and not m.empty for m in probe):
-                    lo = mid
-                else:
-                    hi = mid
-            except Exception as e:
-                import logging
-                err_str = str(e).upper()
-                if "PEER" in err_str or "CHANNEL" in err_str or "ACCESS" in err_str:
-                    logging.getLogger(__name__).error(f"Binary search failed on {chat_id}: {e}")
-                    raise e
+    # Binary search to find top message ID
+    lo, hi = 1, 9_999_999
+    for _ in range(25):
+        if hi - lo <= BATCH_SIZE:
+            break
+        mid = (lo + hi) // 2
+        try:
+            probe = await self.get_messages(chat_id, [mid])
+            if not isinstance(probe, list): probe = [probe]
+            if any(m and not m.empty for m in probe):
+                lo = mid
+            else:
                 hi = mid
-        top_id = hi
+        except Exception as e:
+            import logging
+            err_str = str(e).upper()
+            if "PEER" in err_str or "CHANNEL" in err_str or "ACCESS" in err_str:
+                logging.getLogger(__name__).error(f"Binary search failed on {chat_id}: {e}")
+                raise e
+            hi = mid
+    top_id = hi
 
-    # 2. Determine bounds
-    start_id = max(1, offset if offset > 0 else 1)
-    end_id = top_id
+    # 2. Determine bounds & yield correct counts
+    target_limit = limit if limit > 0 else 10000000
+    skip_count = offset if offset > 0 else 0
+    yielded_count = 0
 
     if not reverse_order:
         # ── Old to New: ascend ──
-        current = start_id
-        while current <= end_id:
-            batch_end_val = min(current + BATCH_SIZE - 1, end_id)
+        current = 1
+        while current <= top_id and yielded_count < target_limit:
+            batch_end_val = min(current + BATCH_SIZE - 1, top_id)
             batch_ids = list(range(current, batch_end_val + 1))
             
             try:
@@ -218,23 +216,20 @@ async def iter_messages(
             valid.sort(key=lambda m: m.id)
             
             for message in valid:
+                if skip_count > 0:
+                    skip_count -= 1
+                    continue
                 yield message
+                yielded_count += 1
+                if yielded_count >= target_limit:
+                    break
                 
             current = batch_end_val + 1
     else:
         # ── New to Old: descend (iter_messages default) ──
-        # (If offset is passed, start from there going downwards)
-        if start_id > 1:
-            # Normal descend starts from top_id
-            start_desc = end_id
-            end_desc = start_id
-        else:
-            start_desc = end_id
-            end_desc = 1
-            
-        current = start_desc
-        while current >= end_desc:
-            batch_start_val = max(current - BATCH_SIZE + 1, end_desc)
+        current = top_id
+        while current >= 1 and yielded_count < target_limit:
+            batch_start_val = max(current - BATCH_SIZE + 1, 1)
             batch_ids = list(range(batch_start_val, current + 1))
             
             try:
@@ -256,7 +251,13 @@ async def iter_messages(
             valid.sort(key=lambda m: m.id, reverse=True)
             
             for message in valid:
+                if skip_count > 0:
+                    skip_count -= 1
+                    continue
                 yield message
+                yielded_count += 1
+                if yielded_count >= target_limit:
+                    break
                 
             current = batch_start_val - 1
 

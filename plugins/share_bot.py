@@ -629,10 +629,11 @@ async def _process_start(client, message):
                             
             except FloodWait as fw:
                 logger.warning(f"FloodWait for {fw.value}s inside share delivery for user {user_id}")
-                try:
-                    import plugins.arya_logger as arya_log
-                    asyncio.create_task(arya_log.log_admin_dm("ShareBot FloodWait", f"Delivery blocked. Got FloodWait for {fw.value}s."))
-                except: pass
+                if fw.value >= 60:
+                    try:
+                        import plugins.arya_logger as arya_log
+                        asyncio.create_task(arya_log.log_admin_dm("ShareBot FloodWait", f"Delivery blocked. Got FloodWait for {fw.value}s."))
+                    except: pass
                 try:
                     await message.reply_text(f"<i>⚠️ Telegram Rate Limit Reached! Waiting {fw.value} seconds to deliver remaining files...</i>")
                 except: pass
@@ -1329,7 +1330,7 @@ async def _process_share_broadcast(client, message):
     
     async def copy_msg(user_id):
         try:
-            await b_msg.copy(chat_id=user_id)
+            await b_msg.copy(chat_id=user_id, reply_markup=b_msg.reply_markup)
             return True, "Success"
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)

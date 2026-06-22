@@ -65,6 +65,14 @@ class Bot(Client):
         except Exception as _rbe:
             logging.warning(f"[Startup] arya_logger.register_bot failed: {_rbe}")
 
+        # Ensure database indexes
+        try:
+            logging.info("[Startup] Ensuring database indexes...")
+            await db.ensure_indexes()
+            logging.info("[Startup] Database indexes verified.")
+        except Exception as _eidx:
+            logging.error(f"[Startup] Index creation failed: {_eidx}")
+
 
         # Check if database URI is default broken one
         if "mongodb+srv://chhjgjkkjhkjhkjh@cluster0.xowzpr4.mongodb.net/" in Config.DATABASE_URI:

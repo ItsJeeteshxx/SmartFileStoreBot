@@ -2983,9 +2983,7 @@ async def main_buttons(user_id=None):
                         callback_data='settings#channels')
            ],[
            InlineKeyboardButton('Aᴜᴅɪᴏ Mᴇʀɢᴇ',
-                        callback_data='mg#audio_list'),
-           InlineKeyboardButton('Vɪᴅᴇᴏ Mᴇʀɢᴇ',
-                        callback_data='mg#video_list')
+                        callback_data='mg#audio_list')
            ],[
            InlineKeyboardButton('Dʟᴠʀ Bᴏᴛ Sᴇᴛᴜᴘ',
                         callback_data='settings#sharebot')

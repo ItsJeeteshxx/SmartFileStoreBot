@@ -1010,4 +1010,24 @@ class Database:
     async def clear_all_deliveries(self, bot_id: str):
         await self.share_deliveries.delete_many({'bot_id': str(bot_id)})
 
+    async def ensure_indexes(self):
+        try:
+            await self.col.create_index("id", unique=True, background=True)
+        except Exception: pass
+        try:
+            await self.bot.create_index("user_id", background=True)
+        except Exception: pass
+        try:
+            await self.chl.create_index("user_id", background=True)
+        except Exception: pass
+        try:
+            await self.db.jobs.create_index("user_id", background=True)
+        except Exception: pass
+        try:
+            await self.db.cleaner_jobs.create_index("user_id", background=True)
+        except Exception: pass
+        try:
+            await self.share_deliveries.create_index("bot_id", background=True)
+        except Exception: pass
+
 db = Database(Config.DATABASE_URI, Config.DATABASE_NAME)

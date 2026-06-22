@@ -57,7 +57,7 @@ async def _cl_get_job(jid: str):
     return await db.db[COLL].find_one({"job_id": jid})
 
 async def _cl_get_all_jobs(uid: int):
-    return [j async for j in db.db[COLL].find({"user_id": uid})]
+    return [j async for j in db.db[COLL].find({"user_id": uid, "status": {"$ne": "completed"}})]
 
 async def _cl_delete_job(jid: str):
     await db.db[COLL].delete_one({"job_id": jid})
@@ -551,10 +551,13 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             await asyncio.sleep(2)
                         except Exception as _re:
                             logger.warning(f"[Cleaner {job_id}] reconnect attempt {attempt+1}: {_re}")
-                    msgs = await asyncio.wait_for(
-                        client.get_messages(from_ch, ids),
-                        timeout=90
-                    )
+                    if not hasattr(client, '_network_lock'):
+                        client._network_lock = asyncio.Lock()
+                    async with client._network_lock:
+                        msgs = await asyncio.wait_for(
+                            client.get_messages(from_ch, ids),
+                            timeout=90
+                        )
                     if not isinstance(msgs, list): msgs = [msgs]
                     for m in msgs:
                         if m and not m.empty:
@@ -640,21 +643,28 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 try:
                     async with _cl_dl_sem:
-                        coro = client.download_media(m, file_name=ipath)
-                        if coro is None:
-                            # Media reference is gone — skip this message silently
-                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (media expired/deleted)")
-                            try:
-                                if os.path.exists(ipath): os.remove(ipath)
-                            except: pass
-                            continue
+                        if not hasattr(client, '_network_lock'):
+                            client._network_lock = asyncio.Lock()
+                        async with client._network_lock:
+                            coro = client.download_media(m, file_name=ipath)
+                            if coro is None:
+                                # Media reference is gone — skip this message silently
+                                logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (media expired/deleted)")
+                                try:
+                                    if os.path.exists(ipath): os.remove(ipath)
+                                except: pass
+                                continue
 
-                        dp = await asyncio.wait_for(coro, timeout=dl_timeout)
+                            dp = await asyncio.wait_for(coro, timeout=dl_timeout)
 
                     if dp and os.path.exists(str(dp)):
+                        _dl_bytes = os.path.getsize(str(dp))
+                        if _dl_bytes == 0:
+                            try: os.remove(str(dp))
+                            except: pass
+                            raise ValueError("File size equals to 0 B")
                         # Track download in global stats (shown in /status)
                         try:
-                            _dl_bytes = os.path.getsize(str(dp))
                             asyncio.create_task(db.update_global_stats(
                                 total_files_downloaded=1, total_data_usage_bytes=_dl_bytes
                             ))
@@ -698,11 +708,18 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             await asyncio.sleep(3)
                             # Retry download once with healed connection
                             async with _cl_dl_sem:
-                                coro2 = client.download_media(m, file_name=ipath)
-                                if coro2 is not None:
-                                    dp2 = await asyncio.wait_for(coro2, timeout=dl_timeout)
-                                    if dp2 and os.path.exists(str(dp2)):
-                                        return m, str(dp2), m_obj, m.id, lbl, ext
+                                if not hasattr(client, '_network_lock'):
+                                    client._network_lock = asyncio.Lock()
+                                async with client._network_lock:
+                                    coro2 = client.download_media(m, file_name=ipath)
+                                    if coro2 is not None:
+                                        dp2 = await asyncio.wait_for(coro2, timeout=dl_timeout)
+                                        if dp2 and os.path.exists(str(dp2)):
+                                            if os.path.getsize(str(dp2)) == 0:
+                                                try: os.remove(str(dp2))
+                                                except: pass
+                                                raise ValueError("File size equals to 0 B")
+                                            return m, str(dp2), m_obj, m.id, lbl, ext
                         except Exception as _re:
                             logger.warning(f"[Cleaner {job_id}] mid={m.id}: reconnect-retry also failed: {_re}")
                         # If retry also fails, still raise so job pauses cleanly
@@ -911,12 +928,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             ff_cmd_retry = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta, deep_clean=deep_clean, force_reencode=True)
                             ok, ff_err = await _ffmpeg_async(ff_cmd_retry)
 
+                    if ok and (not os.path.exists(out_path) or os.path.getsize(out_path) == 0):
+                        ok = False
+                        ff_err = "FFmpeg output file is empty (0 B)"
+
                     if not ok:
                         _ff_skip_phrases = (
                             "invalid audio stream", "no audio", "invalid data",
                             "could not find codec", "decoder not found", "encoder not found",
                             "invalid stream", "no such file", "invalid argument",
                             "moov atom not found", "end of file", "connection refused",
+                            "empty", "0 b", "0 bytes",
                         )
                         _ff_lower = ff_err.lower()
                         if any(p in _ff_lower for p in _ff_skip_phrases):
@@ -1167,6 +1189,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         raise Exception(f"Upload task failed (mid={up_mid}): {up_err}")
 
                 # 2. Kick off CURRENT file upload in background!
+                if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                    raise Exception(f"Upload aborted: output file does not exist or is empty (0 B). Path: {out_path}")
                 out_size = os.path.getsize(out_path)
                 # ALWAYS use Userbot (client) for Cleaner uploads to avoid Main Bot FloodWaits caused by Share Bot
                 bg_up = client
@@ -1200,72 +1224,77 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         for att in range(4):
                             try:
                                 async with _cl_ul_sem:
-                                    if repl_mode:
-                                        edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
-                                        from pyrogram.types import InputMediaAudio, InputMediaVideo
-                                        
-                                        # Rename physical file to enforce file_name for InputMedia since it ignores file_name kwarg
-                                        _ul_dir = os.path.join(os.path.dirname(p_out), f"ul_{job_id}_{c_mid}")
-                                        os.makedirs(_ul_dir, exist_ok=True)
-                                        _real_name = c_file if c_file else f"file_{c_mid}{out_ext}"
-                                        _new_p_out = os.path.join(_ul_dir, _real_name)
-                                        try:
-                                            import shutil
-                                            shutil.move(p_out, _new_p_out)
-                                            p_out = _new_p_out
-                                        except: pass
+                                    if not hasattr(u_cli, '_network_lock'):
+                                        u_cli._network_lock = asyncio.Lock()
+                                    async with u_cli._network_lock:
+                                        if repl_mode:
+                                            edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
+                                            from pyrogram.types import InputMediaAudio, InputMediaVideo
+                                            
+                                            # Rename physical file to enforce file_name for InputMedia since it ignores file_name kwarg
+                                            _ul_dir = os.path.join(os.path.dirname(p_out), f"ul_{job_id}_{c_mid}")
+                                            os.makedirs(_ul_dir, exist_ok=True)
+                                            _real_name = c_file if c_file else f"file_{c_mid}{out_ext}"
+                                            _new_p_out = os.path.join(_ul_dir, _real_name)
+                                            try:
+                                                import shutil
+                                                shutil.move(p_out, _new_p_out)
+                                                p_out = _new_p_out
+                                            except: pass
 
-                                        if job.get("ad_inject_only"):
-                                            # Direct upload + edit — preserve original title/performer
-                                            if is_ff or is_aud:
-                                                _im = InputMediaAudio(p_out, caption=cap,
-                                                    title=c_title or None, performer=art or None)
-                                            elif is_vid:
-                                                _im = InputMediaVideo(p_out, caption=cap)
-                                            else: break
-                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
-                                        else:
-                                            # Normal replace mode: direct file upload → edit
-                                            # NOTE: Previously used "upload to me → file_id → edit"
-                                            # which FAILS for database channels when the file DC does not
-                                            # match the Saved Messages DC, causing MEDIA_EMPTY / silent failures.
-                                            # Direct file path in InputMedia always works regardless of DC.
-                                            if is_ff or is_aud:
-                                                _im = InputMediaAudio(p_out, caption=cap,
-                                                    title=c_title or None, performer=art or None,
-                                                    thumb=thumb)
-                                            elif is_vid:
-                                                _im = InputMediaVideo(p_out, caption=cap, thumb=thumb)
-                                            else: break
-                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
+                                            if job.get("ad_inject_only"):
+                                                # Direct upload + edit — preserve original title/performer
+                                                if is_ff or is_aud:
+                                                    _im = InputMediaAudio(p_out, caption=cap,
+                                                        title=c_title or None, performer=art or None)
+                                                elif is_vid:
+                                                    _im = InputMediaVideo(p_out, caption=cap)
+                                                else: break
+                                                await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
+                                            else:
+                                                # Normal replace mode: direct file upload → edit
+                                                # NOTE: Previously used "upload to me → file_id → edit"
+                                                # which FAILS for database channels when the file DC does not
+                                                # match the Saved Messages DC, causing MEDIA_EMPTY / silent failures.
+                                                # Direct file path in InputMedia always works regardless of DC.
+                                                if is_ff or is_aud:
+                                                    _im = InputMediaAudio(p_out, caption=cap,
+                                                        title=c_title or None, performer=art or None,
+                                                        thumb=thumb)
+                                                elif is_vid:
+                                                    _im = InputMediaVideo(p_out, caption=cap, thumb=thumb)
+                                                else: break
+                                                await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
 
-                                    else:
-                                        if is_ff or is_aud:
-                                            await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
-                                        elif is_vid:
-                                            await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                         else:
-                                            await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
+                                            if is_ff or is_aud:
+                                                await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
+                                            elif is_vid:
+                                                await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
+                                            else:
+                                                await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                     break
                             except FloodWait as fw:
                                 logger.warning(f"[Cleaner bg-up {job_id}] FloodWait {fw.value}s during upload (att={att})")
-                                try:
-                                    import plugins.arya_logger as arya_log
-                                    asyncio.create_task(arya_log.log_admin_dm(
-                                        "Cleaner FloodWait", 
-                                        f"Job {job_id}\nBot/Userbot got FloodWait for {fw.value} seconds."
-                                    ))
-                                except: pass
+                                if fw.value >= 60:
+                                    try:
+                                        import plugins.arya_logger as arya_log
+                                        asyncio.create_task(arya_log.log_admin_dm(
+                                            "Cleaner FloodWait", 
+                                            f"Job {job_id}\nBot/Userbot got FloodWait for {fw.value} seconds."
+                                        ))
+                                    except: pass
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as ue:
-                                try:
-                                    import plugins.arya_logger as arya_log
-                                    asyncio.create_task(arya_log.log_admin_dm(
-                                        "Cleaner Upload Error", 
-                                        f"Job {job_id}\nError: {repr(ue)}"
-                                    ))
-                                except: pass
-                                if att >= 3: return False, str(ue), c_mid
+                                if att >= 3:
+                                    try:
+                                        import plugins.arya_logger as arya_log
+                                        asyncio.create_task(arya_log.log_admin_dm(
+                                            "Cleaner Upload Error", 
+                                            f"Job {job_id}\nError: {repr(ue)}"
+                                        ))
+                                    except: pass
+                                    return False, str(ue), c_mid
                                 logger.warning(f"[Cleaner bg-up {job_id}] retry {att}: {repr(ue)}")
                                 u_cli = client
                                 await asyncio.sleep(3 * (att + 1))
