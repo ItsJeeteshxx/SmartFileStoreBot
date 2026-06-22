@@ -1819,35 +1819,22 @@ async def settings_query(bot, query):
               txt = getattr(msg_obj, "text", None) or cap or "Broadcast message"
               pm_disabled = __import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.DISABLED
 
-              # ── Extract file_id from main bot's message ───────────────────
-              # Telegram file_ids from main bot can be used by delivery bot
-              # to send to users without any download or staging.
-              src_fid = None  # file_id from main bot's message
-              sb_fid  = None  # file_id from first successful delivery bot send (reused after)
-
-              if has_media:
-                  for attr in ("voice","audio","video","animation","video_note","sticker","document","photo"):
-                      obj = getattr(msg_obj, attr, None)
-                      if obj:
-                          src_fid = getattr(obj, "file_id", None)
-                          break
-
               # ── Helper: send media via delivery bot to a target ───────────
               async def _sb_media(target, src):
                   """src = file_id or local path. Returns sent message."""
                   m = msg_obj
-                  if   getattr(m,"voice",      None): return await sb_app.send_voice(target,      voice=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
-                  elif getattr(m,"audio",      None): return await sb_app.send_audio(target,      audio=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
-                  elif getattr(m,"video",      None): return await sb_app.send_video(target,      video=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
-                  elif getattr(m,"animation",  None): return await sb_app.send_animation(target,  animation=src,  caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
-                  elif getattr(m,"video_note", None): return await sb_app.send_video_note(target, video_note=src)
-                  elif getattr(m,"sticker",    None): return await sb_app.send_sticker(target,    sticker=src)
-                  elif getattr(m,"document",   None): return await sb_app.send_document(target,   document=src,   caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
-                  elif getattr(m,"photo",      None): return await sb_app.send_photo(target,      photo=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled)
+                  rm = msg_obj.reply_markup
+                  if   getattr(m,"voice",      None): return await sb_app.send_voice(target,      voice=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled, reply_markup=rm)
+                  elif getattr(m,"audio",      None): return await sb_app.send_audio(target,      audio=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled, reply_markup=rm)
+                  elif getattr(m,"video",      None): return await sb_app.send_video(target,      video=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled, reply_markup=rm)
+                  elif getattr(m,"animation",  None): return await sb_app.send_animation(target,  animation=src,  caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled, reply_markup=rm)
+                  elif getattr(m,"video_note", None): return await sb_app.send_video_note(target, video_note=src, reply_markup=rm)
+                  elif getattr(m,"sticker",    None): return await sb_app.send_sticker(target,    sticker=src, reply_markup=rm)
+                  elif getattr(m,"document",   None): return await sb_app.send_document(target,   document=src,   caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled, reply_markup=rm)
+                  elif getattr(m,"photo",      None): return await sb_app.send_photo(target,      photo=src,      caption=cap, caption_entities=cap_ent, parse_mode=pm_disabled, reply_markup=rm)
                   raise ValueError("Unknown media type")
 
               # ── Pre-download to /tmp if file_id approach fails later ──────
-              # We do this ONCE now, before the loop, so we only download once.
               dl_path = None
               if has_media:
                   try:
@@ -1857,57 +1844,39 @@ async def settings_query(bot, query):
                   except Exception as e:
                       logger.error(f"[Broadcast] pre-download failed: {e}")
 
+              # ── Send the broadcast message to the admin via the delivery bot first to upload/cache it ──
+              sb_msg = None
+              if sb_app:
+                  if has_media:
+                      try:
+                          if dl_path:
+                              sb_msg = await _sb_media(admin_id, dl_path)
+                      except Exception as e:
+                          logger.error(f"[Broadcast] pre-download or upload to admin failed: {e}")
+                  else:
+                      try:
+                          sb_msg = await sb_app.send_message(admin_id, text=txt, entities=txt_ent, parse_mode=pm_disabled, reply_markup=msg_obj.reply_markup)
+                      except Exception as e:
+                          logger.error(f"[Broadcast] text send to admin failed: {e}")
+
               # ── Per-user send ─────────────────────────────────────────────
               async def send_to_user(uid_int):
-                  nonlocal sb_fid, dl_path
-
-                  if not has_media:
-                      # ── Text ──
-                      if sb_app:
-                          return await sb_app.send_message(uid_int, text=txt, entities=txt_ent, parse_mode=pm_disabled)
-                      return await main_bot.copy_message(uid_int, msg_obj.chat.id, msg_obj.id)
-
-                  # ── Media ──
-                  if sb_app:
-                      # Try 1: reuse delivery bot's own file_id (after first successful send)
-                      if sb_fid:
-                          try:
-                              return await _sb_media(uid_int, sb_fid)
-                          except Exception:
-                              sb_fid = None  # reset and try next
-
-                      # Try 2: use main bot's file_id directly with delivery bot
-                      if src_fid:
-                          try:
-                              r = await _sb_media(uid_int, src_fid)
-                              if r:
-                                  # capture delivery bot's file_id for reuse
-                                  for attr in ("voice","audio","video","animation","video_note","sticker","document","photo"):
-                                      obj2 = getattr(r, attr, None)
-                                      if obj2:
-                                          sb_fid = getattr(obj2, "file_id", src_fid)
-                                          break
-                              return r
-                          except Exception as e:
-                              logger.warning(f"[Broadcast] src_fid send failed for {uid_int}: {e}")
-
-                      # Try 3: /tmp file upload on first user, capture sb_fid, then reuse
-                      if dl_path:
-                          try:
-                              r = await _sb_media(uid_int, dl_path)
-                              if r:
-                                  for attr in ("voice","audio","video","animation","video_note","sticker","document","photo"):
-                                      obj2 = getattr(r, attr, None)
-                                      if obj2:
-                                          sb_fid = getattr(obj2, "file_id", None)
-                                          break
-                                  logger.info(f"[Broadcast] /tmp upload to {uid_int} OK, sb_fid captured")
-                              return r
-                          except Exception as e:
-                              logger.error(f"[Broadcast] /tmp send to {uid_int} failed: {e}")
-
+                  nonlocal sb_msg
+                  if uid_int == admin_id and sb_app and sb_msg:
+                      return sb_msg
+                  if sb_app and sb_msg:
+                      try:
+                          return await sb_app.copy_message(
+                              chat_id=uid_int,
+                              from_chat_id=admin_id,
+                              message_id=sb_msg.id,
+                              reply_markup=msg_obj.reply_markup
+                          )
+                      except Exception as e:
+                          logger.warning(f"[Broadcast] copy via sb_app failed for {uid_int}: {e}")
+                  
                   # Fallback: main bot copies directly (always works, appears from main bot)
-                  return await main_bot.copy_message(uid_int, msg_obj.chat.id, msg_obj.id)
+                  return await main_bot.copy_message(uid_int, msg_obj.chat.id, msg_obj.id, reply_markup=msg_obj.reply_markup)
 
               for u in uids:
                   processed += 1
