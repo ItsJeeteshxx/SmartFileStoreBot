@@ -1838,7 +1838,21 @@ async def settings_query(bot, query):
               dl_path = None
               if has_media:
                   try:
-                      _tmp = _tf.gettempdir() + f"/arya_bc_{msg_obj.id}"
+                      ext = ""
+                      m = msg_obj
+                      if getattr(m, "photo", None): ext = ".jpg"
+                      elif getattr(m, "video", None): ext = ".mp4"
+                      elif getattr(m, "audio", None): ext = ".mp3"
+                      elif getattr(m, "voice", None): ext = ".ogg"
+                      elif getattr(m, "animation", None): ext = ".mp4"
+                      elif getattr(m, "video_note", None): ext = ".mp4"
+                      elif getattr(m, "sticker", None): ext = ".webp"
+                      elif getattr(m, "document", None):
+                          fn = getattr(m.document, "file_name", "")
+                          if fn and "." in fn: ext = "." + fn.split(".")[-1]
+                          else: ext = ".bin"
+                      
+                      _tmp = os.path.join(_tf.gettempdir(), f"arya_bc_{msg_obj.id}{ext}")
                       dl_path = await main_bot.download_media(msg_obj, file_name=_tmp)
                       logger.info(f"[Broadcast] pre-downloaded: {dl_path}")
                   except Exception as e:
