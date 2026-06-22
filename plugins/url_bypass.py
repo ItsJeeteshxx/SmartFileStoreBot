@@ -732,47 +732,105 @@ async def _ub_run_job(job_id: str):
             if bot_uname and param:
                 bypassed = short_url
             else:
-                try:
-                    await asyncio.wait_for(ub.send_message(BYPASS_BOT, short_url), timeout=20)
-                except FloodWait as fw:
-                    from plugins.arya_logger import log_admin_dm
-                    asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Send NickBot"))
-                    failed.append((label, f"FloodWait {fw.value}s"))
-                    done += 1
-                    await _update_bypass_job(job_id, {"done": done, "failed": failed})
-                    await asyncio.sleep(fw.value + 1)
-                    continue
-                except Exception as e:
-                    failed.append((label, f"Send failed: {e}"))
-                    done += 1
-                    await _update_bypass_job(job_id, {"done": done, "failed": failed})
-                    await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-                    continue
-        
-                t0 = time.time()
-                for _ in range(60):
-                    await asyncio.sleep(1)
-                    if job_id not in _ub_tasks: break
+                attempt = 0
+                while not bypassed:
+                    # Check if job is stopped or cancelled
+                    job = await _get_bypass_job(job_id)
+                    if not job or job.get("status") in ("stopped", "failed"):
+                        break
+                    if job_id not in _ub_tasks:
+                        break
+
+                    attempt += 1
+                    if attempt > 1:
+                        wait_time = random.randint(180, 300)  # 3-5 minutes wait
+                        for w_sec in range(wait_time):
+                            if job_id not in _ub_tasks: break
+                            
+                            # Check pause state
+                            ev = _ub_paused.get(job_id)
+                            if ev and not ev.is_set(): 
+                                await ev.wait()
+
+                            job = await _get_bypass_job(job_id)
+                            if not job or job.get("status") in ("stopped", "failed"):
+                                break
+
+                            if w_sec % 10 == 0:
+                                await _upd(BOT_INSTANCE, job_id, chat_id,
+                                    f"⚠️ <b>Bypass Bot did not respond!</b>\n"
+                                    f"<b>Link:</b> <code>{done+1} / {total}</code>\n"
+                                    f"<b>Attempt {attempt - 1} failed.</b>\n"
+                                    f"⏳ Retrying the same URL in <code>{wait_time - w_sec}s</code> to prevent gaps...\n\n"
+                                    f"<i>🚫 /bypass_jobs to manage</i>"
+                                )
+                            await asyncio.sleep(1)
+
+                        # Check if job status changed during sleep
+                        job = await _get_bypass_job(job_id)
+                        if not job or job.get("status") in ("stopped", "failed"):
+                            break
+                        if job_id not in _ub_tasks:
+                            break
+
                     try:
-                        async for m in ub.get_chat_history(BYPASS_BOT, limit=5):
-                            ts = m.date.timestamp() if m.date else 0
-                            if ts < t0 - 5: break
-                            c = _parse_bypassed(m.text or m.caption or '')
-                            if c and c != short_url:
-                                bypassed = c; break
-                        if bypassed: break
+                        if not hasattr(ub, '_network_lock'):
+                            ub._network_lock = asyncio.Lock()
+                        async with ub._network_lock:
+                            await asyncio.wait_for(ub.send_message(BYPASS_BOT, short_url), timeout=20)
                     except FloodWait as fw:
                         from plugins.arya_logger import log_admin_dm
-                        asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Check NickBot"))
-                        await asyncio.sleep(fw.value)
+                        if fw.value >= 60:
+                            asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Send NickBot"))
+                        await _upd(BOT_INSTANCE, job_id, chat_id,
+                            f"⏳ <b>FloodWait:</b> Waiting {fw.value}s before retrying to send to bypass bot..."
+                        )
+                        await asyncio.sleep(fw.value + 2)
+                        continue
                     except Exception as e:
-                        logger.warning(f"Error checking NickBot: {e}")
+                        logger.warning(f"[Bypass] Send to NickBot failed (attempt {attempt}): {e}")
+                        await asyncio.sleep(10)
+                        continue
+            
+                    t0 = time.time()
+                    for check_sec in range(60):
+                        await asyncio.sleep(1)
+                        if job_id not in _ub_tasks: break
+                        
+                        job = await _get_bypass_job(job_id)
+                        if not job or job.get("status") in ("stopped", "failed"):
+                            break
+
+                        try:
+                            if not hasattr(ub, '_network_lock'):
+                                ub._network_lock = asyncio.Lock()
+                            async with ub._network_lock:
+                                async for m in ub.get_chat_history(BYPASS_BOT, limit=5):
+                                    ts = m.date.timestamp() if m.date else 0
+                                    if ts < t0 - 5: break
+                                    c = _parse_bypassed(m.text or m.caption or '')
+                                    if c and c != short_url:
+                                        bypassed = c
+                                        break
+                            if bypassed: 
+                                break
+                        except FloodWait as fw:
+                            from plugins.arya_logger import log_admin_dm
+                            if fw.value >= 60:
+                                asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Check NickBot"))
+                            await asyncio.sleep(fw.value)
+                        except Exception as e:
+                            logger.warning(f"Error checking NickBot: {e}")
+
+            # Recheck job after attempting bypass
+            job = await _get_bypass_job(job_id)
+            if not job or job.get("status") in ("stopped", "failed"):
+                break
+            if job_id not in _ub_tasks:
+                break
 
             if not bypassed:
-                failed.append((label, "No bypass reply"))
-                done += 1
-                await _update_bypass_job(job_id, {"done": done, "failed": failed})
-                await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+                # If we broke loop without bypassed (e.g. stopped), continue
                 continue
 
             bot_uname, param = _parse_start(bypassed)
@@ -791,18 +849,52 @@ async def _ub_run_job(job_id: str):
                 f"<i>\u26d4 /bypass_jobs to manage</i>"
             )
 
-            try:
-                await asyncio.wait_for(ub.send_message(bot_uname, f"/start {param}"), timeout=20)
-            except FloodWait as fw:
-                from plugins.arya_logger import log_admin_dm
-                asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, f"URL Bypass Start @{bot_uname}"))
-                failed.append((label, f"FloodWait {fw.value}s"))
-                done += 1
-                await _update_bypass_job(job_id, {"done": done, "failed": failed})
-                await asyncio.sleep(fw.value + 1)
-                continue
-            except Exception as e:
-                failed.append((label, f"/start failed: {e}"))
+            start_ok = False
+            start_attempt = 0
+            while not start_ok:
+                job = await _get_bypass_job(job_id)
+                if not job or job.get("status") in ("stopped", "failed"):
+                    break
+                if job_id not in _ub_tasks:
+                    break
+
+                start_attempt += 1
+                if start_attempt > 1:
+                    await asyncio.sleep(15)
+                    if job_id not in _ub_tasks: break
+
+                try:
+                    if not hasattr(ub, '_network_lock'):
+                        ub._network_lock = asyncio.Lock()
+                    async with ub._network_lock:
+                        await asyncio.wait_for(ub.send_message(bot_uname, f"/start {param}"), timeout=20)
+                    start_ok = True
+                except FloodWait as fw:
+                    from plugins.arya_logger import log_admin_dm
+                    if fw.value >= 60:
+                        asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, f"URL Bypass Start @{bot_uname}"))
+                    await _upd(BOT_INSTANCE, job_id, chat_id,
+                        f"⏳ <b>FloodWait:</b> Waiting {fw.value}s before retrying /start to @{bot_uname}..."
+                    )
+                    await asyncio.sleep(fw.value + 2)
+                except Exception as e:
+                    logger.warning(f"[Bypass] /start failed for @{bot_uname} (attempt {start_attempt}): {e}")
+                    err_str = str(e).lower()
+                    if "username_not_occupied" in err_str or "username_invalid" in err_str or "peer_id_invalid" in err_str:
+                        failed.append((label, f"/start permanent fail: {e}"))
+                        break
+                    if start_attempt >= 5:
+                        failed.append((label, f"/start failed after 5 attempts: {e}"))
+                        break
+
+            # Recheck job state
+            job = await _get_bypass_job(job_id)
+            if not job or job.get("status") in ("stopped", "failed"):
+                break
+            if job_id not in _ub_tasks:
+                break
+
+            if not start_ok:
                 done += 1
                 await _update_bypass_job(job_id, {"done": done, "failed": failed})
                 await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
@@ -817,12 +909,15 @@ async def _ub_run_job(job_id: str):
                 if job_id not in _ub_tasks: break
                 try:
                     nc = 0
-                    async for m in ub.get_chat_history(bot_uname, limit=20):
-                        ts = m.date.timestamp() if m.date else 0
-                        if ts < wait_since: break
-                        if m.media or m.document or m.video or m.audio or m.voice:
-                            nc += 1
-                            if ts > last_file: last_file = ts; got_file = True
+                    if not hasattr(ub, '_network_lock'):
+                        ub._network_lock = asyncio.Lock()
+                    async with ub._network_lock:
+                        async for m in ub.get_chat_history(bot_uname, limit=20):
+                            ts = m.date.timestamp() if m.date else 0
+                            if ts < wait_since: break
+                            if m.media or m.document or m.video or m.audio or m.voice:
+                                nc += 1
+                                if ts > last_file: last_file = ts; got_file = True
                     
                     if nc > files:
                         files = nc
@@ -831,7 +926,8 @@ async def _ub_run_job(job_id: str):
                         
                 except FloodWait as fw:
                     from plugins.arya_logger import log_admin_dm
-                    asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Fetch Files"))
+                    if fw.value >= 60:
+                        asyncio.create_task(log_admin_dm(BOT_INSTANCE, "FloodWait", "Userbot", fw.value, "URL Bypass Fetch Files"))
                     await asyncio.sleep(fw.value)
                 except Exception as e:
                     logger.warning(f"Error fetching files: {e}")
