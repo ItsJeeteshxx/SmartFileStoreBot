@@ -1072,10 +1072,10 @@ async def _process_delivery_button(client, query):
         rz_key = Config.RAZORPAY_KEY
         # Show amount selection panel
         rz_txt = (
-            f"<blockquote><b>" + _sc("support via razorpay") + "</b>\n\n"
-            f"<i>Cards, Net Banking, UPI, Wallets — all accepted!\n"
-            f"International payments also supported.</i>\n\n"
-            f"<b>" + _sc("select an amount to generate your payment link:") + "</b></blockquote>"
+            "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗩𝗜𝗔 𝗥𝗔𝗭𝗢𝗥𝗣𝗔𝗬\n"
+            "▣ Cards, Net Banking, UPI, and Wallets accepted.\n"
+            "◈ International payments are also supported.\n"
+            "◑ Select an amount below to generate your payment link."
         )
         rz_btns = [
             [
@@ -1086,9 +1086,9 @@ async def _process_delivery_button(client, query):
             [
                 InlineKeyboardButton("₹499", callback_data="sbd#pay_rzp#499"),
                 InlineKeyboardButton("₹999", callback_data="sbd#pay_rzp#999"),
-                InlineKeyboardButton(_sc("custom"), callback_data="sbd#pay_rzp#custom"),
+                InlineKeyboardButton("⧉ Custom Amount", callback_data="sbd#pay_rzp#custom"),
             ],
-            [InlineKeyboardButton(_sc("upi instead"), callback_data="sbd#donate")],
+            [InlineKeyboardButton("◈ Use UPI Instead", callback_data="sbd#donate")],
         ]
         try:
             await client.send_message(query.from_user.id, rz_txt, reply_markup=InlineKeyboardMarkup(rz_btns))
