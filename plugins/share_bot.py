@@ -1050,6 +1050,27 @@ async def _process_delivery_button(client, query):
         await query.answer()
         from config import Config
         rz_key = Config.RAZORPAY_KEY
+        rz_secret = Config.RAZORPAY_SECRET
+        if not rz_key or not rz_secret:
+            error_txt = (
+                "◎ 𝗥𝗔𝗭𝗢𝗥𝗣𝗔𝗬 𝗨𝗡𝗔𝗩𝗔𝗜𝗟𝗔𝗕𝗟𝗘\n\n"
+                "▣ Unable to generate a Razorpay payment link at this time.\n\n"
+                "◈ Razorpay keys are not configured.\n\n"
+                "◑ Please use the UPI payment method instead.\n\n"
+                "▸ UPI ID: <code>heyjeetx@naviaxis</code>"
+            )
+            try:
+                await client.send_message(
+                    query.from_user.id,
+                    error_txt,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("◈ Use UPI Instead", callback_data="sbd#donate")
+                    ]])
+                )
+            except Exception:
+                pass
+            return
+
         # Show amount selection panel
         rz_txt = (
             "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗩𝗜𝗔 𝗥𝗔𝗭𝗢𝗥𝗣𝗔𝗬\n\n"
@@ -1164,12 +1185,25 @@ async def _process_delivery_button(client, query):
         except Exception as rz_err:
             logger.error(f"[Razorpay] Link generation failed: {rz_err}")
             # Fallback: show UPI if Razorpay fails
+            err_msg = str(rz_err)
+            if "keys not configured" in err_msg.lower() or "keys not found" in err_msg.lower():
+                err_detail = "Razorpay keys are not configured."
+            else:
+                err_detail = err_msg.strip()
+                if err_detail and not err_detail.endswith('.'):
+                    err_detail += '.'
+
+            error_txt = (
+                "◎ 𝗥𝗔𝗭𝗢𝗥𝗣𝗔𝗬 𝗨𝗡𝗔𝗩𝗔𝗜𝗟𝗔𝗕𝗟𝗘\n\n"
+                "▣ Unable to generate a Razorpay payment link at this time.\n\n"
+                f"◈ {err_detail}\n\n"
+                "◑ Please use the UPI payment method instead.\n\n"
+                "▸ UPI ID: <code>heyjeetx@naviaxis</code>"
+            )
             await gen_msg.edit_text(
-                f"<b>⚠️ Razorpay link generation failed.</b>\n"
-                f"<i>Error: {rz_err}</i>\n\n"
-                f"Please use UPI instead: <code>heyjeetx@naviaxis</code>",
+                error_txt,
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("💳 " + _sc("try upi instead"), callback_data="sbd#donate")
+                    InlineKeyboardButton("◈ Use UPI Instead", callback_data="sbd#donate")
                 ]])
             )
 
