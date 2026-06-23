@@ -986,11 +986,10 @@ async def _process_delivery_button(client, query):
     elif cmd == "donate":
         await query.answer()
         sup_text = (
-            "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗔𝗥𝗬𝗔\n"
-            "▣ Your support helps keep our servers running and allows us to continue delivering high-quality content.\n"
-            "◈ Direct UPI Details\n"
-            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
-            "▸ Name: Jeetesh Meena\n"
+            "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗔𝗥𝗬𝗔\n\n"
+            "▣ Your support helps keep our servers running and allows us to continue delivering high-quality content.\n\n"
+            "◈ Direct UPI Details\n\n"
+            "▸ UPI ID: <code>heyjeetx@naviaxis</code> ▸ Name: Jeetesh Meena\n\n"
             "◑ Select an amount below to generate a direct payment QR code."
         )
         buttons = [
@@ -1025,10 +1024,8 @@ async def _process_delivery_button(client, query):
             am_val = f"₹{am}"
             
         caption = (
-            "◎ 𝗦𝗖𝗔𝗡 𝗢𝗥 𝗧𝗔𝗣 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧\n"
-            f"▸ Amount: {am_val}\n"
-            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
-            "▸ Name: Jeetesh Meena\n"
+            "◎ 𝗦𝗖𝗔𝗡 𝗢𝗥 𝗧𝗔𝗣 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧\n\n"
+            f"▸ Amount: {am_val} ▸ UPI ID: <code>heyjeetx@naviaxis</code> ▸ Name: Jeetesh Meena\n\n"
             "◑ Scan the QR code above or use the payment options below to complete your support."
         )
         
@@ -1052,9 +1049,9 @@ async def _process_delivery_button(client, query):
         rz_key = Config.RAZORPAY_KEY
         # Show amount selection panel
         rz_txt = (
-            "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗩𝗜𝗔 𝗥𝗔𝗭𝗢𝗥𝗣𝗔𝗬\n"
-            "▣ Cards, Net Banking, UPI, and Wallets accepted.\n"
-            "◈ International payments are also supported.\n"
+            "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗩𝗜𝗔 𝗥𝗔𝗭𝗢𝗥𝗣𝗔𝗬\n\n"
+            "▣ Cards, Net Banking, UPI, and Wallets accepted.\n\n"
+            "◈ International payments are also supported.\n\n"
             "◑ Select an amount below to generate your payment link."
         )
         rz_btns = [
