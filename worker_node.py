@@ -23,10 +23,15 @@ Environment Variables:
 
 import os
 import asyncio
+import sys
 import logging
 import time
 import platform
 import socket
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 from bot import Bot
 from database import db
