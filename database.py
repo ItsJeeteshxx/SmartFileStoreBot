@@ -1045,6 +1045,7 @@ class Database:
         try:
             import logging
             import time
+            from pymongo import UpdateOne
             mig_logger = logging.getLogger(__name__)
             
             # 1. Migrate seen_users_{bot_id} documents from stats collection
@@ -1054,23 +1055,23 @@ class Database:
                 user_ids = doc.get("ids", [])
                 if not bot_id or not user_ids:
                     continue
-                mig_logger.info(f"[Migration] Migrating {len(user_ids)} users from old {doc_id} stats document...")
+                mig_logger.info(f"[Migration] Migrating {len(user_ids)} users from old {doc_id} stats document via bulk_write...")
                 
-                inserted_count = 0
-                for uid in user_ids:
-                    try:
-                        await self.share_users.update_one(
-                            {'bot_id': str(bot_id), 'user_id': int(uid)},
-                            {'$setOnInsert': {'first_seen': time.time()}},
-                            upsert=True
-                        )
-                        inserted_count += 1
-                    except Exception:
-                        pass
+                requests = [
+                    UpdateOne(
+                        {'bot_id': str(bot_id), 'user_id': int(uid)},
+                        {'$setOnInsert': {'first_seen': time.time()}},
+                        upsert=True
+                    ) for uid in user_ids
+                ]
+                
+                for i in range(0, len(requests), 1000):
+                    batch = requests[i:i+1000]
+                    await self.share_users.bulk_write(batch, ordered=False)
                 
                 # Delete the old document since it's fully migrated
                 await self.stats.delete_one({"_id": doc_id})
-                mig_logger.info(f"[Migration] Successfully migrated {inserted_count} users and deleted old {doc_id}.")
+                mig_logger.info(f"[Migration] Successfully migrated {len(user_ids)} users and deleted old {doc_id}.")
                 
             # 2. Migrate bot_{bot_id} config 'users' array from share_config collection
             async for doc in self.share_config.find({"_id": {"$regex": "^bot_"}, "users": {"$exists": True}}):
@@ -1082,23 +1083,23 @@ class Database:
                 user_ids = doc.get("users", [])
                 if not user_ids:
                     continue
-                mig_logger.info(f"[Migration] Migrating {len(user_ids)} users from old {doc_id} config document...")
+                mig_logger.info(f"[Migration] Migrating {len(user_ids)} users from old {doc_id} config document via bulk_write...")
                 
-                inserted_count = 0
-                for uid in user_ids:
-                    try:
-                        await self.share_users.update_one(
-                            {'bot_id': str(bot_id), 'user_id': int(uid)},
-                            {'$setOnInsert': {'first_seen': time.time()}},
-                            upsert=True
-                        )
-                        inserted_count += 1
-                    except Exception:
-                        pass
+                requests = [
+                    UpdateOne(
+                        {'bot_id': str(bot_id), 'user_id': int(uid)},
+                        {'$setOnInsert': {'first_seen': time.time()}},
+                        upsert=True
+                    ) for uid in user_ids
+                ]
+                
+                for i in range(0, len(requests), 1000):
+                    batch = requests[i:i+1000]
+                    await self.share_users.bulk_write(batch, ordered=False)
                 
                 # Unset the users array so it doesn't bloat the config doc
                 await self.share_config.update_one({"_id": doc_id}, {"$unset": {"users": ""}})
-                mig_logger.info(f"[Migration] Successfully migrated {inserted_count} users and cleaned old 'users' field from {doc_id}.")
+                mig_logger.info(f"[Migration] Successfully migrated {len(user_ids)} users and cleaned old 'users' field from {doc_id}.")
                 
         except Exception as _m_err:
             import logging
