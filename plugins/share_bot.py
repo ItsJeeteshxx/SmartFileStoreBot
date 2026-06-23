@@ -1001,12 +1001,12 @@ async def _process_delivery_button(client, query):
     elif cmd == "donate":
         await query.answer()
         sup_text = (
-            f"<blockquote>💖 <b>" + _sc("support arya bot") + "</b>\n\n"
-            f"<i>Your support keeps our servers running and allows us to deliver uninterrupted, high-quality content.</i>\n\n"
-            f"<b>💳 " + _sc("direct upi details:") + "</b>\n"
-            f"<b>‣  " + _sc("upi id:") + "</b>  <code>heyjeetx@naviaxis</code>\n"
-            f"<b>‣  " + _sc("name:") + "</b>  Jeetesh Meena\n\n"
-            f"<b>" + _sc("please choose an amount below to generate a direct payment qr code!") + "</b></blockquote>"
+            "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗔𝗥𝗬𝗔\n"
+            "▣ Your support helps keep our servers running and allows us to continue delivering high-quality content.\n"
+            "◈ Direct UPI Details\n"
+            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
+            "▸ Name: Jeetesh Meena\n"
+            "◑ Select an amount below to generate a direct payment QR code."
         )
         buttons = [
             [
@@ -1016,10 +1016,10 @@ async def _process_delivery_button(client, query):
             ],
             [
                 InlineKeyboardButton("₹500", callback_data="sbd#pay_upi#500"),
-                InlineKeyboardButton(_sc("custom amount"), callback_data="sbd#pay_upi#custom")
+                InlineKeyboardButton("⧉ Custom Amount", callback_data="sbd#pay_upi#custom")
             ],
             [
-                InlineKeyboardButton(_sc("pay via razorpay"), callback_data="sbd#razorpay")
+                InlineKeyboardButton("◈ Pay via Razorpay", callback_data="sbd#razorpay")
             ]
         ]
         try:
@@ -1034,22 +1034,17 @@ async def _process_delivery_button(client, query):
         
         if am == "custom":
             upi_uri = "upi://pay?pa=heyjeetx@naviaxis&pn=Jeetesh%20Meena&cu=INR"
-            am_txt = "<code>Any Custom Amount</code>"
-            instruction_txt = (
-                f"<i>Scan the QR Code above, or use the direct deep-link below.\n"
-                f"For Custom Amounts, your Payment App will automatically prompt you to enter the amount you wish to contribute!</i>"
-            )
+            am_val = "Custom Amount"
         else:
             upi_uri = f"upi://pay?pa=heyjeetx@naviaxis&pn=Jeetesh%20Meena&am={am}&cu=INR"
-            am_txt = f"<code>₹{am}</code>"
-            instruction_txt = f"<i>Scan the exact ₹{am} QR Code above, or use the direct deep-link below:</i>"
+            am_val = f"₹{am}"
             
         caption = (
-            f"<b>📱 {_sc('scan or tap to support')}</b>\n\n"
-            f"<b>‣  {_sc('amount:')}</b>  {am_txt}\n"
-            f"<b>‣  {_sc('upi id:')}</b>  <code>heyjeetx@naviaxis</code>\n"
-            f"<b>‣  {_sc('name:')}</b>  Jeetesh Meena\n\n"
-            f"{instruction_txt}"
+            "◎ 𝗦𝗖𝗔𝗡 𝗢𝗥 𝗧𝗔𝗣 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧\n"
+            f"▸ Amount: {am_val}\n"
+            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
+            "▸ Name: Jeetesh Meena\n"
+            "◑ Scan the QR code above or use the payment options below to complete your support."
         )
         
         import urllib.parse
@@ -1057,7 +1052,7 @@ async def _process_delivery_button(client, query):
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_uri}"
         
         buttons = [
-            [InlineKeyboardButton(_sc("pay via razorpay instead"), callback_data="sbd#razorpay")]
+            [InlineKeyboardButton("◈ Pay via Razorpay Instead", callback_data="sbd#razorpay")]
         ]
         
         try:
