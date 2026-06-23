@@ -989,7 +989,8 @@ async def _process_delivery_button(client, query):
             "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗔𝗥𝗬𝗔\n\n"
             "▣ Your support helps keep our servers running and allows us to continue delivering high-quality content.\n\n"
             "◈ Direct UPI Details\n\n"
-            "▸ UPI ID: <code>heyjeetx@naviaxis</code> ▸ Name: Jeetesh Meena\n\n"
+            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
+            "▸ Name: Jeetesh Meena\n\n"
             "◑ Select an amount below to generate a direct payment QR code."
         )
         buttons = [
@@ -1025,7 +1026,9 @@ async def _process_delivery_button(client, query):
             
         caption = (
             "◎ 𝗦𝗖𝗔𝗡 𝗢𝗥 𝗧𝗔𝗣 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧\n\n"
-            f"▸ Amount: {am_val} ▸ UPI ID: <code>heyjeetx@naviaxis</code> ▸ Name: Jeetesh Meena\n\n"
+            f"▸ Amount: {am_val}\n"
+            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
+            "▸ Name: Jeetesh Meena\n\n"
             "◑ Scan the QR code above or use the payment options below to complete your support."
         )
         
