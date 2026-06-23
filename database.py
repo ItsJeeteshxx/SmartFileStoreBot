@@ -30,6 +30,7 @@ class Database:
         self.premium_bans = self.db.premium_bans
         self.premium_ban_activity = self.db.premium_ban_activity
         self.share_deliveries = self.db.share_deliveries
+        self.share_users = self.db.share_users
         
     async def set_share_bot_token(self, token: str):
         # Migrated: now handles multiple bots via array push, preserving backwards compatibility for singles initially if desired, or just override.
@@ -231,14 +232,17 @@ class Database:
     async def add_share_bot_user(self, bot_id: str, user_id: int):
         """Track that this user has used this share bot."""
         if not bot_id: return
-        await self.col.update_one(
-            {'id': user_id},
-            {
-                '$addToSet': {'used_share_bots': bot_id},
-                '$set': {'id': user_id}  # ensure document structure
-            },
-            upsert=True
-        )
+        try:
+            await self.col.update_one(
+                {'id': int(user_id)},
+                {
+                    '$addToSet': {'used_share_bots': str(bot_id)},
+                    '$set': {'id': int(user_id)}
+                },
+                upsert=True
+            )
+        except Exception:
+            pass
 
     # Per-bot fetching media (GIF/image/video shown while delivering files)
     async def get_bot_fetching_media(self, bot_id: str) -> list:
@@ -322,14 +326,19 @@ class Database:
     # Per-bot Users Tracker
     async def add_share_bot_user(self, bot_id: str, user_id: int):
         if not bot_id: return
-        await self.share_config.update_one(
-            {'_id': f'bot_{bot_id}'},
-            {'$addToSet': {'users': user_id}},
-            upsert=True
-        )
+        import time
+        try:
+            await self.share_users.update_one(
+                {'bot_id': str(bot_id), 'user_id': int(user_id)},
+                {'$setOnInsert': {'first_seen': time.time()}},
+                upsert=True
+            )
+        except Exception:
+            pass
 
     async def get_share_bot_users(self, bot_id: str) -> list:
-        return (await self._bot_cfg(bot_id)).get('users', [])
+        cursor = self.share_users.find({'bot_id': str(bot_id)})
+        return [doc['user_id'] async for doc in cursor]
 
     # save_share_link — access_hash allows Share Bot to rebuild peer cache at delivery time
     async def save_share_link(self, uuid_str: str, message_ids: list, source_chat,
@@ -975,17 +984,16 @@ class Database:
         """
         Record that user_id has started bot_id for the first time.
         Returns True if this IS a new user for this specific bot, False if already seen.
-        Uses a lightweight set stored per-bot to avoid a full document scan.
         """
-        doc = await self.stats.find_one({'_id': f'seen_users_{bot_id}'})
-        if doc and int(user_id) in doc.get('ids', []):
-            return False   # already seen on this bot
-        await self.stats.update_one(
-            {'_id': f'seen_users_{bot_id}'},
-            {'$addToSet': {'ids': int(user_id)}},
+        if not bot_id:
+            return False
+        import time
+        res = await self.share_users.update_one(
+            {'bot_id': str(bot_id), 'user_id': int(user_id)},
+            {'$setOnInsert': {'first_seen': time.time()}},
             upsert=True
         )
-        return True   # first time on this bot
+        return bool(res.upserted_id)
 
     # ── Share Bot Delivery Tracker (For Purging) ──────────────────────────────
     async def track_delivery(self, bot_id: str, user_id: int, msg_ids: list):
@@ -1029,5 +1037,71 @@ class Database:
         try:
             await self.share_deliveries.create_index("bot_id", background=True)
         except Exception: pass
+        try:
+            await self.share_users.create_index([("bot_id", 1), ("user_id", 1)], unique=True, background=True)
+        except Exception: pass
+
+        # Self-migration routine: migrate old seen_users_* and bot_* configs to the new share_users collection
+        try:
+            import logging
+            import time
+            mig_logger = logging.getLogger(__name__)
+            
+            # 1. Migrate seen_users_{bot_id} documents from stats collection
+            async for doc in self.stats.find({"_id": {"$regex": "^seen_users_"}}):
+                doc_id = doc.get("_id", "")
+                bot_id = doc_id.replace("seen_users_", "", 1)
+                user_ids = doc.get("ids", [])
+                if not bot_id or not user_ids:
+                    continue
+                mig_logger.info(f"[Migration] Migrating {len(user_ids)} users from old {doc_id} stats document...")
+                
+                inserted_count = 0
+                for uid in user_ids:
+                    try:
+                        await self.share_users.update_one(
+                            {'bot_id': str(bot_id), 'user_id': int(uid)},
+                            {'$setOnInsert': {'first_seen': time.time()}},
+                            upsert=True
+                        )
+                        inserted_count += 1
+                    except Exception:
+                        pass
+                
+                # Delete the old document since it's fully migrated
+                await self.stats.delete_one({"_id": doc_id})
+                mig_logger.info(f"[Migration] Successfully migrated {inserted_count} users and deleted old {doc_id}.")
+                
+            # 2. Migrate bot_{bot_id} config 'users' array from share_config collection
+            async for doc in self.share_config.find({"_id": {"$regex": "^bot_"}, "users": {"$exists": True}}):
+                doc_id = doc.get("_id", "")
+                bot_id = doc_id.replace("bot_", "", 1)
+                # Ignore stats docs like seen_users if any got here
+                if bot_id.startswith("seen_users_") or not bot_id:
+                    continue
+                user_ids = doc.get("users", [])
+                if not user_ids:
+                    continue
+                mig_logger.info(f"[Migration] Migrating {len(user_ids)} users from old {doc_id} config document...")
+                
+                inserted_count = 0
+                for uid in user_ids:
+                    try:
+                        await self.share_users.update_one(
+                            {'bot_id': str(bot_id), 'user_id': int(uid)},
+                            {'$setOnInsert': {'first_seen': time.time()}},
+                            upsert=True
+                        )
+                        inserted_count += 1
+                    except Exception:
+                        pass
+                
+                # Unset the users array so it doesn't bloat the config doc
+                await self.share_config.update_one({"_id": doc_id}, {"$unset": {"users": ""}})
+                mig_logger.info(f"[Migration] Successfully migrated {inserted_count} users and cleaned old 'users' field from {doc_id}.")
+                
+        except Exception as _m_err:
+            import logging
+            logging.getLogger(__name__).error(f"[Migration] Exception in user migration: {_m_err}")
 
 db = Database(Config.DATABASE_URI, Config.DATABASE_NAME)

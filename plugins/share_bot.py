@@ -39,6 +39,14 @@ _JR_TTL = 864000          # 10 days
 _abuse_last_delivery: dict = {}   # { user_id: float }
 _abuse_strikes: dict       = {}   # { user_id: int }
 
+# Channel health cache: tracks unresolvable/invalid force-subscribe channels
+# Format: { chat_id_int: { "status": "invalid", "expires": timestamp } }
+_channel_health_cache: dict = {}
+
+# Anti-abuse configuration cache: caches the config to avoid redundant database calls on every start
+_anti_abuse_config_cache: dict = {}
+_ANTI_ABUSE_CACHE_TTL = 60  # Cache anti-abuse configuration for 1 minute
+
 
 async def _check_and_record_rapid_request(client, message, user_id: int, bot_id: str) -> bool:
     """
@@ -55,10 +63,19 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
     import plugins.arya_logger as _log
 
     # ── Master switch: skip everything if Anti-Abuse is disabled ────────────
-    try:
-        abuse_cfg = await db.get_anti_abuse_config()
-    except Exception:
-        abuse_cfg = {'enabled': True, 'cooldown_secs': _Cfg.ABUSE_COOLDOWN_SECS, 'max_strikes': _Cfg.ABUSE_MAX_STRIKES}
+    now_time = _t.time()
+    cached_cfg = _anti_abuse_config_cache.get('cfg')
+    cached_ts = _anti_abuse_config_cache.get('ts', 0.0)
+    
+    if cached_cfg and (now_time - cached_ts) < _ANTI_ABUSE_CACHE_TTL:
+        abuse_cfg = cached_cfg
+    else:
+        try:
+            abuse_cfg = await db.get_anti_abuse_config()
+            _anti_abuse_config_cache['cfg'] = abuse_cfg
+            _anti_abuse_config_cache['ts'] = now_time
+        except Exception:
+            abuse_cfg = {'enabled': True, 'cooldown_secs': _Cfg.ABUSE_COOLDOWN_SECS, 'max_strikes': _Cfg.ABUSE_MAX_STRIKES}
 
     if not abuse_cfg.get('enabled', True):
         return False   # Anti-Abuse is OFF — allow all requests without any check
@@ -288,35 +305,67 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
         
         ch_id_int = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
         cache_key = f"{user_id}_{ch_id_int}"
+        
+        # Check channel health cache first
+        if ch_id_int in _channel_health_cache:
+            health = _channel_health_cache[ch_id_int]
+            if health['status'] == 'invalid' and now < health['expires']:
+                ch_copy = dict(ch)
+                ch_copy['never_joined'] = True
+                return ch_copy
+
         if cache_key in _fsub_user_cache and _fsub_user_cache[cache_key] > now:
             return None
 
         member = None
+        is_channel_invalid = False
+        
         # Try checking membership via main bot first (highly cached, admin of FSub channels)
         if BOT_INSTANCE and getattr(BOT_INSTANCE, "me", None):
             try:
                 member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
             except (PeerIdInvalid, ChannelInvalid):
                 try:
-                    await safe_resolve_peer(BOT_INSTANCE, chat_id)
-                    member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+                    resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id)
+                    if resolved:
+                        member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+                    else:
+                        is_channel_invalid = True
+                except (PeerIdInvalid, ChannelInvalid):
+                    is_channel_invalid = True
                 except Exception:
                     pass
             except Exception:
                 pass
 
         # Fallback to delivery bot client if main bot failed or was unavailable
-        if member is None:
+        if member is None and not is_channel_invalid:
             try:
                 member = await client.get_chat_member(ch_id_int, user_id)
             except (PeerIdInvalid, ChannelInvalid):
                 try:
-                    await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
-                    member = await client.get_chat_member(ch_id_int, user_id)
+                    resolved = await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
+                    if resolved:
+                        member = await client.get_chat_member(ch_id_int, user_id)
+                    else:
+                        is_channel_invalid = True
+                except (PeerIdInvalid, ChannelInvalid):
+                    is_channel_invalid = True
                 except Exception:
                     pass
             except Exception:
                 pass
+
+        if is_channel_invalid:
+            # Cache the invalid status for 5 minutes
+            _channel_health_cache[ch_id_int] = {
+                'status': 'invalid',
+                'expires': now + 300
+            }
+            logger.error(f"FSub check: Channel {ch_id_int} is unresolvable. Caching invalid status for 5 minutes.")
+            ch_copy = dict(ch)
+            ch_copy['never_joined'] = True
+            return ch_copy
 
         try:
             if member is None:
@@ -440,18 +489,21 @@ async def _process_start(client, message):
         if await _check_and_record_rapid_request(client, message, user_id, bot_id):
             return
 
-    # Track user for stats and broadcast; detect first-ever start for new-user log
-    _was_new_user = False
-    try:
-        _was_new_user = await db.add_share_bot_seen_user(bot_id, user_id)
-    except Exception:
-        pass
-    await db.add_share_bot_user(bot_id, user_id)
-    if _was_new_user:
-        import asyncio as _aio, plugins.arya_logger as _log
-        u_name = (message.from_user.first_name or str(user_id)) if message.from_user else str(user_id)
-        b_name = client.me.first_name if getattr(client, 'me', None) else "DeliveryBot"
-        _aio.create_task(_log.log_new_user(user_id, u_name, b_name, bot_id or ""))
+    # Track user for stats and broadcast; detect first-ever start for new-user log in background
+    async def _track_user_background():
+        try:
+            _was_new_user = await db.add_share_bot_seen_user(bot_id, user_id)
+            # Also record user usage stats
+            await db.add_share_bot_user(bot_id, user_id)
+            if _was_new_user:
+                import plugins.arya_logger as _log
+                u_name = (message.from_user.first_name or str(user_id)) if message.from_user else str(user_id)
+                b_name = client.me.first_name if getattr(client, 'me', None) else "DeliveryBot"
+                await _log.log_new_user(user_id, u_name, b_name, bot_id or "")
+        except Exception:
+            pass
+
+    asyncio.create_task(_track_user_background())
 
     # Plain /start — show welcome
     if len(args) < 2:
