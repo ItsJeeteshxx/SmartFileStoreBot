@@ -310,9 +310,33 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
         if ch_id_int in _channel_health_cache:
             health = _channel_health_cache[ch_id_int]
             if health['status'] == 'invalid' and now < health['expires']:
-                ch_copy = dict(ch)
-                ch_copy['never_joined'] = True
-                return ch_copy
+                if is_jr:
+                    try:
+                        ch_id_for_query = int(ch_id_int)
+                    except (ValueError, TypeError):
+                        ch_id_for_query = ch_id_int
+                        
+                    jr_query = {"user_id": int(user_id)}
+                    if isinstance(ch_id_for_query, int):
+                        jr_query["$or"] = [{"chat_id": ch_id_for_query}, {"chat_id": str(ch_id_for_query)}]
+                    else:
+                        cln = str(ch_id_for_query).lstrip("@").lower()
+                        jr_query["$or"] = [{"chat_id": ch_id_for_query}, {"chat_id": str(ch_id_for_query)}, {"username": cln}]
+
+                    jr_doc = await db.db["pending_jrs"].find_one(jr_query)
+                    
+                    if jr_doc and (now - jr_doc.get("timestamp", 0) < _JR_TTL):
+                        _fsub_user_cache[cache_key] = now + 120
+                        logger.info(f"FSub: JR grant for user {user_id} in cached invalid channel {ch_id_int}")
+                        return None
+                    else:
+                        ch_copy = dict(ch)
+                        ch_copy['needs_request'] = True
+                        return ch_copy
+                else:
+                    ch_copy = dict(ch)
+                    ch_copy['never_joined'] = True
+                    return ch_copy
 
         if cache_key in _fsub_user_cache and _fsub_user_cache[cache_key] > now:
             return None
@@ -357,12 +381,12 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                 pass
 
         if is_channel_invalid:
-            # Cache the invalid status for 5 minutes
+            # Cache the invalid status for 30 seconds
             _channel_health_cache[ch_id_int] = {
                 'status': 'invalid',
-                'expires': now + 300
+                'expires': now + 30
             }
-            logger.error(f"FSub check: Channel {ch_id_int} is unresolvable. Caching invalid status for 5 minutes.")
+            logger.error(f"FSub check: Channel {ch_id_int} is unresolvable. Caching invalid status for 30 seconds.")
             ch_copy = dict(ch)
             ch_copy['never_joined'] = True
             return ch_copy
