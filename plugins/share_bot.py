@@ -698,17 +698,23 @@ async def _process_start(client, message):
         if del_tpl:
             txt = format_msg(del_tpl, message.from_user).replace("{time}", del_str)
         else:
+            SMALLCAPS_MAP = {
+                'a': 'ᴀ', 'b': 'ʙ', 'c': 'ᴄ', 'd': 'ᴅ', 'e': 'ᴇ', 'f': 'ꜰ', 'g': 'ɢ', 'h': 'ʜ',
+                'i': 'ɪ', 'j': 'ᴊ', 'k': 'ᴋ', 'l': 'ʟ', 'm': 'ᴍ', 'n': 'ɴ', 'o': 'ᴏ', 'p': 'ᴘ',
+                'q': 'ǫ', 'r': 'ʀ', 's': 'ꜱ', 't': 'ᴛ', 'u': 'ᴜ', 'v': 'ᴠ', 'w': 'ᴡ', 'x': 'x',
+                'y': 'ʏ', 'z': 'ᴢ'
+            }
+            del_str_sc = "".join(SMALLCAPS_MAP.get(c.lower(), c) for c in del_str)
             txt = (
-                f"<b>‣ Iᴍᴘᴏʀᴛᴀɴᴛ:</b> <code>{total}</code> <b>ꜰɪʟᴇ(ꜱ) ᴅᴇʟɪᴠᴇʀᴇᴅ!</b>\n\n"
-                f"<i>⚠️ Due to copyright, all messages will auto-delete after <b>{del_str}</b>. "
-                f"To re-access, simply click the same link button again.{fail_note}</i>\n\n"
-                f"<blockquote>💡 <b>Tɪᴘ:</b> If any files are missing or you need a specific episode, "
-                f"tap <b>S. Cʜᴀᴛ</b> below. For bot issues or technical problems, "
-                f"use the <b>Aʀʏᴀ Hᴇʟᴘ</b> button.</blockquote>"
+                f"◎ 𝗜𝗠𝗣𝗢𝗥𝗧𝗔𝗡𝗧: {total} FILE(S) DELIVERED!\n"
+                f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ {del_str_sc}.\n"
+                f"◑ To access them again, simply open the same link button.{fail_note}\n"
+                f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n"
+                f"⧉ Having trouble with the bot? Tap \"Arya Help\" below."
             )
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Aʀʏᴀ Hᴇʟᴘ", url="https://t.me/AryaHelpTG"),
-            InlineKeyboardButton("S. Cʜᴀᴛ", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
+            InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
+            InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         notice = await message.reply_text(txt, reply_markup=kb_help)
         asyncio.create_task(
@@ -718,15 +724,14 @@ async def _process_start(client, message):
         suc_tpl = (await db.get_share_bot_text(bot_id, "success_msg") if bot_id else "") or \
                   await db.get_share_text("success_msg", "")
         txt = (format_msg(suc_tpl, message.from_user) if suc_tpl
-               else f"<b>‣ Iᴍᴘᴏʀᴛᴀɴᴛ:</b> <code>{total}</code> <b>ꜰɪʟᴇ(ꜱ) ᴅᴇʟɪᴠᴇʀᴇᴅ!</b>\n\n"
-                    f"<i>⚠️ Due to copyright, all messages will auto-delete after <b>3 hours</b>. "
-                    f"To re-access, simply click the same link button again.{fail_note}</i>\n\n"
-                    f"<blockquote>💡 <b>Tɪᴘ:</b> If any files are missing or you need a specific episode, "
-                    f"tap <b>S. Cʜᴀᴛ</b> below. For bot issues or technical problems, "
-                    f"use the <b>Aʀʏᴀ Hᴇʟᴘ</b> button.</blockquote>")
+               else f"◎ 𝗜𝗠𝗣𝗢𝗥𝗧𝗔𝗡𝗧: {total} FILE(S) DELIVERED!\n"
+                    f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ 3 ʜᴏᴜʀꜱ.\n"
+                    f"◑ To access them again, simply open the same link button.{fail_note}\n"
+                    f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n"
+                    f"⧉ Having trouble with the bot? Tap \"Arya Help\" below.")
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Aʀʏᴀ Hᴇʟᴘ", url="https://t.me/AryaHelpTG"),
-            InlineKeyboardButton("S. Cʜᴀᴛ", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
+            InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
+            InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         await message.reply_text(txt, reply_markup=kb_help)
 
