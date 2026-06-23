@@ -748,40 +748,35 @@ async def _process_start(client, message):
     pref = await db.get_share_bot_text(bot_id, "donation_lang") if bot_id else "both"
 
     if pref != "off":
-        en_txt = (
-            f"<blockquote expandable>"
-            f"Thank you for using our service! Your files have been successfully delivered. "
-            f"These links are permanent and never expire — you can simply tap the same button anytime "
-            f"to re-access your files instantly.\n\n"
-            f"If you enjoy our platform and want us to keep delivering amazing stories, "
-            f"please consider supporting us with a small donation. Every contribution helps us maintain "
-            f"our servers and expand our library."
-            f"</blockquote>"
-        )
-        hi_txt = (
-            f"<blockquote expandable>"
-            f"हमारी सेवा का उपयोग करने के लिए आपका धन्यवाद! आपकी फाइलें सुगमता से डिलीवर हो गई हैं। "
-            f"ये लिंक कभी expire नहीं होते — आप भविष्य में कभी भी उसी बटन पर क्लिक करके अपनी फाइलें "
-            f"दोबारा प्राप्त कर सकते हैं।\n\n"
-            f"अगर आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर उत्कृष्ट कहानियाँ "
-            f"लाते रहें, तो कृपया हमें donation देकर support करें। आपका सहयोग हमारे सर्वर "
-            f"और सेवाओं को बेहतर बनाने में अत्यंत सहायक है।"
-            f"</blockquote>"
-        )
-        
-        if pref == "en":
-            don_body = en_txt
-        elif pref == "hi":
-            don_body = hi_txt
-        else:
-            don_body = en_txt + hi_txt
+        parts = []
+        if pref in ("en", "both"):
+            parts.append(
+                "◑ Thank you for using our service! Your files have been successfully delivered. "
+                "These links are permanent and never expire, so you can tap the same button anytime "
+                "to access your files again.\n"
+                "⧉ If you enjoy our platform and want us to keep delivering amazing stories, "
+                "please consider supporting us with a small donation.\n"
+                "▣ Every contribution helps us maintain our servers and expand our library."
+            )
+        if pref == "both":
+            parts.append("────────────────")
+        if pref in ("hi", "both"):
+            parts.append(
+                "◑ हमारी सेवा का उपयोग करने के लिए धन्यवाद! आपकी फाइलें सफलतापूर्वक डिलीवर हो गई हैं। "
+                "ये लिंक स्थायी हैं और कभी expire नहीं होते, इसलिए आप भविष्य में कभी भी उसी बटन पर "
+                "टैप करके अपनी फाइलें दोबारा प्राप्त कर सकते हैं।\n"
+                "⧉ यदि आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर बेहतरीन कहानियाँ "
+                "लाते रहें, तो कृपया donation देकर हमारा सहयोग करें।\n"
+                "▣ आपका सहयोग हमारे सर्वर को बनाए रखने और हमारी लाइब्रेरी का विस्तार करने में सहायता करता है।"
+            )
+        don_body = f"<blockquote expandable>" + "\n".join(parts) + "</blockquote>"
     else:
         don_body = ""
 
     thank_txt = (
-        f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n\n"
-        f"<b>‣ {total} file(s) sent successfully!</b>\n"
-        f"<b>‣</b> Total delivered by {b_name}: <b>{grand_total:,}</b> files\n\n"
+        f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n"
+        f"◎ {total} FILE(S) SENT SUCCESSFULLY!\n"
+        f"◈ Total delivered by {b_name}: {grand_total:,} files\n\n"
         f"{don_body}"
     )
     
