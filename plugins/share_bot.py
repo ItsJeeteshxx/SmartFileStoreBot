@@ -706,10 +706,10 @@ async def _process_start(client, message):
             }
             del_str_sc = "".join(SMALLCAPS_MAP.get(c.lower(), c) for c in del_str)
             txt = (
-                f"◎ 𝗜𝗠𝗣𝗢𝗥𝗧𝗔𝗡𝗧: {total} FILE(S) DELIVERED!\n"
-                f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ {del_str_sc}.\n"
-                f"◑ To access them again, simply open the same link button.{fail_note}\n"
-                f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n"
+                f"◎ 𝗜𝗠𝗣𝗢𝗥𝗧𝗔𝗡𝗧: {total} FILE(S) DELIVERED!\n\n"
+                f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ {del_str_sc}.\n\n"
+                f"◑ To access them again, simply open the same link button.{fail_note}\n\n"
+                f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
                 f"⧉ Having trouble with the bot? Tap \"Arya Help\" below."
             )
         kb_help = InlineKeyboardMarkup([[
@@ -724,10 +724,10 @@ async def _process_start(client, message):
         suc_tpl = (await db.get_share_bot_text(bot_id, "success_msg") if bot_id else "") or \
                   await db.get_share_text("success_msg", "")
         txt = (format_msg(suc_tpl, message.from_user) if suc_tpl
-               else f"◎ 𝗜𝗠𝗣𝗢𝗥𝗧𝗔𝗡𝗧: {total} FILE(S) DELIVERED!\n"
-                    f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ 3 ʜᴏᴜʀꜱ.\n"
-                    f"◑ To access them again, simply open the same link button.{fail_note}\n"
-                    f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n"
+               else f"◎ 𝗜𝗠𝗣𝗢𝗥𝗧𝗔𝗡𝗧: {total} FILE(S) DELIVERED!\n\n"
+                    f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ 3 ʜᴏᴜʀꜱ.\n\n"
+                    f"◑ To access them again, simply open the same link button.{fail_note}\n\n"
+                    f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
                     f"⧉ Having trouble with the bot? Tap \"Arya Help\" below.")
         kb_help = InlineKeyboardMarkup([[
             InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
