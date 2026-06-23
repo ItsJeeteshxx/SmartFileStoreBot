@@ -745,50 +745,35 @@ async def _process_start(client, message):
     full_name = f"{u_name}{last}"
     b_name = client.me.first_name if getattr(client, "me", None) else "this bot"
 
-    pref = await db.get_share_bot_text(bot_id, "donation_lang") if bot_id else "both"
-
-    if pref != "off":
-        parts = []
-        if pref in ("en", "both"):
-            parts.append(
-                "◑ Thank you for using our service! Your files have been successfully delivered. "
-                "These links are permanent and never expire, so you can tap the same button anytime "
-                "to access your files again.\n"
-                "⧉ If you enjoy our platform and want us to keep delivering amazing stories, "
-                "please consider supporting us with a small donation.\n"
-                "▣ Every contribution helps us maintain our servers and expand our library."
-            )
-        if pref == "both":
-            parts.append("────────────────")
-        if pref in ("hi", "both"):
-            parts.append(
-                "◑ हमारी सेवा का उपयोग करने के लिए धन्यवाद! आपकी फाइलें सफलतापूर्वक डिलीवर हो गई हैं। "
-                "ये लिंक स्थायी हैं और कभी expire नहीं होते, इसलिए आप भविष्य में कभी भी उसी बटन पर "
-                "टैप करके अपनी फाइलें दोबारा प्राप्त कर सकते हैं।\n"
-                "⧉ यदि आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर बेहतरीन कहानियाँ "
-                "लाते रहें, तो कृपया donation देकर हमारा सहयोग करें।\n"
-                "▣ आपका सहयोग हमारे सर्वर को बनाए रखने और हमारी लाइब्रेरी का विस्तार करने में सहायता करता है।"
-            )
-        don_body = f"<blockquote expandable>" + "\n".join(parts) + "</blockquote>"
-    else:
-        don_body = ""
+    don_body = (
+        "◑ Thank you for using our service! Your files have been successfully delivered. "
+        "These links are permanent and never expire, so you can tap the same button anytime "
+        "to access your files again.\n\n"
+        "⧉ If you enjoy our platform and want us to keep delivering amazing stories, "
+        "please consider supporting us with a small donation.\n\n"
+        "▣ Every contribution helps us maintain our servers and expand our library.\n\n"
+        "────────────────\n\n"
+        "◑ हमारी सेवा का उपयोग करने के लिए धन्यवाद! आपकी फाइलें सफलतापूर्वक डिलीवर हो गई हैं। "
+        "ये लिंक स्थायी हैं और कभी expire नहीं होते, इसलिए आप भविष्य में कभी भी उसी बटन पर "
+        "टैप करके अपनी फाइलें दोबारा प्राप्त कर सकते हैं।\n\n"
+        "⧉ यदि आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर बेहतरीन कहानियाँ "
+        "लाते रहें, तो कृपया donation देकर हमारा सहयोग करें।\n\n"
+        "▣ आपका सहयोग हमारे सर्वर को बनाए रखने और हमारी लाइब्रेरी का विस्तार करने में सहायता करता है।"
+    )
 
     thank_txt = (
-        f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n"
-        f"◎ {total} FILE(S) SENT SUCCESSFULLY!\n"
+        f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n\n"
+        f"◎ {total} FILE(S) SENT SUCCESSFULLY!\n\n"
         f"◈ Total delivered by {b_name}: {grand_total:,} files\n\n"
         f"{don_body}"
     )
     
-    if pref != "off":
-        donate_btn = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(_sc("Support via UPI"), callback_data="sbd#donate"),
-                InlineKeyboardButton(_sc("Razorpay"), callback_data="sbd#razorpay")
-            ]
-        ])
-    else:
-        donate_btn = None
+    donate_btn = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Support via UPI", callback_data="sbd#donate"),
+            InlineKeyboardButton("Razorpay", callback_data="sbd#razorpay")
+        ]
+    ])
     try:
         await message.reply_text(thank_txt, reply_markup=donate_btn)
     except Exception as _te:
