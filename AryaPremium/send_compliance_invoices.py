@@ -184,17 +184,14 @@ def generate_clean_invoice(
     draw.text((50, 230), "Payment Gateway:", fill="#64748b", font=font_normal)
     draw.text((180, 230), "Razorpay", fill="#0f172a", font=font_normal)
     
-    draw.text((480, 130), "Place of Supply:", fill="#64748b", font=font_normal)
-    draw.text((610, 130), country, fill="#0f172a", font=font_normal)
+    draw.text((480, 130), "Payment Status:", fill="#64748b", font=font_normal)
+    draw.text((610, 130), "PAID / CAPTURED", fill="#16a34a", font=font_bold)
     
-    draw.text((480, 155), "Payment Status:", fill="#64748b", font=font_normal)
-    draw.text((610, 155), "PAID / CAPTURED", fill="#16a34a", font=font_bold)
+    draw.text((480, 155), "Payment Method:", fill="#64748b", font=font_normal)
+    draw.text((610, 155), method, fill="#0f172a", font=font_normal)
     
-    draw.text((480, 180), "Payment Method:", fill="#64748b", font=font_normal)
-    draw.text((610, 180), method, fill="#0f172a", font=font_normal)
-    
-    draw.text((480, 205), "Currency:", fill="#64748b", font=font_normal)
-    draw.text((610, 205), "INR (₹)", fill="#0f172a", font=font_normal)
+    draw.text((480, 180), "Currency:", fill="#64748b", font=font_normal)
+    draw.text((610, 180), "INR (₹)", fill="#0f172a", font=font_normal)
     
     # Draw divider line
     draw.line([50, 260, 750, 260], fill="#cbd5e1", width=1)
