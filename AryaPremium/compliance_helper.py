@@ -219,62 +219,56 @@ def generate_clean_invoice(
     # Draw divider line
     draw.line([50, 390, 750, 390], fill="#cbd5e1", width=1)
     
-    # Item Table Header
+    # Item Table Header (no GST column - seller not GST registered)
     draw.rectangle([50, 415, 750, 445], fill="#f1f5f9")
     draw.text((60, 423), "Description of Service", fill="#475569", font=font_bold)
-    draw.text((420, 423), "SAC", fill="#475569", font=font_bold)
-    draw.text((475, 423), "Qty", fill="#475569", font=font_bold)
-    draw.text((520, 423), "Unit Price", fill="#475569", font=font_bold)
-    draw.text((615, 423), "Tax (GST)", fill="#475569", font=font_bold)
-    draw.text((695, 423), "Total", fill="#475569", font=font_bold)
+    draw.text((500, 423), "Qty", fill="#475569", font=font_bold)
+    draw.text((560, 423), "Tax", fill="#475569", font=font_bold)
+    draw.text((660, 423), "Amount", fill="#475569", font=font_bold)
     
-    # 18% GST Calculations
+    # No GST - seller is not registered under GST
     total_val = float(amount)
-    base_val = round(total_val / 1.18, 2)
-    gst_val = round(total_val - base_val, 2)
-    cgst_val = round(gst_val / 2, 2)
-    sgst_val = round(gst_val / 2, 2)
     
     # Item Table Row
     draw.text((60, 465), "AryaPremium Digital Access Subscription", fill="#0f172a", font=font_normal)
-    draw.text((60, 485), "(Lifetime Software & Utility License)", fill="#64748b", font=font_small)
-    draw.text((420, 465), "997331", fill="#0f172a", font=font_normal)
-    draw.text((475, 465), "1", fill="#0f172a", font=font_normal)
-    draw.text((520, 465), f"₹{base_val:.2f}", fill="#0f172a", font=font_normal)
-    draw.text((615, 465), "18% (Incl.)", fill="#0f172a", font=font_normal)
-    draw.text((695, 465), f"₹{total_val:.2f}", fill="#0f172a", font=font_bold)
+    draw.text((60, 485), "(Digital Content / Utility License)", fill="#64748b", font=font_small)
+    draw.text((500, 465), "1", fill="#0f172a", font=font_normal)
+    draw.text((545, 465), "Nil", fill="#64748b", font=font_normal)
+    draw.text((645, 465), f"₹{total_val:.2f}", fill="#0f172a", font=font_bold)
     
     draw.line([50, 525, 750, 525], fill="#e2e8f0", width=1)
     
+    # GST Note
+    draw.text((50, 540), "* GST Not Applicable — Seller not registered under GST (Turnover below threshold).",
+              fill="#94a3b8", font=font_small)
+    
     # Summary block
-    draw.text((480, 550), "Subtotal:", fill="#64748b", font=font_normal)
-    draw.text((670, 550), f"₹{base_val:.2f}", fill="#0f172a", font=font_normal)
+    draw.text((480, 565), "Subtotal:", fill="#64748b", font=font_normal)
+    draw.text((670, 565), f"₹{total_val:.2f}", fill="#0f172a", font=font_normal)
     
-    draw.text((480, 575), "CGST 9% (Incl.):", fill="#64748b", font=font_normal)
-    draw.text((670, 575), f"₹{cgst_val:.2f}", fill="#0f172a", font=font_normal)
-    
-    draw.text((480, 600), "SGST 9% (Incl.):", fill="#64748b", font=font_normal)
-    draw.text((670, 600), f"₹{sgst_val:.2f}", fill="#0f172a", font=font_normal)
+    draw.text((480, 590), "Tax (GST):", fill="#64748b", font=font_normal)
+    draw.text((670, 590), "Nil", fill="#64748b", font=font_normal)
     
     # Highlight Box for Total Amount
-    draw.rectangle([460, 635, 750, 680], fill="#f8fafc", outline="#cbd5e1")
-    draw.text((480, 650), "Total Amount Paid:", fill="#0f172a", font=font_bold)
-    draw.text((640, 646), f"₹{total_val:.2f}", fill="#0f172a", font=font_subtitle)
+    draw.rectangle([460, 620, 750, 665], fill="#f8fafc", outline="#cbd5e1")
+    draw.text((480, 635), "Total Amount Paid:", fill="#0f172a", font=font_bold)
+    draw.text((640, 631), f"₹{total_val:.2f}", fill="#0f172a", font=font_subtitle)
     
     # Declaration and terms
-    draw.text((50, 720), "Declaration:", fill="#64748b", font=font_bold)
-    draw.text((50, 745), "We declare that this invoice shows the actual price of the digital services", fill="#64748b", font=font_small)
-    draw.text((50, 762), "described and that all particulars are true and correct.", fill="#64748b", font=font_small)
+    draw.text((50, 700), "Declaration:", fill="#64748b", font=font_bold)
+    draw.text((50, 722), "We declare that this receipt shows the actual price of the digital services", fill="#64748b", font=font_small)
+    draw.text((50, 738), "described and that all particulars are true and correct.", fill="#64748b", font=font_small)
     
-    draw.text((50, 820), "Terms & Conditions:", fill="#64748b", font=font_bold)
-    draw.text((50, 845), "• All digital access subscriptions are active instantly upon payment.", fill="#64748b", font=font_small)
-    draw.text((50, 862), "• Refunds are subject to our 24-hour non-access policy.", fill="#64748b", font=font_small)
+    draw.text((50, 790), "Terms & Conditions:", fill="#64748b", font=font_bold)
+    draw.text((50, 812), "• All digital access subscriptions are active instantly upon payment.", fill="#64748b", font=font_small)
+    draw.text((50, 828), "• Refunds are subject to our 24-hour non-access policy.", fill="#64748b", font=font_small)
+    draw.text((50, 844), "• This is not a GST invoice. No tax has been collected or remitted.", fill="#64748b", font=font_small)
     
-    draw.line([50, 950, 750, 950], fill="#cbd5e1", width=1)
+    draw.line([50, 920, 750, 920], fill="#cbd5e1", width=1)
     
     # Footer
-    draw.text((290, 980), "Thank you for your purchase!", fill="#475569", font=font_bold)
-    draw.text((230, 1005), "This is a computer-generated invoice and requires no signature.", fill="#94a3b8", font=font_small)
+    draw.text((290, 950), "Thank you for your purchase!", fill="#475569", font=font_bold)
+    draw.text((230, 975), "This is a computer-generated receipt and requires no signature.", fill="#94a3b8", font=font_small)
     
     # Save Image
     base_dir = os.path.dirname(os.path.abspath(__file__))
