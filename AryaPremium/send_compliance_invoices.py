@@ -35,7 +35,7 @@ FALLBACK_PAYMENTS = {
         "country": "Domestic (India)",
         "method": "Mastercard Debit Card (Razorpay)",
         "order_id": "OD_7408800968_5C1B92",
-        "invoice_no": "INV/2026/03836"
+        "invoice_no": "INV/2026/00001"
     },
     "pay_T4Jge4uhIfT97q": {
         "amount": 524,
@@ -46,7 +46,7 @@ FALLBACK_PAYMENTS = {
         "country": "International (Export)",
         "method": "Visa Debit Card (Razorpay)",
         "order_id": "OD_5830219482_E5C9A3",
-        "invoice_no": "INV/2026/62740"
+        "invoice_no": "INV/2026/00003"
     },
     "pay_T3BdQ3Tf1Cnfu4": {
         "amount": 299,
@@ -57,7 +57,7 @@ FALLBACK_PAYMENTS = {
         "country": "International (Export)",
         "method": "Visa Credit Card (Razorpay)",
         "order_id": "OD_6019384918_D3B2C9",
-        "invoice_no": "INV/2026/40921"
+        "invoice_no": "INV/2026/00002"
     }
 }
 
@@ -388,8 +388,16 @@ async def main():
                     
             if not invoice_no:
                 # Generate professional invoice number cleanly linked to the actual Order ID
-                inv_hash = zlib.crc32(order_id.encode()) % 100000
-                invoice_no = f"INV/{order_dt.year}/{inv_hash:05d}"
+                try:
+                    # Count how many paid orders were created before this order
+                    count = await db.db.orders.count_documents({
+                        "created_at": {"$lt": order_dt},
+                        "status": "paid"
+                    })
+                    invoice_no = f"INV/{order_dt.year}/{(count + 1):05d}"
+                except Exception:
+                    inv_hash = zlib.crc32(order_id.encode()) % 1000
+                    invoice_no = f"INV/{order_dt.year}/{(inv_hash + 1):05d}"
             
             # Determine payment method
             m = rzp_data.get("method", "").upper()
