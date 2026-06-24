@@ -33,8 +33,7 @@ FALLBACK_PAYMENTS = {
         "contact": "+917742732253",
         "country": "Domestic (India)",
         "method": "Mastercard Debit Card (Razorpay)",
-        "order_id": "OD_7408800968_5C1B92",
-        "invoice_no": "INV/2026/00001"
+        "order_id": "OD_7408800968_5C1B92"
     },
     "pay_T4Jge4uhIfT97q": {
         "amount": 524,
@@ -44,8 +43,7 @@ FALLBACK_PAYMENTS = {
         "contact": "+34631045694",
         "country": "International (Export)",
         "method": "Visa Debit Card (Razorpay)",
-        "order_id": "OD_5830219482_E5C9A3",
-        "invoice_no": "INV/2026/00003"
+        "order_id": "OD_5830219482_E5C9A3"
     },
     "pay_T3BdQ3Tf1Cnfu4": {
         "amount": 299,
@@ -55,8 +53,7 @@ FALLBACK_PAYMENTS = {
         "contact": "+15067213102",
         "country": "International (Export)",
         "method": "Visa Credit Card (Razorpay)",
-        "order_id": "OD_6019384918_D3B2C9",
-        "invoice_no": "INV/2026/00002"
+        "order_id": "OD_6019384918_D3B2C9"
     }
 }
 
@@ -183,6 +180,9 @@ def generate_clean_invoice(
     draw.text((50, 205), "Invoice Date:", fill="#64748b", font=font_normal)
     draw.text((180, 205), order_date, fill="#0f172a", font=font_normal)
     
+    draw.text((50, 230), "Payment Gateway:", fill="#64748b", font=font_normal)
+    draw.text((180, 230), "Razorpay", fill="#0f172a", font=font_normal)
+    
     draw.text((480, 130), "Place of Supply:", fill="#64748b", font=font_normal)
     draw.text((610, 130), country, fill="#0f172a", font=font_normal)
     
@@ -196,16 +196,16 @@ def generate_clean_invoice(
     draw.text((610, 205), "INR (₹)", fill="#0f172a", font=font_normal)
     
     # Draw divider line
-    draw.line([50, 240, 750, 240], fill="#cbd5e1", width=1)
+    draw.line([50, 260, 750, 260], fill="#cbd5e1", width=1)
     
     # Billing Info (Clean & without fake physical addresses)
-    draw.text((50, 260), "BILLED FROM:", fill="#64748b", font=font_bold)
-    draw.text((50, 285), "AryaPremium Store", fill="#0f172a", font=font_bold)
-    draw.text((50, 310), "Email: aryapremiumsupport@gmail.com", fill="#334155", font=font_normal)
+    draw.text((50, 280), "BILLED FROM:", fill="#64748b", font=font_bold)
+    draw.text((50, 305), "AryaPremium Store", fill="#0f172a", font=font_bold)
+    draw.text((50, 330), "Email: aryapremiumsupport@gmail.com", fill="#334155", font=font_normal)
     
-    draw.text((480, 260), "BILLED TO:", fill="#64748b", font=font_bold)
+    draw.text((480, 280), "BILLED TO:", fill="#64748b", font=font_bold)
     
-    y_offset = 285
+    y_offset = 305
     if first_name and first_name != "Premium Customer":
         draw.text((480, y_offset), first_name, fill="#0f172a", font=font_bold)
         y_offset += 25
@@ -217,16 +217,16 @@ def generate_clean_invoice(
         draw.text((480, y_offset), f"Phone: {contact}", fill="#334155", font=font_normal)
     
     # Draw divider line
-    draw.line([50, 370, 750, 370], fill="#cbd5e1", width=1)
+    draw.line([50, 390, 750, 390], fill="#cbd5e1", width=1)
     
     # Item Table Header
-    draw.rectangle([50, 395, 750, 425], fill="#f1f5f9")
-    draw.text((60, 403), "Description of Service", fill="#475569", font=font_bold)
-    draw.text((420, 403), "SAC", fill="#475569", font=font_bold)
-    draw.text((475, 403), "Qty", fill="#475569", font=font_bold)
-    draw.text((520, 403), "Unit Price", fill="#475569", font=font_bold)
-    draw.text((615, 403), "Tax (GST)", fill="#475569", font=font_bold)
-    draw.text((695, 403), "Total", fill="#475569", font=font_bold)
+    draw.rectangle([50, 415, 750, 445], fill="#f1f5f9")
+    draw.text((60, 423), "Description of Service", fill="#475569", font=font_bold)
+    draw.text((420, 423), "SAC", fill="#475569", font=font_bold)
+    draw.text((475, 423), "Qty", fill="#475569", font=font_bold)
+    draw.text((520, 423), "Unit Price", fill="#475569", font=font_bold)
+    draw.text((615, 423), "Tax (GST)", fill="#475569", font=font_bold)
+    draw.text((695, 423), "Total", fill="#475569", font=font_bold)
     
     # 18% GST Calculations
     total_val = float(amount)
@@ -236,45 +236,45 @@ def generate_clean_invoice(
     sgst_val = round(gst_val / 2, 2)
     
     # Item Table Row
-    draw.text((60, 445), "AryaPremium Digital Access Subscription", fill="#0f172a", font=font_normal)
-    draw.text((60, 465), "(Lifetime Software & Utility License)", fill="#64748b", font=font_small)
-    draw.text((420, 445), "997331", fill="#0f172a", font=font_normal)
-    draw.text((475, 445), "1", fill="#0f172a", font=font_normal)
-    draw.text((520, 445), f"₹{base_val:.2f}", fill="#0f172a", font=font_normal)
-    draw.text((615, 445), "18% (Incl.)", fill="#0f172a", font=font_normal)
-    draw.text((695, 445), f"₹{total_val:.2f}", fill="#0f172a", font=font_bold)
+    draw.text((60, 465), "AryaPremium Digital Access Subscription", fill="#0f172a", font=font_normal)
+    draw.text((60, 485), "(Lifetime Software & Utility License)", fill="#64748b", font=font_small)
+    draw.text((420, 465), "997331", fill="#0f172a", font=font_normal)
+    draw.text((475, 465), "1", fill="#0f172a", font=font_normal)
+    draw.text((520, 465), f"₹{base_val:.2f}", fill="#0f172a", font=font_normal)
+    draw.text((615, 465), "18% (Incl.)", fill="#0f172a", font=font_normal)
+    draw.text((695, 465), f"₹{total_val:.2f}", fill="#0f172a", font=font_bold)
     
-    draw.line([50, 505, 750, 505], fill="#e2e8f0", width=1)
+    draw.line([50, 525, 750, 525], fill="#e2e8f0", width=1)
     
     # Summary block
-    draw.text((480, 530), "Subtotal:", fill="#64748b", font=font_normal)
-    draw.text((670, 530), f"₹{base_val:.2f}", fill="#0f172a", font=font_normal)
+    draw.text((480, 550), "Subtotal:", fill="#64748b", font=font_normal)
+    draw.text((670, 550), f"₹{base_val:.2f}", fill="#0f172a", font=font_normal)
     
-    draw.text((480, 555), "CGST 9% (Incl.):", fill="#64748b", font=font_normal)
-    draw.text((670, 555), f"₹{cgst_val:.2f}", fill="#0f172a", font=font_normal)
+    draw.text((480, 575), "CGST 9% (Incl.):", fill="#64748b", font=font_normal)
+    draw.text((670, 575), f"₹{cgst_val:.2f}", fill="#0f172a", font=font_normal)
     
-    draw.text((480, 580), "SGST 9% (Incl.):", fill="#64748b", font=font_normal)
-    draw.text((670, 580), f"₹{sgst_val:.2f}", fill="#0f172a", font=font_normal)
+    draw.text((480, 600), "SGST 9% (Incl.):", fill="#64748b", font=font_normal)
+    draw.text((670, 600), f"₹{sgst_val:.2f}", fill="#0f172a", font=font_normal)
     
     # Highlight Box for Total Amount
-    draw.rectangle([460, 615, 750, 660], fill="#f8fafc", outline="#cbd5e1")
-    draw.text((480, 630), "Total Amount Paid:", fill="#0f172a", font=font_bold)
-    draw.text((640, 626), f"₹{total_val:.2f}", fill="#0f172a", font=font_subtitle)
+    draw.rectangle([460, 635, 750, 680], fill="#f8fafc", outline="#cbd5e1")
+    draw.text((480, 650), "Total Amount Paid:", fill="#0f172a", font=font_bold)
+    draw.text((640, 646), f"₹{total_val:.2f}", fill="#0f172a", font=font_subtitle)
     
     # Declaration and terms
-    draw.text((50, 700), "Declaration:", fill="#64748b", font=font_bold)
-    draw.text((50, 725), "We declare that this invoice shows the actual price of the digital services", fill="#64748b", font=font_small)
-    draw.text((50, 742), "described and that all particulars are true and correct.", fill="#64748b", font=font_small)
+    draw.text((50, 720), "Declaration:", fill="#64748b", font=font_bold)
+    draw.text((50, 745), "We declare that this invoice shows the actual price of the digital services", fill="#64748b", font=font_small)
+    draw.text((50, 762), "described and that all particulars are true and correct.", fill="#64748b", font=font_small)
     
-    draw.text((50, 800), "Terms & Conditions:", fill="#64748b", font=font_bold)
-    draw.text((50, 825), "• All digital access subscriptions are active instantly upon payment.", fill="#64748b", font=font_small)
-    draw.text((50, 842), "• Refunds are subject to our 24-hour non-access policy.", fill="#64748b", font=font_small)
+    draw.text((50, 820), "Terms & Conditions:", fill="#64748b", font=font_bold)
+    draw.text((50, 845), "• All digital access subscriptions are active instantly upon payment.", fill="#64748b", font=font_small)
+    draw.text((50, 862), "• Refunds are subject to our 24-hour non-access policy.", fill="#64748b", font=font_small)
     
-    draw.line([50, 930, 750, 930], fill="#cbd5e1", width=1)
+    draw.line([50, 950, 750, 950], fill="#cbd5e1", width=1)
     
     # Footer
-    draw.text((290, 960), "Thank you for your purchase!", fill="#475569", font=font_bold)
-    draw.text((230, 985), "This is a computer-generated invoice and requires no signature.", fill="#94a3b8", font=font_small)
+    draw.text((290, 980), "Thank you for your purchase!", fill="#475569", font=font_bold)
+    draw.text((230, 1005), "This is a computer-generated invoice and requires no signature.", fill="#94a3b8", font=font_small)
     
     # Save Image
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -375,8 +375,8 @@ async def main():
             if not order_id:
                 if pid in FALLBACK_PAYMENTS:
                     order_id = FALLBACK_PAYMENTS[pid]["order_id"]
-                    invoice_no = FALLBACK_PAYMENTS[pid]["invoice_no"]
-                    print(f"✔ Using predefined fallback Order ID and Invoice No for {pid}: {order_id}, {invoice_no}")
+                    invoice_no = FALLBACK_PAYMENTS[pid].get("invoice_no")
+                    print(f"✔ Using predefined fallback Order ID for {pid}: {order_id}")
                 else:
                     # Fallback to a realistic bot order ID structure (OD_telegramid_hash)
                     tg_id_hash = zlib.crc32(contact.encode()) % 1000000000
