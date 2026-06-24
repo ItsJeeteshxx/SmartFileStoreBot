@@ -1353,6 +1353,244 @@ async def razorpay_callback(
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
 
 
+# ==========================================
+# UPI Manual Verification via Gmail IMAP
+# ==========================================
+import imaplib
+import email
+from email.header import decode_header
+import re
+
+def verify_amount_in_email(body: str, expected_amount: float) -> bool:
+    # Normalize body: replace newlines/tabs with space
+    normalized = body.replace("\n", " ").replace("\r", " ")
+    
+    # Normalize regex formatting of expected amount (e.g. 149.00 or 149)
+    amt_str1 = f"{expected_amount:.2f}"
+    amt_str2 = f"{int(expected_amount)}" if expected_amount.is_integer() else f"{expected_amount:.1f}"
+    
+    body_lower = normalized.lower()
+    
+    # We want to match:
+    # - received/credited ... amount
+    # - amount ... received/credited
+    patterns = [
+        r'(?:received|credited|deposit|transfer|payment|added)\s+(?:value\s+)?(?:of\s+)?(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)',
+        r'(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:received|credited|deposited|added|transfer)',
+        r'(?:received|credited|deposit)\s+(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if abs(val - expected_amount) < 0.01:
+                    return True
+            except ValueError:
+                continue
+                
+    # Fallback checking
+    if any(x in body_lower for x in ["received", "credited", "deposit", "added"]):
+        for currency in ["₹", "rs", "inr"]:
+            if f"{currency}{amt_str1}" in body_lower or f"{currency} {amt_str1}" in body_lower:
+                return True
+            if f"{currency}{amt_str2}" in body_lower or f"{currency} {amt_str2}" in body_lower:
+                return True
+            if f"{currency}.{amt_str1}" in body_lower or f"{currency}. {amt_str1}" in body_lower:
+                return True
+            if f"{currency}.{amt_str2}" in body_lower or f"{currency}. {amt_str2}" in body_lower:
+                return True
+                
+    return False
+
+def get_email_body(msg) -> str:
+    """Helper to extract text body from email message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            cdisp = str(part.get("Content-Disposition"))
+            if ctype == "text/plain" and "attachment" not in cdisp:
+                try:
+                    return part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+            elif ctype == "text/html" and "attachment" not in cdisp:
+                try:
+                    html_content = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    # simple html to text stripping
+                    text_content = re.sub(r'<[^>]+>', ' ', html_content)
+                    text_content = re.sub(r'\s+', ' ', text_content)
+                    return text_content
+                except Exception:
+                    pass
+    else:
+        try:
+            return msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    return ""
+
+@api_router.post("/verify-upi-utr")
+async def verify_upi_utr(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    username = payload.get("username", "")
+    story_ids = payload.get("story_ids", [])
+    utr = str(payload.get("utr", "")).strip()
+    promo_code = payload.get("promo_code", "")
+    is_int = payload.get("is_international", False)
+
+    if not telegram_id or not story_ids or not utr:
+        raise HTTPException(status_code=400, detail="Missing required validation parameters.")
+
+    # 1. Validate UTR pattern (12 digits)
+    if not utr.isdigit() or len(utr) != 12:
+        raise HTTPException(status_code=400, detail="Invalid UTR format. UTR must be exactly 12 digits.")
+
+    # Connect to DB
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database connection is currently unavailable.")
+
+    # 2. Check for UTR Replay attack (already claimed)
+    existing_utr = await db.db.verified_utrs.find_one({"utr": utr})
+    if existing_utr:
+        raise HTTPException(status_code=400, detail="This UTR/RRN has already been claimed for another purchase. Reuse is blocked.")
+
+    # 3. Calculate expected amount
+    from bson.objectid import ObjectId
+    valid_stories = []
+    for sid in story_ids:
+        try:
+            doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(status_code=400, detail="No valid stories in cart.")
+
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    # Verify UPI is enabled
+    if not cfg.get("upi_manual_enabled", False):
+         raise HTTPException(status_code=400, detail="Direct UPI payments are currently disabled by the admin.")
+
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        discount, err = await calculate_promo_discount(db, pcode_clean, story_ids, subtotal, telegram_id)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
+                
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    expected_total = max(0.0, subtotal - discount + platform_fee)
+    if expected_total <= 0:
+        raise HTTPException(status_code=400, detail="Order total must be greater than zero.")
+
+    # 4. Search Gmail IMAP
+    gmail_enabled = cfg.get("gmail_verification_enabled", False)
+    gmail_user = cfg.get("gmail_user", "").strip() or os.environ.get("GMAIL_USER", "").strip()
+    gmail_password = cfg.get("gmail_app_password", "").strip() or os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+
+    if gmail_enabled:
+        if not gmail_user or not gmail_password:
+            logger.error("Gmail credentials are not configured in settings/env!")
+            raise HTTPException(status_code=500, detail="Gmail verification is not configured on the server. Please contact admin.")
+
+        verified = False
+        try:
+            # Login and search via IMAP
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+            mail.login(gmail_user, gmail_password)
+            mail.select("INBOX")
+
+            # Search inbox for the specific UTR text. Extremely fast query index search
+            status, messages = mail.search(None, 'TEXT', utr)
+            if status == "OK" and messages[0]:
+                mail_ids = messages[0].split()
+                # Iterate from most recent messages
+                for mail_id in reversed(mail_ids):
+                    res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
+                    if res_status != "OK":
+                        continue
+                    for response_part in msg_data:
+                        if isinstance(response_part, tuple):
+                            msg = email.message_from_bytes(response_part[1])
+                            body = get_email_body(msg)
+                            
+                            # Verify UTR is present and amount matches
+                            if utr in body and verify_amount_in_email(body, expected_total):
+                                verified = True
+                                break
+                    if verified:
+                        break
+            mail.close()
+            mail.logout()
+        except Exception as imap_err:
+            logger.error(f"Gmail IMAP error: {imap_err}", exc_info=True)
+            raise HTTPException(status_code=500, detail="An error occurred while connecting to the email verification service. Please try again.")
+
+        if not verified:
+            raise HTTPException(
+                status_code=400, 
+                detail="Transaction not found in email alerts. Please ensure the payment went through and wait 10-15 seconds before retrying."
+            )
+    else:
+        # If auto-verification is disabled, manual UPI cannot be verified automatically on the client.
+        raise HTTPException(
+            status_code=400,
+            detail="Automatic UPI verification is currently disabled. Please contact the administrator to enable Gmail Auto-Verification."
+        )
+
+    # 5. Success! Mark UTR as claimed to prevent replay attacks
+    await db.db.verified_utrs.insert_one({
+        "utr": utr,
+        "amount": expected_total,
+        "user_id": telegram_id,
+        "verified_at": datetime.now(timezone.utc)
+    })
+
+    # 6. Create order doc
+    oid = _make_order_id(str(telegram_id))
+    tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
+    order_doc = {
+        "order_id":            oid,
+        "user_id":             tg_id_int if tg_id_int else telegram_id,
+        "username":            username,
+        "story_ids":           story_ids,
+        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "subtotal":            subtotal,
+        "discount":            discount,
+        "promo_code":          pcode_clean if discount > 0 else None,
+        "platform_fee":        platform_fee,
+        "razorpay_fee":        0.0,
+        "total":               expected_total,
+        "status":              "paid",
+        "source":              "upi_manual_miniapp",
+        "utr":                 utr,
+        "created_at":          datetime.now(timezone.utc),
+    }
+    await db.db.orders.insert_one(order_doc)
+
+    # 7. Grant story access
+    if telegram_id:
+        for sid in story_ids:
+            await db.add_purchase(tg_id_int if tg_id_int else telegram_id, sid)
+
+    # 8. Trigger Logs
+    asyncio.create_task(trigger_payment_log_from_order(order_doc))
+    asyncio.create_task(record_purchased_stories(order_doc))
+
+    return {"success": True, "message": "UPI payment verified successfully!"}
+
+
 # ===== Razorpay: Payment Link Webhook =====
 
 @api_router.post("/razorpay-webhook")
@@ -5229,6 +5467,12 @@ async def get_admin_settings(telegram_id: str):
                 "replicate_api_key": cfg.get("replicate_api_key", ""),
                 "fal_api_key": cfg.get("fal_api_key", ""),
                 "stability_api_key": cfg.get("stability_api_key", ""),
+                "razorpay_disabled": cfg.get("razorpay_disabled", False),
+                "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
+                "upi_id": cfg.get("upi_id", ""),
+                "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
+                "gmail_user": cfg.get("gmail_user", ""),
+                "gmail_app_password": cfg.get("gmail_app_password", ""),
             }
         }
     except HTTPException:
@@ -5270,6 +5514,18 @@ async def update_admin_settings(payload: dict):
             update_fields["fal_api_key"] = str(payload["fal_api_key"]).strip()
         if "stability_api_key" in payload:
             update_fields["stability_api_key"] = str(payload["stability_api_key"]).strip()
+        if "razorpay_disabled" in payload:
+            update_fields["razorpay_disabled"] = bool(payload["razorpay_disabled"])
+        if "upi_manual_enabled" in payload:
+            update_fields["upi_manual_enabled"] = bool(payload["upi_manual_enabled"])
+        if "upi_id" in payload:
+            update_fields["upi_id"] = str(payload["upi_id"]).strip()
+        if "gmail_verification_enabled" in payload:
+            update_fields["gmail_verification_enabled"] = bool(payload["gmail_verification_enabled"])
+        if "gmail_user" in payload:
+            update_fields["gmail_user"] = str(payload["gmail_user"]).strip()
+        if "gmail_app_password" in payload:
+            update_fields["gmail_app_password"] = str(payload["gmail_app_password"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -5512,6 +5768,9 @@ async def get_public_settings():
             "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
             "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
             "promo_codes": promo_codes_list,
+            "razorpay_disabled": cfg.get("razorpay_disabled", False),
+            "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
+            "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -5523,7 +5782,10 @@ async def get_public_settings():
             "razorpay_fee_enabled": True,
             "platform_fee_amount": 5.0,
             "platform_fee_enabled": True,
-            "promo_codes": []
+            "promo_codes": [],
+            "razorpay_disabled": False,
+            "upi_manual_enabled": False,
+            "upi_id": os.environ.get("UPI_ID", ""),
         }
 
 
@@ -5795,6 +6057,8 @@ async def trigger_payment_log_from_order(order: dict):
         method = "razorpay"
         if "oxapay" in source.lower():
             method = "oxapay"
+        elif "upi_manual" in source.lower():
+            method = "manual_upi"
         elif "manual" in source.lower():
             method = "manual_admin"
 
@@ -5808,7 +6072,7 @@ async def trigger_payment_log_from_order(order: dict):
             "manual_admin": "👑 Manual Admin",
         }.get(method.lower(), method.capitalize())
 
-        receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or ""
+        receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or order.get("utr") or ""
 
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
