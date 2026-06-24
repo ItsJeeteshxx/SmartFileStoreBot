@@ -354,30 +354,40 @@ async def main():
             
             # Retrieve Order ID from database if possible, otherwise generate a realistic fallback
             order_id = None
+            invoice_no = None
             try:
-                db_order = await db.db.orders.find_one({
-                    "$or": [
-                        {"razorpay_payment_id": pid},
-                        {"payment_id": pid},
-                        {"order_id": pid}
-                    ]
-                })
+                or_queries = [
+                    {"razorpay_payment_id": pid},
+                    {"payment_id": pid},
+                    {"order_id": pid}
+                ]
+                if rzp_data and rzp_data.get("order_id"):
+                    or_queries.append({"razorpay_order_id": rzp_data.get("order_id")})
+                
+                db_order = await db.db.orders.find_one({"$or": or_queries})
                 if db_order:
                     order_id = db_order.get("order_id")
+                    invoice_no = db_order.get("invoice_no")
                     print(f"✔ Found actual Order ID in database: {order_id}")
             except Exception as db_err:
                 print(f"⚠ Database order lookup failed: {db_err}")
                 
             if not order_id:
-                # Fallback to a realistic bot order ID structure (OD_telegramid_hash)
-                tg_id_hash = zlib.crc32(contact.encode()) % 1000000000
-                hash_suffix = zlib.crc32(pid.encode()) % 0xFFFFFF
-                order_id = f"OD_{tg_id_hash}_{hash_suffix:06X}"
-                print(f"⚠ Bot order not found in database. Using generated fallback Order ID: {order_id}")
-                
-            # Generate professional invoice number cleanly linked to the actual Order ID
-            inv_hash = zlib.crc32(order_id.encode()) % 100000
-            invoice_no = f"INV/{order_dt.year}/{inv_hash:05d}"
+                if pid in FALLBACK_PAYMENTS:
+                    order_id = FALLBACK_PAYMENTS[pid]["order_id"]
+                    invoice_no = FALLBACK_PAYMENTS[pid]["invoice_no"]
+                    print(f"✔ Using predefined fallback Order ID and Invoice No for {pid}: {order_id}, {invoice_no}")
+                else:
+                    # Fallback to a realistic bot order ID structure (OD_telegramid_hash)
+                    tg_id_hash = zlib.crc32(contact.encode()) % 1000000000
+                    hash_suffix = zlib.crc32(pid.encode()) % 0xFFFFFF
+                    order_id = f"OD_{tg_id_hash}_{hash_suffix:06X}"
+                    print(f"⚠ Bot order not found in database. Using generated fallback Order ID: {order_id}")
+                    
+            if not invoice_no:
+                # Generate professional invoice number cleanly linked to the actual Order ID
+                inv_hash = zlib.crc32(order_id.encode()) % 100000
+                invoice_no = f"INV/{order_dt.year}/{inv_hash:05d}"
             
             # Determine payment method
             m = rzp_data.get("method", "").upper()
