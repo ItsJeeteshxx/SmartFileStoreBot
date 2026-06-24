@@ -162,7 +162,7 @@ def generate_clean_invoice(
             
     # Draw Header details (No site link drawn)
     draw.text((50, 50), "ARYAPREMIUM STORE", fill="#0f172a", font=font_title)
-    draw.text((530, 50), "TAX INVOICE / RECEIPT", fill="#0f172a", font=font_bold)
+    draw.text((540, 55), "INVOICE / RECEIPT", fill="#0f172a", font=font_subtitle)
     
     # Draw divider line
     draw.line([50, 110, 750, 110], fill="#cbd5e1", width=1)
@@ -222,8 +222,8 @@ def generate_clean_invoice(
     # Item Table Header (no GST column - seller not GST registered)
     draw.rectangle([50, 415, 750, 445], fill="#f1f5f9")
     draw.text((60, 423), "Description of Service", fill="#475569", font=font_bold)
-    draw.text((500, 423), "Qty", fill="#475569", font=font_bold)
-    draw.text((560, 423), "Tax", fill="#475569", font=font_bold)
+    draw.text((460, 423), "Qty", fill="#475569", font=font_bold)
+    draw.text((550, 423), "Tax", fill="#475569", font=font_bold)
     draw.text((660, 423), "Amount", fill="#475569", font=font_bold)
     
     # No GST - seller is not registered under GST
@@ -232,27 +232,29 @@ def generate_clean_invoice(
     # Item Table Row
     draw.text((60, 465), "AryaPremium Digital Access Subscription", fill="#0f172a", font=font_normal)
     draw.text((60, 485), "(Digital Content / Utility License)", fill="#64748b", font=font_small)
-    draw.text((500, 465), "1", fill="#0f172a", font=font_normal)
-    draw.text((545, 465), "Nil", fill="#64748b", font=font_normal)
-    draw.text((645, 465), f"₹{total_val:.2f}", fill="#0f172a", font=font_bold)
+    draw.text((460, 465), "1", fill="#0f172a", font=font_normal)
+    draw.text((550, 465), "Nil", fill="#64748b", font=font_normal)
+    draw.text((660, 465), f"₹{total_val:.2f}", fill="#0f172a", font=font_bold)
     
     draw.line([50, 525, 750, 525], fill="#e2e8f0", width=1)
     
-    # GST Note
-    draw.text((50, 540), "* GST Not Applicable — Seller not registered under GST (Turnover below threshold).",
-              fill="#94a3b8", font=font_small)
+    # GST Exemption note on the left side
+    draw.text((50, 555), "GST Exemption Note:", fill="#64748b", font=font_bold)
+    draw.text((50, 580), "This receipt is issued by an unregistered seller.", fill="#94a3b8", font=font_small)
+    draw.text((50, 598), "Turnover is below the GST registration threshold.", fill="#94a3b8", font=font_small)
+    draw.text((50, 616), "No tax has been collected or is payable.", fill="#94a3b8", font=font_small)
     
-    # Summary block
-    draw.text((480, 565), "Subtotal:", fill="#64748b", font=font_normal)
-    draw.text((670, 565), f"₹{total_val:.2f}", fill="#0f172a", font=font_normal)
+    # Summary block aligned on the right side
+    draw.text((480, 555), "Subtotal:", fill="#64748b", font=font_normal)
+    draw.text((660, 555), f"₹{total_val:.2f}", fill="#0f172a", font=font_normal)
     
-    draw.text((480, 590), "Tax (GST):", fill="#64748b", font=font_normal)
-    draw.text((670, 590), "Nil", fill="#64748b", font=font_normal)
+    draw.text((480, 580), "Tax (GST):", fill="#64748b", font=font_normal)
+    draw.text((660, 580), "Nil", fill="#64748b", font=font_normal)
     
     # Highlight Box for Total Amount
-    draw.rectangle([460, 620, 750, 665], fill="#f8fafc", outline="#cbd5e1")
-    draw.text((480, 635), "Total Amount Paid:", fill="#0f172a", font=font_bold)
-    draw.text((640, 631), f"₹{total_val:.2f}", fill="#0f172a", font=font_subtitle)
+    draw.rectangle([460, 610, 750, 655], fill="#f8fafc", outline="#cbd5e1")
+    draw.text((480, 625), "Total Amount Paid:", fill="#0f172a", font=font_bold)
+    draw.text((660, 621), f"₹{total_val:.2f}", fill="#0f172a", font=font_subtitle)
     
     # Declaration and terms
     draw.text((50, 700), "Declaration:", fill="#64748b", font=font_bold)
@@ -416,7 +418,11 @@ async def main():
             amount = fallback["amount"]
             order_date = fallback["date"]
             order_id = fallback["order_id"]
-            invoice_no = fallback["invoice_no"]
+            invoice_no = fallback.get("invoice_no")
+            if not invoice_no:
+                # Deterministic hash invoice number based on order_id
+                inv_hash = zlib.crc32(order_id.encode()) % 1000
+                invoice_no = f"INV/2026/{(inv_hash + 1):05d}"
 
         try:
             # Call the clean invoice generator
