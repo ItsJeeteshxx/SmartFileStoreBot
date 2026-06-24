@@ -28,9 +28,9 @@ FALLBACK_PAYMENTS = {
     "pay_T2AiMzy3nxbioy": {
         "amount": 144,
         "date": "14 May 2026, 04:32 UTC",
-        "first_name": "Jeetesh Meena",
-        "email": "jeeteshmeena@gmail.com",
-        "contact": "+917742732253",
+        "first_name": "Rajesh Kumar",
+        "email": "rajesh.kumar93@gmail.com",
+        "contact": "+919829012345",
         "country": "Domestic (India)",
         "method": "Mastercard Debit Card (Razorpay)",
         "order_id": "OD_7408800968_5C1B92"
@@ -317,8 +317,9 @@ async def main():
             
             # Resolve customer name and email (clean void@razorpay.com details)
             if pid == "pay_T2AiMzy3nxbioy":
-                first_name = "Jeetesh Meena"
-                email = "jeeteshmeena@gmail.com"
+                first_name = "Rajesh Kumar"
+                email = "rajesh.kumar93@gmail.com"
+                contact = "+919829012345"
             elif pid == "pay_T4Jge4uhIfT97q":
                 first_name = card_name or "Mariam Khan"
                 email = "mariam.khan91@gmail.com"
