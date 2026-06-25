@@ -349,7 +349,7 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                         new_mids.append(m.id)
                         
                     # Send Public Log if configured
-                    from config import _env
+                    from config import Config, _env
                     log_ch = _env("ARYA_LOGS_CHANNEL") or os.environ.get("PUBLIC_LOG_CHANNEL_ID")
                     if log_ch and m and getattr(m, 'link', None):
                         try:
@@ -362,7 +362,7 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                             log_txt = (
                                 f"<b><a href='{m.link}'>{safe_s_name}</a></b> Latest Eps <b>{ep_str}</b> Have been Added.\n"
                                 f"<b><a href='{m.link}'>{safe_s_name}</a></b> के लेटेस्ट एपिसोड्स <b>{ep_str}</b> ऐड हो गए हैं。\n\n"
-                                f"<a href='https://t.me/UseAryaBot/apminibyarya'>Sponsored By 𝘼𝘳𝙮𝘢 𝙋𝘳𝙚𝘮𝘪𝘶𝙢</a>"
+                                f"<a href='https://t.me/{Config.BOT_USERNAME}/{Config.MINI_APP_NAME}'>Sponsored By 𝘼𝘳𝙮𝘢 𝙋𝘳𝘦𝘮𝘪𝘶𝙢</a>"
                             )
                                 
                             if bot_inst:

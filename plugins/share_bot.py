@@ -944,8 +944,8 @@ async def _send_premium_menu(client, query_or_msg, edit: bool = False):
     )
     buttons = [
         [
-            InlineKeyboardButton("»  " + _sc("Bot"), url="https://t.me/UseAryaBot"),
-            InlineKeyboardButton("»  " + _sc("Mini App"), url="http://t.me/UseAryaBot/apminibyarya")
+            InlineKeyboardButton("»  " + _sc("Bot"), url=f"https://t.me/{Config.BOT_USERNAME}"),
+            InlineKeyboardButton("»  " + _sc("Mini App"), url=f"https://t.me/{Config.BOT_USERNAME}/{Config.MINI_APP_NAME}")
         ],
         [
             InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")

@@ -70,6 +70,7 @@ class Config:
     GMAIL_USER = _env("GMAIL_USER", "")
     GMAIL_APP_PASSWORD = _env("GMAIL_APP_PASSWORD", "")
     MINI_APP_NAME = _env("MINI_APP_NAME", "apminibyarya")
+    BOT_USERNAME = _env("BOT_USERNAME", "UseAryaBot")
 
 
 class temp(object):
