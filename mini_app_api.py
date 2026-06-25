@@ -1551,9 +1551,13 @@ async def verify_upi_utr(payload: dict):
     if gmail_enabled:
         if not gmail_user or not gmail_password:
             logger.error("Gmail credentials are not configured in settings/env!")
-            raise HTTPException(status_code=500, detail="Gmail verification is not configured on the server. Please contact admin.")
+            raise HTTPException(
+                status_code=500,
+                detail="Automatic payment verification is temporarily unavailable. Please contact support."
+            )
 
         verified = False
+        amount_mismatch = False
         try:
             # Login and search via IMAP
             mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
@@ -1572,30 +1576,48 @@ async def verify_upi_utr(payload: dict):
                     for response_part in msg_data:
                         if isinstance(response_part, tuple):
                             msg = email.message_from_bytes(response_part[1])
+                            from_header = msg.get("From", "")
+                            
+                            # Enforce sender check: only noreply@slice.bank.in is allowed
+                            if "noreply@slice.bank.in" not in from_header.lower():
+                                continue
+                                
                             body = get_email_body(msg)
                             
                             # Verify UTR is present and amount matches
-                            if utr in body and verify_amount_in_email(body, expected_total):
-                                verified = True
-                                break
+                            if utr in body:
+                                if verify_amount_in_email(body, expected_total):
+                                    verified = True
+                                    break
+                                else:
+                                    amount_mismatch = True
                     if verified:
                         break
             mail.close()
             mail.logout()
         except Exception as imap_err:
             logger.error(f"Gmail IMAP error: {imap_err}", exc_info=True)
-            raise HTTPException(status_code=500, detail="An error occurred while connecting to the email verification service. Please try again.")
+            raise HTTPException(
+                status_code=500,
+                detail="An error occurred during payment verification. Please try again in a few moments."
+            )
 
         if not verified:
-            raise HTTPException(
-                status_code=400, 
-                detail="Transaction not found in email alerts. Please ensure the payment went through and wait 10-15 seconds before retrying."
-            )
+            if amount_mismatch:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Payment verification failed: The amount credited does not match the expected order total. Please ensure you transfer the exact amount shown."
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Payment not detected. Please verify your UTR/RRN number and ensure you paid the exact amount. If you just paid, please wait 10-15 seconds and try again."
+                )
     else:
         # If auto-verification is disabled, manual UPI cannot be verified automatically on the client.
         raise HTTPException(
             status_code=400,
-            detail="Automatic UPI verification is currently disabled. Please contact the administrator to enable Gmail Auto-Verification."
+            detail="Automatic payment verification is currently disabled. Please contact support."
         )
 
     # 5. Success! Mark UTR as claimed to prevent replay attacks
