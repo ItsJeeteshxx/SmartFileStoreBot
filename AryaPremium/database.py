@@ -18,11 +18,12 @@ class PremiumDatabase:
         self.settings = None
 
     async def connect(self):
-        if not Config.MONGO_URI:
+        mongo_uri = getattr(Config, "MONGO_URI", None) or getattr(Config, "DATABASE_URI", None) or getattr(Config, "DATABASE", None)
+        if not mongo_uri:
             logger.error("No MongoDB URI configured.")
             return
 
-        self.client = AsyncIOMotorClient(Config.MONGO_URI)
+        self.client = AsyncIOMotorClient(mongo_uri)
         self.db = self.client[Config.DATABASE_NAME]
         
         # We share users with the main bot if needed, but premium has its own ecosystem collections
