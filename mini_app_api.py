@@ -2064,8 +2064,19 @@ async def create_oxapay_order(payload: dict):
         logger.error(f"OxaPay network error: {oxapay_error}")
         raise HTTPException(status_code=502, detail=f"Failed to reach OxaPay: {oxapay_error}")
 
-    if oxapay_result.get("result") != 100:
-        logger.error(f"OxaPay rejected: {oxapay_result}")
+    # OxaPay returns result as integer 100 for success — but some API versions return string "100"
+    # Also: if payLink is present in response, treat as success regardless of result field
+    result_code = oxapay_result.get("result") or oxapay_result.get("status")
+    pay_link_check = oxapay_result.get("payLink") or oxapay_result.get("pay_link") or oxapay_result.get("paylink")
+    try:
+        result_int = int(result_code) if result_code is not None else 0
+    except (ValueError, TypeError):
+        result_int = 0
+
+    logger.info(f"OxaPay raw response: result={result_code!r} result_int={result_int} payLink={bool(pay_link_check)} full={oxapay_result}")
+
+    if result_int != 100 and not pay_link_check:
+        logger.error(f"OxaPay rejected (no payLink, result={result_code}): {oxapay_result}")
         raise HTTPException(status_code=502, detail=f"OxaPay error: {oxapay_result.get('message', 'Unknown')}")
 
     pay_link  = oxapay_result.get("payLink") or oxapay_result.get("pay_link")
