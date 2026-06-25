@@ -1994,9 +1994,12 @@ async def create_oxapay_order(payload: dict):
 
     base_url = "https://api.oxapay.com"
 
-    story_ids = payload.get("story_ids", [])
-    tg_id     = payload.get("telegram_id") or 0
-    username  = payload.get("username", "")
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    username   = payload.get("username", "")
+    first_name = payload.get("first_name", "") or ""
+    # Only use first word of name for invoice (keep it short)
+    customer_name = (first_name.split()[0] if first_name.strip() else "") or username or "Customer"
 
     if not story_ids:
         raise HTTPException(status_code=400, detail="Cart is empty")
@@ -2050,7 +2053,8 @@ async def create_oxapay_order(payload: dict):
                     "lifetime": 30,
                     "fee_paid_by_payer": 1,
                     "order_id": oid,
-                    "description": f"{len(valid_stories)} Arya Premium stories for {tg_id}",
+                    "description": f"{len(valid_stories)} Arya Premium stories for {customer_name}",
+                    "customer_name": customer_name,
                     "callback_url": "https://aryapremium.store/api/oxapay-webhook",
                     "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                     "sandbox": is_sandbox,
@@ -2115,6 +2119,37 @@ async def create_oxapay_order(payload: dict):
         logger.error(f"DB insert error for OxaPay order: {e}")
 
     logger.info(f"OxaPay invoice created: order={oid} usd={total_usd} user={tg_id}")
+
+    # === Send Bot DM with payment link ===
+    async def _send_oxapay_dm():
+        try:
+            bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
+            if not bot_token or not tg_id:
+                return
+            story_list = "\n".join([f"  • {s.get('story_name_en', s.get('title', 'Story'))}" for s in valid_stories])
+            dm_text = (
+                f"🪙 <b>Crypto Payment Invoice</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Order ID:</b> <code>{oid}</code>\n"
+                f"<b>Amount:</b> ${total_usd:.2f} (~₹{total_inr:.0f})\n"
+                f"<b>Stories ({len(valid_stories)}):</b>\n{story_list}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💳 <b><a href=\'{pay_link}\'>Click here to Pay</a></b>\n"
+                f"⏳ Link expires in <b>30 minutes</b>\n\n"
+                f"✅ Your stories will be <b>auto-unlocked</b> after payment."
+            )
+            import aiohttp as _aiohttp
+            async with _aiohttp.ClientSession() as _sess:
+                await _sess.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": int(tg_id), "text": dm_text, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=5
+                )
+        except Exception as _e:
+            logger.warning(f"OxaPay DM send failed: {_e}")
+    asyncio.create_task(_send_oxapay_dm())
+
     return {"success": True, "payLink": pay_link, "trackId": track_id}
 
 
@@ -2196,6 +2231,40 @@ async def oxapay_webhook(request: Request):
     asyncio.create_task(record_purchased_stories(updated_order))
 
     logger.info(f"OxaPay ✅ unlocked {len(story_ids)} stories for user={user_id} trackId={track_id}")
+
+    # === Send Success Notification to user ===
+    async def _send_oxapay_success_dm():
+        try:
+            bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
+            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+            if not bot_token or not user_id:
+                return
+            story_names = order.get("story_names", [])
+            story_list = "\n".join([f"  • {n}" for n in story_names]) if story_names else "  • Your purchased stories"
+            success_text = (
+                f"✅ <b>Payment Successful!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Your crypto payment has been confirmed and stories are now unlocked! 🎉\n\n"
+                f"<b>Unlocked Stories:</b>\n{story_list}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📚 Open <b>Arya Premium</b> to listen to them now!"
+            )
+            keyboard = {"inline_keyboard": [[{
+                "text": "📚 Open Arya Premium",
+                "url": f"https://t.me/{bot_username}/app"
+            }]]}
+            import aiohttp as _aiohttp
+            async with _aiohttp.ClientSession() as _sess:
+                await _sess.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": int(user_id), "text": success_text, "parse_mode": "HTML",
+                          "reply_markup": keyboard, "disable_web_page_preview": True},
+                    timeout=5
+                )
+        except Exception as _e:
+            logger.warning(f"OxaPay success DM failed: {_e}")
+    asyncio.create_task(_send_oxapay_success_dm())
+
     return {"success": True, "message": "Payment verified and processed"}
 
 
