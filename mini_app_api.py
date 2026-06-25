@@ -5823,6 +5823,7 @@ async def get_public_settings():
             "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
             "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
             "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
+            "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -5839,6 +5840,7 @@ async def get_public_settings():
             "upi_manual_enabled": False,
             "upi_id": os.environ.get("UPI_ID", ""),
             "upi_payee_name": os.environ.get("UPI_PAYEE_NAME", "Arya Premium"),
+            "gmail_verification_enabled": False,
         }
 
 
