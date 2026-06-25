@@ -1427,6 +1427,45 @@ def extract_payer_name_from_email(body: str) -> str:
                 
     return ""
 
+def extract_amount_from_email(body: str) -> float | None:
+    # Normalize body: replace newlines/tabs with space
+    normalized = body.replace("\n", " ").replace("\r", " ")
+    body_lower = normalized.lower()
+    
+    # Let's search using the same patterns as verify_amount_in_email
+    patterns = [
+        r'(?:received|credited|deposit|transfer|payment|added)\s+(?:value\s+)?(?:of\s+)?(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)',
+        r'(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:received|credited|deposited|added|transfer)',
+        r'(?:received|credited|deposit)\s+(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                # Ignore values like 0 or very small or extremely large values that might be balances/dates
+                if 1.0 <= val <= 100000.0:
+                    return val
+            except ValueError:
+                continue
+                
+    # Fallback to general currency match
+    fallback_patterns = [
+        r'(?:rs\.?|₹|inr)\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    for pattern in fallback_patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if 1.0 <= val <= 100000.0:
+                    return val
+            except ValueError:
+                continue
+                
+    return None
+
 def verify_amount_in_email(body: str, expected_amount: float) -> bool:
     # Normalize body: replace newlines/tabs with space
     normalized = body.replace("\n", " ").replace("\r", " ")
@@ -1624,6 +1663,7 @@ async def verify_upi_utr(payload: dict):
 
         verified = False
         amount_mismatch = False
+        mismatched_amount = None
         try:
             # Login and search via IMAP
             mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
@@ -1658,7 +1698,11 @@ async def verify_upi_utr(payload: dict):
                                     break
                                 else:
                                     amount_mismatch = True
-                    if verified:
+                                    parsed_amount = extract_amount_from_email(body)
+                                    if parsed_amount is not None:
+                                        mismatched_amount = parsed_amount
+                                    break  # Correct UTR found but wrong amount
+                    if verified or amount_mismatch:
                         break
             mail.close()
             mail.logout()
@@ -1671,10 +1715,26 @@ async def verify_upi_utr(payload: dict):
 
         if not verified:
             if amount_mismatch:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Payment verification failed: The amount credited does not match the expected order total. Please ensure you transfer the exact amount shown."
-                )
+                if mismatched_amount is not None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Payment of ₹{mismatched_amount:.2f} received, but the expected amount is ₹{expected_total:.2f}. "
+                            "Please pay the exact amount. You cannot get access to stories with a lower payment amount.\n\n"
+                            f"भुगतान ₹{mismatched_amount:.2f} प्राप्त हुआ है, लेकिन अपेक्षित राशि ₹{expected_total:.2f} है। "
+                            "कृपया सटीक राशि का भुगतान करें। कम राशि का भुगतान करने पर आपको स्टोरी का एक्सेस नहीं मिल सकता है।"
+                        )
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Payment received, but the amount does not match the expected total of ₹{expected_total:.2f}. "
+                            "Please pay the exact amount. You cannot get access to stories with a lower payment amount.\n\n"
+                            f"भुगतान प्राप्त हुआ है, लेकिन राशि ₹{expected_total:.2f} की अपेक्षित राशि से मेल नहीं खाती। "
+                            "कृपया सटीक राशि का भुगतान करें। कम राशि का भुगतान करने पर आपको स्टोरी का एक्सेस नहीं मिल सकता है।"
+                        )
+                    )
             else:
                 raise HTTPException(
                     status_code=400,
