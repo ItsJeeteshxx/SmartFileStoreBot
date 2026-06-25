@@ -57,6 +57,8 @@ class Config:
     DELIVERY_LOGS_CHANNEL = _env("DELIVERY_LOGS_CHANNEL", "")
     ARYA_LOGS_CHANNEL = _env("ARYA_LOGS_CHANNEL", "")
     PREMIUM_UPDATES_CHANNEL = _env("PREMIUM_UPDATES_CHANNEL", "")
+    GMAIL_USER = _env("GMAIL_USER", "")
+    GMAIL_APP_PASSWORD = _env("GMAIL_APP_PASSWORD", "")
 
     # Premium Configs
     BOT_TOKEN       = _env("BOT_TOKEN", "")

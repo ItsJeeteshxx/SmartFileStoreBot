@@ -1443,9 +1443,9 @@ async def verify_upi_utr(payload: dict):
     if not telegram_id or not story_ids or not utr:
         raise HTTPException(status_code=400, detail="Missing required validation parameters.")
 
-    # 1. Validate UTR pattern (12 digits)
-    if not utr.isdigit() or len(utr) != 12:
-        raise HTTPException(status_code=400, detail="Invalid UTR format. UTR must be exactly 12 digits.")
+    # 1. Validate UTR pattern (12 to 22 digits)
+    if not utr.isdigit() or not (12 <= len(utr) <= 22):
+        raise HTTPException(status_code=400, detail="Invalid UTR format. UTR must be between 12 and 22 digits.")
 
     # Connect to DB
     db = getattr(app.state, "db", None)
@@ -1496,8 +1496,56 @@ async def verify_upi_utr(payload: dict):
 
     # 4. Search Gmail IMAP
     gmail_enabled = cfg.get("gmail_verification_enabled", False)
-    gmail_user = cfg.get("gmail_user", "").strip() or os.environ.get("GMAIL_USER", "").strip()
-    gmail_password = cfg.get("gmail_app_password", "").strip() or os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+    
+    gmail_user = cfg.get("gmail_user", "").strip()
+    gmail_password = cfg.get("gmail_app_password", "").strip()
+
+    # If database settings are empty, look in env and configs (with dynamic reload)
+    if not gmail_user or not gmail_password:
+        try:
+            from dotenv import load_dotenv
+            import os
+            # Reload root .env and sub-app .env
+            load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+            load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "AryaPremium", ".env"), override=True)
+        except Exception as dotenv_err:
+            logger.warning(f"Dotenv dynamic reload warning: {dotenv_err}")
+
+        # Try env vars
+        if not gmail_user:
+            gmail_user = os.environ.get("GMAIL_USER", "").strip() or os.environ.get("gmail_user", "").strip()
+        if not gmail_password:
+            gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "").strip() or os.environ.get("gmail_app_password", "").strip()
+
+        # Try RootConfig reload
+        if not gmail_user or not gmail_password:
+            try:
+                import importlib
+                import config
+                importlib.reload(config)
+                if not gmail_user:
+                    gmail_user = getattr(config.Config, "GMAIL_USER", "").strip()
+                if not gmail_password:
+                    gmail_password = getattr(config.Config, "GMAIL_APP_PASSWORD", "").strip()
+            except Exception as e:
+                logger.warning(f"config reload warning: {e}")
+
+        # Try PremConfig reload
+        if not gmail_user or not gmail_password:
+            try:
+                import importlib
+                import AryaPremium.config
+                importlib.reload(AryaPremium.config)
+                if not gmail_user:
+                    gmail_user = getattr(AryaPremium.config.Config, "GMAIL_USER", "").strip()
+                if not gmail_password:
+                    gmail_password = getattr(AryaPremium.config.Config, "GMAIL_APP_PASSWORD", "").strip()
+            except Exception as e:
+                logger.warning(f"AryaPremium.config reload warning: {e}")
+
+    # Auto-enable if credentials are set but toggle is False
+    if not gmail_enabled and gmail_user and gmail_password:
+        gmail_enabled = True
 
     if gmail_enabled:
         if not gmail_user or not gmail_password:
@@ -5470,6 +5518,7 @@ async def get_admin_settings(telegram_id: str):
                 "razorpay_disabled": cfg.get("razorpay_disabled", False),
                 "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
                 "upi_id": cfg.get("upi_id", ""),
+                "upi_payee_name": cfg.get("upi_payee_name", "Arya Premium"),
                 "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
                 "gmail_user": cfg.get("gmail_user", ""),
                 "gmail_app_password": cfg.get("gmail_app_password", ""),
@@ -5520,6 +5569,8 @@ async def update_admin_settings(payload: dict):
             update_fields["upi_manual_enabled"] = bool(payload["upi_manual_enabled"])
         if "upi_id" in payload:
             update_fields["upi_id"] = str(payload["upi_id"]).strip()
+        if "upi_payee_name" in payload:
+            update_fields["upi_payee_name"] = str(payload["upi_payee_name"]).strip()
         if "gmail_verification_enabled" in payload:
             update_fields["gmail_verification_enabled"] = bool(payload["gmail_verification_enabled"])
         if "gmail_user" in payload:
@@ -5771,6 +5822,7 @@ async def get_public_settings():
             "razorpay_disabled": cfg.get("razorpay_disabled", False),
             "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
             "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
+            "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -5786,6 +5838,7 @@ async def get_public_settings():
             "razorpay_disabled": False,
             "upi_manual_enabled": False,
             "upi_id": os.environ.get("UPI_ID", ""),
+            "upi_payee_name": os.environ.get("UPI_PAYEE_NAME", "Arya Premium"),
         }
 
 
