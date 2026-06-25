@@ -1363,15 +1363,68 @@ from email.header import decode_header
 import re
 import hashlib
 
+def clean_extracted_name(name: str) -> str:
+    # Remove extra spaces
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    # Split into words and stop at any common non-name keywords
+    stop_words = {
+        "amount", "utr", "rrn", "txn", "txnid", "date", "ref", "rs", "inr", "upi", 
+        "payment", "status", "type", "received", "credited", "transferred", "has", 
+        "been", "via", "on", "in", "to", "your", "my", "account", "bank", "slice",
+        "customer", "user", "card", "rupees", "id", "no", "reference", "credited",
+        "debit", "credit", "wallet", "balance", "success", "failed", "pending"
+    }
+    
+    words = name.split()
+    valid_words = []
+    for w in words:
+        # Strip trailing punctuation from the word for checking
+        w_clean = re.sub(r'[^a-zA-Z]', '', w).lower()
+        if w_clean in stop_words:
+            break
+        valid_words.append(w)
+        
+    cleaned = " ".join(valid_words).strip()
+    # Clean any trailing punctuation or special chars from the name
+    cleaned = re.sub(r'[^a-zA-Z\s\.\-\&]', '', cleaned).strip()
+    # Strip any trailing punctuation like dots or dashes from the end of the cleaned name
+    cleaned = cleaned.rstrip('. - &').strip()
+    return cleaned
+
 def extract_payer_name_from_email(body: str) -> str:
     """Helper to extract sender name from slice email notifications."""
-    match = re.search(r'from\s+([a-zA-Z\s\.\-\&]{3,40})(?:\s*\(upi|\s+upi|\s+via|\s+on\s+\d|\s+in\s+your|\r|\n|\.|$)', body, re.IGNORECASE)
-    if match:
-        name = match.group(1).strip()
-        name = re.sub(r'\s+', ' ', name)
-        words_to_skip = {"your", "my", "slice", "account", "bank", "upi", "card", "rs", "rupees", "inr", "customer", "user", "payment"}
-        if name.lower() not in words_to_skip and len(name) >= 3:
-            return name.title()
+    if not body:
+        return ""
+    
+    # Normalize spaces and strip HTML tags if present
+    body_clean = re.sub(r'<[^>]+>', ' ', body)
+    body_clean = re.sub(r'\s+', ' ', body_clean).strip()
+    
+    # We will search with multiple regex patterns. We order them from most specific to general.
+    patterns = [
+        # Explicit fields in tables or lists (e.g. "Payer: John Doe" or "Payer Name: John Doe")
+        r'(?:payer|sender|remitter)(?:\s+name)?\s*[:\-]\s*([a-zA-Z\s\.\-\&]{3,40})',
+        
+        # Sentences like "received from John Doe via UPI" or "transferred by John Doe"
+        # We allow an optional colon after from/by as well
+        r'\b(?:from|by)\s*:?\s*([a-zA-Z\s\.\-\&]{3,40})'
+    ]
+    
+    words_to_skip = {
+        "your", "my", "slice", "account", "bank", "upi", "card", "rs", "rupees", "inr", 
+        "customer", "user", "payment", "has", "been", "credited", "received", "transferred", 
+        "by", "via", "on", "in", "to"
+    }
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_clean, re.IGNORECASE):
+            name = match.group(1).strip()
+            cleaned_name = clean_extracted_name(name)
+            
+            if len(cleaned_name) >= 3 and cleaned_name.lower() not in words_to_skip:
+                return cleaned_name.title()
+                
     return ""
 
 def verify_amount_in_email(body: str, expected_amount: float) -> bool:
