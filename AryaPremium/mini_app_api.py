@@ -1517,40 +1517,36 @@ async def create_oxapay_order(payload: dict):
         logger.error(f"OxaPay network error: {oxapay_error}")
         raise HTTPException(status_code=502, detail=f"Failed to reach OxaPay: {oxapay_error}")
 
-    # OxaPay NEW API format (v1):
-    # { "data": { "track_id": "...", "payment_url": "https://..." }, "status": 200, "message": "..." }
-    # Old format was: { "result": 100, "payLink": "...", "trackId": "..." }
     logger.info(f"OxaPay raw response: {oxapay_result}")
 
-    # Support both old and new API formats
+    # --- OxaPay NEW API v1 format (2024+) ---
+    # Response: { "data": { "payment_url": "...", "track_id": "..." }, "status": 200, "message": "..." }
+    # --- OxaPay OLD API format ---
+    # Response: { "result": 100, "payLink": "...", "trackId": "..." }
+
+    # Extract from new API format first (data.payment_url, data.track_id)
+    data_obj  = oxapay_result.get("data") or {}
+    pay_link  = (data_obj.get("payment_url") or data_obj.get("pay_url")
+                 or oxapay_result.get("payLink") or oxapay_result.get("pay_link")
+                 or oxapay_result.get("paylink"))
+    track_id  = (data_obj.get("track_id") or data_obj.get("trackId")
+                 or oxapay_result.get("trackId") or oxapay_result.get("track_id"))
+
+    # Determine success: new API uses status==200, old API uses result==100
     status_code = oxapay_result.get("status") or oxapay_result.get("result")
     try:
         status_int = int(status_code) if status_code is not None else 0
     except (ValueError, TypeError):
         status_int = 0
 
-    # New format: data is nested inside "data" key
-    data_obj = oxapay_result.get("data") or {}
+    # Success = (status 200 or result 100) AND payLink present
+    is_success = (status_int in (100, 200)) and bool(pay_link)
 
-    # Extract pay_link — new format uses "payment_url", old uses "payLink"
-    pay_link = (
-        data_obj.get("payment_url")
-        or oxapay_result.get("payLink")
-        or oxapay_result.get("pay_link")
-        or oxapay_result.get("paylink")
-    )
-    # Extract track_id — new format uses "track_id", old uses "trackId"
-    track_id = (
-        data_obj.get("track_id")
-        or oxapay_result.get("trackId")
-        or oxapay_result.get("track_id")
-    )
+    if not is_success:
+        logger.error(f"OxaPay rejected (status={status_code}, payLink={pay_link!r}): {oxapay_result}")
+        raise HTTPException(status_code=502, detail=f"OxaPay error: {oxapay_result.get('message', 'Unknown')}")
 
-    if not pay_link:
-        logger.error(f"OxaPay: no payment_url in response (status={status_code}): {oxapay_result}")
-        raise HTTPException(status_code=502, detail=f"OxaPay error: {oxapay_result.get('message', 'No payment URL returned')}")
-
-    logger.info(f"OxaPay invoice OK: pay_link={pay_link} track_id={track_id}")
+    logger.info(f"OxaPay success: pay_link={pay_link} track_id={track_id}")
 
     # Store pending order in DB
     try:
@@ -1584,17 +1580,13 @@ async def oxapay_webhook(request: Request):
     except Exception:
         raise HTTPException(400, "Invalid JSON")
 
-    # Support both old format (trackId, status="Paid") and new format (track_id, status=200)
-    track_id = data.get("trackId") or data.get("track_id")
+    track_id = data.get("trackId") or data.get("track_id")  # new API uses track_id
     status   = data.get("status")
-    status_str = str(status).lower() if status is not None else ""
 
-    # New format sends status as integer 200; old format sends string "Paid"
-    is_paid = (status_str == "paid" or status == 200 or status == "200")
-
-    logger.info(f"OxaPay webhook received: track_id={track_id} status={status!r} is_paid={is_paid} data={data}")
-
-    if not is_paid or not track_id:
+    # OxaPay sends status as "Paid" (old) or "paid" (new) — normalize
+    status_lower = str(status).lower() if status else ""
+    if status_lower != "paid" or not track_id:
+        logger.info(f"OxaPay webhook ignored: status={status!r} track_id={track_id!r}")
         return {"success": False, "message": "Ignored or invalid status"}
 
     # Verify via OxaPay Inquiry API to prevent fake webhooks
@@ -1611,13 +1603,10 @@ async def oxapay_webhook(request: Request):
                 headers={"merchant_api_key": oxapay_key}
             )
             inquiry = r.json()
-            # New format: status in inquiry.data.status or inquiry.status
-            inq_data = inquiry.get("data") or {}
-            inq_status = (
-                str(inq_data.get("status", "")).lower()
-                or str(inquiry.get("status", "")).lower()
-            )
-            if inq_status not in ("paid", "200") and inquiry.get("status") != 200:
+            # New API: inquiry.data.status, Old API: inquiry.status
+            inq_data   = inquiry.get("data") or {}
+            inq_status = (inq_data.get("status") or inquiry.get("status") or "").lower()
+            if inq_status != "paid":
                 logger.warning(f"OxaPay verification failed: {track_id} → {inquiry}")
                 return {"success": False, "message": "Verification failed"}
     except Exception as e:
