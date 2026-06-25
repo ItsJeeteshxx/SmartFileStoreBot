@@ -1361,6 +1361,18 @@ import imaplib
 import email
 from email.header import decode_header
 import re
+import hashlib
+
+def extract_payer_name_from_email(body: str) -> str:
+    """Helper to extract sender name from slice email notifications."""
+    match = re.search(r'from\s+([a-zA-Z\s\.\-\&]{3,40})(?:\s*\(upi|\s+upi|\s+via|\s+on\s+\d|\s+in\s+your|\r|\n|\.|$)', body, re.IGNORECASE)
+    if match:
+        name = match.group(1).strip()
+        name = re.sub(r'\s+', ' ', name)
+        words_to_skip = {"your", "my", "slice", "account", "bank", "upi", "card", "rs", "rupees", "inr", "customer", "user", "payment"}
+        if name.lower() not in words_to_skip and len(name) >= 3:
+            return name.title()
+    return ""
 
 def verify_amount_in_email(body: str, expected_amount: float) -> bool:
     # Normalize body: replace newlines/tabs with space
@@ -1548,6 +1560,7 @@ async def verify_upi_utr(payload: dict):
     if not gmail_enabled and gmail_user and gmail_password:
         gmail_enabled = True
 
+    payer_name = ""
     if gmail_enabled:
         if not gmail_user or not gmail_password:
             logger.error("Gmail credentials are not configured in settings/env!")
@@ -1588,6 +1601,7 @@ async def verify_upi_utr(payload: dict):
                             if utr in body:
                                 if verify_amount_in_email(body, expected_total):
                                     verified = True
+                                    payer_name = extract_payer_name_from_email(body)
                                     break
                                 else:
                                     amount_mismatch = True
@@ -1633,10 +1647,17 @@ async def verify_upi_utr(payload: dict):
     if not oid:
         oid = _make_order_id(str(telegram_id))
     tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
+    
+    # Generate deterministic invoice number using order ID hash
+    inv_hash = int(hashlib.md5(str(oid).encode()).hexdigest(), 16) % 100000
+    invoice_number = f"INV/{datetime.now().year}/{inv_hash:05d}"
+
     order_doc = {
         "order_id":            oid,
         "user_id":             tg_id_int if tg_id_int else telegram_id,
         "username":            username,
+        "payer_name":          payer_name if payer_name else username,
+        "invoice_number":      invoice_number,
         "story_ids":           story_ids,
         "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
         "subtotal":            subtotal,
@@ -1661,7 +1682,7 @@ async def verify_upi_utr(payload: dict):
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
 
-    return {"success": True, "message": "UPI payment verified successfully!", "order_id": oid}
+    return {"success": True, "message": "UPI payment verified successfully!", "order_id": oid, "invoice_number": invoice_number, "payer_name": payer_name}
 
 
 @api_router.post("/send-receipt-telegram")
