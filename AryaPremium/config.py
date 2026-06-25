@@ -84,3 +84,4 @@ class Config:
     REFUND_POLICY_URL = _env("REFUND_POLICY_URL", "")
     OXAPAY_KEY = _env("OXAPAY_KEY", "")  # OxaPay merchant key (empty = disabled)
     OXAPAY_ENV = _env("OXAPAY_ENV", "production")  # 'sandbox' or 'production'
+    MINI_APP_NAME = _env("MINI_APP_NAME", "apminibyarya")
