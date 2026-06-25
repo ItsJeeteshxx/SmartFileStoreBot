@@ -29,9 +29,8 @@ FALLBACK_PAYMENTS = {
         "amount": 144,
         "date": "14 May 2026, 04:32 UTC",
         "first_name": "Arvind Bhardwaj",
-        "email": "arvindbhardwaj@gmail.com",
+        "email": "",
         "contact": "+917742732253",
-        "country": "Domestic (India)",
         "method": "Mastercard Debit Card (Razorpay)",
         "order_id": "OD_7408800968_5C1B92"
     },
@@ -41,7 +40,6 @@ FALLBACK_PAYMENTS = {
         "first_name": "Mariam Khan",
         "email": "mariam.khan91@gmail.com",
         "contact": "+34631045694",
-        "country": "International (Export)",
         "method": "Visa Debit Card (Razorpay)",
         "order_id": "OD_5830219482_E5C9A3"
     },
@@ -51,7 +49,6 @@ FALLBACK_PAYMENTS = {
         "first_name": "Gurvanshdeep Singh",
         "email": "gurvanshdeep.singh@gmail.com",
         "contact": "+15067213102",
-        "country": "International (Export)",
         "method": "Visa Credit Card (Razorpay)",
         "order_id": "OD_6019384918_D3B2C9"
     }
@@ -122,7 +119,6 @@ def generate_clean_invoice(
     first_name: str,
     email: str,
     contact: str,
-    country: str,
     method: str,
     amount: int
 ) -> str:
@@ -207,8 +203,9 @@ def generate_clean_invoice(
         draw.text((480, y_offset), first_name, fill="#0f172a", font=font_bold)
         y_offset += 25
         
-    draw.text((480, y_offset), f"Email: {email}", fill="#334155", font=font_normal)
-    y_offset += 20
+    if email and str(email).strip().lower() not in ["none", "", "n/a", "null", "—"]:
+        draw.text((480, y_offset), f"Email: {email}", fill="#334155", font=font_normal)
+        y_offset += 20
     
     if contact and str(contact).strip().lower() not in ["none", "", "n/a", "null"]:
         draw.text((480, y_offset), f"Phone: {contact}", fill="#334155", font=font_normal)
@@ -315,7 +312,7 @@ async def main():
             # Resolve customer name and email (clean void@razorpay.com details)
             if pid == "pay_T2AiMzy3nxbioy":
                 first_name = "Arvind Bhardwaj"
-                email = "arvindbhardwaj@gmail.com"
+                email = ""
                 contact = "+917742732253"
             elif pid == "pay_T4Jge4uhIfT97q":
                 first_name = card_name or "Mariam Khan"
@@ -400,10 +397,6 @@ async def main():
             else:
                 method = m or "Razorpay Payment"
                 
-            # Place of supply
-            is_intl = rzp_data.get("international", False)
-            country = "International (Export)" if is_intl else "Domestic (India)"
-            
         else:
             # B. If Razorpay API fails/not found, use fallback dictionary
             print(f"⚠ Warning: Payment ID {pid} not found/failed in Razorpay API. Using fallback values...")
@@ -411,7 +404,6 @@ async def main():
             first_name = fallback["first_name"]
             email = fallback["email"]
             contact = fallback.get("contact")
-            country = fallback["country"]
             method = fallback["method"]
             amount = fallback["amount"]
             order_date = fallback["date"]
@@ -432,7 +424,6 @@ async def main():
                 first_name=first_name,
                 email=email,
                 contact=contact,
-                country=country,
                 method=method,
                 amount=int(amount)
             )
