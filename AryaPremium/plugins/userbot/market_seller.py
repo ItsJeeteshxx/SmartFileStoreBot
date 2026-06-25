@@ -2470,7 +2470,9 @@ async def _process_start(client, message):
 
                 # Redirect to Mini App
 
-                wa_url = f"https://t.me/{Config.BOT_USERNAME}/{Config.MINI_APP_NAME}?startapp=story_{story_id}"
+                bot_username = client.me.username
+
+                wa_url = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{story_id}"
 
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ Open in Mini App / मिनी ऐप खोलें", url=wa_url)]])
 

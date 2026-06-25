@@ -1469,7 +1469,7 @@ async def market_callback(client, query):
             
             bot_un = story.get("bot_username", "Bot")
             if _mini_app_on:
-                deep_link = f"https://t.me/{Config.BOT_USERNAME}/{Config.MINI_APP_NAME}?startapp=story_{s_id}"
+                deep_link = f"https://t.me/{bot_un}/apminibyarya?startapp=story_{s_id}"
                 msg_txt = "📱 **Mini App Link:**\n"
             else:
                 deep_link = f"https://t.me/{bot_un}?start=buy_{s_id}"
@@ -2354,7 +2354,7 @@ async def _add_story_flow(client, user_id):
         _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
         _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
         if _mini_app_on:
-            deep_link = f"https://t.me/{Config.BOT_USERNAME}/{Config.MINI_APP_NAME}?startapp=story_{story_id}"
+            deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
         else:
             deep_link = f"https://t.me/{sj['bot_username']}?start=buy_{story_id}"
         
@@ -2500,7 +2500,7 @@ async def _edit_story_flow(client, user_id, s_id, action):
                             _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
                             _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
                             if _mini_app_on:
-                                buy_link = f"https://t.me/{Config.BOT_USERNAME}/{Config.MINI_APP_NAME}?startapp=story_{s_id}"
+                                buy_link = f"https://t.me/{story.get('bot_username')}/apminibyarya?startapp=story_{s_id}"
                             else:
                                 buy_link = f"https://t.me/{story.get('bot_username')}?start=buy_{s_id}"
                             kb_buy = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ VIEW & BUY STORY", url=buy_link)]])

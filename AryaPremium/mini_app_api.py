@@ -922,7 +922,7 @@ async def create_payment_link(payload: dict):
             "notify": {"sms": False, "email": False},
             "reminder_enable": False,
             "reference_id": order_id,
-            "callback_url": f"https://t.me/{bot_username}/{Config.MINI_APP_NAME}",  # Returns to WebApp after payment
+            "callback_url": f"https://t.me/{bot_username}/app",  # Returns to WebApp after payment
             "callback_method": "get",
         })
         
@@ -1299,7 +1299,7 @@ async def razorpay_callback(
     asyncio.create_task(record_purchased_stories(order_doc))
 
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
-    return RedirectResponse(url=f"https://t.me/{bot_username}/{Config.MINI_APP_NAME}", status_code=302)
+    return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
 
 
 # ===== Razorpay: Payment Link Webhook =====
@@ -1509,7 +1509,7 @@ async def create_oxapay_order(payload: dict):
                     "description": f"{len(valid_stories)} Arya Premium stories for {customer_name}",
                     "customer_name": customer_name,
                     "callback_url": "https://aryapremium.store/api/oxapay-webhook",
-                    "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/{Config.MINI_APP_NAME}",
+                    "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                     "sandbox": is_sandbox,
                 }
             )
@@ -1704,7 +1704,7 @@ async def oxapay_webhook(request: Request):
             )
             keyboard = {"inline_keyboard": [[{
                 "text": "📚 Open Arya Premium",
-                "url": f"https://t.me/{bot_username}/{Config.MINI_APP_NAME}"
+                "url": f"https://t.me/{bot_username}/app"
             }]]}
             import aiohttp as _aiohttp
             async with _aiohttp.ClientSession() as _sess:
