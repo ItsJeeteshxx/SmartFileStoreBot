@@ -1045,6 +1045,7 @@ async def check_payment_link(id: str, payload: dict):
             return {
                 "success": True,
                 "status": "paid",
+                "order_id": order["order_id"] if order else "",
                 "checkout_url": f"https://t.me/{bot_username}?start=success_{order['order_id']}" if order else ""
             }
             
@@ -1606,7 +1607,9 @@ async def verify_upi_utr(payload: dict):
     })
 
     # 6. Create order doc
-    oid = _make_order_id(str(telegram_id))
+    oid = payload.get("order_id")
+    if not oid:
+        oid = _make_order_id(str(telegram_id))
     tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
     order_doc = {
         "order_id":            oid,
@@ -1636,7 +1639,58 @@ async def verify_upi_utr(payload: dict):
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
 
-    return {"success": True, "message": "UPI payment verified successfully!"}
+    return {"success": True, "message": "UPI payment verified successfully!", "order_id": oid}
+
+
+@api_router.post("/send-receipt-telegram")
+async def send_receipt_telegram(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    pdf_base64 = payload.get("pdf_base64")
+    order_id = payload.get("order_id", "Receipt")
+    
+    if not telegram_id or not pdf_base64:
+        raise HTTPException(status_code=400, detail="Missing telegram_id or pdf_base64")
+        
+    import base64
+    try:
+        pdf_bytes = base64.b64decode(pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PDF data")
+        
+    # Resolve correct bot token for the user
+    token = await get_customer_bot_token(int(telegram_id))
+    
+    if not token:
+        raise HTTPException(status_code=500, detail="Bot token is not configured on the server.")
+        
+    import httpx
+    # Prepare multipart/form-data for Telegram sendDocument API
+    files = {
+        "document": (f"Receipt-{order_id}.pdf", pdf_bytes, "application/pdf")
+    }
+    data = {
+        "chat_id": int(telegram_id),
+        "caption": f"📄 Here is your receipt for Order ID: <code>{order_id}</code>.\nThank you for choosing Arya Premium!",
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{token}/sendDocument",
+                data=data,
+                files=files
+            )
+            resp_data = resp.json()
+            if not resp_data.get("ok"):
+                error_desc = resp_data.get("description", "Unknown error")
+                logger.error(f"Telegram sendDocument failed: {error_desc}")
+                raise HTTPException(status_code=500, detail=f"Telegram API Error: {error_desc}")
+                
+        return {"success": True, "message": "Receipt sent to Telegram chat!"}
+    except Exception as e:
+        logger.error(f"Failed to send receipt via Telegram: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ===== Razorpay: Payment Link Webhook =====
