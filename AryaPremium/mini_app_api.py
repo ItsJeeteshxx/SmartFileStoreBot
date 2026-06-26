@@ -117,6 +117,17 @@ async def lifespan(app: FastAPI):
             await arya_db.db.premium_ban_activity.create_index([("timestamp", -1)], background=True)
             
             logger.info("✅ Database indexes verified/created in background")
+            
+            # Migrate legacy flagged bans to strictly banned status
+            try:
+                mig_res = await arya_db.db.premium_bans.update_many(
+                    {"status": "flagged"},
+                    {"$set": {"status": "banned"}}
+                )
+                if mig_res.modified_count > 0:
+                    logger.info(f"✅ Database Migration: Updated {mig_res.modified_count} flagged records to strictly banned")
+            except Exception as mig_err:
+                logger.warning(f"Failed to migrate flagged records: {mig_err}")
         except Exception as idx_err:
             logger.warning(f"Failed to create indexes: {idx_err}")
             
@@ -6034,12 +6045,12 @@ async def ban_guard_middleware(request: Request, call_next):
                     else:
                         user_name = f"Alt of User {banned_by_ip['_id']}"
                         
-                    # Auto-flag this Telegram ID
+                    # Auto-ban this Telegram ID (strictly banned)
                     await db.db.premium_bans.update_one(
                         {"_id": tg_id},
                         {"$set": {
                             "reason": reason,
-                            "status": "flagged",
+                            "status": "banned",
                             "banned_at": datetime.now(timezone.utc),
                             "name": user_name
                         }, "$addToSet": update_fields if update_fields else {"ips": ip}},

@@ -105,13 +105,13 @@ async def verify():
         alt_name = f"Alt of User {banned_by_ip['_id']}"
         print(f"Alt account detected on blocked IP! Auto-banning new Telegram ID {alt_tg_id}...")
         
-        # Auto-flag in bans collection
+        # Auto-ban in bans collection
         await db.db.premium_bans.update_one(
             {"_id": alt_tg_id},
             {"$set": {
                 "ips": [test_ip_blocked],
                 "reason": reason,
-                "status": "flagged",
+                "status": "banned",
                 "banned_at": datetime.now(timezone.utc),
                 "name": alt_name
             }},
@@ -143,7 +143,7 @@ async def verify():
     print(f"Delivery bot record for alt user {alt_tg_id}: {new_user_doc}")
     
     assert new_banned_doc is not None, "Rule B failed: Alt user was not added to premium_bans!"
-    assert new_banned_doc["status"] == "flagged", "Rule B failed: Alt user status should be 'flagged'!"
+    assert new_banned_doc["status"] == "banned", "Rule B failed: Alt user status should be 'banned'!"
     assert new_user_doc is not None, "Rule B failed: Alt user record was not propagated to users collection!"
     assert new_user_doc["ban_status"]["is_banned"] is True, "Rule B failed: Alt user is_banned should be True!"
     print("✅ Rule B (Alt-Account Evasion) works perfectly! New ID successfully linked and auto-banned across Delivery Bot DB.")

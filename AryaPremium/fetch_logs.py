@@ -11,10 +11,15 @@ async def fetch_logs():
     client = AsyncIOMotorClient(mongo_uri)
     db = client.pocket_arya_store
     
-    print("--- AUTOMATIC BANS (FLAGGED USERS) ---")
-    flagged = await db.premium_bans.find({"status": "flagged"}).to_list(length=100)
+    print("--- AUTOMATIC BANS (AUTO-BANNED/FLAGGED USERS) ---")
+    flagged = await db.premium_bans.find({
+        "$or": [
+            {"status": "flagged"},
+            {"status": "banned", "reason": {"$regex": "^Auto-ban"}}
+        ]
+    }).to_list(length=100)
     if not flagged:
-        print("No auto-banned (flagged) users found.")
+        print("No auto-banned users found.")
     for u in flagged:
         print(f"ID: {u.get('_id')} | Name: {u.get('name')} | Reason: {u.get('reason')} | IPs: {u.get('ips')}")
         
@@ -25,10 +30,15 @@ async def fetch_logs():
     for a in activity:
         print(f"Time: {a.get('timestamp')} | Action: {a.get('action')} | Reason: {a.get('reason')}")
 
-    # Remove the auto-flags to unban the user's alt accounts!
-    print("\n--- CLEARING AUTO-FLAGS ---")
-    result = await db.premium_bans.delete_many({"status": "flagged"})
-    print(f"Cleared {result.deleted_count} auto-flagged users from the database.")
+    # Remove the auto-flags/auto-bans to unban the user's alt accounts!
+    print("\n--- CLEARING AUTO-BANS ---")
+    result = await db.premium_bans.delete_many({
+        "$or": [
+            {"status": "flagged"},
+            {"status": "banned", "reason": {"$regex": "^Auto-ban"}}
+        ]
+    })
+    print(f"Cleared {result.deleted_count} auto-banned/flagged users from the database.")
     
     await client.close()
 
