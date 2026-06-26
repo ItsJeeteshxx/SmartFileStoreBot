@@ -2765,7 +2765,7 @@ async def delete_admin_story(story_id: str, telegram_id: str):
 # SUPPORT MANAGEMENT
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/admin/support")
-async def get_admin_support(telegram_id: str):
+async def get_admin_support(request: Request, telegram_id: str):
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
@@ -2773,10 +2773,17 @@ async def get_admin_support(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        cursor = arya_db.db.premium_feedback.find({
-            "status": {"$ne": "resolved"},
-            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
-        }).sort("created_at", -1).limit(100)
+        
+        is_owner = await is_request_owner(request)
+        query_filter = {
+            "status": {"$ne": "resolved"}
+        }
+        if is_owner:
+            query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
+        else:
+            query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
+            
+        cursor = arya_db.db.premium_feedback.find(query_filter).sort("created_at", -1).limit(100)
         tickets = []
         async for doc in cursor:
             tickets.append({
@@ -3495,45 +3502,80 @@ async def admin_unban_user(payload: dict):
         if not target_id:
             raise HTTPException(status_code=400, detail="Missing target_id")
             
-        try:
-            target_id_int = int(target_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid target Telegram ID")
-            
         arya_db = app.state.db
+        target_str = str(target_id).strip()
         
-        # Find existing ban to log its name/details
-        ban_doc = await arya_db.db.premium_bans.find_one({"_id": target_id_int})
-        name = ban_doc.get("name", f"User {target_id_int}") if ban_doc else f"User {target_id_int}"
+        is_ip = False
+        is_device = False
+        is_tg_id = False
         
-        # Remove ban from premium_bans collection
-        await arya_db.db.premium_bans.delete_one({"_id": target_id_int})
-        
-        # Remove ban from main bot users collection so they can use Delivery Bot again!
-        await arya_db.db.users.update_one(
-            {"id": target_id_int},
-            {"$set": {"ban_status": {"is_banned": False, "ban_reason": ""}}}
-        )
-        
-        # Clear in-memory abuse strike counts for clean state
-        try:
-            from plugins.share_bot import _abuse_strikes, _abuse_last_delivery
-            _abuse_strikes.pop(target_id_int, None)
-            _abuse_last_delivery.pop(target_id_int, None)
-        except Exception:
-            pass
+        if "." in target_str or ":" in target_str:
+            is_ip = True
+        else:
+            try:
+                target_id_int = int(target_str)
+                is_tg_id = True
+            except ValueError:
+                is_device = True
+                
+        if is_ip:
+            res = await arya_db.db.premium_bans.update_many(
+                {"ips": target_str},
+                {"$pull": {"ips": target_str}}
+            )
+            from utils_ban_logger import log_premium_ban_event
+            asyncio.create_task(log_premium_ban_event(
+                user_id=0,
+                name=f"IP {target_str}",
+                action="UNBANNED",
+                reason=f"IP unbanned by administrator (removed from {res.modified_count} profiles)",
+                ips=[target_str]
+            ))
+            return {"success": True, "message": f"Successfully unbanned IP {target_str} (removed from {res.modified_count} profiles)"}
             
-        # Log to logs channel (Strictly No Emojis)
-        from utils_ban_logger import log_premium_ban_event
-        asyncio.create_task(log_premium_ban_event(
-            user_id=target_id_int,
-            name=name,
-            action="UNBANNED",
-            reason="Unbanned by administrator",
-            ips=[]
-        ))
-        
-        return {"success": True, "message": f"Successfully unbanned User {target_id_int}"}
+        elif is_device:
+            res = await arya_db.db.premium_bans.update_many(
+                {"device_ids": target_str},
+                {"$pull": {"device_ids": target_str}}
+            )
+            from utils_ban_logger import log_premium_ban_event
+            asyncio.create_task(log_premium_ban_event(
+                user_id=0,
+                name=f"Device {target_str}",
+                action="UNBANNED",
+                reason=f"Device ID unbanned by administrator (removed from {res.modified_count} profiles)",
+                ips=[]
+            ))
+            return {"success": True, "message": f"Successfully unbanned Device {target_str} (removed from {res.modified_count} profiles)"}
+            
+        elif is_tg_id:
+            ban_doc = await arya_db.db.premium_bans.find_one({"_id": target_id_int})
+            name = ban_doc.get("name", f"User {target_id_int}") if ban_doc else f"User {target_id_int}"
+            
+            await arya_db.db.premium_bans.delete_one({"_id": target_id_int})
+            
+            await arya_db.db.users.update_one(
+                {"id": target_id_int},
+                {"$set": {"ban_status": {"is_banned": False, "ban_reason": ""}}}
+            )
+            
+            try:
+                from plugins.share_bot import _abuse_strikes, _abuse_last_delivery
+                _abuse_strikes.pop(target_id_int, None)
+                _abuse_last_delivery.pop(target_id_int, None)
+            except Exception:
+                pass
+                
+            from utils_ban_logger import log_premium_ban_event
+            asyncio.create_task(log_premium_ban_event(
+                user_id=target_id_int,
+                name=name,
+                action="UNBANNED",
+                reason="Unbanned by administrator",
+                ips=ban_doc.get("ips", []) if ban_doc else []
+            ))
+            return {"success": True, "message": f"Successfully unbanned User {target_id_int}"}
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4932,7 +4974,7 @@ async def get_location_analytics(telegram_id: str, days: int = 30):
 # Stores: mini_app_enabled (bool), tnc_enabled (bool)
 # ─────────────────────────────────────────────────────────────────────────────
 @api_router.get("/admin/settings")
-async def get_admin_settings(telegram_id: str):
+async def get_admin_settings(request: Request, telegram_id: str):
     """Returns current feature toggle settings for the Mini App."""
     from AryaPremium.config import Config
     try:
@@ -4941,6 +4983,8 @@ async def get_admin_settings(telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
         arya_db = app.state.db
         cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        
+        is_owner_flag = await is_request_owner(request)
         
         # Load from premium_promo_codes collection
         db_promos = await arya_db.db.premium_promo_codes.find().to_list(length=1000)
@@ -4978,6 +5022,7 @@ async def get_admin_settings(telegram_id: str):
                 "replicate_api_key": cfg.get("replicate_api_key", ""),
                 "fal_api_key": cfg.get("fal_api_key", ""),
                 "stability_api_key": cfg.get("stability_api_key", ""),
+                "is_owner": is_owner_flag,
             }
         }
     except HTTPException:
@@ -5910,6 +5955,75 @@ async def admin_logout(request: Request):
         )
     return {"success": True, "message": "Logged out"}
 
+async def is_request_owner(request: Request) -> bool:
+    """Helper to verify if a request is from a supreme owner (via verified Telegram ID or active owner session email)."""
+    db = getattr(app.state, "db", None)
+    if not db:
+        return False
+
+    # Check X-Telegram-Init-Data
+    init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
+    if init_data:
+        from AryaPremium.config import Config
+        bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+        tokens_to_check = [bot_token] if bot_token else []
+        try:
+            bots = await db.db.premium_bots.find().to_list(length=None)
+            for b in bots:
+                tok = b.get('token')
+                if tok and tok not in tokens_to_check:
+                    tokens_to_check.append(tok)
+        except Exception:
+            pass
+
+        for tok in tokens_to_check:
+            valid_data = verify_telegram_web_app_data(init_data, tok)
+            if valid_data:
+                try:
+                    import json
+                    user_data = json.loads(valid_data.get("user", "{}"))
+                    validated_id = user_data.get("id")
+                    if validated_id and int(validated_id) in Config.OWNER_IDS:
+                        return True
+                except Exception:
+                    pass
+                break
+
+    # Check X-Admin-Session email in OWNER_EMAILS env variable
+    session_token = request.headers.get("X-Admin-Session")
+    if session_token:
+        session = await db.db.admin_sessions.find_one({
+            "session_token": session_token,
+            "active": True,
+            "expires_at": {"$gt": datetime.now(timezone.utc)}
+        })
+        if session:
+            email = session.get("email", "").strip().lower()
+            owner_emails_env = os.environ.get("OWNER_EMAILS", "")
+            owner_emails = [e.strip().lower() for e in owner_emails_env.replace(",", " ").split() if e.strip()]
+            if email and email in owner_emails:
+                return True
+
+    # Fallback to query parameter telegram_id check (ONLY if they have an active admin session, to prevent spoofing)
+    tg_id_str = request.query_params.get("telegram_id")
+    if tg_id_str:
+        try:
+            tg_id = int(tg_id_str)
+            from AryaPremium.config import Config
+            if tg_id in Config.OWNER_IDS:
+                if session_token:
+                    session = await db.db.admin_sessions.find_one({
+                        "session_token": session_token,
+                        "active": True,
+                        "expires_at": {"$gt": datetime.now(timezone.utc)}
+                    })
+                    if session:
+                        return True
+        except ValueError:
+            pass
+
+    return False
+
 @app.middleware("http")
 async def ban_guard_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -6014,8 +6128,23 @@ async def ban_guard_middleware(request: Request, call_next):
                 # No initData provided (old frontend or direct API call).
                 pass
 
-            # 1. SUPREME OWNER EXEMPTION
+            # 1. SUPREME OWNER / ADMIN EXEMPTION
+            is_exempt = False
             if tg_id and Config.OWNER_IDS and tg_id in Config.OWNER_IDS:
+                is_exempt = True
+            else:
+                # Fallback: check if the request contains a valid admin session
+                session_token = request.headers.get("X-Admin-Session")
+                if session_token:
+                    session = await db.db.admin_sessions.find_one({
+                        "session_token": session_token,
+                        "active": True,
+                        "expires_at": {"$gt": datetime.now(timezone.utc)}
+                    })
+                    if session:
+                        is_exempt = True
+            
+            if is_exempt:
                 response = await call_next(request)
                 return response
             
