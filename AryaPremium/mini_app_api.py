@@ -2021,10 +2021,7 @@ async def get_my_purchases(telegram_id: str):
         
         # In AryaPremium, purchases are in user.purchases
         user = await arya_db.db.users.find_one({"id": user_id_int})
-        if not user:
-            return {"success": True, "data": []}
-            
-        purchased_story_ids = user.get("purchases", [])
+        purchased_story_ids = user.get("purchases", []) if user else []
         
         purchased_items = []
         for story_id in purchased_story_ids:
@@ -2047,16 +2044,112 @@ async def get_my_purchases(telegram_id: str):
                                 "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
                                 "source": order.get("source", "miniapp"),
                                 "status": order.get("status"),
-                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", ""))
+                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
+                                "resolved_by": order.get("resolved_by")
                             }
                         else:
-                            formatted["order_details"] = None
+                            # Try to find in premium_purchases
+                            purchase_rec = None
+                            try:
+                                purchase_rec = await arya_db.db.premium_purchases.find_one({
+                                    "user_id": {"$in": [user_id_int, str(user_id_int)]},
+                                    "story_id": ObjectId(story_id)
+                                })
+                            except Exception:
+                                pass
+                                
+                            if purchase_rec:
+                                p_at = purchase_rec.get("purchased_at") or purchase_rec.get("created_at")
+                                formatted["order_details"] = {
+                                    "order_id": purchase_rec.get("order_id") or "",
+                                    "source": purchase_rec.get("source", "imported"),
+                                    "status": "paid",
+                                    "created_at": p_at.isoformat() if isinstance(p_at, datetime) else str(p_at or "")
+                                }
+                            else:
+                                formatted["order_details"] = None
 
                         purchased_items.append(formatted)
             except Exception:
                 pass
                 
+        # Also query for recent pending/failed/processing/review orders (recent within 5m, under review/rejected within 7d)
+        from datetime import timedelta
+        # Broad range query using naive UTC
+        eight_days_ago_naive = datetime.utcnow() - timedelta(days=8)
+        
+        recent_orders_cursor = arya_db.db.orders.find({
+            "user_id": {"$in": [user_id_int, str(user_id_int)]},
+            "status": {"$in": ["pending", "failed", "processing", "review_pending", "review_rejected"]},
+            "created_at": {"$gte": eight_days_ago_naive}
+        })
+        
+        async for order in recent_orders_cursor:
+            story_ids = order.get("story_ids", [])
+            if isinstance(story_ids, str):
+                story_ids = [story_ids]
+            
+            status = order.get("status")
+            created_at = order.get("created_at")
+            if not isinstance(created_at, datetime):
+                continue
+                
+            # Normalize to naive UTC datetime
+            if created_at.tzinfo is not None:
+                created_at_utc = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                created_at_utc = created_at
+                
+            now_naive = datetime.utcnow()
+            
+            # Detect and adjust if DB saved local IST time as naive datetime
+            if created_at_utc > now_naive + timedelta(minutes=1):
+                created_at_utc = created_at_utc - timedelta(hours=5, minutes=30)
+                
+            age = now_naive - created_at_utc
+            
+            # Check timeouts:
+            # - pending, failed, processing: 5 minutes
+            # - review_rejected: 24 hours
+            # - review_pending: 7 days
+            if status in ["pending", "failed", "processing"]:
+                if age > timedelta(minutes=5):
+                    continue
+            elif status == "review_rejected":
+                if age > timedelta(hours=24):
+                    continue
+            elif status == "review_pending":
+                if age > timedelta(days=7):
+                    continue
+            
+            for story_id in story_ids:
+                if story_id in purchased_story_ids:
+                    continue  # Already successfully purchased and shown
+                
+                try:
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+                    if story:
+                        formatted = _format_story(story)
+                        if formatted:
+                            formatted["story_id"] = formatted["id"]
+                            formatted["temp_order"] = True
+                            formatted["order_details"] = {
+                                "order_id": order.get("order_id") or str(order.get("_id")),
+                                "source": order.get("source", "miniapp"),
+                                "status": order.get("status", "pending"),
+                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
+                                "review_message": order.get("review_message"),
+                                "review_screenshot": order.get("review_screenshot"),
+                                "reject_reason": order.get("reject_reason")
+                            }
+                            purchased_items.append(formatted)
+                except Exception:
+                    pass
+                    
         return {"success": True, "data": purchased_items}
+    except Exception as e:
+        logger.error(f"Failed to fetch my-purchases: {e}")
+        return {"success": False, "data": []}
     except Exception as e:
         logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}

@@ -2833,26 +2833,52 @@ async def get_my_purchases(telegram_id: str):
                 
         # Also query for recent pending/failed/processing/review orders (recent within 5m, under review/rejected within 7d)
         from datetime import timedelta
-        five_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        # Broad range query using naive UTC
+        eight_days_ago_naive = datetime.utcnow() - timedelta(days=8)
+        
         recent_orders_cursor = arya_db.db.orders.find({
             "user_id": {"$in": [user_id_int, str(user_id_int)]},
-            "$or": [
-                {
-                    "status": {"$in": ["pending", "failed", "processing"]},
-                    "created_at": {"$gte": five_minutes_ago}
-                },
-                {
-                    "status": {"$in": ["review_pending", "review_rejected"]},
-                    "created_at": {"$gte": seven_days_ago}
-                }
-            ]
+            "status": {"$in": ["pending", "failed", "processing", "review_pending", "review_rejected"]},
+            "created_at": {"$gte": eight_days_ago_naive}
         })
         
         async for order in recent_orders_cursor:
             story_ids = order.get("story_ids", [])
             if isinstance(story_ids, str):
                 story_ids = [story_ids]
+            
+            status = order.get("status")
+            created_at = order.get("created_at")
+            if not isinstance(created_at, datetime):
+                continue
+                
+            # Normalize to naive UTC datetime
+            if created_at.tzinfo is not None:
+                created_at_utc = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                created_at_utc = created_at
+                
+            now_naive = datetime.utcnow()
+            
+            # Detect and adjust if DB saved local IST time as naive datetime
+            if created_at_utc > now_naive + timedelta(minutes=1):
+                created_at_utc = created_at_utc - timedelta(hours=5, minutes=30)
+                
+            age = now_naive - created_at_utc
+            
+            # Check timeouts:
+            # - pending, failed, processing: 5 minutes
+            # - review_rejected: 24 hours
+            # - review_pending: 7 days
+            if status in ["pending", "failed", "processing"]:
+                if age > timedelta(minutes=5):
+                    continue
+            elif status == "review_rejected":
+                if age > timedelta(hours=24):
+                    continue
+            elif status == "review_pending":
+                if age > timedelta(days=7):
+                    continue
             
             for story_id in story_ids:
                 if story_id in purchased_story_ids:
