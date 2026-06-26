@@ -71,13 +71,38 @@ async def get_all_valid_bot_tokens(db) -> list:
     except Exception as e:
         logger.warning(f"Failed to load PremConfig tokens: {e}")
 
-    # 2. Env config tokens (direct env variable)
+    # 2. Env config tokens (direct env variable & direct .env file parse)
+    tokens_from_env = []
     add_tokens_env = os.environ.get("ADDITIONAL_BOT_TOKENS", "")
     if add_tokens_env:
-        for tok in add_tokens_env.replace(",", " ").split():
-            tok = tok.strip()
-            if tok and tok not in tokens_to_check:
-                tokens_to_check.append(tok)
+        tokens_from_env.extend(add_tokens_env.replace(",", " ").split())
+        
+    try:
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.basename(this_dir) == "AryaPremium":
+            parent_dir = os.path.dirname(this_dir)
+        else:
+            parent_dir = this_dir
+        paths = [
+            os.path.join(this_dir, ".env"),
+            os.path.join(parent_dir, ".env")
+        ]
+        for p in paths:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "ADDITIONAL_BOT_TOKENS" in line and "=" in line:
+                            _, val = line.split("=", 1)
+                            val = val.strip().strip("'").strip('"')
+                            tokens_from_env.extend(val.replace(",", " ").split())
+    except Exception:
+        pass
+
+    for tok in tokens_from_env:
+        tok = tok.strip()
+        if tok and tok not in tokens_to_check:
+            tokens_to_check.append(tok)
 
     # 3. Dynamic loading of root config
     root_db_name = "arya"
