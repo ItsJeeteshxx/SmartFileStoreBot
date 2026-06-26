@@ -70,7 +70,10 @@ def translate_to_english(text: str) -> str:
 async def _get_groq_key() -> str | None:
     """Retrieve the Groq API key from DB config."""
     try:
-        from database import db
+        try:
+            from AryaPremium.database import db
+        except ImportError:
+            from database import db
         val = await db.get_config("groq_api_key")
         return val.strip() if val and isinstance(val, str) else None
     except Exception:
@@ -251,8 +254,12 @@ async def _safe_send_log(client, channel_id: int, text: str, photo_path: str = N
 
 async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, method: str,
                       receipt_id: str = "", photo_path: str = None, username: str = "", pay_link: str = "", order_id: str = "", user_last_name: str = ""):
-    from config import Config
-    from database import db
+    try:
+        from AryaPremium.config import Config
+        from AryaPremium.database import db
+    except ImportError:
+        from config import Config
+        from database import db
     if not getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or not db.mgmt_client: return
     try:
         if order_id:
@@ -340,8 +347,12 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
         import logging; logging.getLogger(__name__).error(f"Payment log error: {e}")
 
 async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_name: str, d_type: str, status: str, username: str = "", order_id: str = "", user_last_name: str = ""):
-    from config import Config
-    from database import db
+    try:
+        from AryaPremium.config import Config
+        from AryaPremium.database import db
+    except ImportError:
+        from config import Config
+        from database import db
     if not getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or not db.mgmt_client: return
     try:
         from datetime import datetime, timezone, timedelta
@@ -399,8 +410,12 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
         import logging; logging.getLogger(__name__).error(f"Delivery log error: {e}")
 
 async def log_arya_event(event_type: str, user_id: int, user_info: dict, details: str):
-    from config import Config
-    from database import db
+    try:
+        from AryaPremium.config import Config
+        from AryaPremium.database import db
+    except ImportError:
+        from config import Config
+        from database import db
     if not getattr(Config, "ARYA_LOGS_CHANNEL", None) or not db.mgmt_client: return
     try:
         from datetime import datetime, timezone, timedelta

@@ -1,5 +1,8 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from config import Config
+try:
+    from AryaPremium.config import Config
+except ImportError:
+    from config import Config
 import logging
 from datetime import datetime, timezone
 

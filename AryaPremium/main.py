@@ -50,8 +50,12 @@ except Exception as e:
 # -------------------------------------------
 
 from pyrogram import Client, compose, filters
-from config import Config
-from database import db
+try:
+    from AryaPremium.config import Config
+    from AryaPremium.database import db
+except ImportError:
+    from config import Config
+    from database import db
 from utils import setup_ask_router
 
 # Setup basic logging

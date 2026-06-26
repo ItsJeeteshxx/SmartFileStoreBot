@@ -79,7 +79,7 @@ async def get_all_valid_bot_tokens(db) -> list:
             if tok and tok not in tokens_to_check:
                 tokens_to_check.append(tok)
 
-    # 3. Dynamic loading of root config
+    # 3. Direct parsing of parent/root config/env to prevent side-effects from exec_module
     root_db_name = "arya"
     root_bot_token = None
     try:
@@ -88,17 +88,21 @@ async def get_all_valid_bot_tokens(db) -> list:
             parent_dir = os.path.dirname(this_dir)
         else:
             parent_dir = this_dir
-        parent_config_path = os.path.join(parent_dir, "config.py")
-        if os.path.exists(parent_config_path):
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("root_config", parent_config_path)
-            root_config_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(root_config_module)
-            RootConfig = root_config_module.Config
-            root_db_name = getattr(RootConfig, "DATABASE_NAME", "arya")
-            root_bot_token = getattr(RootConfig, "BOT_TOKEN", None)
+            
+        parent_env_path = os.path.join(parent_dir, ".env")
+        env_vars = {}
+        if os.path.exists(parent_env_path):
+            with open(parent_env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        env_vars[k.strip()] = v.strip().strip("'").strip('"')
+                        
+        root_db_name = env_vars.get("DATABASE_NAME") or os.environ.get("DATABASE_NAME", "arya")
+        root_bot_token = env_vars.get("BOT_TOKEN") or os.environ.get("BOT_TOKEN", None)
     except Exception as e:
-        logger.warning(f"Failed to load parent config dynamically: {e}")
+        logger.warning(f"Failed to parse parent env: {e}")
 
     if root_bot_token and isinstance(root_bot_token, str) and root_bot_token.strip():
         tok = root_bot_token.strip()
@@ -4506,6 +4510,7 @@ async def admin_unban_user(payload: dict):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@api_router.get("/admin/buyers")
 async def get_admin_buyers(telegram_id: str):
     from AryaPremium.config import Config
     try:

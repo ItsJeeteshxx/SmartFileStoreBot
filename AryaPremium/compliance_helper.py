@@ -18,8 +18,12 @@ if sys.platform.startswith("win"):
     except AttributeError:
         pass
 
-from config import Config
-from database import db
+try:
+    from AryaPremium.config import Config
+    from AryaPremium.database import db
+except ImportError:
+    from config import Config
+    from database import db
 
 # ==============================================================================
 # FALLBACK TRANSACTION DETAILS (Used only if the Razorpay API call fails)
