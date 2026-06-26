@@ -5958,6 +5958,156 @@ async def admin_logout(request: Request):
         )
     return {"success": True, "message": "Logged out"}
 
+import time
+
+_TOKEN_CACHE = {
+    "tokens": [],
+    "last_updated": 0.0
+}
+_TOKEN_CACHE_TTL = 300 # 5 minutes
+
+async def get_all_valid_bot_tokens(db) -> list:
+    now = time.time()
+    if _TOKEN_CACHE["tokens"] and (now - _TOKEN_CACHE["last_updated"]) < _TOKEN_CACHE_TTL:
+        return _TOKEN_CACHE["tokens"]
+
+    tokens_to_check = []
+
+    # 1. AryaPremium config tokens
+    from AryaPremium.config import Config as PremConfig
+    for attr in ("MGMT_BOT_TOKEN", "BOT_TOKEN"):
+        tok = getattr(PremConfig, attr, None)
+        if tok and isinstance(tok, str) and tok.strip():
+            tok = tok.strip()
+            if tok not in tokens_to_check:
+                tokens_to_check.append(tok)
+
+    # 2. Env config tokens
+    add_tokens_env = os.environ.get("ADDITIONAL_BOT_TOKENS", "")
+    if add_tokens_env:
+        for tok in add_tokens_env.replace(",", " ").split():
+            tok = tok.strip()
+            if tok and tok not in tokens_to_check:
+                tokens_to_check.append(tok)
+
+    # 3. Dynamic loading of root config
+    root_db_name = "arya"
+    root_bot_token = None
+    try:
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.basename(this_dir) == "AryaPremium":
+            parent_dir = os.path.dirname(this_dir)
+        else:
+            parent_dir = this_dir
+        parent_config_path = os.path.join(parent_dir, "config.py")
+        if os.path.exists(parent_config_path):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("root_config", parent_config_path)
+            root_config_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(root_config_module)
+            RootConfig = root_config_module.Config
+            root_db_name = getattr(RootConfig, "DATABASE_NAME", "arya")
+            root_bot_token = getattr(RootConfig, "BOT_TOKEN", None)
+    except Exception as e:
+        logger.warning(f"Failed to load parent config dynamically: {e}")
+
+    if root_bot_token and isinstance(root_bot_token, str) and root_bot_token.strip():
+        tok = root_bot_token.strip()
+        if tok not in tokens_to_check:
+            tokens_to_check.append(tok)
+
+    # 4. Fetch share bots from root db
+    try:
+        if root_db_name:
+            root_db = db.client[root_db_name]
+            share_bots_doc = await root_db.global_stats.find_one({'_id': 'share_bots_list'})
+            if share_bots_doc and 'bots' in share_bots_doc:
+                for bot in share_bots_doc['bots']:
+                    tok = bot.get('token')
+                    if tok and isinstance(tok, str) and tok.strip():
+                        tok = tok.strip()
+                        if tok not in tokens_to_check:
+                            tokens_to_check.append(tok)
+    except Exception as e:
+        logger.warning(f"Failed to fetch share bots list from root db: {e}")
+
+    # 5. Fetch premium bots from premium database
+    try:
+        bots = await db.db.premium_bots.find().to_list(length=None)
+        for b in bots:
+            tok = b.get('token')
+            if tok and isinstance(tok, str) and tok.strip():
+                tok = tok.strip()
+                if tok not in tokens_to_check:
+                    tokens_to_check.append(tok)
+    except Exception as e:
+        logger.warning(f"Failed to fetch premium bots: {e}")
+
+    # 6. Scan MongoDB cluster databases
+    try:
+        db_names = await db.client.list_database_names()
+        for db_name in db_names:
+            if db_name in ('admin', 'local', 'config', root_db_name, getattr(PremConfig, "DATABASE_NAME", "")):
+                continue
+            db_obj = db.client[db_name]
+            # check premium_bots
+            try:
+                bots = await db_obj.premium_bots.find().to_list(length=None)
+                for b in bots:
+                    tok = b.get('token')
+                    if tok and isinstance(tok, str) and tok.strip():
+                        tok = tok.strip()
+                        if tok not in tokens_to_check:
+                            tokens_to_check.append(tok)
+            except Exception:
+                pass
+            # check global_stats.share_bots_list
+            try:
+                share_bots_doc = await db_obj.global_stats.find_one({'_id': 'share_bots_list'})
+                if share_bots_doc and 'bots' in share_bots_doc:
+                    for bot in share_bots_doc['bots']:
+                        tok = bot.get('token')
+                        if tok and isinstance(tok, str) and tok.strip():
+                            tok = tok.strip()
+                            if tok not in tokens_to_check:
+                                tokens_to_check.append(tok)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Error scanning MongoDB cluster for tokens: {e}")
+
+    # 7. Scan server directories for files containing bot tokens
+    try:
+        import re
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_of_project = os.path.dirname(os.path.dirname(this_dir))
+        if os.path.exists(parent_of_project):
+            for root, dirs, files in os.walk(parent_of_project, topdown=True):
+                depth = root[len(parent_of_project):].count(os.sep)
+                if depth > 2:
+                    dirs.clear()
+                    continue
+                dirs[:] = [d for d in dirs if d not in ('venv', '.git', 'node_modules', '__pycache__')]
+                for file in files:
+                    if file in ('.env', 'config.env', 'config.py'):
+                        filepath = os.path.join(root, file)
+                        try:
+                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                                found = re.findall(r'\d{8,10}:[A-Za-z0-9_-]{35}', content)
+                                for t in found:
+                                    t_clean = t.strip()
+                                    if t_clean not in tokens_to_check:
+                                        tokens_to_check.append(t_clean)
+                        except Exception:
+                            pass
+    except Exception as e:
+        logger.warning(f"Error scanning filesystem for tokens: {e}")
+
+    _TOKEN_CACHE["tokens"] = tokens_to_check
+    _TOKEN_CACHE["last_updated"] = now
+    return tokens_to_check
+
 async def is_request_owner(request: Request) -> bool:
     """Helper to verify if a request is from a supreme owner (via verified Telegram ID or active owner session email)."""
     db = getattr(app.state, "db", None)
@@ -5967,58 +6117,16 @@ async def is_request_owner(request: Request) -> bool:
     # Check X-Telegram-Init-Data
     init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
     if init_data:
-        tokens_to_check = []
-        from AryaPremium.config import Config as PremConfig
-        for attr in ("MGMT_BOT_TOKEN", "BOT_TOKEN"):
-            tok = getattr(PremConfig, attr, None)
-            if tok and isinstance(tok, str) and tok.strip():
-                tok = tok.strip()
-                if tok not in tokens_to_check:
-                    tokens_to_check.append(tok)
-        try:
-            from config import Config as RootConfig
-            for attr in ("BOT_TOKEN",):
-                tok = getattr(RootConfig, attr, None)
-                if tok and isinstance(tok, str) and tok.strip():
-                    tok = tok.strip()
-                    if tok not in tokens_to_check:
-                        tokens_to_check.append(tok)
-        except Exception:
-            pass
-        try:
-            from config import Config as RootConfig
-            root_db_name = RootConfig.DATABASE_NAME
-            if root_db_name:
-                root_db = db.client[root_db_name]
-                share_bots_doc = await root_db.global_stats.find_one({'_id': 'share_bots_list'})
-                if share_bots_doc and 'bots' in share_bots_doc:
-                    for bot in share_bots_doc['bots']:
-                        tok = bot.get('token')
-                        if tok and isinstance(tok, str) and tok.strip():
-                            tok = tok.strip()
-                            if tok not in tokens_to_check:
-                                tokens_to_check.append(tok)
-        except Exception:
-            pass
-        try:
-            bots = await db.db.premium_bots.find().to_list(length=None)
-            for b in bots:
-                tok = b.get('token')
-                if tok and isinstance(tok, str) and tok.strip():
-                    tok = tok.strip()
-                    if tok not in tokens_to_check:
-                        tokens_to_check.append(tok)
-        except Exception:
-            pass
-
+        tokens_to_check = await get_all_valid_bot_tokens(db)
         for tok in tokens_to_check:
             valid_data = verify_telegram_web_app_data(init_data, tok)
             if valid_data:
                 try:
                     import json
+                    from AryaPremium.config import Config as PremConfig
                     user_data = json.loads(valid_data.get("user", "{}"))
                     validated_id = user_data.get("id")
-                    if validated_id and int(validated_id) in Config.OWNER_IDS:
+                    if validated_id and int(validated_id) in PremConfig.OWNER_IDS:
                         return True
                 except Exception:
                     pass
@@ -6044,8 +6152,8 @@ async def is_request_owner(request: Request) -> bool:
     if tg_id_str:
         try:
             tg_id = int(tg_id_str)
-            from AryaPremium.config import Config
-            if tg_id in Config.OWNER_IDS:
+            from AryaPremium.config import Config as PremConfig
+            if tg_id in PremConfig.OWNER_IDS:
                 if session_token:
                     session = await db.db.admin_sessions.find_one({
                         "session_token": session_token,
@@ -6109,53 +6217,30 @@ async def ban_guard_middleware(request: Request, call_next):
                         tg_id = int(tg_id_str)
                 except Exception:
                     pass
-                    
-            tokens_to_check = []
-            from AryaPremium.config import Config as PremConfig
-            for attr in ("MGMT_BOT_TOKEN", "BOT_TOKEN"):
-                tok = getattr(PremConfig, attr, None)
-                if tok and isinstance(tok, str) and tok.strip():
-                    tok = tok.strip()
-                    if tok not in tokens_to_check:
-                        tokens_to_check.append(tok)
+            
+            # Load parent config dynamically to get root_db_name
+            root_db_name = "arya"
             try:
-                from config import Config as RootConfig
-                for attr in ("BOT_TOKEN",):
-                    tok = getattr(RootConfig, attr, None)
-                    if tok and isinstance(tok, str) and tok.strip():
-                        tok = tok.strip()
-                        if tok not in tokens_to_check:
-                            tokens_to_check.append(tok)
-            except Exception:
-                pass
-            try:
-                from config import Config as RootConfig
-                root_db_name = RootConfig.DATABASE_NAME
-                if root_db_name:
-                    root_db = db.client[root_db_name]
-                    share_bots_doc = await root_db.global_stats.find_one({'_id': 'share_bots_list'})
-                    if share_bots_doc and 'bots' in share_bots_doc:
-                        for bot in share_bots_doc['bots']:
-                            tok = bot.get('token')
-                            if tok and isinstance(tok, str) and tok.strip():
-                                tok = tok.strip()
-                                if tok not in tokens_to_check:
-                                    tokens_to_check.append(tok)
+                import os
+                import importlib.util
+                this_dir = os.path.dirname(os.path.abspath(__file__))
+                if os.path.basename(this_dir) == "AryaPremium":
+                    parent_dir = os.path.dirname(this_dir)
+                else:
+                    parent_dir = this_dir
+                parent_config_path = os.path.join(parent_dir, "config.py")
+                if os.path.exists(parent_config_path):
+                    spec = importlib.util.spec_from_file_location("root_config", parent_config_path)
+                    root_config_module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(root_config_module)
+                    RootConfig = root_config_module.Config
+                    root_db_name = getattr(RootConfig, "DATABASE_NAME", "arya")
             except Exception as e:
-                logger.warning(f"Failed to fetch share bots list from root db: {e}")
-            try:
-                bots = await db.db.premium_bots.find().to_list(length=None)
-                for b in bots:
-                    tok = b.get('token')
-                    if tok and isinstance(tok, str) and tok.strip():
-                        tok = tok.strip()
-                        if tok not in tokens_to_check:
-                            tokens_to_check.append(tok)
-            except Exception as e:
-                logger.warning(f"Failed to fetch premium bots list for signature checking: {e}")
+                logger.warning(f"Failed to load parent config dynamically: {e}")
 
             # Crypto validation logic
             if init_data:
+                tokens_to_check = await get_all_valid_bot_tokens(db)
                 valid_data = None
                 for tok in tokens_to_check:
                     valid_data = verify_telegram_web_app_data(init_data, tok)
@@ -6229,8 +6314,6 @@ async def ban_guard_middleware(request: Request, call_next):
                 banned_in_root = False
                 root_ban_reason = "Banned by administrator"
                 try:
-                    from config import Config as RootConfig
-                    root_db_name = RootConfig.DATABASE_NAME
                     if root_db_name:
                         root_db = db.client[root_db_name]
                         root_user = await root_db.users.find_one({"id": tg_id})
