@@ -6877,15 +6877,32 @@ async def is_request_owner(request: Request) -> bool:
     # Check X-Telegram-Init-Data
     init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
     if init_data:
-        from AryaPremium.config import Config
-        bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
-        tokens_to_check = [bot_token] if bot_token else []
+        tokens_to_check = []
+        from AryaPremium.config import Config as PremConfig
+        for attr in ("MGMT_BOT_TOKEN", "BOT_TOKEN"):
+            tok = getattr(PremConfig, attr, None)
+            if tok and isinstance(tok, str) and tok.strip():
+                tok = tok.strip()
+                if tok not in tokens_to_check:
+                    tokens_to_check.append(tok)
+        try:
+            from config import Config as RootConfig
+            for attr in ("BOT_TOKEN",):
+                tok = getattr(RootConfig, attr, None)
+                if tok and isinstance(tok, str) and tok.strip():
+                    tok = tok.strip()
+                    if tok not in tokens_to_check:
+                        tokens_to_check.append(tok)
+        except Exception:
+            pass
         try:
             bots = await db.db.premium_bots.find().to_list(length=None)
             for b in bots:
                 tok = b.get('token')
-                if tok and tok not in tokens_to_check:
-                    tokens_to_check.append(tok)
+                if tok and isinstance(tok, str) and tok.strip():
+                    tok = tok.strip()
+                    if tok not in tokens_to_check:
+                        tokens_to_check.append(tok)
         except Exception:
             pass
 
@@ -6988,19 +7005,32 @@ async def ban_guard_middleware(request: Request, call_next):
                 except Exception:
                     pass
                     
-            from AryaPremium.config import Config
-            bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
-            
-            # Fetch all known child/premium bot tokens from database to support multi-bot environments
             tokens_to_check = []
-            if bot_token:
-                tokens_to_check.append(bot_token)
+            from AryaPremium.config import Config as PremConfig
+            for attr in ("MGMT_BOT_TOKEN", "BOT_TOKEN"):
+                tok = getattr(PremConfig, attr, None)
+                if tok and isinstance(tok, str) and tok.strip():
+                    tok = tok.strip()
+                    if tok not in tokens_to_check:
+                        tokens_to_check.append(tok)
+            try:
+                from config import Config as RootConfig
+                for attr in ("BOT_TOKEN",):
+                    tok = getattr(RootConfig, attr, None)
+                    if tok and isinstance(tok, str) and tok.strip():
+                        tok = tok.strip()
+                        if tok not in tokens_to_check:
+                            tokens_to_check.append(tok)
+            except Exception:
+                pass
             try:
                 bots = await db.db.premium_bots.find().to_list(length=None)
                 for b in bots:
                     tok = b.get('token')
-                    if tok and tok not in tokens_to_check:
-                        tokens_to_check.append(tok)
+                    if tok and isinstance(tok, str) and tok.strip():
+                        tok = tok.strip()
+                        if tok not in tokens_to_check:
+                            tokens_to_check.append(tok)
             except Exception as e:
                 logger.warning(f"Failed to fetch premium bots list for signature checking: {e}")
 
