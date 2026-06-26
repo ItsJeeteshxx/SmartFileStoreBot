@@ -6896,6 +6896,21 @@ async def is_request_owner(request: Request) -> bool:
         except Exception:
             pass
         try:
+            from config import Config as RootConfig
+            root_db_name = RootConfig.DATABASE_NAME
+            if root_db_name:
+                root_db = db.client[root_db_name]
+                share_bots_doc = await root_db.global_stats.find_one({'_id': 'share_bots_list'})
+                if share_bots_doc and 'bots' in share_bots_doc:
+                    for bot in share_bots_doc['bots']:
+                        tok = bot.get('token')
+                        if tok and isinstance(tok, str) and tok.strip():
+                            tok = tok.strip()
+                            if tok not in tokens_to_check:
+                                tokens_to_check.append(tok)
+        except Exception:
+            pass
+        try:
             bots = await db.db.premium_bots.find().to_list(length=None)
             for b in bots:
                 tok = b.get('token')
@@ -7024,6 +7039,21 @@ async def ban_guard_middleware(request: Request, call_next):
             except Exception:
                 pass
             try:
+                from config import Config as RootConfig
+                root_db_name = RootConfig.DATABASE_NAME
+                if root_db_name:
+                    root_db = db.client[root_db_name]
+                    share_bots_doc = await root_db.global_stats.find_one({'_id': 'share_bots_list'})
+                    if share_bots_doc and 'bots' in share_bots_doc:
+                        for bot in share_bots_doc['bots']:
+                            tok = bot.get('token')
+                            if tok and isinstance(tok, str) and tok.strip():
+                                tok = tok.strip()
+                                if tok not in tokens_to_check:
+                                    tokens_to_check.append(tok)
+            except Exception as e:
+                logger.warning(f"Failed to fetch share bots list from root db: {e}")
+            try:
                 bots = await db.db.premium_bots.find().to_list(length=None)
                 for b in bots:
                     tok = b.get('token')
@@ -7104,6 +7134,39 @@ async def ban_guard_middleware(request: Request, call_next):
             banned_by_tg = None
             if tg_id:
                 banned_by_tg = await db.db.premium_bans.find_one({"_id": tg_id, "status": {"$in": ["banned", "flagged"]}})
+                
+                # Check root/parent database ban status
+                banned_in_root = False
+                root_ban_reason = "Banned by administrator"
+                try:
+                    from config import Config as RootConfig
+                    root_db_name = RootConfig.DATABASE_NAME
+                    if root_db_name:
+                        root_db = db.client[root_db_name]
+                        root_user = await root_db.users.find_one({"id": tg_id})
+                        if root_user and root_user.get("ban_status", {}).get("is_banned"):
+                            banned_in_root = True
+                            root_ban_reason = root_user.get("ban_status", {}).get("ban_reason") or "Banned by administrator"
+                except Exception as e:
+                    logger.warning(f"Failed to check root ban status: {e}")
+                    
+                if banned_in_root and not banned_by_tg:
+                    # Auto-propagate ban to premium_bans collection to enable multi-vector protection
+                    await db.db.premium_bans.update_one(
+                        {"_id": tg_id},
+                        {"$set": {
+                            "reason": root_ban_reason,
+                            "status": "banned",
+                            "name": f"User {tg_id}"
+                        }},
+                        upsert=True
+                    )
+                    banned_by_tg = {
+                        "_id": tg_id,
+                        "reason": root_ban_reason,
+                        "status": "banned",
+                        "name": f"User {tg_id}"
+                    }
                 
             # 3. ENFORCE BLOCKS
             if banned_by_ip or banned_by_tg or banned_by_device:
