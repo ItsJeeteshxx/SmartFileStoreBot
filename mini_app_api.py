@@ -6879,25 +6879,54 @@ async def ban_guard_middleware(request: Request, call_next):
             from AryaPremium.config import Config
             bot_token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
             
-            # Crypto validation logic (Soft check for multi-bot compatibility)
-            if init_data and bot_token:
-                valid_data = verify_telegram_web_app_data(init_data, bot_token)
-                if valid_data:
+            # Fetch all known child/premium bot tokens from database to support multi-bot environments
+            tokens_to_check = []
+            if bot_token:
+                tokens_to_check.append(bot_token)
+            try:
+                bots = await db.db.premium_bots.find().to_list(length=None)
+                for b in bots:
+                    tok = b.get('token')
+                    if tok and tok not in tokens_to_check:
+                        tokens_to_check.append(tok)
+            except Exception as e:
+                logger.warning(f"Failed to fetch premium bots list for signature checking: {e}")
+
+            # Crypto validation logic
+            if init_data:
+                valid_data = None
+                for tok in tokens_to_check:
+                    valid_data = verify_telegram_web_app_data(init_data, tok)
+                    if valid_data:
+                        break
+                
+                if not valid_data:
+                    # Forged or invalid signature - block immediately!
+                    logger.warning(f"Blocked request due to invalid/forged Telegram signature: {path}")
                     import json
+                    return Response(
+                        content=json.dumps({
+                            "banned": True,
+                            "reason": "Security verification failed (Invalid Session)",
+                            "detail": "BANNED"
+                        }),
+                        status_code=503,
+                        media_type="application/json"
+                    )
+                else:
                     try:
+                        import json
                         user_data = json.loads(valid_data.get("user", "{}"))
                         validated_id = user_data.get("id")
-                        if not tg_id and validated_id:
+                        if validated_id:
+                            # Override client-resolved ID with the cryptographically verified one to prevent spoofing
+                            if tg_id and tg_id != int(validated_id):
+                                logger.warning(f"ID spoofing attempt blocked! Resolved: {tg_id}, Validated: {validated_id}")
                             tg_id = int(validated_id)
-                    except Exception:
-                        pass
-                else:
-                    # Signature failed (likely because user is accessing via a child bot with a different token)
-                    # We log it but do NOT block, to support multi-bot setups.
-                    logger.debug(f"Signature mismatch for initData (expected for multi-bot setups)")
+                    except Exception as e:
+                        logger.error(f"Error parsing validated user data: {e}")
             else:
                 # No initData provided (old frontend or direct API call).
-                # We allow it to pass through to support backward compatibility.
                 pass
 
             # 1. SUPREME OWNER EXEMPTION
