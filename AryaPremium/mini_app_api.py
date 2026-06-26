@@ -57,6 +57,9 @@ def verify_telegram_web_app_data(init_data: str, bot_token: str) -> dict:
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
         if calculated_hash == received_hash:
             return data_dict
+        else:
+            masked_token = bot_token[:10] + "..." + bot_token[-5:] if len(bot_token) > 15 else "short"
+            logger.warning(f"Signature verification failed for token {masked_token}. Calc: {calculated_hash}, Recv: {received_hash}")
     except Exception as e:
         logger.error(f"initData verification failed: {e}")
     return {}
