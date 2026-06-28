@@ -2754,10 +2754,22 @@ async def get_user_tickets(telegram_id: str):
         
         query = {
             "user_id": {"$in": [uid_int, str(uid_int)]},
-            # Exclude Live Chat sessions (handled separately), story requests, and feedback entries
-            "category": {"$nin": ["Live Chat", "live_chat", "request", "Request", "feedback", "Feedback"]},
-            # Also exclude by text prefix as a safety net (in case category is missing/wrong)
-            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
+            "$and": [
+                {
+                    "$or": [
+                        {"category": {"$exists": False}},
+                        {"category": None},
+                        {"category": {"$nin": ["Live Chat", "live_chat", "request", "Request", "feedback", "Feedback", "Security", "security"]}}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"text": {"$exists": False}},
+                        {"text": None},
+                        {"text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}}
+                    ]
+                }
+            ]
         }
         
         cursor = arya_db.db.premium_feedback.find(query).sort("created_at", -1).limit(50)
@@ -4451,7 +4463,29 @@ async def get_admin_support(request: Request, telegram_id: str):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        query_filter = {}
+        query_filter = {
+            "$and": [
+                {
+                    "$or": [
+                        {"category": {"$exists": False}},
+                        {"category": None},
+                        {"category": {"$nin": [
+                            "request", "Request", "REQUEST", 
+                            "feedback", "Feedback", "FEEDBACK", 
+                            "security", "Security", "SECURITY", 
+                            "story-request", "story_request", "storyrequest"
+                        ]}}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"text": {"$exists": False}},
+                        {"text": None},
+                        {"text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}}
+                    ]
+                }
+            ]
+        }
 
         # Limit to 120 tickets for top list performance
         cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(120)
