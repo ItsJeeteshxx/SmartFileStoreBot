@@ -4455,10 +4455,7 @@ async def get_admin_support(request: Request, telegram_id: str):
         # ── Exclude story requests and feedback entries from support queue ──
         # Only show genuine support tickets and live-chat sessions
         # Dual-layer filter: by text prefix AND by category field (case-insensitive)
-        query_filter = {
-            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}},
-            "category": {"$not": {"$regex": "^(request|feedback|security)$", "$options": "i"}}
-        }
+        query_filter = {}
 
         # Sort by updated_at descending so Live Chat sessions always appear first
         cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(300)
