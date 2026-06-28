@@ -2560,9 +2560,11 @@ async def submit_support(
             logger.error(f"Failed to upload file attachment: {upload_err}")
 
     # Always save to premium_feedback (for support panel + legacy compat)
+    ticket_ref = f"ARY-{int(datetime.now(timezone.utc).timestamp()) % 899999 + 100000}"
     fb_doc = {
         "user_id": uid,
         "bot_id": "mini_app",
+        "ticket_id": ticket_ref,
         "type": "photo" if file and file.content_type and file.content_type.startswith("image/") else ("video" if file and file.content_type and file.content_type.startswith("video/") else ("document" if file else "text")),
         "text": f"[{type.upper()}] {message}",
         "status": "open",
@@ -2609,7 +2611,7 @@ async def submit_support(
                 req_doc["file_name"] = file.filename or "file"
             await arya_db.db.premium_requests.insert_one(req_doc)
         
-        # Notify admins via Telegram API using Management Bot Token (wrapped in try/except to be non-blocking)
+        # Notify admins & send Telegram Bot DM notification to user
         try:
             from AryaPremium.config import Config
             import aiohttp
@@ -2617,6 +2619,33 @@ async def submit_support(
             escaped_first_name = escape_html(first_name or "Mini App User")
             escaped_username = f"@{escape_html(username)}" if username else "—"
             escaped_message = escape_html(message)
+            escaped_subject = escape_html(subject or "General Support")
+            escaped_description = escape_html(description or message)
+
+            # Send Bot DM to user if ticket type
+            if type == "ticket" or category or subject:
+                try:
+                    user_bot_token = Config.BOT_TOKEN or Config.MGMT_BOT_TOKEN
+                    if user_bot_token and str(telegram_id).isdigit():
+                        user_msg = (
+                            f"🎫 <b>Ticket Created Successfully</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"Hello <b>{escaped_first_name}</b>!\n"
+                            f"Your support ticket has been registered.\n\n"
+                            f"🆔 <b>Ticket ID:</b> <code>{ticket_ref}</code>\n"
+                            f"📌 <b>Subject:</b> {escaped_subject}\n"
+                            f"📝 <b>Details:</b> {escaped_description[:150]}...\n"
+                            f"⏳ <b>Est. Resolution Time:</b> ~2 Hours\n\n"
+                            f"<i>You can check the status and admin responses directly in the Support section of the Mini App.</i>"
+                        )
+                        async with aiohttp.ClientSession() as session:
+                            await session.post(f"https://api.telegram.org/bot{user_bot_token}/sendMessage", json={
+                                "chat_id": telegram_id,
+                                "text": user_msg,
+                                "parse_mode": "HTML"
+                            }, timeout=5)
+                except Exception as u_err:
+                    logger.warning(f"Failed to send user ticket DM: {u_err}")
             
             if type == "request":
                 admin_txt = (
@@ -2633,14 +2662,13 @@ async def submit_support(
             elif type == "ticket" or category or subject:
                 escaped_category = escape_html(category or "General")
                 escaped_priority = escape_html(priority or "Normal")
-                escaped_subject = escape_html(subject or "No Subject")
-                escaped_description = escape_html(description or message)
                 admin_txt = (
                     f"🎫 <b>New Support Ticket from Mini App</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"<b>User:</b> {escaped_first_name}\n"
                     f"<b>Username:</b> {escaped_username}\n"
                     f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                    f"<b>Ticket ID:</b> <code>{ticket_ref}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"<b>Category:</b> {escaped_category}\n"
                     f"<b>Priority:</b> {escaped_priority}\n"
@@ -2692,10 +2720,67 @@ async def submit_support(
         except Exception as notify_err:
             logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
                         
-        return {"success": True, "message": "Support request submitted successfully"}
+        return {"success": True, "message": "Support request submitted successfully", "ticket_id": ticket_ref, "id": fb_id}
     except Exception as e:
         logger.error(f"Support submission failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to submit support request")
+
+
+@api_router.get("/support/user-tickets")
+async def get_user_tickets(telegram_id: str):
+    """Retrieves all support tickets for a specific user."""
+    from bson.objectid import ObjectId
+    from datetime import datetime, timezone
+    try:
+        arya_db = app.state.db
+        uid_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        
+        query = {
+            "user_id": {"$in": [uid_int, str(uid_int)]},
+            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
+        }
+        
+        cursor = arya_db.db.premium_feedback.find(query).sort("created_at", -1).limit(50)
+        tickets = []
+        async for doc in cursor:
+            created_dt = doc.get("created_at", datetime.now(timezone.utc))
+            created_str = created_dt.strftime("%d/%m/%Y, %H:%M") if isinstance(created_dt, datetime) else str(created_dt)
+            
+            text_content = doc.get("text", "")
+            if text_content.startswith("[TICKET]") or text_content.startswith("[SUPPORT]"):
+                text_content = text_content.split("]", 1)[-1].strip()
+            
+            subj = doc.get("subject") or text_content[:40] or "Live Chat Support"
+            desc = doc.get("description") or text_content
+            
+            msgs = doc.get("messages", [])
+            formatted_msgs = []
+            for m in msgs:
+                formatted_msgs.append({
+                    "id": m.get("id", "m_reply"),
+                    "from": m.get("from", "agent"),
+                    "body": m.get("body") or m.get("text") or "",
+                    "at": m.get("at", "12:00 PM"),
+                    "file_url": m.get("file_url")
+                })
+                
+            tickets.append({
+                "id": str(doc["_id"]),
+                "ticket_id": doc.get("ticket_id") or f"ARY-{str(doc['_id'])[-6:].upper()}",
+                "subject": subj,
+                "category": doc.get("category", "Support"),
+                "priority": doc.get("priority", "Normal"),
+                "status": doc.get("status", "Open").capitalize(),
+                "created_at": created_str,
+                "description": desc,
+                "file_url": doc.get("file_url"),
+                "messages": formatted_msgs,
+                "est_time": "~2 Hours"
+            })
+        return {"success": True, "data": tickets}
+    except Exception as e:
+        logger.error(f"Error fetching user tickets: {e}")
+        return {"success": False, "data": []}
 
 
 @api_router.post("/submit-order-review")
@@ -3836,19 +3921,18 @@ async def support_upload_file(file: UploadFile = File(...)):
 @api_router.get("/support/chat")
 async def get_support_chat(telegram_id: str):
     """Gets the active support chat ticket for a user, or creates one if none exists."""
+    from datetime import datetime, timezone
     arya_db = app.state.db
     uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
     
-    # Find an active chat ticket (not resolved and not closed)
-    ticket = await arya_db.db.premium_feedback.find_one({
-        "user_id": uid,
-        "status": {"$nin": ["resolved", "closed", "Resolved", "Closed"]},
-        "category": "Live Chat"
-    })
+    # Find the most recent support chat ticket (active or closed)
+    ticket = await arya_db.db.premium_feedback.find_one(
+        {"user_id": uid, "category": "Live Chat"},
+        sort=[("created_at", -1)]
+    )
     
     if not ticket:
         # Create a new active chat ticket with a default welcome message from the agent
-        welcome_at = datetime.now(timezone.utc).strftime("%I:%M %p")
         ticket_doc = {
             "user_id": uid,
             "bot_id": "mini_app",
@@ -3874,13 +3958,24 @@ async def get_support_chat(telegram_id: str):
         result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
         ticket = await arya_db.db.premium_feedback.find_one({"_id": result.inserted_id})
 
+    # Determine if agent is typing
+    now = datetime.now(timezone.utc)
+    agent_typing = False
+    agent_typing_until = ticket.get("agent_typing_until")
+    if agent_typing_until:
+        if agent_typing_until.tzinfo is None:
+            agent_typing_until = agent_typing_until.replace(tzinfo=timezone.utc)
+        if agent_typing_until > now:
+            agent_typing = True
+
     messages = ticket.get("messages", [])
     return {
         "success": True,
         "ticket_id": str(ticket["_id"]),
         "status": ticket.get("status", "Open"),
         "messages": messages,
-        "language": ticket.get("chat_language", "")
+        "language": ticket.get("chat_language", ""),
+        "agent_typing": agent_typing
     }
 
 
@@ -3894,27 +3989,34 @@ class ChatMessagePayload(BaseModel):
 @api_router.post("/support/chat/send")
 async def send_support_chat_message(payload: ChatMessagePayload):
     """User sends a message or updates language in the live chat."""
+    from datetime import datetime, timezone
+    from bson.objectid import ObjectId
     arya_db = app.state.db
     uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
     
-    # Find active ticket
-    ticket = await arya_db.db.premium_feedback.find_one({
-        "user_id": uid,
-        "status": {"$nin": ["resolved", "closed", "Resolved", "Closed"]},
-        "category": "Live Chat"
-    })
+    # We should search for the most recent ticket
+    ticket = await arya_db.db.premium_feedback.find_one(
+        {"user_id": uid, "category": "Live Chat"},
+        sort=[("created_at", -1)]
+    )
     
+    # If the most recent ticket is closed, don't allow sending new messages
+    if ticket and ticket.get("status", "Open") in ["closed", "Closed", "resolved", "Resolved"]:
+        raise HTTPException(status_code=400, detail="This chat session is closed. Please start a new chat.")
+        
     is_new_chat = (not ticket) or len(ticket.get("messages", [])) == 0
     
     msg_id = f"u-{int(time.time() * 1000)}"
     msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
     
     new_msg = None
-    if (payload.message and payload.message.strip()) or payload.file_url:
+    message_str = payload.message or ""
+    
+    if message_str.strip() or payload.file_url:
         new_msg = {
             "id": msg_id,
             "from": "user",
-            "body": payload.message or "Attachment",
+            "body": message_str or "Attachment",
             "at": msg_at
         }
         if payload.file_url:
@@ -3924,8 +4026,8 @@ async def send_support_chat_message(payload: ChatMessagePayload):
     update_fields = {
         "updated_at": datetime.now(timezone.utc)
     }
-    if payload.message and payload.message.strip():
-        update_fields["text"] = payload.message
+    if message_str.strip():
+        update_fields["text"] = message_str
     elif payload.file_url:
         update_fields["text"] = "Shared a file"
     if payload.selected_language:
@@ -3943,13 +4045,13 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         )
         ticket_id = str(ticket["_id"])
     else:
-        # Create a new ticket if none active
+        # Create a new ticket if none exists at all
         ticket_doc = {
             "user_id": uid,
             "bot_id": "mini_app",
             "type": "text",
-            "text": payload.message or ("Shared a file" if payload.file_url else "Live Chat Support"),
-            "subject": (payload.message[:40] if len(payload.message) > 40 else payload.message) if payload.message else "Live Chat Support",
+            "text": message_str or ("Shared a file" if payload.file_url else "Live Chat Support"),
+            "subject": (message_str[:40] if len(message_str) > 40 else message_str) if message_str else "Live Chat Support",
             "category": "Live Chat",
             "priority": "Normal",
             "status": "Open",
@@ -3971,7 +4073,7 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         ticket_id = str(result.inserted_id)
         
     # Trigger background admin notification ONLY if it is the first time user sends a query
-    if is_new_chat and payload.message and payload.message.strip():
+    if is_new_chat and message_str.strip():
         first_name = "User"
         username = ""
         user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
@@ -3983,7 +4085,7 @@ async def send_support_chat_message(payload: ChatMessagePayload):
             send_admin_support_notification_bg(
                 telegram_id=payload.telegram_id,
                 type_str="chat",
-                message=payload.message,
+                message=message_str,
                 first_name=first_name,
                 username=username
             )
@@ -3997,6 +4099,114 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         "messages": updated_ticket.get("messages", []),
         "language": updated_ticket.get("chat_language", "")
     }
+
+
+class NewChatPayload(BaseModel):
+    telegram_id: str
+    selected_language: Optional[str] = None
+
+@api_router.post("/support/chat/new")
+async def create_new_support_chat(payload: NewChatPayload):
+    """User starts a brand new support chat session by closing old ones."""
+    from datetime import datetime, timezone
+    arya_db = app.state.db
+    uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+    
+    # Archive/Close all previous live chat tickets for this user
+    await arya_db.db.premium_feedback.update_many(
+        {"user_id": uid, "category": "Live Chat", "status": {"$ne": "Closed"}},
+        {"$set": {"status": "Closed", "updated_at": datetime.now(timezone.utc)}}
+    )
+    
+    # Create new active ticket
+    ticket_doc = {
+        "user_id": uid,
+        "bot_id": "mini_app",
+        "type": "text",
+        "text": "Live Chat Support",
+        "subject": "Live Chat Support",
+        "category": "Live Chat",
+        "priority": "Normal",
+        "status": "Open",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "source": "mini_app",
+        "unread": 0,
+        "messages": []
+    }
+    if payload.selected_language:
+        ticket_doc["chat_language"] = payload.selected_language
+        
+    user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+    if user_doc:
+        ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
+        ticket_doc["username"] = user_doc.get("username") or ""
+        
+    result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
+    ticket_id = str(result.inserted_id)
+    
+    return {
+        "success": True,
+        "ticket_id": ticket_id,
+        "status": "Open",
+        "messages": [],
+        "language": payload.selected_language or ""
+    }
+
+
+class CloseChatPayload(BaseModel):
+    telegram_id: str
+    ticket_id: str
+
+@api_router.post("/support/chat/close")
+async def close_support_chat(payload: CloseChatPayload):
+    """Closes the specified support chat session."""
+    from datetime import datetime, timezone
+    from bson.objectid import ObjectId
+    arya_db = app.state.db
+    
+    await arya_db.db.premium_feedback.update_one(
+        {"_id": ObjectId(payload.ticket_id)},
+        {"$set": {"status": "Closed", "updated_at": datetime.now(timezone.utc)}}
+    )
+    
+    updated_ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(payload.ticket_id)})
+    return {
+        "success": True,
+        "ticket_id": payload.ticket_id,
+        "status": "Closed",
+        "messages": updated_ticket.get("messages", []) if updated_ticket else []
+    }
+
+
+class TypingPayload(BaseModel):
+    telegram_id: str
+    ticket_id: str = ""
+    is_typing: bool
+    from_agent: bool = False
+
+@api_router.post("/support/chat/typing")
+async def support_chat_typing(payload: TypingPayload):
+    """Updates typing state for user or agent in live chat."""
+    from datetime import datetime, timezone, timedelta
+    from bson.objectid import ObjectId
+    arya_db = app.state.db
+    
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=4) if payload.is_typing else None
+    update_field = "agent_typing_until" if payload.from_agent else "user_typing_until"
+    
+    query = {}
+    if payload.ticket_id and len(payload.ticket_id) == 24:
+        query["_id"] = ObjectId(payload.ticket_id)
+    else:
+        uid_int = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+        query["$or"] = [{"user_id": uid_int}, {"user_id": str(uid_int)}]
+        
+    await arya_db.db.premium_feedback.update_many(
+        query,
+        {"$set": {update_field: expiry}}
+    )
+    return {"success": True}
 
 
 class TicketStatusPayload(BaseModel):
@@ -4092,6 +4302,7 @@ async def update_support_fields(payload: TicketUpdatePayload):
 async def get_admin_support(request: Request, telegram_id: str):
     from AryaPremium.config import Config
     from bson.objectid import ObjectId
+    from datetime import datetime, timezone, timedelta
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
@@ -4100,9 +4311,7 @@ async def get_admin_support(request: Request, telegram_id: str):
         arya_db = app.state.db
         
         is_owner = await is_request_owner(request)
-        query_filter = {
-            "status": {"$nin": ["resolved", "closed", "Resolved", "Closed"]}
-        }
+        query_filter = {}  # Allow open and closed tickets
         if is_owner:
             query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
         else:
@@ -4139,6 +4348,122 @@ async def get_admin_support(request: Request, telegram_id: str):
                 if text_content.startswith("[TICKET]") or text_content.startswith("[SUPPORT]"):
                     text_content = text_content.split("]", 1)[-1].strip()
                 subj = text_content[:40] + ("..." if len(text_content) > 40 else "") or "Live Chat Support"
+
+            # Enrich with real user data from MongoDB
+            ticket_uid = doc.get("user_id")
+            online = False
+            photo_url = None
+            joined_str = "—"
+            first_purchase = "N/A"
+            total_purchases = 0
+            last_activity_desc = "Unknown"
+            device_desc = doc.get("device", "Telegram Mini App")
+            
+            if ticket_uid is not None:
+                try:
+                    ticket_uid_int = int(ticket_uid) if str(ticket_uid).isdigit() else ticket_uid
+                    user_doc = await arya_db.db.users.find_one({"$or": [{"id": ticket_uid_int}, {"id": str(ticket_uid_int)}]})
+                    if user_doc:
+                        photo_url = user_doc.get("photoUrl")
+                        
+                        # 5-minute inactivity -> offline status check
+                        last_active_val = user_doc.get("last_active")
+                        if last_active_val:
+                            if isinstance(last_active_val, (int, float)):
+                                last_active_dt = datetime.fromtimestamp(last_active_val, tz=timezone.utc)
+                            elif isinstance(last_active_val, str):
+                                try:
+                                    last_active_dt = datetime.fromisoformat(last_active_val.replace("Z", "+00:00"))
+                                except:
+                                    last_active_dt = None
+                            else:
+                                last_active_dt = last_active_val
+                                
+                            if last_active_dt:
+                                if last_active_dt.tzinfo is None:
+                                    last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
+                                if datetime.now(timezone.utc) - last_active_dt < timedelta(minutes=5):
+                                    online = True
+                        
+                        # Joined date formatting
+                        joined_val = user_doc.get("joined_date") or user_doc.get("joined_at") or user_doc.get("created_at")
+                        if not joined_val:
+                            doc_id = user_doc.get("_id")
+                            if doc_id and isinstance(doc_id, ObjectId):
+                                joined_val = doc_id.generation_time
+                        if isinstance(joined_val, datetime):
+                            joined_str = joined_val.strftime("%d/%m/%Y")
+                        elif isinstance(joined_val, (int, float)):
+                            joined_str = datetime.fromtimestamp(joined_val, tz=timezone.utc).strftime("%d/%m/%Y")
+                        elif isinstance(joined_val, str):
+                            joined_str = joined_val.split("T")[0]
+                        
+                        # Total purchases (items in user purchases list + successful orders)
+                        purchased_list = user_doc.get("purchases", [])
+                        orders_count = await arya_db.db.orders.count_documents({
+                            "user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]},
+                            "status": {"$in": ["paid", "delivered"]}
+                        })
+                        total_purchases = max(len(purchased_list), orders_count)
+                        
+                        # First purchase name
+                        first_order = await arya_db.db.orders.find_one(
+                            {
+                                "user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]},
+                                "status": {"$in": ["paid", "delivered"]}
+                            },
+                            sort=[("created_at", 1)]
+                        )
+                        if first_order and first_order.get("story_names"):
+                            first_purchase = first_order["story_names"][0]
+                        elif purchased_list:
+                            try:
+                                first_story_id = purchased_list[0]
+                                first_story = await arya_db.db.premium_stories.find_one({
+                                    "$or": [
+                                        {"_id": ObjectId(first_story_id) if (isinstance(first_story_id, str) and len(first_story_id) == 24) or isinstance(first_story_id, ObjectId) else None},
+                                        {"story_id": str(first_story_id)},
+                                        {"id": first_story_id}
+                                    ]
+                                })
+                                if first_story:
+                                    first_purchase = first_story.get("title") or first_story.get("story_name_en") or "Story"
+                            except:
+                                pass
+                                
+                        # Device lookup from analytics fallback
+                        if user_doc.get("device"):
+                            device_desc = user_doc["device"]
+                        else:
+                            latest_event = await arya_db.db.mini_app_analytics.find_one(
+                                {"user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]}},
+                                sort=[("_id", -1)]
+                            )
+                            if latest_event and latest_event.get("device"):
+                                device_desc = latest_event["device"].capitalize()
+                                
+                        # Last activity description from analytics
+                        latest_event = await arya_db.db.mini_app_analytics.find_one(
+                            {"user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]}},
+                            sort=[("_id", -1)]
+                        )
+                        if latest_event:
+                            event_name = latest_event.get("event", latest_event.get("type", "App View"))
+                            last_activity_desc = event_name.replace("_", " ").title()
+                        elif last_active_val:
+                            last_activity_desc = "Active Recently"
+                except Exception as ex:
+                    logger.warning(f"Error enriching support ticket user data: {ex}")
+
+            # User typing indicator status
+            now = datetime.now(timezone.utc)
+            user_typing = False
+            user_typing_until = doc.get("user_typing_until")
+            if user_typing_until:
+                if user_typing_until.tzinfo is None:
+                    user_typing_until = user_typing_until.replace(tzinfo=timezone.utc)
+                if user_typing_until > now:
+                    user_typing = True
             
             tickets.append({
                 "id": str(doc["_id"]),
@@ -4152,13 +4477,20 @@ async def get_admin_support(request: Request, telegram_id: str):
                 "unread": doc.get("unread", 0),
                 "lastActive": last_active,
                 "createdAt": created_str,
-                "device": doc.get("device", "Telegram Mini App"),
+                "device": device_desc,
                 "platform": doc.get("platform", "Android / iOS"),
                 "agent": doc.get("assigned_agent", "Unassigned"),
                 "tags": doc.get("tags", ["app"]),
                 "notes": doc.get("notes", ""),
                 "messages": msgs,
-                "file_url": doc.get("file_url", "")
+                "file_url": doc.get("file_url", ""),
+                "online": online,
+                "photoUrl": photo_url,
+                "joined": joined_str,
+                "firstPurchase": first_purchase,
+                "totalPurchases": total_purchases,
+                "lastActivity": last_activity_desc,
+                "user_typing": user_typing
             })
         return {"success": True, "data": tickets}
     except Exception as e:
@@ -4413,6 +4745,8 @@ class SupportReply(BaseModel):
     reply_text: str
     reply_media_file_id: Optional[str] = None  # Telegram file_id to forward as media
     reply_media_type: Optional[str] = None  # photo, video, audio, document
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
 
 @api_router.post("/admin/support/reply")
 async def reply_support(data: SupportReply):
@@ -4494,6 +4828,9 @@ async def reply_support(data: SupportReply):
                 "at": msg_at,
                 "status": "seen"
             }
+            if data.file_url:
+                new_msg["file_url"] = data.file_url
+                new_msg["file_type"] = data.file_type or "application/octet-stream"
             await arya_db.db.premium_feedback.update_one(
                 {"_id": ObjectId(data.ticket_id)},
                 {
@@ -4507,6 +4844,13 @@ async def reply_support(data: SupportReply):
                 {"$set": {"status": "resolved", "admin_reply": data.reply_text, "updated_at": datetime.now(timezone.utc)}}
             )
         return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in reply_support: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to reply: {str(e)}")
+
+
     except HTTPException:
         raise
     except Exception as e:
