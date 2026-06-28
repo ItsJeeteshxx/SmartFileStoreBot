@@ -4444,23 +4444,101 @@ async def get_admin_support(request: Request, telegram_id: str):
     from AryaPremium.config import Config
     from bson.objectid import ObjectId
     from datetime import datetime, timezone, timedelta
+    import asyncio
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        
-        is_owner = await is_request_owner(request)
-        # ── Exclude story requests and feedback entries from support queue ──
-        # Only show genuine support tickets and live-chat sessions
-        # Dual-layer filter: by text prefix AND by category field (case-insensitive)
         query_filter = {}
 
-        # Sort by updated_at descending so Live Chat sessions always appear first
-        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(300)
+        # Limit to 120 tickets for top list performance
+        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(120)
+        tickets_docs = await cursor.to_list(length=None)
+        
+        # 1. Collect all user IDs
+        user_ids = []
+        for doc in tickets_docs:
+            uid = doc.get("user_id")
+            if uid is not None:
+                user_ids.append(uid)
+                if str(uid).isdigit():
+                    user_ids.append(int(uid))
+                    user_ids.append(str(uid))
+        
+        unique_user_ids = list(set(user_ids))
+        
+        # 2. Fetch users, orders, and analytics concurrently
+        async def fetch_users():
+            try:
+                return await arya_db.db.users.find({"id": {"$in": unique_user_ids}}).to_list(length=None)
+            except Exception as e:
+                logger.warning(f"Error batch fetching users: {e}")
+                return []
+
+        async def fetch_orders():
+            try:
+                return await arya_db.db.orders.find({
+                    "user_id": {"$in": unique_user_ids},
+                    "status": {"$in": ["paid", "delivered"]}
+                }).to_list(length=None)
+            except Exception as e:
+                logger.warning(f"Error batch fetching orders: {e}")
+                return []
+
+        async def fetch_analytics_for_user(uid):
+            uid_variants = [uid]
+            if str(uid).isdigit():
+                uid_variants.append(int(uid))
+                uid_variants.append(str(uid))
+            try:
+                latest_event = await arya_db.db.mini_app_analytics.find_one(
+                    {"user_id": {"$in": uid_variants}},
+                    sort=[("_id", -1)]
+                )
+                return uid, latest_event
+            except Exception:
+                return uid, None
+
+        if unique_user_ids:
+            user_docs, orders_docs, *analytics_results = await asyncio.gather(
+                fetch_users(),
+                fetch_orders(),
+                *(fetch_analytics_for_user(uid) for uid in unique_user_ids)
+            )
+        else:
+            user_docs, orders_docs, analytics_results = [], [], []
+        
+        # 3. Create mapping dictionaries for fast lookup
+        user_map = {}
+        for u in user_docs:
+            uid = u.get("id")
+            if uid is not None:
+                user_map[uid] = u
+                user_map[str(uid)] = u
+                if str(uid).isdigit():
+                    user_map[int(uid)] = u
+                    
+        orders_by_user = {}
+        for o in orders_docs:
+            uid = o.get("user_id")
+            if uid is not None:
+                orders_by_user.setdefault(uid, []).append(o)
+                if str(uid).isdigit():
+                    orders_by_user.setdefault(int(uid), []).append(o)
+                    orders_by_user.setdefault(str(uid), []).append(o)
+                    
+        analytics_map = {}
+        for uid, ev in analytics_results:
+            if ev:
+                analytics_map[uid] = ev
+                if str(uid).isdigit():
+                    analytics_map[int(uid)] = ev
+                    analytics_map[str(uid)] = ev
+
         tickets = []
-        async for doc in cursor:
+        for doc in tickets_docs:
             created_dt = doc.get("created_at", datetime.now(timezone.utc))
             updated_dt = doc.get("updated_at", created_dt)
             
@@ -4469,7 +4547,6 @@ async def get_admin_support(request: Request, telegram_id: str):
             
             msgs = doc.get("messages", [])
             if not msgs:
-                # Seed with original message as a fallback
                 msg_body = doc.get("text", "")
                 if msg_body.startswith("[TICKET]") or msg_body.startswith("[SUPPORT]"):
                     msg_body = msg_body.split("]", 1)[-1].strip()
@@ -4482,7 +4559,6 @@ async def get_admin_support(request: Request, telegram_id: str):
                     }
                 ]
             
-            # Extract subject
             subj = doc.get("subject", "")
             if not subj:
                 text_content = doc.get("text", "")
@@ -4490,7 +4566,7 @@ async def get_admin_support(request: Request, telegram_id: str):
                     text_content = text_content.split("]", 1)[-1].strip()
                 subj = text_content[:40] + ("..." if len(text_content) > 40 else "") or "Live Chat Support"
 
-            # Enrich with real user data from MongoDB
+            # Enrich from maps
             ticket_uid = doc.get("user_id")
             online = False
             photo_url = None
@@ -4501,100 +4577,76 @@ async def get_admin_support(request: Request, telegram_id: str):
             device_desc = doc.get("device", "Telegram Mini App")
             
             if ticket_uid is not None:
-                try:
-                    ticket_uid_int = int(ticket_uid) if str(ticket_uid).isdigit() else ticket_uid
-                    user_doc = await arya_db.db.users.find_one({"$or": [{"id": ticket_uid_int}, {"id": str(ticket_uid_int)}]})
-                    if user_doc:
-                        photo_url = user_doc.get("photoUrl")
-                        
-                        # 5-minute inactivity -> offline status check
-                        last_active_val = user_doc.get("last_active")
-                        if last_active_val:
-                            if isinstance(last_active_val, (int, float)):
-                                last_active_dt = datetime.fromtimestamp(last_active_val, tz=timezone.utc)
-                            elif isinstance(last_active_val, str):
-                                try:
-                                    last_active_dt = datetime.fromisoformat(last_active_val.replace("Z", "+00:00"))
-                                except:
-                                    last_active_dt = None
-                            else:
-                                last_active_dt = last_active_val
-                                
-                            if last_active_dt:
-                                if last_active_dt.tzinfo is None:
-                                    last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
-                                if datetime.now(timezone.utc) - last_active_dt < timedelta(minutes=5):
-                                    online = True
-                        
-                        # Joined date formatting
-                        joined_val = user_doc.get("joined_date") or user_doc.get("joined_at") or user_doc.get("created_at")
-                        if not joined_val:
-                            doc_id = user_doc.get("_id")
-                            if doc_id and isinstance(doc_id, ObjectId):
-                                joined_val = doc_id.generation_time
-                        if isinstance(joined_val, datetime):
-                            joined_str = joined_val.strftime("%d/%m/%Y")
-                        elif isinstance(joined_val, (int, float)):
-                            joined_str = datetime.fromtimestamp(joined_val, tz=timezone.utc).strftime("%d/%m/%Y")
-                        elif isinstance(joined_val, str):
-                            joined_str = joined_val.split("T")[0]
-                        
-                        # Total purchases (items in user purchases list + successful orders)
-                        purchased_list = user_doc.get("purchases", [])
-                        orders_count = await arya_db.db.orders.count_documents({
-                            "user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]},
-                            "status": {"$in": ["paid", "delivered"]}
-                        })
-                        total_purchases = max(len(purchased_list), orders_count)
-                        
-                        # First purchase name
-                        first_order = await arya_db.db.orders.find_one(
-                            {
-                                "user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]},
-                                "status": {"$in": ["paid", "delivered"]}
-                            },
-                            sort=[("created_at", 1)]
-                        )
-                        if first_order and first_order.get("story_names"):
-                            first_purchase = first_order["story_names"][0]
-                        elif purchased_list:
+                user_doc = user_map.get(ticket_uid)
+                if user_doc:
+                    photo_url = user_doc.get("photoUrl")
+                    
+                    # 5-minute inactivity check
+                    last_active_val = user_doc.get("last_active")
+                    if last_active_val:
+                        if isinstance(last_active_val, (int, float)):
+                            last_active_dt = datetime.fromtimestamp(last_active_val, tz=timezone.utc)
+                        elif isinstance(last_active_val, str):
                             try:
-                                first_story_id = purchased_list[0]
-                                first_story = await arya_db.db.premium_stories.find_one({
-                                    "$or": [
-                                        {"_id": ObjectId(first_story_id) if (isinstance(first_story_id, str) and len(first_story_id) == 24) or isinstance(first_story_id, ObjectId) else None},
-                                        {"story_id": str(first_story_id)},
-                                        {"id": first_story_id}
-                                    ]
-                                })
-                                if first_story:
-                                    first_purchase = first_story.get("title") or first_story.get("story_name_en") or "Story"
+                                last_active_dt = datetime.fromisoformat(last_active_val.replace("Z", "+00:00"))
                             except:
-                                pass
-                                
-                        # Device lookup from analytics fallback
-                        if user_doc.get("device"):
-                            device_desc = user_doc["device"]
+                                last_active_dt = None
                         else:
-                            latest_event = await arya_db.db.mini_app_analytics.find_one(
-                                {"user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]}},
-                                sort=[("_id", -1)]
-                            )
-                            if latest_event and latest_event.get("device"):
-                                device_desc = latest_event["device"].capitalize()
+                            last_active_dt = last_active_val
+                            
+                        if last_active_dt:
+                            if last_active_dt.tzinfo is None:
+                                last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
+                            if datetime.now(timezone.utc) - last_active_dt < timedelta(minutes=5):
+                                online = True
                                 
-                        # Last activity description from analytics
-                        latest_event = await arya_db.db.mini_app_analytics.find_one(
-                            {"user_id": {"$in": [ticket_uid_int, str(ticket_uid_int)]}},
-                            sort=[("_id", -1)]
-                        )
-                        if latest_event:
-                            event_name = latest_event.get("event", latest_event.get("type", "App View"))
-                            last_activity_desc = event_name.replace("_", " ").title()
-                        elif last_active_val:
-                            last_activity_desc = "Active Recently"
-                except Exception as ex:
-                    logger.warning(f"Error enriching support ticket user data: {ex}")
+                    # Joined date formatting
+                    joined_val = user_doc.get("joined_date") or user_doc.get("joined_at") or user_doc.get("created_at")
+                    if not joined_val:
+                        doc_id = user_doc.get("_id")
+                        if doc_id and isinstance(doc_id, ObjectId):
+                            joined_val = doc_id.generation_time
+                    if isinstance(joined_val, datetime):
+                        joined_str = joined_val.strftime("%d/%m/%Y")
+                    elif isinstance(joined_val, (int, float)):
+                        joined_str = datetime.fromtimestamp(joined_val, tz=timezone.utc).strftime("%d/%m/%Y")
+                    elif isinstance(joined_val, str):
+                        joined_str = joined_val.split("T")[0]
+                        
+                    # Total purchases
+                    purchased_list = user_doc.get("purchases", [])
+                    user_orders = orders_by_user.get(ticket_uid, [])
+                    total_purchases = max(len(purchased_list), len(user_orders))
+                    
+                    # First purchase name
+                    if user_orders:
+                        try:
+                            tz_min = datetime.min.replace(tzinfo=timezone.utc)
+                            sorted_orders = sorted(user_orders, key=lambda o: o.get("created_at") or tz_min)
+                            first_order = sorted_orders[0]
+                            if first_order.get("story_names"):
+                                first_purchase = first_order["story_names"][0]
+                        except Exception:
+                            pass
+                    
+                    if first_purchase == "N/A" and purchased_list:
+                        first_purchase = "Story Entry"
+                            
+                    # Device lookup
+                    if user_doc.get("device"):
+                        device_desc = user_doc["device"]
+                    else:
+                        latest_event = analytics_map.get(ticket_uid)
+                        if latest_event and latest_event.get("device"):
+                            device_desc = latest_event["device"].capitalize()
+                            
+                    # Last activity description
+                    latest_event = analytics_map.get(ticket_uid)
+                    if latest_event:
+                        event_name = latest_event.get("event", latest_event.get("type", "App View"))
+                        last_activity_desc = event_name.replace("_", " ").title()
+                    elif last_active_val:
+                        last_activity_desc = "Active Recently"
 
             # User typing indicator status
             now = datetime.now(timezone.utc)
@@ -4605,7 +4657,7 @@ async def get_admin_support(request: Request, telegram_id: str):
                     user_typing_until = user_typing_until.replace(tzinfo=timezone.utc)
                 if user_typing_until > now:
                     user_typing = True
-            
+
             tickets.append({
                 "id": str(doc["_id"]),
                 "userName": doc.get("user_name", doc.get("first_name", "Unknown")),
@@ -4624,7 +4676,6 @@ async def get_admin_support(request: Request, telegram_id: str):
                 "tags": doc.get("tags", ["app"]),
                 "notes": doc.get("notes", ""),
                 "messages": msgs,
-                "file_url": doc.get("file_url", ""),
                 "online": online,
                 "photoUrl": photo_url,
                 "joined": joined_str,
