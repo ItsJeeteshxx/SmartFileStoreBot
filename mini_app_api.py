@@ -3812,6 +3812,27 @@ async def send_admin_support_notification_bg(
         logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
 
 
+@api_router.post("/support/upload-file")
+async def support_upload_file(file: UploadFile = File(...)):
+    """Uploads any file (image, pdf, audio) for live chat support."""
+    try:
+        contents = await file.read()
+        file_url = None
+        if file.content_type and file.content_type.startswith("image/"):
+            try:
+                file_url = await optimize_and_upload_to_storage(contents)
+            except Exception:
+                pass
+        
+        if not file_url:
+            file_url = await upload_file_to_storage(contents, file.filename or "file", file.content_type or "application/octet-stream")
+            
+        return {"success": True, "url": file_url}
+    except Exception as e:
+        logger.error(f"Failed to upload file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload file")
+
+
 @api_router.get("/support/chat")
 async def get_support_chat(telegram_id: str):
     """Gets the active support chat ticket for a user, or creates one if none exists."""
@@ -3865,12 +3886,14 @@ async def get_support_chat(telegram_id: str):
 
 class ChatMessagePayload(BaseModel):
     telegram_id: str
-    message: str
+    message: Optional[str] = ""
     selected_language: Optional[str] = None
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
 
 @api_router.post("/support/chat/send")
 async def send_support_chat_message(payload: ChatMessagePayload):
-    """User sends a message in the live chat."""
+    """User sends a message or updates language in the live chat."""
     arya_db = app.state.db
     uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
     
@@ -3881,30 +3904,42 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         "category": "Live Chat"
     })
     
+    is_new_chat = (not ticket) or len(ticket.get("messages", [])) == 0
+    
     msg_id = f"u-{int(time.time() * 1000)}"
     msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
-    new_msg = {
-        "id": msg_id,
-        "from": "user",
-        "body": payload.message,
-        "at": msg_at
-    }
     
+    new_msg = None
+    if (payload.message and payload.message.strip()) or payload.file_url:
+        new_msg = {
+            "id": msg_id,
+            "from": "user",
+            "body": payload.message or "Attachment",
+            "at": msg_at
+        }
+        if payload.file_url:
+            new_msg["file_url"] = payload.file_url
+            new_msg["file_type"] = payload.file_type or "application/octet-stream"
+        
     update_fields = {
-        "text": payload.message,
         "updated_at": datetime.now(timezone.utc)
     }
+    if payload.message and payload.message.strip():
+        update_fields["text"] = payload.message
+    elif payload.file_url:
+        update_fields["text"] = "Shared a file"
     if payload.selected_language:
         update_fields["chat_language"] = payload.selected_language
-    
+        
     if ticket:
+        update_query = {"$set": update_fields}
+        if new_msg:
+            update_query["$push"] = {"messages": new_msg}
+            update_query["$inc"] = {"unread": 1}
+            
         await arya_db.db.premium_feedback.update_one(
             {"_id": ticket["_id"]},
-            {
-                "$push": {"messages": new_msg},
-                "$set": update_fields,
-                "$inc": {"unread": 1}
-            }
+            update_query
         )
         ticket_id = str(ticket["_id"])
     else:
@@ -3913,16 +3948,16 @@ async def send_support_chat_message(payload: ChatMessagePayload):
             "user_id": uid,
             "bot_id": "mini_app",
             "type": "text",
-            "text": payload.message,
-            "subject": payload.message[:40] if len(payload.message) > 40 else payload.message,
+            "text": payload.message or ("Shared a file" if payload.file_url else "Live Chat Support"),
+            "subject": (payload.message[:40] if len(payload.message) > 40 else payload.message) if payload.message else "Live Chat Support",
             "category": "Live Chat",
             "priority": "Normal",
             "status": "Open",
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
             "source": "mini_app",
-            "unread": 1,
-            "messages": [new_msg]
+            "unread": 1 if new_msg else 0,
+            "messages": [new_msg] if new_msg else []
         }
         if payload.selected_language:
             ticket_doc["chat_language"] = payload.selected_language
@@ -3935,30 +3970,32 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
         ticket_id = str(result.inserted_id)
         
-    # Trigger background admin notification
-    first_name = "User"
-    username = ""
-    user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
-    if user_doc:
-        first_name = user_doc.get("first_name") or "User"
-        username = user_doc.get("username") or ""
-        
-    asyncio.create_task(
-        send_admin_support_notification_bg(
-            telegram_id=payload.telegram_id,
-            type_str="chat",
-            message=payload.message,
-            first_name=first_name,
-            username=username
+    # Trigger background admin notification ONLY if it is the first time user sends a query
+    if is_new_chat and payload.message and payload.message.strip():
+        first_name = "User"
+        username = ""
+        user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+        if user_doc:
+            first_name = user_doc.get("first_name") or "User"
+            username = user_doc.get("username") or ""
+            
+        asyncio.create_task(
+            send_admin_support_notification_bg(
+                telegram_id=payload.telegram_id,
+                type_str="chat",
+                message=payload.message,
+                first_name=first_name,
+                username=username
+            )
         )
-    )
-    
+        
     updated_ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(ticket_id)})
     return {
         "success": True,
         "ticket_id": ticket_id,
         "status": updated_ticket.get("status", "Open"),
-        "messages": updated_ticket.get("messages", [])
+        "messages": updated_ticket.get("messages", []),
+        "language": updated_ticket.get("chat_language", "")
     }
 
 
@@ -4002,6 +4039,51 @@ async def update_support_notes(payload: TicketNotesPayload):
     await arya_db.db.premium_feedback.update_one(
         {"_id": ObjectId(payload.ticket_id)},
         {"$set": {"notes": payload.notes, "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"success": True}
+
+
+class TicketUpdatePayload(BaseModel):
+    telegram_id: str
+    ticket_id: str
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    notes: Optional[str] = None
+    agent: Optional[str] = None
+    tags: Optional[list] = None
+    status: Optional[str] = None
+
+@api_router.post("/admin/support/update")
+async def update_support_fields(payload: TicketUpdatePayload):
+    """Admin updates any fields on a support ticket."""
+    if not is_admin(str(payload.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    
+    update_data = {}
+    if payload.priority is not None:
+        update_data["priority"] = payload.priority
+    if payload.category is not None:
+        update_data["category"] = payload.category
+    if payload.notes is not None:
+        update_data["notes"] = payload.notes
+    if payload.agent is not None:
+        update_data["agent"] = payload.agent
+    if payload.tags is not None:
+        update_data["tags"] = payload.tags
+    if payload.status is not None:
+        update_data["status"] = payload.status
+        
+    if not update_data:
+        return {"success": True, "message": "No fields to update"}
+        
+    update_data["updated_at"] = datetime.now(timezone.utc)
+    
+    await arya_db.db.premium_feedback.update_one(
+        {"_id": ObjectId(payload.ticket_id)},
+        {"$set": update_data}
     )
     return {"success": True}
 
@@ -4371,7 +4453,7 @@ async def reply_support(data: SupportReply):
         if not token:
             token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
 
-        if token:
+        if token and ticket.get("category") != "Live Chat":
             try:
                 async with aiohttp.ClientSession() as session:
                     chat_id = ticket["user_id"]
