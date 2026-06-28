@@ -2737,8 +2737,7 @@ async def get_user_tickets(telegram_id: str):
         
         query = {
             "user_id": {"$in": [uid_int, str(uid_int)]},
-            "category": {"$nin": ["Live Chat", "live_chat"]},
-            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
+            "category": {"$nin": ["Live Chat", "live_chat"]}
         }
         
         cursor = arya_db.db.premium_feedback.find(query).sort("created_at", -1).limit(50)
@@ -4001,9 +4000,9 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         sort=[("created_at", -1)]
     )
     
-    # If the most recent ticket is closed, don't allow sending new messages
+    # If the most recent ticket is closed, start a new active session or reopen it
     if ticket and ticket.get("status", "Open") in ["closed", "Closed", "resolved", "Resolved"]:
-        raise HTTPException(status_code=400, detail="This chat session is closed. Please start a new chat.")
+        ticket = None
         
     is_new_chat = (not ticket) or len(ticket.get("messages", [])) == 0
     
@@ -4356,11 +4355,7 @@ async def get_admin_support(request: Request, telegram_id: str):
         arya_db = app.state.db
         
         is_owner = await is_request_owner(request)
-        query_filter = {}  # Allow open and closed tickets
-        if is_owner:
-            query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
-        else:
-            query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
+        query_filter = {}  # Allow all support tickets and live chats to show in admin panel
             
         cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(100)
         tickets = []
