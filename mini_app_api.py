@@ -2795,8 +2795,25 @@ async def get_user_tickets(telegram_id: str):
                 "description": desc,
                 "file_url": doc.get("file_url"),
                 "messages": formatted_msgs,
-                "est_time": "~2 Hours"
+                "est_time": "~2 Hours",
+                "has_new_reply": doc.get("user_has_new_reply", False)
             })
+        # ── Background: clear user_has_new_reply flag so badge disappears after user views ──
+        new_reply_ids = [t["id"] for t in tickets if t.get("has_new_reply")]
+        if new_reply_ids:
+            async def _clear_reply_flags():
+                try:
+                    from bson.objectid import ObjectId as _ObjId
+                    ids = [_ObjId(i) for i in new_reply_ids if len(i) == 24]
+                    if ids:
+                        await arya_db.db.premium_feedback.update_many(
+                            {"_id": {"$in": ids}},
+                            {"$set": {"user_has_new_reply": False}}
+                        )
+                except Exception as _e:
+                    logger.warning(f"Failed to clear reply flags: {_e}")
+            asyncio.create_task(_clear_reply_flags())
+
         return {"success": True, "data": tickets}
     except Exception as e:
         logger.error(f"Error fetching user tickets: {e}")
@@ -4324,9 +4341,14 @@ async def update_support_status(payload: TicketStatusPayload):
     else:
         query = {"ticket_id": payload.ticket_id}
 
+    update_payload = {"status": status_val, "updated_at": datetime.now(timezone.utc)}
+    # Clear polling flag when ticket is explicitly resolved/closed
+    if status_val.lower() in ("resolved", "closed"):
+        update_payload["user_has_new_reply"] = False
+
     await arya_db.db.premium_feedback.update_many(
         query,
-        {"$set": {"status": status_val, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": update_payload}
     )
     return {"success": True}
 
@@ -4996,7 +5018,11 @@ async def reply_support(data: SupportReply):
 
         # Update database for both Live Chat and Support Tickets
         is_live = ticket.get("category") == "Live Chat"
-        new_status = "Open" if is_live else "Resolved"
+        # ✅ FIX: Do NOT auto-set "Resolved" after every reply.
+        # Live Chat stays "Open"; support tickets go to "Waiting User"
+        # so admin can still see the thread. Only explicit status-change
+        # endpoint (update_support_status) should set Resolved/Closed.
+        new_status = "Open" if is_live else "Waiting User"
         
         await arya_db.db.premium_feedback.update_one(
             {"_id": ObjectId(data.ticket_id)},
@@ -5005,7 +5031,8 @@ async def reply_support(data: SupportReply):
                 "$set": {
                     "status": new_status,
                     "admin_reply": reply_body,
-                    "unread": 0,
+                    "unread": 0,              # admin unread reset
+                    "user_has_new_reply": True,  # user-side polling flag
                     "updated_at": datetime.now(timezone.utc)
                 }
             }
