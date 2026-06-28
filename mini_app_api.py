@@ -3924,10 +3924,12 @@ async def get_support_chat(telegram_id: str):
     from datetime import datetime, timezone
     arya_db = app.state.db
     uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
+    uid_str = str(uid)
     
     # Find the most recent support chat ticket (active or closed)
+    # Use $in to match both int and string stored user_id values
     ticket = await arya_db.db.premium_feedback.find_one(
-        {"user_id": uid, "category": "Live Chat"},
+        {"user_id": {"$in": [uid, uid_str]}, "category": "Live Chat"},
         sort=[("created_at", -1)]
     )
     
@@ -3993,10 +3995,11 @@ async def send_support_chat_message(payload: ChatMessagePayload):
     from bson.objectid import ObjectId
     arya_db = app.state.db
     uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+    uid_str = str(uid)
     
-    # We should search for the most recent ticket
+    # Use $in to match both int and string stored user_id values
     ticket = await arya_db.db.premium_feedback.find_one(
-        {"user_id": uid, "category": "Live Chat"},
+        {"user_id": {"$in": [uid, uid_str]}, "category": "Live Chat"},
         sort=[("created_at", -1)]
     )
     
@@ -4111,10 +4114,11 @@ async def create_new_support_chat(payload: NewChatPayload):
     from datetime import datetime, timezone
     arya_db = app.state.db
     uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+    uid_str = str(uid)
     
-    # Archive/Close all previous live chat tickets for this user
+    # Archive/Close all previous live chat tickets for this user (match both int and string user_id)
     await arya_db.db.premium_feedback.update_many(
-        {"user_id": uid, "category": "Live Chat", "status": {"$ne": "Closed"}},
+        {"user_id": {"$in": [uid, uid_str]}, "category": "Live Chat", "status": {"$ne": "Closed"}},
         {"$set": {"status": "Closed", "updated_at": datetime.now(timezone.utc)}}
     )
     
@@ -4357,7 +4361,8 @@ async def get_admin_support(request: Request, telegram_id: str):
         is_owner = await is_request_owner(request)
         query_filter = {}  # Allow all support tickets and live chats to show in admin panel
             
-        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(100)
+        # Increased limit and sort by updated_at descending so Live Chat sessions always appear
+        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(300)
         tickets = []
         async for doc in cursor:
             created_dt = doc.get("created_at", datetime.now(timezone.utc))
@@ -4807,10 +4812,20 @@ async def reply_support(data: SupportReply):
         # Determine which bot token to use
         token = None
         try:
-            user_doc = await arya_db.db.users.find_one({"id": int(ticket["user_id"])})
+            raw_uid = ticket["user_id"]
+            try:
+                uid_int = int(raw_uid)
+            except (ValueError, TypeError):
+                uid_int = None
+            user_doc = await arya_db.db.users.find_one(
+                {"id": uid_int} if uid_int is not None else {"username": str(raw_uid)}
+            )
             if user_doc and user_doc.get("bot_ids"):
                 for bid in user_doc["bot_ids"]:
-                    bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                    try:
+                        bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                    except Exception:
+                        bot_doc = None
                     if bot_doc and bot_doc.get("token"):
                         token = bot_doc["token"]
                         break
@@ -4847,7 +4862,11 @@ async def reply_support(data: SupportReply):
         if token:
             try:
                 async with aiohttp.ClientSession() as session:
-                    chat_id = ticket["user_id"]
+                    raw_cid = ticket["user_id"]
+                    try:
+                        chat_id = int(raw_cid)
+                    except (ValueError, TypeError):
+                        chat_id = raw_cid
                     is_live_chat = ticket.get("category") == "Live Chat"
                     ticket_ref = ticket.get("ticket_id") or f"ARY-{str(ticket['_id'])[-6:].upper()}"
                     subj = ticket.get("subject") or "Support Ticket"
