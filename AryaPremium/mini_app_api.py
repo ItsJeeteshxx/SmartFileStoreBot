@@ -1960,6 +1960,79 @@ async def upload_file_to_storage(file_bytes: bytes, filename: str, content_type:
 
     return url
 
+async def send_admin_support_notification_bg(
+    telegram_id: str,
+    type_str: str,
+    message: str,
+    first_name: str,
+    username: str,
+    file_bytes: Optional[bytes] = None,
+    file_name: Optional[str] = None,
+    file_content_type: Optional[str] = None
+):
+    """Asynchronously notifies owners/admins of new support submissions in the background."""
+    from AryaPremium.config import Config
+    import aiohttp
+    
+    try:
+        escaped_first_name = escape_html(first_name or "Mini App User")
+        escaped_username = f"@{escape_html(username)}" if username else "—"
+        escaped_message = escape_html(message)
+        
+        if type_str == "request":
+            admin_txt = (
+                f"🛎️ <b>New Story Request from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>User:</b> {escaped_first_name}\n"
+                f"<b>Username:</b> {escaped_username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Request:</b>\n"
+                f"<blockquote>{escaped_message[:800]}</blockquote>\n"
+                f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
+            )
+        else:
+            admin_txt = (
+                f"💬 <b>New {type_str.title()} from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>User:</b> {escaped_first_name}\n"
+                f"<b>Username:</b> {escaped_username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Message:</b>\n"
+                f"<blockquote>{escaped_message[:800]}</blockquote>"
+            )
+        
+        token = Config.MGMT_BOT_TOKEN
+        if token and Config.OWNER_IDS:
+            async with aiohttp.ClientSession() as session:
+                for oid in Config.OWNER_IDS:
+                    try:
+                        if file_bytes:
+                            form = aiohttp.FormData()
+                            form.add_field('chat_id', str(oid))
+                            form.add_field('caption', admin_txt)
+                            form.add_field('parse_mode', 'HTML')
+                            method = "sendDocument"
+                            field_name = "document"
+                            if file_content_type:
+                                if file_content_type.startswith("image/"):
+                                    method = "sendPhoto"; field_name = "photo"
+                                elif file_content_type.startswith("video/"):
+                                    method = "sendVideo"; field_name = "video"
+                                elif file_content_type.startswith("audio/"):
+                                    method = "sendAudio"; field_name = "audio"
+                            form.add_field(field_name, file_bytes, filename=file_name or "file")
+                            await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
+                        else:
+                            await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
+                            }, timeout=10)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin {oid}: {e}")
+    except Exception as notify_err:
+        logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
+
 @api_router.post("/support")
 async def submit_support(
     telegram_id: str = Form(...),
@@ -2048,72 +2121,25 @@ async def submit_support(
                 req_doc["file_name"] = file.filename or "file"
             await arya_db.db.premium_requests.insert_one(req_doc)
         
-        # Notify admins via Telegram API using Management Bot Token (wrapped in try/except to be non-blocking)
-        try:
-            from AryaPremium.config import Config
-            import aiohttp
+        # Read file bytes for background Telegram notification task
+        file_bytes = None
+        if file:
+            await file.seek(0)
+            file_bytes = await file.read()
             
-            escaped_first_name = escape_html(first_name or "Mini App User")
-            escaped_username = f"@{escape_html(username)}" if username else "—"
-            escaped_message = escape_html(message)
-            
-            if type == "request":
-                admin_txt = (
-                    f"🛎️ <b>New Story Request from Mini App</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>User:</b> {escaped_first_name}\n"
-                    f"<b>Username:</b> {escaped_username}\n"
-                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>Request:</b>\n"
-                    f"<blockquote>{escaped_message[:800]}</blockquote>\n"
-                    f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
-                )
-            else:
-                admin_txt = (
-                    f"💬 <b>New {type.title()} from Mini App</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>User:</b> {escaped_first_name}\n"
-                    f"<b>Username:</b> {escaped_username}\n"
-                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<b>Message:</b>\n"
-                    f"<blockquote>{escaped_message[:800]}</blockquote>"
-                )
-            
-            token = Config.MGMT_BOT_TOKEN
-            if token and Config.OWNER_IDS:
-                async with aiohttp.ClientSession() as session:
-                    file_bytes = None
-                    if file:
-                        file_bytes = await file.read()
-                    
-                    for oid in Config.OWNER_IDS:
-                        try:
-                            if file_bytes:
-                                form = aiohttp.FormData()
-                                form.add_field('chat_id', str(oid))
-                                form.add_field('caption', admin_txt)
-                                form.add_field('parse_mode', 'HTML')
-                                method = "sendDocument"
-                                field_name = "document"
-                                if file.content_type:
-                                    if file.content_type.startswith("image/"):
-                                        method = "sendPhoto"; field_name = "photo"
-                                    elif file.content_type.startswith("video/"):
-                                        method = "sendVideo"; field_name = "video"
-                                    elif file.content_type.startswith("audio/"):
-                                        method = "sendAudio"; field_name = "audio"
-                                form.add_field(field_name, file_bytes, filename=file.filename or "file")
-                                await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
-                            else:
-                                await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                    "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
-                                }, timeout=3)
-                        except Exception as e:
-                            logger.warning(f"Failed to notify admin {oid}: {e}")
-        except Exception as notify_err:
-            logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
+        # Notify admins via background task so the API response returns instantly
+        asyncio.create_task(
+            send_admin_support_notification_bg(
+                telegram_id=str(telegram_id),
+                type_str=type,
+                message=message,
+                first_name=first_name,
+                username=username,
+                file_bytes=file_bytes,
+                file_name=file.filename if file else None,
+                file_content_type=file.content_type if file else None
+            )
+        )
                         
         return {"success": True, "message": "Support request submitted successfully"}
     except Exception as e:
@@ -2928,6 +2954,226 @@ async def delete_admin_story(story_id: str, telegram_id: str):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SUPPORT MANAGEMENT
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
+# USER SUPPORT & LIVE CHAT ENDPOINTS
+# ─────────────────────────────────────────────────────────────────
+
+@api_router.get("/support/chat")
+async def get_support_chat(telegram_id: str):
+    """Gets the active support chat ticket for a user, or creates one if none exists."""
+    arya_db = app.state.db
+    uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
+    
+    # Find an active chat ticket (not resolved and not closed)
+    ticket = await arya_db.db.premium_feedback.find_one({
+        "user_id": uid,
+        "status": {"$nin": ["resolved", "closed"]},
+        "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
+    })
+    
+    if not ticket:
+        # Create a new active chat ticket with a default welcome message from the agent
+        welcome_at = datetime.now(timezone.utc).strftime("%I:%M %p")
+        ticket_doc = {
+            "user_id": uid,
+            "bot_id": "mini_app",
+            "type": "text",
+            "text": "Live Chat Support",
+            "subject": "Live Chat Support",
+            "category": "Live Chat",
+            "priority": "Normal",
+            "status": "open",
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+            "source": "mini_app",
+            "unread": 0,
+            "messages": [
+                {
+                    "id": "m1",
+                    "from": "agent",
+                    "body": "Hi! You're connected to Arya Support. How can we help today?",
+                    "at": welcome_at
+                }
+            ]
+        }
+        
+        # Try to pre-populate user details if they exist in DB
+        user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+        if user_doc:
+            ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
+            ticket_doc["username"] = user_doc.get("username") or ""
+        
+        result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
+        ticket = await arya_db.db.premium_feedback.find_one({"_id": result.inserted_id})
+
+    # Format the messages array for frontend compatibility
+    messages = ticket.get("messages", [])
+    if not messages:
+        welcome_at = ticket.get("created_at", datetime.now(timezone.utc)).strftime("%I:%M %p")
+        messages = [
+            {
+                "id": "m1",
+                "from": "agent",
+                "body": "Hi! You're connected to Arya Support. How can we help today?",
+                "at": welcome_at
+            }
+        ]
+        
+    return {
+        "success": True,
+        "ticket_id": str(ticket["_id"]),
+        "status": ticket.get("status", "open"),
+        "messages": messages
+    }
+
+class ChatMessagePayload(BaseModel):
+    telegram_id: str
+    message: str
+
+@api_router.post("/support/chat/send")
+async def send_support_chat_message(payload: ChatMessagePayload):
+    """User sends a message in the live chat."""
+    arya_db = app.state.db
+    uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+    
+    # Find active ticket
+    ticket = await arya_db.db.premium_feedback.find_one({
+        "user_id": uid,
+        "status": {"$nin": ["resolved", "closed"]},
+        "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
+    })
+    
+    msg_id = f"u-{int(time.time() * 1000)}"
+    msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
+    new_msg = {
+        "id": msg_id,
+        "from": "user",
+        "body": payload.message,
+        "at": msg_at
+    }
+    
+    if ticket:
+        # Append message to existing ticket
+        await arya_db.db.premium_feedback.update_one(
+            {"_id": ticket["_id"]},
+            {
+                "$push": {"messages": new_msg},
+                "$set": {
+                    "text": payload.message,  # update preview text
+                    "status": "open",
+                    "updated_at": datetime.now(timezone.utc)
+                },
+                "$inc": {"unread": 1}
+            }
+        )
+        ticket_id = str(ticket["_id"])
+    else:
+        # Create a new ticket if none active
+        ticket_doc = {
+            "user_id": uid,
+            "bot_id": "mini_app",
+            "type": "text",
+            "text": payload.message,
+            "subject": payload.message[:40] if len(payload.message) > 40 else payload.message,
+            "category": "Live Chat",
+            "priority": "Normal",
+            "status": "open",
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+            "source": "mini_app",
+            "unread": 1,
+            "messages": [
+                {
+                    "id": "m1",
+                    "from": "agent",
+                    "body": "Hi! You're connected to Arya Support. How can we help today?",
+                    "at": datetime.now(timezone.utc).strftime("%I:%M %p")
+                },
+                new_msg
+            ]
+        }
+        user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+        if user_doc:
+            ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
+            ticket_doc["username"] = user_doc.get("username") or ""
+            
+        result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
+        ticket_id = str(result.inserted_id)
+        
+    # Trigger background admin notification
+    first_name = "User"
+    username = ""
+    user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+    if user_doc:
+        first_name = user_doc.get("first_name") or "User"
+        username = user_doc.get("username") or ""
+        
+    asyncio.create_task(
+        send_admin_support_notification_bg(
+            telegram_id=payload.telegram_id,
+            type_str="chat",
+            message=payload.message,
+            first_name=first_name,
+            username=username,
+            file_bytes=None,
+            file_name=None,
+            file_content_type=None
+        )
+    )
+    
+    updated_ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(ticket_id)})
+    return {
+        "success": True,
+        "ticket_id": ticket_id,
+        "status": updated_ticket.get("status", "open"),
+        "messages": updated_ticket.get("messages", [])
+    }
+
+class TicketStatusPayload(BaseModel):
+    telegram_id: str
+    ticket_id: str
+    status: str
+
+@api_router.post("/admin/support/status")
+async def update_support_status(payload: TicketStatusPayload):
+    """Admin updates ticket status."""
+    if not is_admin(str(payload.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    
+    status_val = payload.status  # Keep casing as selected (e.g. "Open", "In Progress", etc.)
+    
+    await arya_db.db.premium_feedback.update_one(
+        {"_id": ObjectId(payload.ticket_id)},
+        {"$set": {"status": status_val, "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"success": True}
+
+class TicketNotesPayload(BaseModel):
+    telegram_id: str
+    ticket_id: str
+    notes: str
+
+@api_router.post("/admin/support/notes")
+async def update_support_notes(payload: TicketNotesPayload):
+    """Admin updates ticket internal notes."""
+    if not is_admin(str(payload.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    
+    await arya_db.db.premium_feedback.update_one(
+        {"_id": ObjectId(payload.ticket_id)},
+        {"$set": {"notes": payload.notes, "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"success": True}
+
+# ─────────────────────────────────────────────────────────────────
+# SUPPORT MANAGEMENT (ADMIN SIDE)
+# ─────────────────────────────────────────────────────────────────
 @api_router.get("/admin/support")
 async def get_admin_support(request: Request, telegram_id: str):
     from AryaPremium.config import Config
@@ -2940,29 +3186,71 @@ async def get_admin_support(request: Request, telegram_id: str):
         
         is_owner = await is_request_owner(request)
         query_filter = {
-            "status": {"$ne": "resolved"}
+            "status": {"$nin": ["resolved", "closed", "Resolved", "Closed"]}
         }
         if is_owner:
             query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
         else:
             query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
             
-        cursor = arya_db.db.premium_feedback.find(query_filter).sort("created_at", -1).limit(100)
+        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(100)
         tickets = []
         async for doc in cursor:
+            # Format date/time
+            created_dt = doc.get("created_at", datetime.now(timezone.utc))
+            updated_dt = doc.get("updated_at", created_dt)
+            
+            created_str = created_dt.strftime("%d/%m/%Y, %H:%M") if isinstance(created_dt, datetime) else str(created_dt)
+            last_active = updated_dt.strftime("%I:%M %p") if isinstance(updated_dt, datetime) else "09:00"
+            
+            # Format messages
+            msgs = doc.get("messages", [])
+            if not msgs:
+                # Seed with original message as a fallback
+                msg_body = doc.get("text", "")
+                if msg_body.startswith("[TICKET]") or msg_body.startswith("[SUPPORT]"):
+                    msg_body = msg_body.split("]", 1)[-1].strip()
+                msgs = [
+                    {
+                        "id": "m_init",
+                        "from": "user",
+                        "body": msg_body,
+                        "at": last_active
+                    }
+                ]
+            
+            # Extract subject
+            subj = doc.get("subject", "")
+            if not subj:
+                text_content = doc.get("text", "")
+                if text_content.startswith("[TICKET]") or text_content.startswith("[SUPPORT]"):
+                    text_content = text_content.split("]", 1)[-1].strip()
+                subj = text_content[:40] + ("..." if len(text_content) > 40 else "") or "Live Chat Support"
+
             tickets.append({
                 "id": str(doc["_id"]),
-                "user_id": doc.get("user_id"),
-                "username": doc.get("username", "Unknown"),
-                "first_name": doc.get("user_name", doc.get("first_name", "Unknown")),
-                "text": doc.get("text", ""),
-                "type": doc.get("type", "text"),  # text, photo, video, audio, document
-                "file_id": doc.get("file_id", ""),  # Telegram file_id for media
-                "file_url": doc.get("file_url", ""),  # CDN URL if available
-                "status": doc.get("status", "open"),
-                "date": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
+                "userName": doc.get("user_name", doc.get("first_name", "Unknown")),
+                "telegramUsername": f"@{doc.get('username')}" if doc.get("username") else "—",
+                "telegramId": str(doc.get("user_id", "")),
+                "subject": subj,
+                "category": doc.get("category", "Support"),
+                "priority": doc.get("priority", "Normal"),
+                "status": doc.get("status", "Open"),
+                "unread": doc.get("unread", 0),
+                "lastActive": last_active,
+                "createdAt": created_str,
+                "device": doc.get("device", "Telegram Mini App"),
+                "platform": doc.get("platform", "Android / iOS"),
+                "agent": doc.get("assigned_agent", "Unassigned"),
+                "tags": doc.get("tags", ["app"]),
+                "notes": doc.get("notes", ""),
+                "messages": msgs,
+                "file_url": doc.get("file_url", "")
             })
         return {"success": True, "data": tickets}
+    except Exception as e:
+        logger.error(f"Error fetching support: {e}")
+        return {"success": False, "data": []}
     except Exception as e:
         logger.error(f"Error fetching support: {e}")
         return {"success": False, "data": []}
@@ -3285,10 +3573,27 @@ async def reply_support(data: SupportReply):
             except Exception as notify_err:
                 logger.error(f"Failed to send support reply Telegram notification: {notify_err}", exc_info=True)
         
-        # Mark resolved
+        # Append message to conversation thread & reset unread count
+        msg_id = f"a-{int(time.time() * 1000)}"
+        msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
+        agent_msg = {
+            "id": msg_id,
+            "from": "agent",
+            "body": data.reply_text,
+            "at": msg_at
+        }
+        
         await arya_db.db.premium_feedback.update_one(
             {"_id": ObjectId(data.ticket_id)},
-            {"$set": {"status": "resolved", "admin_reply": data.reply_text}}
+            {
+                "$push": {"messages": agent_msg},
+                "$set": {
+                    "status": "waiting user",
+                    "admin_reply": data.reply_text,
+                    "updated_at": datetime.now(timezone.utc),
+                    "unread": 0
+                }
+            }
         )
         return {"success": True}
     except HTTPException:
