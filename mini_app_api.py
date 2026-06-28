@@ -4753,6 +4753,7 @@ async def reply_support(data: SupportReply):
     from AryaPremium.config import Config
     from bson.objectid import ObjectId
     import aiohttp
+    import time
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
         if not is_admin(str(data.telegram_id)):
@@ -4763,7 +4764,7 @@ async def reply_support(data: SupportReply):
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
-        # Determine which bot token to use (seller bot preferred, fallback to config)
+        # Determine which bot token to use
         token = None
         try:
             user_doc = await arya_db.db.users.find_one({"id": int(ticket["user_id"])})
@@ -4785,64 +4786,86 @@ async def reply_support(data: SupportReply):
                 pass
 
         if not token:
-            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None)
 
-        if token and ticket.get("category") != "Live Chat":
+        # Build message object
+        msg_id = f"a-{int(time.time() * 1000)}"
+        msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
+        reply_body = data.reply_text or "Attachment"
+        new_msg = {
+            "id": msg_id,
+            "from": "agent",
+            "body": reply_body,
+            "at": msg_at,
+            "status": "seen"
+        }
+        if data.file_url:
+            new_msg["file_url"] = data.file_url
+            new_msg["file_type"] = data.file_type or "application/octet-stream"
+
+        # Send Telegram Bot DM to User with detailed ticket response summary
+        if token:
             try:
                 async with aiohttp.ClientSession() as session:
                     chat_id = ticket["user_id"]
-                    # Send text reply
-                    if data.reply_text:
-                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": f"<b>Admin Reply:</b>\n\n{escape_html(data.reply_text)}",
-                            "parse_mode": "HTML"
-                        })
-                    # Forward media if provided
+                    is_live_chat = ticket.get("category") == "Live Chat"
+                    ticket_ref = ticket.get("ticket_id") or f"ARY-{str(ticket['_id'])[-6:].upper()}"
+                    subj = ticket.get("subject") or "Support Ticket"
+
+                    if is_live_chat:
+                        dm_txt = (
+                            f"💬 <b>New Message in Live Chat</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"<b>Support Team:</b>\n"
+                            f"<blockquote>{escape_html(reply_body[:500])}</blockquote>\n"
+                            f"<i>Open Mini App Support section to continue chatting.</i>"
+                        )
+                    else:
+                        dm_txt = (
+                            f"💬 <b>Support Ticket Update</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🆔 <b>Ticket ID:</b> <code>{ticket_ref}</code>\n"
+                            f"📌 <b>Subject:</b> {escape_html(subj)}\n\n"
+                            f"<b>Admin Reply:</b>\n"
+                            f"<blockquote>{escape_html(reply_body[:500])}</blockquote>\n\n"
+                            f"<i>You can check full status & details in the Support section of Mini App.</i>"
+                        )
+
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": dm_txt,
+                        "parse_mode": "HTML"
+                    }, timeout=5)
+
+                    # Forward media if provided via bot API media methods
                     if data.reply_media_file_id and data.reply_media_type:
-                        method_map = {
-                            "photo": "sendPhoto", "video": "sendVideo",
-                            "audio": "sendAudio", "document": "sendDocument"
-                        }
+                        method_map = {"photo": "sendPhoto", "video": "sendVideo", "audio": "sendAudio", "document": "sendDocument"}
                         method = method_map.get(data.reply_media_type, "sendDocument")
-                        field_map = {
-                            "photo": "photo", "video": "video",
-                            "audio": "audio", "document": "document"
-                        }
+                        field_map = {"photo": "photo", "video": "video", "audio": "audio", "document": "document"}
                         field = field_map.get(data.reply_media_type, "document")
                         await session.post(f"https://api.telegram.org/bot{token}/{method}", json={
                             "chat_id": chat_id,
                             field: data.reply_media_file_id
-                        })
+                        }, timeout=5)
             except Exception as notify_err:
-                logger.error(f"Failed to send support reply Telegram notification: {notify_err}", exc_info=True)
+                logger.error(f"Failed to send support reply Telegram notification: {notify_err}")
+
+        # Update database for both Live Chat and Support Tickets
+        is_live = ticket.get("category") == "Live Chat"
+        new_status = "Open" if is_live else "Resolved"
         
-        # Mark resolved or append to live chat messages
-        if ticket.get("category") == "Live Chat":
-            msg_id = f"a-{int(time.time() * 1000)}"
-            msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
-            new_msg = {
-                "id": msg_id,
-                "from": "agent",
-                "body": data.reply_text,
-                "at": msg_at,
-                "status": "seen"
-            }
-            if data.file_url:
-                new_msg["file_url"] = data.file_url
-                new_msg["file_type"] = data.file_type or "application/octet-stream"
-            await arya_db.db.premium_feedback.update_one(
-                {"_id": ObjectId(data.ticket_id)},
-                {
-                    "$push": {"messages": new_msg},
-                    "$set": {"status": "Open", "unread": 0, "updated_at": datetime.now(timezone.utc)}
+        await arya_db.db.premium_feedback.update_one(
+            {"_id": ObjectId(data.ticket_id)},
+            {
+                "$push": {"messages": new_msg},
+                "$set": {
+                    "status": new_status,
+                    "admin_reply": reply_body,
+                    "unread": 0,
+                    "updated_at": datetime.now(timezone.utc)
                 }
-            )
-        else:
-            await arya_db.db.premium_feedback.update_one(
-                {"_id": ObjectId(data.ticket_id)},
-                {"$set": {"status": "resolved", "admin_reply": data.reply_text, "updated_at": datetime.now(timezone.utc)}}
-            )
+            }
+        )
         return {"success": True}
     except HTTPException:
         raise
