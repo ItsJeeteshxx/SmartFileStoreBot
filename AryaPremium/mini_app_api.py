@@ -1980,16 +1980,34 @@ async def send_admin_support_notification_bg(
         escaped_message = escape_html(message)
         
         if type_str == "request":
+            # Extract structured fields from message text
+            import re as _re
+            lang_match = _re.search(r'Language:\s*([^\n]+)', message)
+            escaped_language = escape_html(lang_match.group(1).strip() if lang_match else "Not specified")
+            link_match = _re.search(r'Link:\s*([^\n]+)', message)
+            story_link = escape_html(link_match.group(1).strip() if link_match else "")
+            story_name_match = _re.search(r'Story Name:\s*([^\n]+)', message)
+            escaped_story_name = escape_html(story_name_match.group(1).strip() if story_name_match else message.split("\n")[0][:80])
+            platform_match = _re.search(r'Platform:\s*([^\n]+)', message)
+            escaped_platform = escape_html(platform_match.group(1).strip() if platform_match else "Not specified")
+            status_match = _re.search(r'Status:\s*([^\n]+)', message)
+            escaped_req_status = escape_html(status_match.group(1).strip() if status_match else "Unknown")
             admin_txt = (
-                f"🛎️ <b>New Story Request from Mini App</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"\U0001f6ce\ufe0f <b>New Story Request from Mini App</b>\n"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
                 f"<b>User:</b> {escaped_first_name}\n"
                 f"<b>Username:</b> {escaped_username}\n"
                 f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>Request:</b>\n"
-                f"<blockquote>{escaped_message[:800]}</blockquote>\n"
-                f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                f"<b>\U0001f4da Story Name:</b> {escaped_story_name}\n"
+                f"<b>\U0001f4f1 Platform:</b> {escaped_platform}\n"
+                f"<b>\U0001f310 Language:</b> {escaped_language}\n"
+                f"<b>\u2705 Status:</b> {escaped_req_status}\n"
+                + (f"<b>\U0001f517 Link:</b> {story_link}\n" if story_link else "")
+                + f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                f"<b>Full Request:</b>\n"
+                f"<blockquote>{escaped_message[:500]}</blockquote>\n"
+                f"<i>Manage from Admin Panel \u2192 Requests tab or Bot \u2192 STORY REQUESTS</i>"
             )
         else:
             admin_txt = (
@@ -2048,7 +2066,8 @@ async def submit_support(
     """Submits a support ticket, feedback, or suggestion from the Mini App, with optional file attachment."""
     message = message.strip()
     
-    if not telegram_id or (not message and not file):
+    # For story requests, message is always provided. Allow requests without mandatory file.
+    if not telegram_id or (not message and not file and type != "request"):
         raise HTTPException(status_code=400, detail="Message or file is required")
 
     arya_db = app.state.db
@@ -2157,12 +2176,13 @@ async def get_my_requests(telegram_id: str):
     
     try:
         user_id = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        user_id_str = str(user_id)
         requests = []
         seen_feedback_ids = set()
 
-        # Primary: premium_requests (unified bot+miniapp collection)
+        # Primary: premium_requests — match both int and str stored user_id
         cursor = arya_db.db.premium_requests.find(
-            {"user_id": user_id}
+            {"user_id": {"$in": [user_id, user_id_str]}}
         ).sort("created_at", -1)
         async for doc in cursor:
             fb_id = doc.get("feedback_id", "")
@@ -2177,12 +2197,17 @@ async def get_my_requests(telegram_id: str):
                 "text": doc.get("text", doc.get("story_name", "")),
                 "status": status.lower() if status else "pending",
                 "source": doc.get("source", "bot"),
+                "admin_message": doc.get("admin_message", ""),
+                "file_url": doc.get("file_url", ""),
+                "language": doc.get("language", ""),
+                "completion_type": doc.get("completion_type", ""),
+                "link": doc.get("link", ""),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
             })
 
         # Legacy: premium_feedback with [REQUEST] prefix (not already linked)
         cursor2 = arya_db.db.premium_feedback.find({
-            "user_id": user_id,
+            "user_id": {"$in": [user_id, user_id_str]},
             "text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}
         }).sort("created_at", -1)
         async for doc in cursor2:
@@ -2219,27 +2244,60 @@ async def get_my_purchases(telegram_id: str):
         from bson.objectid import ObjectId
         
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+        user_id_str = str(user_id_int)
         
         # In AryaPremium, purchases are in user.purchases
         user = await arya_db.db.users.find_one({"id": user_id_int})
         purchased_story_ids = user.get("purchases", []) if user else []
         
+        # ── BULK FETCH: all stories in ONE query instead of N separate queries ──
+        story_oid_list = []
+        for sid in purchased_story_ids:
+            try:
+                story_oid_list.append(ObjectId(sid))
+            except Exception:
+                pass
+
+        stories_by_oid = {}
+        if story_oid_list:
+            story_cursor = arya_db.db.premium_stories.find({"_id": {"$in": story_oid_list}})
+            async for s in story_cursor:
+                stories_by_oid[str(s["_id"])] = s
+
+        # ── BULK FETCH: all paid orders in ONE query ──
+        orders_by_story: dict = {}
+        if purchased_story_ids:
+            order_cursor = arya_db.db.orders.find({
+                "user_id": {"$in": [user_id_int, user_id_str]},
+                "story_ids": {"$in": purchased_story_ids},
+                "status": {"$in": ["paid", "delivered"]}
+            })
+            async for ord_doc in order_cursor:
+                for sid in (ord_doc.get("story_ids") or []):
+                    if sid not in orders_by_story:
+                        orders_by_story[sid] = ord_doc
+
+        # ── BULK FETCH: premium_purchases in ONE query ──
+        pp_by_story: dict = {}
+        if story_oid_list:
+            pp_cursor = arya_db.db.premium_purchases.find({
+                "user_id": {"$in": [user_id_int, user_id_str]},
+                "story_id": {"$in": story_oid_list}
+            })
+            async for pp in pp_cursor:
+                sid_str = str(pp.get("story_id", ""))
+                if sid_str and sid_str not in pp_by_story:
+                    pp_by_story[sid_str] = pp
+
         purchased_items = []
         for story_id in purchased_story_ids:
             try:
-                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+                story = stories_by_oid.get(story_id)
                 if story:
                     formatted = _format_story(story)
                     if formatted:
                         formatted["story_id"] = formatted["id"]
-                        
-                        # Find if there's an order via Mini App for this story
-                        order = await arya_db.db.orders.find_one({
-                            "user_id": {"$in": [user_id_int, str(user_id_int)]},
-                            "story_ids": story_id,
-                            "status": {"$in": ["paid", "delivered"]}
-                        })
-                        
+                        order = orders_by_story.get(story_id)
                         if order:
                             formatted["order_details"] = {
                                 "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
@@ -2249,16 +2307,7 @@ async def get_my_purchases(telegram_id: str):
                                 "resolved_by": order.get("resolved_by")
                             }
                         else:
-                            # Try to find in premium_purchases
-                            purchase_rec = None
-                            try:
-                                purchase_rec = await arya_db.db.premium_purchases.find_one({
-                                    "user_id": {"$in": [user_id_int, str(user_id_int)]},
-                                    "story_id": ObjectId(story_id)
-                                })
-                            except Exception:
-                                pass
-                                
+                            purchase_rec = pp_by_story.get(story_id)
                             if purchase_rec:
                                 p_at = purchase_rec.get("purchased_at") or purchase_rec.get("created_at")
                                 formatted["order_details"] = {
@@ -2269,7 +2318,6 @@ async def get_my_purchases(telegram_id: str):
                                 }
                             else:
                                 formatted["order_details"] = None
-
                         purchased_items.append(formatted)
             except Exception:
                 pass
@@ -2348,9 +2396,6 @@ async def get_my_purchases(telegram_id: str):
                     pass
                     
         return {"success": True, "data": purchased_items}
-    except Exception as e:
-        logger.error(f"Failed to fetch my-purchases: {e}")
-        return {"success": False, "data": []}
     except Exception as e:
         logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}
@@ -2961,16 +3006,23 @@ async def delete_admin_story(story_id: str, telegram_id: str):
 @api_router.get("/support/chat")
 async def get_support_chat(telegram_id: str):
     """Gets the active support chat ticket for a user, or creates one if none exists."""
+    import asyncio
     arya_db = app.state.db
     uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
-    
-    # Find an active chat ticket (not resolved and not closed)
-    ticket = await arya_db.db.premium_feedback.find_one({
-        "user_id": uid,
+    uid_str = str(uid)
+
+    # ── Run ticket lookup and user_doc lookup in PARALLEL ──
+    ticket_query = arya_db.db.premium_feedback.find_one({
+        "user_id": {"$in": [uid, uid_str]},
         "status": {"$nin": ["resolved", "closed"]},
         "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
     })
-    
+    user_query = arya_db.db.users.find_one(
+        {"id": uid} if isinstance(uid, int) else {"username": uid},
+        {"first_name": 1, "username": 1, "_id": 0}
+    )
+    ticket, user_doc = await asyncio.gather(ticket_query, user_query)
+
     if not ticket:
         # Create a new active chat ticket with a default welcome message from the agent
         welcome_at = datetime.now(timezone.utc).strftime("%I:%M %p")
@@ -2996,15 +3048,28 @@ async def get_support_chat(telegram_id: str):
                 }
             ]
         }
-        
-        # Try to pre-populate user details if they exist in DB
-        user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+
+        # Pre-populate user details (already fetched in parallel above)
         if user_doc:
             ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
             ticket_doc["username"] = user_doc.get("username") or ""
-        
+
         result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
-        ticket = await arya_db.db.premium_feedback.find_one({"_id": result.inserted_id})
+        # Use ticket_doc directly — avoids extra find_one round trip
+        ticket_doc["_id"] = result.inserted_id
+        ticket = ticket_doc
+
+    # Reset unread counter as background task (non-blocking)
+    if ticket.get("unread", 0) > 0:
+        async def _reset_unread():
+            try:
+                await arya_db.db.premium_feedback.update_one(
+                    {"_id": ticket["_id"]},
+                    {"$set": {"unread": 0}}
+                )
+            except Exception:
+                pass
+        asyncio.create_task(_reset_unread())
 
     # Format the messages array for frontend compatibility
     messages = ticket.get("messages", [])
@@ -3018,7 +3083,7 @@ async def get_support_chat(telegram_id: str):
                 "at": welcome_at
             }
         ]
-        
+
     return {
         "success": True,
         "ticket_id": str(ticket["_id"]),
