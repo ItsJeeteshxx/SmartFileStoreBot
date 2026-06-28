@@ -2576,7 +2576,7 @@ async def submit_support(
         "source": "mini_app",
         "subject": subject or "",
         "priority": priority or "Normal",
-        "category": category or type,
+        "category": (category or type).lower(),
         "description": description or message,
         "device": device or "Telegram Mini App",
         "platform": client_platform or "Android / iOS"
@@ -2754,7 +2754,10 @@ async def get_user_tickets(telegram_id: str):
         
         query = {
             "user_id": {"$in": [uid_int, str(uid_int)]},
-            "category": {"$nin": ["Live Chat", "live_chat"]}
+            # Exclude Live Chat sessions (handled separately), story requests, and feedback entries
+            "category": {"$nin": ["Live Chat", "live_chat", "request", "Request", "feedback", "Feedback"]},
+            # Also exclude by text prefix as a safety net (in case category is missing/wrong)
+            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
         }
         
         cursor = arya_db.db.premium_feedback.find(query).sort("created_at", -1).limit(50)
@@ -4427,9 +4430,15 @@ async def get_admin_support(request: Request, telegram_id: str):
         arya_db = app.state.db
         
         is_owner = await is_request_owner(request)
-        query_filter = {}  # Allow all support tickets and live chats to show in admin panel
-            
-        # Increased limit and sort by updated_at descending so Live Chat sessions always appear
+        # ── Exclude story requests and feedback entries from support queue ──
+        # Only show genuine support tickets and live-chat sessions
+        # Dual-layer filter: by text prefix AND by category field (case-insensitive)
+        query_filter = {
+            "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}},
+            "category": {"$not": {"$regex": "^(request|feedback|security)$", "$options": "i"}}
+        }
+
+        # Sort by updated_at descending so Live Chat sessions always appear first
         cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(300)
         tickets = []
         async for doc in cursor:
@@ -4800,8 +4809,15 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
         try:
             user_chat_id = doc.get("user_id")
             if user_chat_id:
-                # Use MGMT_BOT_TOKEN directly — most reliable
-                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+                # Use the Arya Premium Delivery Bot — NOT the management bot
+                # Prefer: user's specific delivery bot → any delivery bot → BOT_TOKEN → MGMT last resort
+                try:
+                    uid_for_token = int(user_chat_id) if str(user_chat_id).isdigit() else None
+                    token = await get_customer_bot_token(uid_for_token) if uid_for_token else None
+                except Exception:
+                    token = None
+                if not token:
+                    token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None)
                 if token:
                     # Status label with emoji
                     status_emojis = {
@@ -4909,6 +4925,7 @@ async def reply_support(data: SupportReply):
                 pass
 
         if not token:
+            # Last resort: use main delivery bot token, NEVER management bot as first choice
             token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None)
 
         # Build message object
@@ -4994,13 +5011,6 @@ async def reply_support(data: SupportReply):
             }
         )
         return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in reply_support: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to reply: {str(e)}")
-
-
     except HTTPException:
         raise
     except Exception as e:
