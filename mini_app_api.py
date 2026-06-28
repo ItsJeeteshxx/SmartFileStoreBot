@@ -2737,6 +2737,7 @@ async def get_user_tickets(telegram_id: str):
         
         query = {
             "user_id": {"$in": [uid_int, str(uid_int)]},
+            "category": {"$nin": ["Live Chat", "live_chat"]},
             "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
         }
         
@@ -4155,27 +4156,41 @@ async def create_new_support_chat(payload: NewChatPayload):
 
 
 class CloseChatPayload(BaseModel):
-    telegram_id: str
-    ticket_id: str
+    telegram_id: Optional[str] = None
+    ticket_id: Optional[str] = None
 
 @api_router.post("/support/chat/close")
 async def close_support_chat(payload: CloseChatPayload):
-    """Closes the specified support chat session."""
+    """Closes the specified support chat session by ticket_id or telegram_id."""
     from datetime import datetime, timezone
     from bson.objectid import ObjectId
     arya_db = app.state.db
     
-    await arya_db.db.premium_feedback.update_one(
-        {"_id": ObjectId(payload.ticket_id)},
+    query = {}
+    if payload.ticket_id and len(payload.ticket_id) == 24:
+        try:
+            query = {"_id": ObjectId(payload.ticket_id)}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    elif payload.telegram_id:
+        uid_int = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+        query = {
+            "user_id": {"$in": [uid_int, str(uid_int)]},
+            "category": {"$in": ["Live Chat", "live_chat"]},
+            "status": {"$ne": "Closed"}
+        }
+    else:
+        return {"success": False, "message": "Missing ticket_id or telegram_id"}
+        
+    res = await arya_db.db.premium_feedback.update_many(
+        query,
         {"$set": {"status": "Closed", "updated_at": datetime.now(timezone.utc)}}
     )
     
-    updated_ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(payload.ticket_id)})
     return {
         "success": True,
-        "ticket_id": payload.ticket_id,
         "status": "Closed",
-        "messages": updated_ticket.get("messages", []) if updated_ticket else []
+        "modified": res.modified_count
     }
 
 
@@ -4222,11 +4237,21 @@ async def update_support_status(payload: TicketStatusPayload):
         
     arya_db = app.state.db
     from bson.objectid import ObjectId
+    from datetime import datetime, timezone
     
     status_val = payload.status  # "Open", "Waiting User", "Closed", etc.
     
-    await arya_db.db.premium_feedback.update_one(
-        {"_id": ObjectId(payload.ticket_id)},
+    query = {}
+    if len(payload.ticket_id) == 24:
+        try:
+            query = {"$or": [{"_id": ObjectId(payload.ticket_id)}, {"ticket_id": payload.ticket_id}]}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    else:
+        query = {"ticket_id": payload.ticket_id}
+
+    await arya_db.db.premium_feedback.update_many(
+        query,
         {"$set": {"status": status_val, "updated_at": datetime.now(timezone.utc)}}
     )
     return {"success": True}
@@ -4245,9 +4270,19 @@ async def update_support_notes(payload: TicketNotesPayload):
         
     arya_db = app.state.db
     from bson.objectid import ObjectId
+    from datetime import datetime, timezone
     
-    await arya_db.db.premium_feedback.update_one(
-        {"_id": ObjectId(payload.ticket_id)},
+    query = {}
+    if len(payload.ticket_id) == 24:
+        try:
+            query = {"$or": [{"_id": ObjectId(payload.ticket_id)}, {"ticket_id": payload.ticket_id}]}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    else:
+        query = {"ticket_id": payload.ticket_id}
+
+    await arya_db.db.premium_feedback.update_many(
+        query,
         {"$set": {"notes": payload.notes, "updated_at": datetime.now(timezone.utc)}}
     )
     return {"success": True}
@@ -4271,6 +4306,7 @@ async def update_support_fields(payload: TicketUpdatePayload):
         
     arya_db = app.state.db
     from bson.objectid import ObjectId
+    from datetime import datetime, timezone
     
     update_data = {}
     if payload.priority is not None:
@@ -4291,8 +4327,17 @@ async def update_support_fields(payload: TicketUpdatePayload):
         
     update_data["updated_at"] = datetime.now(timezone.utc)
     
-    await arya_db.db.premium_feedback.update_one(
-        {"_id": ObjectId(payload.ticket_id)},
+    query = {}
+    if len(payload.ticket_id) == 24:
+        try:
+            query = {"$or": [{"_id": ObjectId(payload.ticket_id)}, {"ticket_id": payload.ticket_id}]}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    else:
+        query = {"ticket_id": payload.ticket_id}
+
+    await arya_db.db.premium_feedback.update_many(
+        query,
         {"$set": update_data}
     )
     return {"success": True}
