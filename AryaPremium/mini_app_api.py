@@ -6729,20 +6729,7 @@ async def ban_guard_middleware(request: Request, call_next):
                         "reason": root_ban_reason,
                         "status": "banned",
                         "name": f"User {tg_id}"
-                    }
-
-                # Auto-unban paid user if they were auto-banned in the past as an alt
-                if banned_by_tg and is_paid_user:
-                    reason_str = banned_by_tg.get("reason", "")
-                    if "auto-ban" in reason_str.lower() or "alt account" in reason_str.lower() or "alternative account" in reason_str.lower() or "blocked ip/device" in reason_str.lower() or "blocked device" in reason_str.lower():
-                        try:
-                            await db.db.premium_bans.delete_one({"_id": tg_id})
-                            await db.db.users.update_one({"id": tg_id}, {"$unset": {"ban_status": ""}})
-                            banned_by_tg = None
-                            logger.info(f"Dynamically unbanned paid user {tg_id} who was auto-banned as an alt account.")
-                        except Exception as ex:
-                            logger.error(f"Failed to auto-unban paid user {tg_id}: {ex}")
-                
+                    }                
             # 3. ENFORCE BLOCKS
             # We strictly DO NOT block or auto-ban innocent users based solely on IP addresses
             # because mobile carrier networks use shared/dynamic CGNAT IPs.

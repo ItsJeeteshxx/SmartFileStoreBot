@@ -5903,6 +5903,65 @@ async def get_admin_buyers(telegram_id: str):
         return {"success": False, "data": []}
 
 
+@api_router.get("/admin/shared-ips")
+async def get_shared_ips(telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        # Aggregate logs in mini_app_analytics to find IPs with > 2 unique users
+        pipeline = [
+            {"$match": {"ip": {"$exists": True, "$ne": None, "$nin": ["", "127.0.0.1", "::1", "unknown"]}}},
+            {
+                "$group": {
+                    "_id": "$ip",
+                    "unique_users": {"$addToSet": "$user_id"},
+                    "total_hits": {"$sum": 1}
+                }
+            },
+            {
+                "$project": {
+                    "ip": "$_id",
+                    "unique_users": "$unique_users",
+                    "unique_users_count": {"$size": "$unique_users"},
+                    "total_hits": "$total_hits"
+                }
+            },
+            {"$match": {"unique_users_count": {"$gt": 2}}},
+            {"$sort": {"unique_users_count": -1}},
+            {"$limit": 50}
+        ]
+        
+        shared_ips = []
+        async for doc in arya_db.db.mini_app_analytics.aggregate(pipeline):
+            users_list = []
+            for uid in doc.get("unique_users", []):
+                if not uid:
+                    continue
+                try:
+                    uid_int = int(uid)
+                    user_doc = await arya_db.db.users.find_one({"id": uid_int})
+                    username = user_doc.get("username") if user_doc else None
+                    first_name = user_doc.get("first_name") if user_doc else None
+                    name = f"@{username}" if username else (first_name or f"User {uid}")
+                    users_list.append({"id": uid_int, "name": name})
+                except Exception:
+                    users_list.append({"id": uid, "name": f"User {uid}"})
+            
+            shared_ips.append({
+                "ip": doc["ip"],
+                "users": users_list,
+                "users_count": doc["unique_users_count"],
+                "total_hits": doc["total_hits"]
+            })
+            
+        return {"success": True, "shared_ips": shared_ips}
+    except Exception as e:
+        logger.error(f"Error fetching shared IPs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class ManualPurchase(BaseModel):
     telegram_id: str
     user_id: int
@@ -8334,20 +8393,7 @@ async def ban_guard_middleware(request: Request, call_next):
                         "reason": root_ban_reason,
                         "status": "banned",
                         "name": f"User {tg_id}"
-                    }
-
-                # Auto-unban paid user if they were auto-banned in the past as an alt
-                if banned_by_tg and is_paid_user:
-                    reason_str = banned_by_tg.get("reason", "")
-                    if "auto-ban" in reason_str.lower() or "alt account" in reason_str.lower() or "alternative account" in reason_str.lower() or "blocked ip/device" in reason_str.lower() or "blocked device" in reason_str.lower():
-                        try:
-                            await db.db.premium_bans.delete_one({"_id": tg_id})
-                            await db.db.users.update_one({"id": tg_id}, {"$unset": {"ban_status": ""}})
-                            banned_by_tg = None
-                            logger.info(f"Dynamically unbanned paid user {tg_id} who was auto-banned as an alt account.")
-                        except Exception as ex:
-                            logger.error(f"Failed to auto-unban paid user {tg_id}: {ex}")
-                
+                    }                
             # 3. ENFORCE BLOCKS
             # We strictly DO NOT block or auto-ban innocent users based solely on IP addresses
             # because mobile carrier networks use shared/dynamic CGNAT IPs.
