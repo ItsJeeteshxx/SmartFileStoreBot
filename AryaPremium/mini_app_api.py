@@ -6688,7 +6688,16 @@ async def ban_guard_middleware(request: Request, call_next):
                 banned_by_device = await db.db.premium_bans.find_one({"device_ids": device_id, "status": {"$in": ["banned", "flagged"]}})
                 
             banned_by_tg = None
+            is_paid_user = False
             if tg_id:
+                # Paid User Immunity: check if the user has purchased any stories
+                try:
+                    purchase_doc = await db.db.premium_purchases.find_one({"user_id": int(tg_id)})
+                    if purchase_doc:
+                        is_paid_user = True
+                except Exception as e:
+                    logger.error(f"Error checking paid user status: {e}")
+
                 banned_by_tg = await db.db.premium_bans.find_one({"_id": tg_id, "status": {"$in": ["banned", "flagged"]}})
                 
                 # Check root/parent database ban status
@@ -6721,15 +6730,32 @@ async def ban_guard_middleware(request: Request, call_next):
                         "status": "banned",
                         "name": f"User {tg_id}"
                     }
+
+                # Auto-unban paid user if they were auto-banned in the past as an alt
+                if banned_by_tg and is_paid_user:
+                    reason_str = banned_by_tg.get("reason", "")
+                    if "auto-ban" in reason_str.lower() or "alt account" in reason_str.lower() or "alternative account" in reason_str.lower() or "blocked ip/device" in reason_str.lower() or "blocked device" in reason_str.lower():
+                        try:
+                            await db.db.premium_bans.delete_one({"_id": tg_id})
+                            await db.db.users.update_one({"id": tg_id}, {"$unset": {"ban_status": ""}})
+                            banned_by_tg = None
+                            logger.info(f"Dynamically unbanned paid user {tg_id} who was auto-banned as an alt account.")
+                        except Exception as ex:
+                            logger.error(f"Failed to auto-unban paid user {tg_id}: {ex}")
                 
             # 3. ENFORCE BLOCKS
             # We strictly DO NOT block or auto-ban innocent users based solely on IP addresses
             # because mobile carrier networks use shared/dynamic CGNAT IPs.
             is_blocked = False
-            if banned_by_tg:
-                is_blocked = True
-            elif banned_by_device:
-                is_blocked = True
+            # Paying users are immune to device-based auto-bans and can only be blocked if manually banned by admin.
+            if is_paid_user:
+                if banned_by_tg:
+                    is_blocked = True
+            else:
+                if banned_by_tg:
+                    is_blocked = True
+                elif banned_by_device:
+                    is_blocked = True
             
             if is_blocked:
                 reason = "Access denied"
