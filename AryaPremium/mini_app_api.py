@@ -6723,9 +6723,17 @@ async def ban_guard_middleware(request: Request, call_next):
                     }
                 
             # 3. ENFORCE BLOCKS
-            if banned_by_ip or banned_by_tg or banned_by_device:
+            # We strictly DO NOT block or auto-ban innocent users based solely on IP addresses
+            # because mobile carrier networks use shared/dynamic CGNAT IPs.
+            is_blocked = False
+            if banned_by_tg:
+                is_blocked = True
+            elif banned_by_device:
+                is_blocked = True
+            
+            if is_blocked:
                 reason = "Access denied"
-                target_tg_id = tg_id or (banned_by_ip["_id"] if banned_by_ip else None)
+                target_tg_id = tg_id
                 if not target_tg_id and banned_by_device:
                     target_tg_id = banned_by_device["_id"]
                 user_name = "Banned User"
@@ -6755,13 +6763,11 @@ async def ban_guard_middleware(request: Request, call_next):
                         reason=f"VPN Evasion caught: User on new IP {ip} (added to blocklist)"
                     ))
                     
-                # Rule B: New/unbanned Telegram ID on blocked IP or Device (Alt account)
-                elif (banned_by_ip or banned_by_device) and tg_id and not banned_by_tg:
-                    reason = f"Auto-ban: Alternative account detected on blocked IP/Device"
-                    if banned_by_device:
-                        user_name = f"Alt of User {banned_by_device['_id']}"
-                    else:
-                        user_name = f"Alt of User {banned_by_ip['_id']}"
+                # Rule B: New/unbanned Telegram ID on blocked Device (Alt account)
+                # Note: We do NOT auto-ban on blocked IP alone, only on blocked Device.
+                elif banned_by_device and tg_id and not banned_by_tg:
+                    reason = f"Auto-ban: Alternative account detected on blocked Device"
+                    user_name = f"Alt of User {banned_by_device['_id']}"
                         
                     # Auto-ban this Telegram ID (strictly banned)
                     await db.db.premium_bans.update_one(
@@ -6771,7 +6777,7 @@ async def ban_guard_middleware(request: Request, call_next):
                             "status": "banned",
                             "banned_at": datetime.now(timezone.utc),
                             "name": user_name
-                        }, "$addToSet": update_fields if update_fields else {"ips": ip}},
+                        }, "$addToSet": update_fields if update_fields else {"device_ids": device_id}},
                         upsert=True
                     )
                     # Propagate to Delivery Bot ban list
@@ -6786,12 +6792,12 @@ async def ban_guard_middleware(request: Request, call_next):
                         name=user_name,
                         ip=ip,
                         action=f"App Open ({path})",
-                        reason=f"Alt account caught on blocked IP/Device (Telegram ID banned automatically)"
+                        reason=f"Alt account caught on blocked Device (Telegram ID banned automatically)"
                     ))
                     
                 # Default Block Logging
                 else:
-                    ref_doc = banned_by_tg or banned_by_ip or banned_by_device
+                    ref_doc = banned_by_tg or banned_by_device
                     reason = ref_doc.get("reason", "Banned by administrator")
                     user_name = ref_doc.get("name", f"User {target_tg_id}")
                     
@@ -6807,7 +6813,7 @@ async def ban_guard_middleware(request: Request, call_next):
                         name=user_name,
                         ip=ip,
                         action=f"App Open ({path})",
-                        reason=f"Blocked request from banned user/IP/Device: {reason}"
+                        reason=f"Blocked request from banned user/Device: {reason}"
                     ))
                     
                 # Save blocked access log in database
