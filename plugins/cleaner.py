@@ -49,6 +49,22 @@ IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
 _FFMPEG_POOL = cf.ThreadPoolExecutor(max_workers=MAX_CONCURRENT + 2, thread_name_prefix="cl_ff")
 
+
+async def _remove_file_async(path: str):
+    if not path:
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, os.remove, path)
+    except Exception:
+        pass
+
+
+async def _move_file_async(src: str, dst: str):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, shutil.move, src, dst)
+
+
 # ─── DB Helpers ───────────────────────────────────────────────────────────────
 async def _cl_save_job(job: dict):
     await db.db[COLL].replace_one({"job_id": job["job_id"]}, job, upsert=True)
@@ -197,13 +213,15 @@ async def _ffmpeg_async(cmd: list) -> tuple:
                 return True, ""
         except asyncio.TimeoutError:
             try:
-                process.kill()
+                if 'process' in locals():
+                    process.kill()
             except Exception:
                 pass
             return False, "FFmpeg timeout (45m)"
         except asyncio.CancelledError:
             try:
-                process.kill()
+                if 'process' in locals():
+                    process.kill()
             except Exception:
                 pass
             raise
@@ -249,7 +267,7 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
 
     if deep_clean:
         cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
-        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1",
                 "-write_xing", "0", "-id3v2_version", "3"]
     elif in_ext == out_ext and not force_reencode:
         cmd += ["-c:a", "copy"]
@@ -434,7 +452,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 _ap = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_ad_{job_id}_{_akey}.mp3"))
                 # Always re-download to ensure fresh ad (never use stale cached file)
                 try:
-                    if os.path.exists(_ap): os.remove(_ap)
+                    await _remove_file_async(_ap)
                     coro = _ad_dl_cli.download_media(_afid, file_name=_ap)
                     if coro is None: continue
                     import asyncio
@@ -650,9 +668,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             if coro is None:
                                 # Media reference is gone — skip this message silently
                                 logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (media expired/deleted)")
-                                try:
-                                    if os.path.exists(ipath): os.remove(ipath)
-                                except: pass
+                                await _remove_file_async(ipath)
                                 continue
 
                             dp = await asyncio.wait_for(coro, timeout=dl_timeout)
@@ -660,8 +676,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     if dp and os.path.exists(str(dp)):
                         _dl_bytes = os.path.getsize(str(dp))
                         if _dl_bytes == 0:
-                            try: os.remove(str(dp))
-                            except: pass
+                            await _remove_file_async(str(dp))
                             raise ValueError("File size equals to 0 B")
                         # Track download in global stats (shown in /status)
                         try:
@@ -672,15 +687,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
                     else:
                         logger.warning(f"[Cleaner {job_id}] mid={m.id}: download resolved to None (media expired)")
-                        try:
-                            if os.path.exists(ipath): os.remove(ipath)
-                        except: pass
+                        await _remove_file_async(ipath)
                         continue
 
                 except asyncio.TimeoutError:
-                    try:
-                        if os.path.exists(ipath): os.remove(ipath)
-                    except: pass
+                    await _remove_file_async(ipath)
                     # On timeout: try to reconnect client before raising so resume can work
                     try:
                         client = await _ensure_alive(client)
@@ -690,9 +701,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 except Exception as e:
                     err_upper = str(e).upper()
                     estr_lower = str(e).lower()
-                    try:
-                        if os.path.exists(ipath): os.remove(ipath)
-                    except: pass
+                    await _remove_file_async(ipath)
                     if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
                         logger.warning(f"[Cleaner {job_id}] mid={m.id}: media reference expired ({e}) — skipping")
                         continue
@@ -716,8 +725,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                         dp2 = await asyncio.wait_for(coro2, timeout=dl_timeout)
                                         if dp2 and os.path.exists(str(dp2)):
                                             if os.path.getsize(str(dp2)) == 0:
-                                                try: os.remove(str(dp2))
-                                                except: pass
+                                                await _remove_file_async(str(dp2))
                                                 raise ValueError("File size equals to 0 B")
                                             return m, str(dp2), m_obj, m.id, lbl, ext
                         except Exception as _re:
@@ -828,8 +836,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 if is_photo:
                     done += 1
                     curr_num += 1
-                    try: os.remove(dl_path)
-                    except: pass
+                    await _remove_file_async(dl_path)
                     await _cl_update_job(job_id, {
                         "files_done": done, "current_msg_id": active_mid + 1,
                         "curr_num_checkpoint": curr_num, "last_progress_ts": time.time(),
@@ -921,9 +928,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     if not ok and not deep_clean:
                         _ff_lower = ff_err.lower()
                         if "invalid audio stream" in _ff_lower or "exactly one mp3 audio stream is required" in _ff_lower:
-                            try:
-                                if os.path.exists(out_path): os.remove(out_path)
-                            except: pass
+                            await _remove_file_async(out_path)
                             logger.warning(f"[Cleaner {job_id}] mid={active_mid}: Fake extension detected. Forcing re-encode...")
                             ff_cmd_retry = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta, deep_clean=deep_clean, force_reencode=True)
                             ok, ff_err = await _ffmpeg_async(ff_cmd_retry)
@@ -943,23 +948,19 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         _ff_lower = ff_err.lower()
                         if any(p in _ff_lower for p in _ff_skip_phrases):
                             logger.warning(f"[Cleaner {job_id}] mid={active_mid}: FFmpeg stream error, falling back to basic rename — {ff_err[:80]}")
-                            try:
-                                if os.path.exists(out_path): os.remove(out_path)
-                            except: pass
+                            await _remove_file_async(out_path)
                             out_ext = orig_ext
                             out_path = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_out_{job_id}_{active_mid}{out_ext}"))
                             clean_file = f"{_sanitize_for_filename(clean_title)}{out_ext}"
-                            shutil.move(dl_path, out_path)
+                            await _move_file_async(dl_path, out_path)
                             use_ff = False  # Mark as raw file for uploader
                         else:
-                            try: os.remove(dl_path)
-                            except: pass
+                            await _remove_file_async(dl_path)
                             raise Exception(f"FFmpeg: {ff_err[:120]}")
                     else:
-                        try: os.remove(dl_path)
-                        except: pass
+                        await _remove_file_async(dl_path)
                 else:
-                    shutil.move(dl_path, out_path)
+                    await _move_file_async(dl_path, out_path)
 
                 # ── Audio Ad Injection ─────────────────────────────────────────
                 # Two paths:
@@ -1125,6 +1126,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _ff_inj_one += [
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
+                                "-threads", "1",
                                 "-write_xing", "0", "-id3v2_version", "3",
                                 _inj_out
                             ]
@@ -1147,9 +1149,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 except: pass
 
                             if _inj_ok and os.path.exists(_inj_out) and os.path.getsize(_inj_out) > 1024:
-                                if os.path.exists(out_path):
-                                    try: os.remove(out_path)
-                                    except: pass
+                                await _remove_file_async(out_path)
                                 out_path = _inj_out
                                 out_ext = ".mp3"
                                 clean_file = f"{clean_file_name_only}{out_ext}"
@@ -1166,17 +1166,13 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 try:
                                     await _cl_update_job(job_id, {"debug_inj_err": _inj_err[-500:]})
                                 except: pass
-                                try:
-                                    if os.path.exists(_inj_out): os.remove(_inj_out)
-                                except: pass
+                                await _remove_file_async(_inj_out)
 
                   except Exception as _ae:
                     logger.warning(f"[Cleaner {job_id}] Ad injection error serial={curr_num}: {_ae}")
                     try:
                         await _cl_update_job(job_id, {"debug_inj_err": str(_ae)})
                     except: pass
-
-
 
                 # ── TRUE PARALLEL UPLOAD PIPELINE ──
                 # 1. Wait for PREVIOUS file to finish uploading (Strict Ordering)
@@ -1237,8 +1233,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                             _real_name = c_file if c_file else f"file_{c_mid}{out_ext}"
                                             _new_p_out = os.path.join(_ul_dir, _real_name)
                                             try:
-                                                import shutil
-                                                shutil.move(p_out, _new_p_out)
+                                                await _move_file_async(p_out, _new_p_out)
                                                 p_out = _new_p_out
                                             except: pass
 
@@ -1253,10 +1248,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                                 await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
                                             else:
                                                 # Normal replace mode: direct file upload → edit
-                                                # NOTE: Previously used "upload to me → file_id → edit"
-                                                # which FAILS for database channels when the file DC does not
-                                                # match the Saved Messages DC, causing MEDIA_EMPTY / silent failures.
-                                                # Direct file path in InputMedia always works regardless of DC.
                                                 if is_ff or is_aud:
                                                     _im = InputMediaAudio(p_out, caption=cap,
                                                         title=c_title or None, performer=art or None,
@@ -1299,9 +1290,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 u_cli = client
                                 await asyncio.sleep(3 * (att + 1))
 
-                        try: os.remove(p_out)
-                        except: pass
-
                         # Track upload in global stats (shown in /status)
                         try:
                             asyncio.create_task(db.update_global_stats(total_files_uploaded=1))
@@ -1325,6 +1313,14 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         return True, None, c_mid
                     except Exception as fatal:
                         return False, str(fatal), c_mid
+                    finally:
+                        await _remove_file_async(p_out)
+                        try:
+                            _dir_to_clean = os.path.dirname(p_out)
+                            if os.path.basename(_dir_to_clean).startswith("ul_") and os.path.exists(_dir_to_clean):
+                                loop = asyncio.get_event_loop()
+                                await loop.run_in_executor(None, shutil.rmtree, _dir_to_clean, True)
+                        except: pass
 
                 # Spawn background upload task - it runs CONCURRENTLY with next N+1 Download and N+1 FFmpeg
                 _upload_task = asyncio.create_task(
@@ -1348,9 +1344,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 await _cl_update_job(job_id, {"status": "paused", "error": err_msg, "current_msg_id": save_mid})
                 _safe_dl = locals().get('dl_path', '')
-                if _safe_dl and os.path.exists(_safe_dl):
-                    try: os.remove(_safe_dl)
-                    except: pass
+                await _remove_file_async(_safe_dl)
                 if _bot:
                     try:
                         fail_kb = InlineKeyboardMarkup([[
@@ -1386,15 +1380,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 await _cl_update_job(job_id, {"status": "paused", "error": err_msg})
                 job_failed = True
 
-        try:
-            if local_cover and os.path.exists(local_cover): os.remove(local_cover)
-        except: pass
+        await _remove_file_async(local_cover)
 
         # Cleanup ad temp files
         for _ap in _ad_local.values():
-            try:
-                if os.path.exists(_ap): os.remove(_ap)
-            except: pass
+            await _remove_file_async(_ap)
 
         # FIX #2: Pop bot_ref AFTER we've saved it to _bot (local var)
         _cl_bot_ref.pop(job_id, None)
@@ -1461,12 +1451,32 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     logger.error(f"[Cleaner {job_id}] completion notify failed: {ex}")
 
 
-    # Run inside or outside semaphore
-    if skip_sem:
-        await _body()
-    else:
-        async with _cl_semaphore:
+    # Run inside or outside semaphore with top-level error trapping to prevent unhandled crashes
+    try:
+        if skip_sem:
             await _body()
+        else:
+            async with _cl_semaphore:
+                await _body()
+    except Exception as e:
+        logger.error(f"[Cleaner {job_id}] CRITICAL: Unhandled crash in cleaner body: {e}", exc_info=True)
+        try:
+            await _cl_update_job(job_id, {"status": "paused", "error": f"Crash: {str(e)[:150]}"})
+        except: pass
+        _cl_bot_ref.pop(job_id, None)
+        try:
+            _notify_bot = bot or _cl_bot_ref.get(job_id)
+            if not _notify_bot:
+                _notify_bot = _CLIENT.bot()
+            if _notify_bot:
+                await _notify_bot.send_message(
+                    job.get("user_id"),
+                    f"<b>⚠️ Cleaner Job Crashed!</b>\n\n"
+                    f"<b>🧹 Name:</b> {job.get('base_name', '')}\n"
+                    f"<b>❌ Error:</b> <code>{str(e)[:200]}</code>\n\n"
+                    f"<i>The bot encountered a critical crash while running this job. It has been automatically paused.</i>"
+                )
+        except: pass
 
 
 # ─── UI Callbacks ──────────────────────────────────────────────────────────────

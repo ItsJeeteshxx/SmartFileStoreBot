@@ -171,12 +171,21 @@ def _count_running_jobs() -> dict:
     except Exception:
         mg_active, mg_paused = 0, 0
 
+    try:
+        from plugins.cleaner import _cl_tasks, _cl_paused
+        cl_active = sum(1 for t in _cl_tasks.values() if not t.done())
+        cl_paused = sum(1 for ev in _cl_paused.values() if not ev.is_set())
+    except Exception:
+        cl_active, cl_paused = 0, 0
+
     return {
         "mj_active": mj_active,
         "mj_paused": mj_paused,
         "lj_active": lj_active,
         "mg_active": mg_active,
         "mg_paused": mg_paused,
+        "cl_active": cl_active,
+        "cl_paused": cl_paused,
     }
 
 
@@ -231,6 +240,31 @@ async def _pause_livejobs(reason: str) -> list[str]:
     return stopped
 
 
+async def _pause_cleanerjobs(reason: str) -> list[str]:
+    """Pause all running Cleaner Jobs. Returns list of paused job_ids."""
+    paused = []
+    try:
+        from plugins.cleaner import _cl_tasks, _cl_paused
+        from database import db
+        for jid, task in list(_cl_tasks.items()):
+            if task.done():
+                continue
+            ev = _cl_paused.get(jid)
+            if ev and ev.is_set():  # currently running
+                ev.clear()          # pause
+                _sys_paused_jobs.add(f"cl:{jid}")
+                paused.append(jid)
+                try:
+                    await db.db["cleaner_jobs"].update_one(
+                        {"job_id": jid}, {"$set": {"status": "paused", "paused_reason": reason}}
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"[SysMonitor] pause_cleanerjobs error: {e}")
+    return paused
+
+
 async def _pause_mergers(reason: str, force_all: bool = False) -> list[str]:
     """Pause merger jobs.
     If force_all=False: only pause if more than 1 merger is running.
@@ -264,7 +298,7 @@ async def _pause_mergers(reason: str, force_all: bool = False) -> list[str]:
 
 async def _resume_sys_paused_jobs(bot) -> dict:
     """Resume all jobs that were paused by the system monitor."""
-    resumed = {"mj": 0, "lj": 0, "mg": 0}
+    resumed = {"mj": 0, "lj": 0, "mg": 0, "cl": 0}
 
     to_remove = set()
     for key in list(_sys_paused_jobs):
@@ -317,6 +351,21 @@ async def _resume_sys_paused_jobs(bot) -> dict:
                 pass
             to_remove.add(key)
 
+        elif typ == "cl":
+            try:
+                from plugins.cleaner import _cl_paused
+                from database import db
+                ev = _cl_paused.get(jid)
+                if ev:
+                    ev.set()
+                    resumed["cl"] += 1
+                await db.db["cleaner_jobs"].update_one(
+                    {"job_id": jid}, {"$set": {"status": "running"}, "$unset": {"paused_reason": ""}}
+                )
+            except Exception:
+                pass
+            to_remove.add(key)
+
     _sys_paused_jobs -= to_remove
     return resumed
 
@@ -347,7 +396,9 @@ def _build_stat_msg(snap: dict, jobs: dict, temps: dict, include_temps: bool = T
         f"  📦 Multi Jobs: <code>{jobs['mj_active']}</code>  "
         f"(Paused: <code>{jobs['mj_paused']}</code>)",
         f"  🎵 Mergers: <code>{jobs['mg_active']}</code>  "
-        f"(Paused: <code>{jobs['mg_paused']}</code>)\n",
+        f"(Paused: <code>{jobs['mg_paused']}</code>)",
+        f"  🧹 Cleaner Jobs: <code>{jobs['cl_active']}</code>  "
+        f"(Paused: <code>{jobs['cl_paused']}</code>)\n",
     ]
 
     if _sys_paused_jobs:
@@ -391,7 +442,7 @@ async def _monitor_loop(bot):
             r, c = snap["ram_pct"], snap["cpu_pct"]
             now  = time.time()
             jobs = _count_running_jobs()
-            total_active = jobs["mj_active"] + jobs["lj_active"] + jobs["mg_active"]
+            total_active = jobs["mj_active"] + jobs["lj_active"] + jobs["mg_active"] + jobs["cl_active"]
 
             avail_gb = snap["ram_avail_gb"]
 
@@ -431,6 +482,7 @@ async def _monitor_loop(bot):
                             f"<b>RAM:</b> <code>{r:.1f}%</code> | <b>CPU:</b> <code>{c:.1f}%</code>\n\n"
                             f"<i>Action automatically taken:</i>\n"
                             f"• Resumed <b>{resumed['mj']}</b> Multi Job(s)\n"
+                            f"• Resumed <b>{resumed['cl']}</b> Cleaner Job(s)\n"
                             f"• Resumed <b>{resumed['mg']}</b> Merger(s)\n"
                         )
                         for uid in Config.BOT_OWNER_ID:
@@ -439,7 +491,7 @@ async def _monitor_loop(bot):
 
             # CRITICAL/EMERGENCY: only act when there's actual work to pause.
             # A single passive merger running alone + high idle RAM → no auto-pause.
-            meaningful_active = jobs["mj_active"] + max(0, jobs["mg_active"] - 1)
+            meaningful_active = jobs["mj_active"] + jobs["cl_active"] + max(0, jobs["mg_active"] - 1)
             if level != "ok" and (meaningful_active > 0 or level == "emergency"):
                 cooldown = ALERT_COOLDOWN_WARN if level == "warning" else ALERT_COOLDOWN_CRIT
                 last = _last_alert_ts.get(level, 0)
@@ -463,14 +515,15 @@ async def _monitor_loop(bot):
                             except Exception: pass
 
                     elif level == "critical":
-                        # Pause Multi Jobs + Live Jobs
+                        # Pause Multi Jobs + Live Jobs + Cleaner Jobs
                         # Pause Mergers only if > 1 running
                         reason = f"System critical: RAM {r:.0f}% CPU {c:.0f}%"
                         mj_p = await _pause_multijobs(reason)
+                        cl_p = await _pause_cleanerjobs(reason)
                         lj_p = [] # Never pause Live Jobs, they are passive listeners
                         mg_p = await _pause_mergers(reason, force_all=False)
 
-                        paused_count = len(mj_p) + len(mg_p)
+                        paused_count = len(mj_p) + len(mg_p) + len(cl_p)
                         merger_note = (
                             "Merger continuing (only 1 running — allowed)."
                             if jobs["mg_active"] <= 1
@@ -482,6 +535,7 @@ async def _monitor_loop(bot):
                             f"<b>RAM:</b> <code>{r:.1f}%</code> | <b>CPU:</b> <code>{c:.1f}%</code>\n\n"
                             f"<i>Action automatically taken to stabilize system (Live Jobs protected):</i>\n"
                             f"• Paused <b>{len(mj_p)}</b> Multi Job(s)\n"
+                            f"• Paused <b>{len(cl_p)}</b> Cleaner Job(s)\n"
                             f"• {merger_note}\n\n"
                             f"<i>All paused jobs are safely bookmarked. "
                             f"Use <b>/resumeall</b> to seamlessly continue when the load drops.</i>"
@@ -498,6 +552,7 @@ async def _monitor_loop(bot):
                         # Pause EVERYTHING including all mergers
                         reason = f"EMERGENCY: RAM {r:.0f}% CPU {c:.0f}%"
                         mj_p = await _pause_multijobs(reason)
+                        cl_p = await _pause_cleanerjobs(reason)
                         lj_p = [] # Never pause Live Jobs, they are passive listeners
                         mg_p = await _pause_mergers(reason, force_all=True)
 
@@ -507,6 +562,7 @@ async def _monitor_loop(bot):
                             f"<i>System has reached an emergency threshold.</i>\n\n"
                             f"<i>Action immediately taken (Live Jobs protected):</i>\n"
                             f"• Paused <b>{len(mj_p)}</b> Multi Job(s)\n"
+                            f"• Paused <b>{len(cl_p)}</b> Cleaner Job(s)\n"
                             f"• Paused <b>{len(mg_p)}</b> Merger(s)\n\n"
                             f"<i>You should consider clearing temporary files to free memory. "
                             f"Use <b>/cleanup</b> to wipe cache, and <b>/resumeall</b> once recovered.</i>"
@@ -648,11 +704,13 @@ async def cmd_pauseall(bot, message: Message):
     reason = "Manual /pauseall by owner"
     mj_p = await _pause_multijobs(reason)
     lj_p = await _pause_livejobs(reason)
+    cl_p = await _pause_cleanerjobs(reason)
     mg_p = await _pause_mergers(reason, force_all=True)
     await m.edit_text(
         f"<b>⏸ All Tasks Paused</b>\n\n"
         f"• Multi Jobs paused: <code>{len(mj_p)}</code>\n"
         f"• Live Jobs stopped: <code>{len(lj_p)}</code>\n"
+        f"• Cleaner Jobs paused: <code>{len(cl_p)}</code>\n"
         f"• Mergers paused: <code>{len(mg_p)}</code>\n\n"
         f"Use /resumeall to restart them.",
         reply_markup=InlineKeyboardMarkup([[
@@ -671,6 +729,7 @@ async def cmd_resumeall(bot, message: Message):
         f"<b>▶️ Jobs Resumed</b>\n\n"
         f"• Multi Jobs resumed: <code>{res['mj']}</code>\n"
         f"• Live Jobs restarted: <code>{res['lj']}</code>\n"
+        f"• Cleaner Jobs resumed: <code>{res['cl']}</code>\n"
         f"• Mergers resumed: <code>{res['mg']}</code>\n\n"
         f"<i>Use /sysstat to check current status.</i>"
     )
