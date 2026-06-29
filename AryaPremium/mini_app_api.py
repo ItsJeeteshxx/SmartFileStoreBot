@@ -5951,25 +5951,48 @@ async def send_smtp_email(to_email: str, subject: str, text_content: str) -> boo
         return False
 
 async def log_to_telegram(text: str):
-    """Sends active security log updates to the Telegram channels."""
+    """Sends active security log updates to the Telegram channels (ARYA_LOGS_CHANNEL)."""
     from AryaPremium.config import Config
     token = getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN")
     channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
-    if not token or not channel_id:
+    if not token:
+        logger.warning("[AryaLog] log_to_telegram: MGMT_BOT_TOKEN is not set — cannot send log.")
+        return
+    if not channel_id:
+        logger.warning("[AryaLog] log_to_telegram: ARYA_LOGS_CHANNEL is not set — cannot send log.")
         return
     try:
         import aiohttp
+        # Ensure channel_id is an integer if it looks like one
+        chat_id_val = channel_id
+        try:
+            chat_id_val = int(str(channel_id).strip())
+        except (ValueError, TypeError):
+            pass  # Keep as string (username like @mychannel)
+
         async with aiohttp.ClientSession() as session:
-            await session.post(
+            resp = await session.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={
-                    "chat_id": channel_id,
+                    "chat_id": chat_id_val,
                     "text": text,
-                    "parse_mode": "HTML"
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
                 }
             )
+            resp_data = await resp.json()
+            if not resp_data.get("ok"):
+                err_desc = resp_data.get("description", "Unknown error")
+                err_code = resp_data.get("error_code", "?")
+                logger.error(
+                    f"[AryaLog] Telegram API rejected log to channel '{chat_id_val}': "
+                    f"[{err_code}] {err_desc}. "
+                    f"Ensure MGMT bot is an ADMIN of ARYA_LOGS_CHANNEL with 'Post Messages' permission."
+                )
+            else:
+                logger.debug(f"[AryaLog] log_to_telegram: message sent to channel {chat_id_val}")
     except Exception as e:
-        logger.error(f"Failed to send Telegram log: {e}")
+        logger.error(f"[AryaLog] Failed to send Telegram log (network/config error): {e}")
 
 def escape_html(text: str) -> str:
     """Escapes HTML special characters for safe inclusion in Telegram messages."""

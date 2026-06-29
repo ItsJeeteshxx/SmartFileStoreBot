@@ -49,14 +49,27 @@ def _get_bot():
     Priority: main bot → any running share/delivery bot client.
     """
     global _BOT_REF
-    if _BOT_REF and getattr(_BOT_REF, 'is_connected', False):
+
+    def _is_connected(cli) -> bool:
+        """Safely check if a Pyrogram client is connected."""
+        if not cli:
+            return False
+        try:
+            # is_connected is a property in modern Pyrogram — call it directly
+            return bool(cli.is_connected)
+        except Exception:
+            # If it raises (e.g. old version / not started), assume connected
+            # so we at least try to send and get a real error back
+            return True
+
+    if _BOT_REF and _is_connected(_BOT_REF):
         return _BOT_REF
 
     # Fallback: use any running delivery bot (share_clients)
     try:
         from plugins.share_bot import share_clients
         for cli in share_clients.values():
-            if cli and getattr(cli, 'is_connected', False):
+            if cli and _is_connected(cli):
                 return cli
     except Exception:
         pass
@@ -81,9 +94,12 @@ async def _get_cfg() -> dict:
     try:
         from database import db
         _cfg_cache = await db.get_logs_config()
+        # Only update timestamp on SUCCESS — so a DB failure doesn't poison
+        # the cache for 60s and cause all startup logs to be silently dropped.
         _cfg_ts = now
     except Exception as e:
-        logger.warning(f"[AryaLog] Could not load logs config: {e}")
+        logger.warning(f"[AryaLog] Could not load logs config: {e}. Will retry on next log call.")
+        # Do NOT update _cfg_ts here — force an immediate retry next call
         if not _cfg_cache:
             _cfg_cache = {
                 'ch_bans':      0,

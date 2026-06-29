@@ -260,7 +260,12 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
     except ImportError:
         from config import Config
         from database import db
-    if not getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or not db.mgmt_client: return
+    if not getattr(Config, "PAYMENT_LOGS_CHANNEL", None):
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: PAYMENT_LOGS_CHANNEL not set in config — skipping payment log.")
+        return
+    if not db.mgmt_client:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: db.mgmt_client is None — MGMT bot not started. Payment log cannot be sent.")
+        return
     try:
         if order_id:
             try:
@@ -353,7 +358,12 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
     except ImportError:
         from config import Config
         from database import db
-    if not getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or not db.mgmt_client: return
+    if not getattr(Config, "DELIVERY_LOGS_CHANNEL", None):
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: DELIVERY_LOGS_CHANNEL not set in config — skipping delivery log.")
+        return
+    if not db.mgmt_client:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: db.mgmt_client is None — MGMT bot not started. Delivery log cannot be sent.")
+        return
     try:
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
@@ -416,7 +426,12 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
     except ImportError:
         from config import Config
         from database import db
-    if not getattr(Config, "ARYA_LOGS_CHANNEL", None) or not db.mgmt_client: return
+    if not getattr(Config, "ARYA_LOGS_CHANNEL", None):
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_arya_event: ARYA_LOGS_CHANNEL not set in config — skipping arya event log.")
+        return
+    if not db.mgmt_client:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_arya_event: db.mgmt_client is None — MGMT bot not started. Arya event log cannot be sent.")
+        return
     try:
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
