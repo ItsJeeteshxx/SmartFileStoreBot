@@ -71,16 +71,42 @@ _FFMPEG_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ffm
 # ─── Client health-check / reconnect ────────────────────────────────────
 async def _mg_ensure_client_alive(client):
     """
-    Verify the Pyrogram client is connected (passive check with no timeout drops).
-    Pyrogram inherently auto-reconnects, but if it was manually disconnected we connect it.
+    Verify and reconnect the Pyrogram client for merger jobs.
+    Uses the same robust strategy as jobs.py:
+    1. Trust is_connected() fast-path — no ping needed if True.
+    2. If not connected, try stop()+start() with is_connected guard.
     """
     try:
-        if not getattr(client, "is_connected", True):
-            await client.connect()
+        # Fast-path: trust Pyrogram's own connection state
+        is_conn = getattr(client, 'is_connected', None)
+        if is_conn is not None:
+            connected = is_conn() if callable(is_conn) else bool(is_conn)
+            if connected:
+                return client  # alive ✔️
+
+        # Not connected — try to restart
+        try:
+            await client.stop()
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+
+        # Guard: if still connected after stop() (stop silently failed), don't call start()
+        still_conn = getattr(client, 'is_connected', None)
+        if still_conn is not None:
+            sc = still_conn() if callable(still_conn) else bool(still_conn)
+            if sc:
+                return client  # stop() no-op but client is alive
+
+        await client.start()
+        logger.info("[Merger] Client reconnected successfully.")
     except Exception as e:
-        logger.warning(f"[Merger] Reconnect attempt failed discretely: {e}")
+        err = str(e).lower()
+        if "already connected" in err:
+            logger.info("[Merger] Client already connected — skipping restart.")
+        else:
+            logger.warning(f"[Merger] Reconnect attempt: {e}")
     return client
-    raise RuntimeError("Merger client failed to reconnect after 3 attempts")
 
 @Client.on_message(filters.private, group=-14)
 async def _mg_input_router(bot, message):
@@ -1702,38 +1728,60 @@ async def _run_job(jid, uid, bot):
             mid  = replace_target["msg_id"]
 
             # ─── Reconnect client before upload ─────────────────────────────────
-            # A merge job can run for 1–8 hours. The Telegram connection will
-            # silently die. We MUST verify/reconnect before any upload attempt.
             try:
                 client = await _mg_ensure_client_alive(client)
             except Exception as rc_err:
-                # If reconnect fails totally, try main bot for DM fallback
                 logger.error(f"[MG {jid}] Client reconnect failed before replace upload: {rc_err}")
                 raise Exception(f"Client reconnect failed before upload: {rc_err}")
 
             await _safe_resolve_peer(client, dest)
-            
-            # --- Robust Editing: Upload to 'me' first to bypass edit_message_media limits ---
+
+            # ── UPLOAD TIMEOUT: large files (100MB+) can hang forever without this ──
+            # We give 30 minutes for the dummy upload to complete.
+            UPLOAD_TIMEOUT = 30 * 60   # 30 minutes
+            EDIT_TIMEOUT   = 5  * 60   # 5 minutes for edit_message_media
+
             dummy_msg = None
             uploaded_file_id = None
-            try:
-                if status_msg: await status_msg.edit_text("<b>⬆️ Uploading to Telegram Cloud for Editing...</b>")
-            except: pass
-            
-            try:
+
+            async def _do_dummy_upload():
+                """Upload merged file to Saved Messages to get a file_id for editing."""
                 if mtype == "video":
-                    dummy_msg = await client.send_video(chat_id="me", video=out_path, caption="Temp", file_name=f"{out_name}{out_ext}", thumb=thumb, supports_streaming=True, progress=_up_prog)
-                    uploaded_file_id = dummy_msg.video.file_id
+                    return await client.send_video(
+                        chat_id="me", video=out_path, caption="Temp",
+                        file_name=f"{out_name}{out_ext}", thumb=thumb,
+                        supports_streaming=True, progress=_up_prog)
                 else:
-                    dummy_msg = await client.send_audio(chat_id="me", audio=out_path, caption="Temp", file_name=f"{out_name}{out_ext}", thumb=thumb, progress=_up_prog)
-                    uploaded_file_id = dummy_msg.audio.file_id
-                await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(out_path)) if out_path and os.path.exists(str(out_path)) else 0)
-            except Exception as e:
-                logger.error(f"[MG {jid}] Dummy upload failed: {e}")
-                
+                    return await client.send_audio(
+                        chat_id="me", audio=out_path, caption="Temp",
+                        file_name=f"{out_name}{out_ext}", thumb=thumb,
+                        progress=_up_prog)
+
+            try:
+                if status_msg:
+                    try: await status_msg.edit_text("<b>⬆️ Uploading to Telegram Cloud for Editing...</b>")
+                    except: pass
+
+                dummy_msg = await asyncio.wait_for(_do_dummy_upload(), timeout=UPLOAD_TIMEOUT)
+                if dummy_msg:
+                    uploaded_file_id = dummy_msg.video.file_id if mtype == "video" else dummy_msg.audio.file_id
+                await db.update_global_stats(
+                    total_files_uploaded=1,
+                    total_data_usage_bytes=os.path.getsize(str(out_path)) if out_path and os.path.exists(str(out_path)) else 0)
+                logger.info(f"[MG {jid}] Dummy upload complete, file_id obtained.")
+            except asyncio.TimeoutError:
+                logger.error(f"[MG {jid}] Dummy upload TIMED OUT after {UPLOAD_TIMEOUT//60} minutes.")
+                # uploaded_file_id stays None — edit will use local path (slower but works)
+            except Exception as ue:
+                logger.error(f"[MG {jid}] Dummy upload failed: {ue}")
+                # uploaded_file_id stays None
+
+            # ── Try edit_message_media (up to 3 attempts) ──────────────────────
+            edit_success = False
+            last_edit_err = None
             for att in range(3):
                 try:
-                    from pyrogram.types import InputMediaDocument, InputMediaAudio, InputMediaVideo
+                    from pyrogram.types import InputMediaAudio, InputMediaVideo
                     target_media = uploaded_file_id if uploaded_file_id else out_path
                     if mtype == "video":
                         media = InputMediaVideo(target_media, caption=caption, supports_streaming=True, thumb=thumb)
@@ -1742,46 +1790,96 @@ async def _run_job(jid, uid, bot):
                         if metadata.get("title"): kw["title"] = metadata["title"]
                         if metadata.get("artist"): kw["performer"] = metadata["artist"]
                         media = InputMediaAudio(**kw)
-                        
-                    await client.edit_message_media(chat_id=dest, message_id=mid, media=media)
+
+                    await asyncio.wait_for(
+                        client.edit_message_media(chat_id=dest, message_id=mid, media=media),
+                        timeout=EDIT_TIMEOUT)
+
+                    # ✅ Edit succeeded
+                    edit_success = True
                     if dummy_msg:
                         try: await dummy_msg.delete()
                         except: pass
-                    # Notify DM
                     if dest != uid:
-                        try: await bot.send_message(uid, f"<b>✅ Channel post successfully replaced!</b>")
+                        try: await bot.send_message(uid, "<b>✅ Channel post successfully replaced!</b>")
                         except: pass
                     break
-                except FloodWait as fw: await asyncio.sleep(fw.value+2)
-                except Exception as e:
+
+                except asyncio.TimeoutError:
+                    last_edit_err = f"edit_message_media timed out after {EDIT_TIMEOUT//60} min (attempt {att+1})"
+                    logger.error(f"[MG {jid}] {last_edit_err}")
                     if att < 2:
-                        # On connection errors, try to heal before retry
-                        estr = str(e).lower()
-                        if any(k in estr for k in ("not been started", "not connected", "disconnected")):
-                            try: client = await _mg_ensure_client_alive(client)
-                            except Exception: pass
                         await asyncio.sleep(5)
                         continue
-                    # All 3 attempts exhausted — fallback: send to DM via main bot
+                except FloodWait as fw:
+                    logger.warning(f"[MG {jid}] FloodWait {fw.value}s during edit attempt {att+1}")
+                    await asyncio.sleep(fw.value + 2)
+                    continue
+                except Exception as e:
+                    last_edit_err = str(e)
+                    logger.error(f"[MG {jid}] edit_message_media attempt {att+1} failed: {e}")
+                    estr = str(e).lower()
+                    if any(k in estr for k in ("not been started", "not connected", "disconnected")):
+                        try: client = await _mg_ensure_client_alive(client)
+                        except Exception: pass
+                    if att < 2:
+                        await asyncio.sleep(5)
+                        continue
+
+            # ── DM Fallback — always runs if edit failed ───────────────────────
+            if not edit_success:
+                logger.warning(f"[MG {jid}] All edit attempts failed. Falling back to DM. Last error: {last_edit_err}")
+                try:
+                    await bot.send_message(uid,
+                        f"<b>⚠️ Replace channel post failed after 3 attempts.</b>\n"
+                        f"<b>Uploading merged file directly to your DM.</b>\n"
+                        f"<code>{last_edit_err}</code>")
+                except: pass
+
+                # Send to DM via main bot (bot is always connected, unlike clone client)
+                dm_sent = False
+                for dm_att in range(3):
+                    try:
+                        if mtype == "video":
+                            await asyncio.wait_for(
+                                bot.send_video(chat_id=uid, video=out_path, caption=caption, thumb=thumb),
+                                timeout=UPLOAD_TIMEOUT)
+                        else:
+                            kw2 = {"chat_id": uid, "audio": out_path, "caption": caption, "thumb": thumb}
+                            if metadata.get("title"): kw2["title"] = metadata["title"]
+                            if metadata.get("artist"): kw2["performer"] = metadata["artist"]
+                            await asyncio.wait_for(bot.send_audio(**kw2), timeout=UPLOAD_TIMEOUT)
+                        await db.update_global_stats(
+                            total_files_uploaded=1,
+                            total_data_usage_bytes=os.path.getsize(str(out_path)) if out_path and os.path.exists(str(out_path)) else 0)
+                        dm_sent = True
+                        try: await bot.send_message(uid, "<b>✅ Merged file sent to your DM (replace failed).</b>")
+                        except: pass
+                        break
+                    except asyncio.TimeoutError:
+                        logger.error(f"[MG {jid}] DM fallback upload timed out (attempt {dm_att+1})")
+                        if dm_att < 2:
+                            await asyncio.sleep(10)
+                        continue
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 2)
+                        continue
+                    except Exception as fb_e:
+                        logger.error(f"[MG {jid}] DM fallback attempt {dm_att+1} failed: {fb_e}")
+                        if dm_att < 2:
+                            await asyncio.sleep(10)
+                        continue
+
+                if not dm_sent:
+                    await _db_up(jid, status="error",
+                        error=f"Replace failed and DM fallback also failed. Last error: {last_edit_err}")
                     try:
                         await bot.send_message(uid,
-                            f"<b>⚠️ Edit channel post failed after 3 attempts.</b>\n"
-                            f"<b>Uploading merged file directly to your DM.</b>\n"
-                            f"<code>{e}</code>")
-                        # Use BOT (not dead clone client) for DM fallback
-                        if mtype == "video":
-                            await bot.send_video(chat_id=uid, video=out_path, caption=caption, thumb=thumb)
-                        else:
-                            kw = {"chat_id": uid, "audio": out_path, "caption": caption, "thumb": thumb}
-                            if metadata.get("title"): kw["title"] = metadata["title"]
-                            if metadata.get("artist"): kw["performer"] = metadata["artist"]
-                            await bot.send_audio(**kw)
-                        await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(out_path)) if out_path and os.path.exists(str(out_path)) else 0)
-                    except Exception as fallback_e:
-                        await _db_up(jid, status="error",
-                            error=f"Replace failed and DM fallback also failed: {fallback_e}")
-                        raise Exception(f"Replace failed: {e}. DM fallback: {fallback_e}")
-                    raise Exception(f"Replace media failed (file saved to DM): {e}")
+                            f"<b>❌ CRITICAL: Replace failed AND DM upload also failed!</b>\n"
+                            f"File is saved at VPS: <code>{out_path}</code>\n"
+                            f"Error: <code>{last_edit_err}</code>")
+                    except: pass
+
         else:
             # ─── Reconnect before normal channel upload too ──────────────────────
             try:
