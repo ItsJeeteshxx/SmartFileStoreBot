@@ -1930,12 +1930,15 @@ async def verify_upi_utr(payload: dict):
         "verified_at": datetime.now(timezone.utc)
     })
 
-    # 6. Create order doc
+    # 6. Create / upgrade order doc
+    # If a pending order was already created when the QR page opened (via
+    # /create-pending-order), we UPDATE that record instead of inserting a
+    # duplicate. This keeps a single, traceable record per payment attempt.
     oid = payload.get("order_id")
     if not oid:
         oid = _make_order_id(str(telegram_id))
     tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
-    
+
     # Generate deterministic invoice number using order ID hash
     inv_hash = int(hashlib.md5(str(oid).encode()).hexdigest(), 16) % 100000
     invoice_number = f"INV/{datetime.now().year}/{inv_hash:05d}"
@@ -1957,9 +1960,19 @@ async def verify_upi_utr(payload: dict):
         "status":              "paid",
         "source":              "upi_manual_miniapp",
         "utr":                 utr,
-        "created_at":          datetime.now(timezone.utc),
+        "paid_at":             datetime.now(timezone.utc),
     }
-    await db.db.orders.insert_one(order_doc)
+
+    # Upsert: update existing pending order (matched by order_id) or insert new
+    upsert_result = await db.db.orders.update_one(
+        {"order_id": oid, "status": "pending"},
+        {"$set": order_doc},
+    )
+    if upsert_result.matched_count == 0:
+        # No pending record found — insert fresh (covers cases where
+        # /create-pending-order was never called or order_id differed)
+        order_doc["created_at"] = datetime.now(timezone.utc)
+        await db.db.orders.insert_one(order_doc)
 
     # 7. Grant story access
     if telegram_id:
@@ -1971,6 +1984,86 @@ async def verify_upi_utr(payload: dict):
     asyncio.create_task(record_purchased_stories(order_doc))
 
     return {"success": True, "message": "UPI payment verified successfully!", "order_id": oid, "invoice_number": invoice_number, "payer_name": payer_name}
+
+
+# ==========================================
+# Create Pending UPI Order (QR Page Mount)
+# ==========================================
+
+@api_router.post("/create-pending-order")
+async def create_pending_order(payload: dict):
+    """
+    Called the instant the QR payment screen is shown to the user — BEFORE they pay.
+    Creates a status=\"pending\" order record so every payment attempt is traceable
+    by order_id, even if the user pays to the wrong UPI ID or UTR verification fails.
+
+    Idempotent: if the order_id already exists in the DB the endpoint returns success
+    without creating a duplicate.
+    """
+    telegram_id   = payload.get("telegram_id")
+    story_ids     = payload.get("story_ids", [])
+    order_id      = str(payload.get("order_id", "")).strip()
+    amount        = float(payload.get("amount", 0) or 0)
+    upi_id_shown  = str(payload.get("upi_id_shown", "")).strip()  # exact UPI ID displayed
+    promo_code    = str(payload.get("promo_code", "")).strip().upper()
+    username      = str(payload.get("username", "")).strip()
+    first_name    = str(payload.get("first_name", "")).strip()
+    last_name     = str(payload.get("last_name", "")).strip()
+
+    # Soft validation — never block the user flow, just log and return ok
+    if not telegram_id or not order_id:
+        logger.warning("create_pending_order: missing telegram_id or order_id — skipping")
+        return {"success": True, "message": "skipped"}
+
+    db = getattr(app.state, "db", None)
+    if not db:
+        logger.error("create_pending_order: DB not available")
+        return {"success": True, "message": "db_unavailable"}
+
+    try:
+        # Idempotency: don't create duplicate if order_id already recorded
+        existing = await db.db.orders.find_one({"order_id": order_id})
+        if existing:
+            logger.info(f"create_pending_order: order {order_id} already exists (status={existing.get('status')}) — skipping")
+            return {"success": True, "message": "already_exists"}
+
+        tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
+
+        # Resolve story names from DB for richer admin view
+        story_names = []
+        if story_ids:
+            from bson.objectid import ObjectId
+            for sid in story_ids:
+                try:
+                    doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                    if doc:
+                        story_names.append(doc.get("story_name_en", doc.get("title", sid)))
+                except Exception:
+                    story_names.append(sid)
+
+        pending_doc = {
+            "order_id":       order_id,
+            "user_id":        tg_id_int if tg_id_int else telegram_id,
+            "username":       username,
+            "first_name":     first_name,
+            "last_name":      last_name,
+            "story_ids":      story_ids,
+            "story_names":    story_names,
+            "total":          amount,
+            "promo_code":     promo_code if promo_code else None,
+            "status":         "pending",
+            "source":         "upi_manual_miniapp",
+            "upi_id_shown":   upi_id_shown,   # audit trail — exact UPI ID user saw
+            "created_at":     datetime.now(timezone.utc),
+        }
+        await db.db.orders.insert_one(pending_doc)
+        logger.info(f"create_pending_order: created pending order {order_id} for user {telegram_id} (upi_id_shown={upi_id_shown})")
+        return {"success": True, "message": "pending_order_created", "order_id": order_id}
+
+    except Exception as e:
+        # Never raise — this is a best-effort tracking call
+        logger.error(f"create_pending_order error: {e}", exc_info=True)
+        return {"success": True, "message": "error_ignored"}
 
 
 @api_router.post("/send-receipt-telegram")
