@@ -6055,6 +6055,108 @@ async def get_shared_ips(telegram_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================
+# Admin: Order ID Lookup
+# ==========================================
+
+@api_router.get("/admin/order-lookup")
+async def admin_order_lookup(order_id: str, telegram_id: str = ""):
+    """
+    Given an order_id (from user's payment screen / session), return:
+    - Full order document (status, amount, story_ids, upi_id_shown, created_at, etc.)
+    - Buyer profile (name, username, telegram_id) so admin can identify the user
+    - story_names resolved from DB
+    Used by admin to find and manually approve a pending/failed UPI payment.
+    """
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="DB unavailable")
+
+    order_id = str(order_id).strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+
+    # Auth: require admin telegram_id (same pattern as other admin endpoints)
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    admin_ids_raw = cfg.get("admin_telegram_ids", "") or os.environ.get("ADMIN_TELEGRAM_IDS", "") or os.environ.get("ADMIN_ID", "")
+    admin_ids = [str(x).strip() for x in str(admin_ids_raw).split(",") if str(x).strip()]
+    if admin_ids and telegram_id and str(telegram_id) not in admin_ids:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # 1. Find order by order_id
+    order = await db.db.orders.find_one({"order_id": order_id})
+
+    # 2. Fallback: search by partial match (last 8 chars of order_id)
+    if not order and len(order_id) >= 6:
+        order = await db.db.orders.find_one({"order_id": {"$regex": order_id[-8:], "$options": "i"}})
+
+    if not order:
+        return {"success": False, "found": False, "message": f"No order found with ID: {order_id}"}
+
+    user_id = order.get("user_id")
+
+    # 3. Resolve story names if not stored
+    story_ids = order.get("story_ids", [])
+    story_names = order.get("story_names", [])
+    if story_ids and not story_names:
+        from bson.objectid import ObjectId
+        for sid in story_ids:
+            try:
+                doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                if doc:
+                    story_names.append(doc.get("story_name_en", doc.get("title", sid)))
+            except Exception:
+                story_names.append(sid)
+
+    # 4. Try to get buyer profile from purchases collection
+    buyer_profile = {}
+    if user_id:
+        buyer_doc = await db.db.purchases.find_one({"user_id": user_id})
+        if not buyer_doc:
+            buyer_doc = await db.db.purchases.find_one({"user_id": str(user_id)})
+        if buyer_doc:
+            buyer_profile = {
+                "first_name": buyer_doc.get("first_name", order.get("first_name", "")),
+                "last_name": buyer_doc.get("last_name", order.get("last_name", "")),
+                "username": buyer_doc.get("username", order.get("username", "")),
+                "user_id": user_id,
+            }
+        else:
+            buyer_profile = {
+                "first_name": order.get("first_name", ""),
+                "last_name": order.get("last_name", ""),
+                "username": order.get("username", ""),
+                "user_id": user_id,
+            }
+
+    # 5. Build clean response (exclude MongoDB _id)
+    order_out = {
+        "order_id":      order.get("order_id", order_id),
+        "status":        order.get("status", "unknown"),
+        "amount":        order.get("total", order.get("amount", 0)),
+        "story_ids":     story_ids,
+        "story_names":   story_names,
+        "upi_id_shown":  order.get("upi_id_shown", ""),  # exact UPI shown to user
+        "utr":           order.get("utr", ""),
+        "source":        order.get("source", ""),
+        "promo_code":    order.get("promo_code", ""),
+        "created_at":    str(order.get("created_at", order.get("paid_at", ""))),
+        "paid_at":       str(order.get("paid_at", "")),
+        "invoice_number": order.get("invoice_number", ""),
+        "user_id":       user_id,
+        "username":      order.get("username", ""),
+        "first_name":    order.get("first_name", ""),
+    }
+
+    logger.info(f"admin_order_lookup: found order {order_id} status={order_out['status']} user={user_id}")
+    return {
+        "success": True,
+        "found": True,
+        "order": order_out,
+        "buyer": buyer_profile,
+    }
+
+
 class ManualPurchase(BaseModel):
     telegram_id: str
     user_id: int
