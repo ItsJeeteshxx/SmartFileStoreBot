@@ -589,6 +589,7 @@ async def _forward_message(
                 await asyncio.sleep(fw.value + 2)
                 continue
             except Exception as e:
+                logger.warning(f"[LiveJobs _send_one] Exception during copy of msg {msg.id} to {chat}: {e} (Attempt {attempt+1})")
                 err = str(e).upper()
                 # Stop jobs completely if destination or source lacks permissions / invalid
                 if any(x in err for x in ["PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN", "USER_BANNED", "CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED"]):
@@ -669,6 +670,7 @@ async def _forward_message(
                 await asyncio.sleep(fw.value + 2)
                 continue
             except Exception as e2:
+                logger.warning(f"[LiveJobs _send_one] Fallback failed to {chat} for msg {msg.id}: {e2} (Attempt {attempt+1})")
                 f_err = str(e2).upper()
                 if "TIMEOUT" in f_err or "CONNECTION" in f_err or "BROKEN PIPE" in f_err or "ERRNO 32" in f_err:
                     await asyncio.sleep(5)

@@ -280,6 +280,7 @@ async def _mj_forward(
                 await asyncio.sleep(fw.value + 2)
                 continue
             except Exception as exc:
+                logger.warning(f"[MultiJob _send_one] Exception during forward of msg {msg.id} to {chat}: {exc} (Attempt {_send_attempt+1})")
                 err = str(exc).upper()
                 if any(x in err for x in ["PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN", "USER_BANNED", "CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED"]):
                     raise ValueError(f"Fatal Chat Error: {exc}")
@@ -361,7 +362,7 @@ async def _mj_forward(
                                 await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
                         return True
                     except Exception as fallback_e:
-                        logger.debug(f"[MultiJob _send_one] Fallback failed to {chat}: {fallback_e}")
+                        logger.warning(f"[MultiJob _send_one] Fallback failed to {chat} for msg {msg.id}: {fallback_e}")
                         return False
 
                 # If transient, try to heal before retrying
