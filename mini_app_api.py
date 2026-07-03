@@ -7389,6 +7389,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
                 "gmail_user": cfg.get("gmail_user", ""),
                 "gmail_app_password": cfg.get("gmail_app_password", ""),
+                "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
                 "is_owner": is_owner_flag,
             }
         }
@@ -7445,6 +7446,8 @@ async def update_admin_settings(payload: dict):
             update_fields["gmail_user"] = str(payload["gmail_user"]).strip()
         if "gmail_app_password" in payload:
             update_fields["gmail_app_password"] = str(payload["gmail_app_password"]).strip()
+        if "mint_theme_enabled" in payload:
+            update_fields["mint_theme_enabled"] = bool(payload["mint_theme_enabled"])
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -7692,6 +7695,7 @@ async def get_public_settings():
             "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
             "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
             "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
+            "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
