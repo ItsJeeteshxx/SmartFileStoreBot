@@ -360,7 +360,7 @@ async def _send_bypass_menu(bot, uid, chat_id, mid=None):
     return await bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(kb))
 
 
-@Client.on_message(filters.private & filters.command(['bypass', 'bypass_jobs', 'bypass_menu']))
+@Client.on_message(filters.private & filters.command(['bypass', 'bypass_menu']))
 @require_feature("url_bypass")
 async def bypass_jobs_cmd(bot, message):
     await _send_bypass_menu(bot, message.from_user.id, message.chat.id)
@@ -724,7 +724,7 @@ async def _ub_run_job(job_id: str):
                 f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{done+1} / {total}</code>\n"
                 f"<b>\u00bb  Lᴀʙᴇʟ  :</b> <code>{label[:35]}</code>\n"
                 f"<b>\u00bb  Sᴛᴇᴘ   :</b> Sending to bypass bot...\n\n"
-                f"<i>\u26d4 /bypass_jobs to manage</i>"
+                f"<i>\u26d4 /bypass to manage</i>"
             )
 
             bypassed = None
@@ -762,7 +762,7 @@ async def _ub_run_job(job_id: str):
                                     f"<b>Link:</b> <code>{done+1} / {total}</code>\n"
                                     f"<b>Attempt {attempt - 1} failed.</b>\n"
                                     f"⏳ Retrying the same URL in <code>{wait_time - w_sec}s</code> to prevent gaps...\n\n"
-                                    f"<i>🚫 /bypass_jobs to manage</i>"
+                                    f"<i>🚫 /bypass to manage</i>"
                                 )
                             await asyncio.sleep(1)
 
@@ -773,11 +773,14 @@ async def _ub_run_job(job_id: str):
                         if job_id not in _ub_tasks:
                             break
 
+                    sent_time = time.time()
                     try:
                         if not hasattr(ub, '_network_lock'):
                             ub._network_lock = asyncio.Lock()
                         async with ub._network_lock:
-                            await asyncio.wait_for(ub.send_message(BYPASS_BOT, short_url), timeout=20)
+                            sent_msg = await asyncio.wait_for(ub.send_message(BYPASS_BOT, short_url), timeout=20)
+                            if sent_msg and getattr(sent_msg, 'date', None):
+                                sent_time = sent_msg.date.timestamp()
                     except FloodWait as fw:
                         from plugins.arya_logger import log_admin_dm
                         if fw.value >= 60:
@@ -792,7 +795,7 @@ async def _ub_run_job(job_id: str):
                         await asyncio.sleep(10)
                         continue
             
-                    t0 = time.time()
+                    t0 = sent_time - 30
                     for check_sec in range(60):
                         await asyncio.sleep(1)
                         if job_id not in _ub_tasks: break
@@ -807,7 +810,7 @@ async def _ub_run_job(job_id: str):
                             async with ub._network_lock:
                                 async for m in ub.get_chat_history(BYPASS_BOT, limit=5):
                                     ts = m.date.timestamp() if m.date else 0
-                                    if ts < t0 - 5: break
+                                    if ts < t0: break
                                     c = _parse_bypassed(m.text or m.caption or '')
                                     if c and c != short_url:
                                         bypassed = c
@@ -846,11 +849,12 @@ async def _ub_run_job(job_id: str):
                 f"<code>{bar}</code>\n\n"
                 f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{done+1} / {total}</code>\n"
                 f"<b>\u00bb  Sᴛᴇᴘ   :</b> Sending /start to @{bot_uname}...\n\n"
-                f"<i>\u26d4 /bypass_jobs to manage</i>"
+                f"<i>\u26d4 /bypass to manage</i>"
             )
 
             start_ok = False
             start_attempt = 0
+            wait_since = time.time() - 10
             while not start_ok:
                 job = await _get_bypass_job(job_id)
                 if not job or job.get("status") in ("stopped", "failed"):
@@ -867,7 +871,11 @@ async def _ub_run_job(job_id: str):
                     if not hasattr(ub, '_network_lock'):
                         ub._network_lock = asyncio.Lock()
                     async with ub._network_lock:
-                        await asyncio.wait_for(ub.send_message(bot_uname, f"/start {param}"), timeout=20)
+                        sent_msg = await asyncio.wait_for(ub.send_message(bot_uname, f"/start {param}"), timeout=20)
+                        if sent_msg and getattr(sent_msg, 'date', None):
+                            wait_since = sent_msg.date.timestamp() - 10
+                        else:
+                            wait_since = time.time() - 10
                     start_ok = True
                 except FloodWait as fw:
                     from plugins.arya_logger import log_admin_dm
@@ -900,8 +908,7 @@ async def _ub_run_job(job_id: str):
                 await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
                 continue
 
-            wait_since = time.time()
-            files = 0; last_file = time.time(); got_file = False
+            files = 0; last_file = wait_since; got_file = False
             adaptive = BASE_IDLE_SEC
 
             while True:
@@ -943,7 +950,7 @@ async def _ub_run_job(job_id: str):
                     f"<b>\u00bb  Lɪɴᴋ      :</b> <code>{done+1} / {total}</code>\n"
                     f"<b>\u00bb  Fɪʟᴇs     :</b> <code>{files}</code> received\n"
                     f"<b>\u00bb  Iᴅʟᴇ Tɪᴍᴇ :</b> <code>{int(idle)}s / {adaptive}s</code>\n\n"
-                    f"<i>\u26d4 /bypass_jobs to manage</i>"
+                    f"<i>\u26d4 /bypass to manage</i>"
                 )
 
             done += 1
@@ -953,7 +960,7 @@ async def _ub_run_job(job_id: str):
                 wait_sec = pacing * 60
                 await _upd(BOT_INSTANCE, job_id, chat_id,
                     f"⏳ <b>Pacing Delay:</b> Waiting {pacing} min for Live Job synchronization...\n"
-                    f"<i>Job will resume automatically. /bypass_jobs to manage.</i>"
+                    f"<i>Job will resume automatically. /bypass to manage.</i>"
                 )
                 for _ in range(wait_sec):
                     if job_id not in _ub_tasks: break
@@ -1006,4 +1013,4 @@ async def _ub_run_job(job_id: str):
 # ── Stop ──────────────────────────────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command(['stopbypass', 'bypass_stop']))
 async def bypass_stop_cmd(bot, message):
-    await message.reply_text("Please use /bypass_jobs to manage and stop your jobs.", parse_mode=PM)
+    await message.reply_text("Please use /bypass to manage and stop your jobs.", parse_mode=PM)
