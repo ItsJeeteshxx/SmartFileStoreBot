@@ -57,19 +57,6 @@ _lj_last_reconnect: dict = {}  # session_name -> last reconnect timestamp
 _lj_me_cache: dict = {}        # session_name -> (me_obj, cached_at_timestamp)
 _LJ_ME_CACHE_TTL = 300         # Reuse cached me for 5 min — avoids repeated GetFullUser calls
 
-# ─── Per-client heal lock ─────────────────────────────────────────────────────
-# When multiple LiveJob tasks share the same userbot, they can ALL enter the
-# heal loop simultaneously, causing "Client is already connected" spam.
-# This lock ensures only ONE job heals a given client at a time.
-# Others wait, then see is_connected=True and return immediately.
-_lj_heal_locks: dict[str, asyncio.Lock] = {}
-
-def _get_client_heal_lock(sname: str) -> asyncio.Lock:
-    """Get or create the per-client heal lock for session 'sname'."""
-    if sname not in _lj_heal_locks:
-        _lj_heal_locks[sname] = asyncio.Lock()
-    return _lj_heal_locks[sname]
-
 async def _lj_ping_client(client) -> bool:
     """
     Lightweight MTProto Ping to verify the transport is alive.
@@ -135,103 +122,59 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
     """
     sname = getattr(client, 'name', None) or str(id(client))
 
-    # ── Step 1: Trust Pyrogram's own is_connected() — fast-path, no ping needed.
-    #    Pyrogram's _connected Event is SET on successful handshake and CLEARED
-    #    only when the transport truly drops. If it says True, we are alive.
-    def _is_conn() -> bool:
+    # ── Step 1: Removed (Do not trust Pyrogram's is_connected blindly if we were asked to heal) ────────
+
+    # ── Step 2: Attempt ping + restart up to 5 times ─────────────────────────
+    BACKOFFS = [2, 5, 15, 30, 60]
+    for attempt in range(5):
+        is_alive = False
         try:
-            is_conn = getattr(client, 'is_connected', None)
-            if is_conn is None:
-                return False
-            return is_conn() if callable(is_conn) else bool(is_conn)
-        except Exception:
-            return False
+            is_alive = await _lj_ping_client(client)
+        except Exception as ping_err:
+            logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
 
-    if _is_conn():
-        return client   # alive ✔️ — skip all pings
+        if is_alive:
+            logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
+            return client   # alive ✔️
 
-    # ── Step 2: Per-client heal lock — prevents multiple concurrent jobs from
-    #    all trying to heal the same client at once ("already connected" spam).
-    heal_lock = _get_client_heal_lock(sname)
+        backoff = BACKOFFS[attempt]
+        logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
+        _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
 
-    async with heal_lock:
-        # Re-check after acquiring lock: another job may have already healed it.
-        if _is_conn():
-            return client   # healed by another job ✔️
+        # Evict stale me cache before restart
+        _lj_me_cache.pop(sname, None)
 
-        # ── Step 3: Attempt ping + restart up to 5 times ─────────────────────
-        BACKOFFS = [2, 5, 15, 30, 60]
-        for attempt in range(5):
-            is_alive = False
-            try:
-                is_alive = await _lj_ping_client(client)
-            except Exception as ping_err:
-                logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
+        await asyncio.sleep(backoff)
 
-            if is_alive:
-                logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
-                return client   # alive ✔️
-
-            # Re-check is_connected before declaring dead (Pyrogram may have
-            # internally reconnected between ping start and now)
-            if _is_conn():
-                logger.info(f"[LiveJob] is_connected=True after ping fail — trusting Pyrogram, returning alive")
-                return client
-
-            backoff = BACKOFFS[attempt]
-            logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
-            _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
-            _lj_me_cache.pop(sname, None)
-
-            await asyncio.sleep(backoff)
-
-            # Re-check after sleep — Pyrogram's own reconnect may have run
-            if _is_conn():
-                logger.info(f"[LiveJob] is_connected=True after backoff sleep — client self-healed")
-                return client
-
-            # Try to bring the session back up in-place
-            try:
-                from plugins.test import _get_cache_lock
-                inner_lock = _get_cache_lock()
-                async with inner_lock:
-                    if _is_conn():
-                        logger.info(f"[LiveJob] Client {sname} alive after inner lock acquire.")
-                        return client
-
-                    logger.info(f"[LiveJob] Healing client {sname} in-place...")
-
-                    try:
-                        await client.stop()
-                        await asyncio.sleep(1)
-                    except Exception:
-                        pass
-
-                    # If still connected after stop(), stop() was a no-op.
-                    # DO NOT call start() — it will raise "Client is already connected".
-                    if _is_conn():
-                        logger.info(f"[LiveJob] Client {sname} still connected after stop() — treating as alive")
-                        return client
-
-                    await client.start()
-
-                # Confirm alive after restart
-                if _is_conn() or await _lj_ping_client(client):
-                    logger.info(f"[LiveJob] Client reconnected on attempt {attempt+1}")
+        # Try to bring the session back up in-place
+        try:
+            from plugins.test import _get_cache_lock
+            lock = _get_cache_lock()
+            async with lock:
+                # Double check if another job already healed it while we were waiting for the lock
+                if await _lj_ping_client(client):
+                    logger.info(f"[LiveJob] Client {sname} already healed by another job.")
                     return client
 
-            except FloodWait as fw:
-                logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
-                await asyncio.sleep(min(fw.value + 2, 60))
-            except Exception as re_err:
-                err_str = str(re_err).lower()
-                if "already connected" in err_str:
-                    # "already connected" = client IS alive. Return immediately.
-                    logger.info(f"[LiveJob] 'already connected' — client {sname} is alive, returning.")
-                    return client
-                logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
+                logger.info(f"[LiveJob] Healing client {sname} in-place...")
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+                
+                await client.start()
 
-        raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
+            # Confirm with ping outside lock
+            if await _lj_ping_client(client):
+                logger.info(f"[LiveJob] Client reconnected (ping) on attempt {attempt+1}")
+                return client
+        except FloodWait as fw:
+            logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
+            await asyncio.sleep(min(fw.value + 2, 60))
+        except Exception as re_err:
+            logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
+
+    raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
 
 
 
@@ -458,66 +401,29 @@ def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int, min_dur_se
 
 
 def _msg_in_topic(msg, from_thread_id: int) -> bool:
-    """Return True if `msg` belongs to the given source topic (thread)."""
-    # 1. message_thread_id attribute
+    """Return True if `msg` belongs to the given source topic (thread).
+
+    Telegram rules:
+    - Messages in a topic carry `message_thread_id` = the topic's root message ID.
+    - The topic-creator message itself has msg.id == thread_id AND no message_thread_id.
+    - In the 'General' topic (thread_id=1), messages may NOT carry message_thread_id at all.
+    - Some Pyrogram builds expose `reply_to_top_id` which equals the topic root.
+    - Forwarded messages keep the original message_thread_id.
+    """
     tid = getattr(msg, "message_thread_id", None)
     if tid is not None and int(tid) == from_thread_id:
         return True
-
-    # 2. reply_to_top_message_id attribute (Pyrofork specific)
-    rttm = getattr(msg, "reply_to_top_message_id", None)
-    if rttm is not None and int(rttm) == from_thread_id:
-        return True
-
-    # 3. Topic-creator message itself
+    # The topic-starter message itself
     if int(msg.id) == from_thread_id:
         return True
-
-    # 4. General topic (id=1): messages with no thread marker belong to General
-    if from_thread_id == 1 and tid is None and rttm is None:
+    # General topic (id=1): messages with no thread marker belong to General
+    if from_thread_id == 1 and tid is None:
         return True
-
-    # 5. reply_to_top_id attribute (older pyrogram / pyrofork field)
+    # Fallback: reply_to_top_id (older pyrogram / pyrofork field)
     rtt = getattr(msg, "reply_to_top_id", None)
     if rtt is not None and int(rtt) == from_thread_id:
         return True
-
-    # 6. reply_to object fields (pyrogram v2+ / Pyrofork)
-    reply_to = getattr(msg, "reply_to", None)
-    if reply_to:
-        rt_top = getattr(reply_to, "reply_to_top_id", None)
-        if rt_top is not None and int(rt_top) == from_thread_id:
-            return True
-        rt_msg = getattr(reply_to, "reply_to_msg_id", None)
-        if rt_msg is not None and int(rt_msg) == from_thread_id:
-            return True
-
-    # 7. Fallback if reply_to_message exists and has thread_id/top_message_id
-    reply_to_message = getattr(msg, "reply_to_message", None)
-    if reply_to_message:
-        rt_tid = getattr(reply_to_message, "message_thread_id", None)
-        if rt_tid is not None and int(rt_tid) == from_thread_id:
-            return True
-        rt_rttm = getattr(reply_to_message, "reply_to_top_message_id", None)
-        if rt_rttm is not None and int(rt_rttm) == from_thread_id:
-            return True
-
-    # 8. Fallback if reply_to_message_id is direct reply to topic starter
-    rtm_id = getattr(msg, "reply_to_message_id", None)
-    if rtm_id is not None and int(rtm_id) == from_thread_id:
-        return True
-
-    # Log mismatch details if the message belongs to a topic but didn't match
-    actual_topic = tid or rttm or rtt or (getattr(reply_to, "reply_to_top_id", None) if reply_to else None)
-    if actual_topic is not None:
-        logger.warning(
-            f"[Topic Mismatch] Message {msg.id} in source chat belongs to topic {actual_topic}, "
-            f"but job expects topic {from_thread_id}. Attributes checked: "
-            f"tid={tid}, rttm={rttm}, rtt={rtt}, msg.id={msg.id}"
-        )
-
     return False
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -598,7 +504,6 @@ async def _forward_message(
                 await asyncio.sleep(fw.value + 2)
                 continue
             except Exception as e:
-                logger.warning(f"[LiveJobs _send_one] Exception during copy of msg {msg.id} to {chat}: {e} (Attempt {attempt+1})")
                 err = str(e).upper()
                 # Stop jobs completely if destination or source lacks permissions / invalid
                 if any(x in err for x in ["PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN", "USER_BANNED", "CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED"]):
@@ -679,7 +584,6 @@ async def _forward_message(
                 await asyncio.sleep(fw.value + 2)
                 continue
             except Exception as e2:
-                logger.warning(f"[LiveJobs _send_one] Fallback failed to {chat} for msg {msg.id}: {e2} (Attempt {attempt+1})")
                 f_err = str(e2).upper()
                 if "TIMEOUT" in f_err or "CONNECTION" in f_err or "BROKEN PIPE" in f_err or "ERRNO 32" in f_err:
                     await asyncio.sleep(5)
@@ -1225,7 +1129,7 @@ async def _run_job(job_id: str, user_id: int):
                  
                  # Filter by source topic if configured
                  from_thread = job.get("from_thread")
-                 if from_thread and int(from_thread) > 0:
+                 if from_thread:
                      from_thread = int(from_thread)
                      valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 
@@ -1640,7 +1544,7 @@ async def _run_job(job_id: str, user_id: int):
 
             # Filter by source topic if configured — use fresh DB value (not stale startup snapshot)
             from_thread = fresh.get("from_thread") if fresh else job.get("from_thread")
-            if from_thread and int(from_thread) > 0:
+            if from_thread:
                 from_thread = int(from_thread)
                 before_count = len(new_msgs)
                 new_msgs = [m for m in new_msgs if _msg_in_topic(m, from_thread)]

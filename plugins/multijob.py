@@ -120,66 +120,12 @@ async def _mj_inc(job_id: str, n: int = 1):
 
 def _msg_in_topic(msg, from_thread_id: int) -> bool:
     """Return True if msg belongs to the given source topic."""
-    # 1. message_thread_id attribute
     tid = getattr(msg, "message_thread_id", None)
     if tid is not None and int(tid) == from_thread_id:
         return True
-
-    # 2. reply_to_top_message_id attribute (Pyrofork specific)
-    rttm = getattr(msg, "reply_to_top_message_id", None)
-    if rttm is not None and int(rttm) == from_thread_id:
-        return True
-
-    # 3. Topic-creator message itself
     if int(msg.id) == from_thread_id:
         return True
-
-    # 4. General topic (id=1): messages with no thread marker belong to General
-    if from_thread_id == 1 and tid is None and rttm is None:
-        return True
-
-    # 5. reply_to_top_id attribute (older pyrogram / pyrofork field)
-    rtt = getattr(msg, "reply_to_top_id", None)
-    if rtt is not None and int(rtt) == from_thread_id:
-        return True
-
-    # 6. reply_to object fields (pyrogram v2+ / Pyrofork)
-    reply_to = getattr(msg, "reply_to", None)
-    if reply_to:
-        rt_top = getattr(reply_to, "reply_to_top_id", None)
-        if rt_top is not None and int(rt_top) == from_thread_id:
-            return True
-        rt_msg = getattr(reply_to, "reply_to_msg_id", None)
-        if rt_msg is not None and int(rt_msg) == from_thread_id:
-            return True
-
-    # 7. Fallback if reply_to_message exists and has thread_id/top_message_id
-    reply_to_message = getattr(msg, "reply_to_message", None)
-    if reply_to_message:
-        rt_tid = getattr(reply_to_message, "message_thread_id", None)
-        if rt_tid is not None and int(rt_tid) == from_thread_id:
-            return True
-        rt_rttm = getattr(reply_to_message, "reply_to_top_message_id", None)
-        if rt_rttm is not None and int(rt_rttm) == from_thread_id:
-            return True
-
-    # 8. Fallback if reply_to_message_id is direct reply to topic starter
-    rtm_id = getattr(msg, "reply_to_message_id", None)
-    if rtm_id is not None and int(rtm_id) == from_thread_id:
-        return True
-
-    # Log mismatch details if the message belongs to a topic but didn't match
-    actual_topic = tid or rttm or rtt or (getattr(reply_to, "reply_to_top_id", None) if reply_to else None)
-    if actual_topic is not None:
-        logger.warning(
-            f"[Topic Mismatch] Message {msg.id} in source chat belongs to topic {actual_topic}, "
-            f"but job expects topic {from_thread_id}. Attributes checked: "
-            f"tid={tid}, rttm={rttm}, rtt={rtt}, msg.id={msg.id}"
-        )
-
     return False
-
-
 
 
 def _passes_filters(msg, disabled_types: list) -> bool:
@@ -289,7 +235,6 @@ async def _mj_forward(
                 await asyncio.sleep(fw.value + 2)
                 continue
             except Exception as exc:
-                logger.warning(f"[MultiJob _send_one] Exception during forward of msg {msg.id} to {chat}: {exc} (Attempt {_send_attempt+1})")
                 err = str(exc).upper()
                 if any(x in err for x in ["PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN", "USER_BANNED", "CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED"]):
                     raise ValueError(f"Fatal Chat Error: {exc}")
@@ -371,7 +316,7 @@ async def _mj_forward(
                                 await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
                         return True
                     except Exception as fallback_e:
-                        logger.warning(f"[MultiJob _send_one] Fallback failed to {chat} for msg {msg.id}: {fallback_e}")
+                        logger.debug(f"[MultiJob _send_one] Fallback failed to {chat}: {fallback_e}")
                         return False
 
                 # If transient, try to heal before retrying
@@ -904,7 +849,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
             # Filter by source topic if configured
             from_thread = job.get("from_thread")
-            if from_thread and int(from_thread) > 0:
+            if from_thread:
                 from_thread = int(from_thread)
                 valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 

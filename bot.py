@@ -20,35 +20,6 @@ logging.getLogger("pyrogram").setLevel(logging.ERROR)
 
 import concurrent.futures
 
-# --- PATCH PYROGRAM MESSAGE PARSING FOR TOPIC THREAD SUPPORT ---
-try:
-    import pyrogram
-    from pyrogram.types import Message
-    original_parse = Message._parse
-
-    async def patched_parse(client, message, users, chats, is_scheduled=False, replies=1):
-        parsed = await original_parse(client, message, users, chats, is_scheduled, replies)
-        if parsed and isinstance(parsed, Message):
-            rttm = getattr(parsed, "reply_to_top_message_id", None)
-            if rttm is None:
-                parsed.reply_to_top_message_id = None
-                if hasattr(message, "reply_to") and message.reply_to:
-                    reply_to = message.reply_to
-                    is_forum = getattr(reply_to, "forum_topic", False)
-                    if is_forum:
-                        top_id = getattr(reply_to, "reply_to_top_id", None)
-                        if top_id is not None:
-                            parsed.reply_to_top_message_id = top_id
-                        else:
-                            parsed.reply_to_top_message_id = getattr(reply_to, "reply_to_msg_id", None)
-        return parsed
-
-    Message._parse = patched_parse
-    logging.info("Successfully patched pyrogram.types.Message._parse for topic thread support")
-except Exception as patch_err:
-    logging.warning(f"Failed to patch pyrogram Message._parse: {patch_err}")
-# ---------------------------------------------------------------
-
 BOT_INSTANCE = None
 
 class Bot(Client): 
