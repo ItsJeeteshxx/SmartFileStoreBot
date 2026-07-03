@@ -57,6 +57,19 @@ _lj_last_reconnect: dict = {}  # session_name -> last reconnect timestamp
 _lj_me_cache: dict = {}        # session_name -> (me_obj, cached_at_timestamp)
 _LJ_ME_CACHE_TTL = 300         # Reuse cached me for 5 min — avoids repeated GetFullUser calls
 
+# ─── Per-client heal lock ─────────────────────────────────────────────────────
+# When multiple LiveJob tasks share the same userbot, they can ALL enter the
+# heal loop simultaneously, causing "Client is already connected" spam.
+# This lock ensures only ONE job heals a given client at a time.
+# Others wait, then see is_connected=True and return immediately.
+_lj_heal_locks: dict[str, asyncio.Lock] = {}
+
+def _get_client_heal_lock(sname: str) -> asyncio.Lock:
+    """Get or create the per-client heal lock for session 'sname'."""
+    if sname not in _lj_heal_locks:
+        _lj_heal_locks[sname] = asyncio.Lock()
+    return _lj_heal_locks[sname]
+
 async def _lj_ping_client(client) -> bool:
     """
     Lightweight MTProto Ping to verify the transport is alive.
@@ -122,59 +135,103 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
     """
     sname = getattr(client, 'name', None) or str(id(client))
 
-    # ── Step 1: Removed (Do not trust Pyrogram's is_connected blindly if we were asked to heal) ────────
-
-    # ── Step 2: Attempt ping + restart up to 5 times ─────────────────────────
-    BACKOFFS = [2, 5, 15, 30, 60]
-    for attempt in range(5):
-        is_alive = False
+    # ── Step 1: Trust Pyrogram's own is_connected() — fast-path, no ping needed.
+    #    Pyrogram's _connected Event is SET on successful handshake and CLEARED
+    #    only when the transport truly drops. If it says True, we are alive.
+    def _is_conn() -> bool:
         try:
-            is_alive = await _lj_ping_client(client)
-        except Exception as ping_err:
-            logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
+            is_conn = getattr(client, 'is_connected', None)
+            if is_conn is None:
+                return False
+            return is_conn() if callable(is_conn) else bool(is_conn)
+        except Exception:
+            return False
 
-        if is_alive:
-            logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
-            return client   # alive ✔️
+    if _is_conn():
+        return client   # alive ✔️ — skip all pings
 
-        backoff = BACKOFFS[attempt]
-        logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
-        _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
+    # ── Step 2: Per-client heal lock — prevents multiple concurrent jobs from
+    #    all trying to heal the same client at once ("already connected" spam).
+    heal_lock = _get_client_heal_lock(sname)
 
-        # Evict stale me cache before restart
-        _lj_me_cache.pop(sname, None)
+    async with heal_lock:
+        # Re-check after acquiring lock: another job may have already healed it.
+        if _is_conn():
+            return client   # healed by another job ✔️
 
-        await asyncio.sleep(backoff)
+        # ── Step 3: Attempt ping + restart up to 5 times ─────────────────────
+        BACKOFFS = [2, 5, 15, 30, 60]
+        for attempt in range(5):
+            is_alive = False
+            try:
+                is_alive = await _lj_ping_client(client)
+            except Exception as ping_err:
+                logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
 
-        # Try to bring the session back up in-place
-        try:
-            from plugins.test import _get_cache_lock
-            lock = _get_cache_lock()
-            async with lock:
-                # Double check if another job already healed it while we were waiting for the lock
-                if await _lj_ping_client(client):
-                    logger.info(f"[LiveJob] Client {sname} already healed by another job.")
+            if is_alive:
+                logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
+                return client   # alive ✔️
+
+            # Re-check is_connected before declaring dead (Pyrogram may have
+            # internally reconnected between ping start and now)
+            if _is_conn():
+                logger.info(f"[LiveJob] is_connected=True after ping fail — trusting Pyrogram, returning alive")
+                return client
+
+            backoff = BACKOFFS[attempt]
+            logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
+            _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
+            _lj_me_cache.pop(sname, None)
+
+            await asyncio.sleep(backoff)
+
+            # Re-check after sleep — Pyrogram's own reconnect may have run
+            if _is_conn():
+                logger.info(f"[LiveJob] is_connected=True after backoff sleep — client self-healed")
+                return client
+
+            # Try to bring the session back up in-place
+            try:
+                from plugins.test import _get_cache_lock
+                inner_lock = _get_cache_lock()
+                async with inner_lock:
+                    if _is_conn():
+                        logger.info(f"[LiveJob] Client {sname} alive after inner lock acquire.")
+                        return client
+
+                    logger.info(f"[LiveJob] Healing client {sname} in-place...")
+
+                    try:
+                        await client.stop()
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass
+
+                    # If still connected after stop(), stop() was a no-op.
+                    # DO NOT call start() — it will raise "Client is already connected".
+                    if _is_conn():
+                        logger.info(f"[LiveJob] Client {sname} still connected after stop() — treating as alive")
+                        return client
+
+                    await client.start()
+
+                # Confirm alive after restart
+                if _is_conn() or await _lj_ping_client(client):
+                    logger.info(f"[LiveJob] Client reconnected on attempt {attempt+1}")
                     return client
 
-                logger.info(f"[LiveJob] Healing client {sname} in-place...")
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
-                
-                await client.start()
+            except FloodWait as fw:
+                logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
+                await asyncio.sleep(min(fw.value + 2, 60))
+            except Exception as re_err:
+                err_str = str(re_err).lower()
+                if "already connected" in err_str:
+                    # "already connected" = client IS alive. Return immediately.
+                    logger.info(f"[LiveJob] 'already connected' — client {sname} is alive, returning.")
+                    return client
+                logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
 
-            # Confirm with ping outside lock
-            if await _lj_ping_client(client):
-                logger.info(f"[LiveJob] Client reconnected (ping) on attempt {attempt+1}")
-                return client
-        except FloodWait as fw:
-            logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
-            await asyncio.sleep(min(fw.value + 2, 60))
-        except Exception as re_err:
-            logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
-
-    raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
+        raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
 
 
 
