@@ -458,28 +458,47 @@ def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int, min_dur_se
 
 
 def _msg_in_topic(msg, from_thread_id: int) -> bool:
-    """Return True if `msg` belongs to the given source topic (thread).
-
-    Telegram rules:
-    - Messages in a topic carry `message_thread_id` = the topic's root message ID.
-    - The topic-creator message itself has msg.id == thread_id AND no message_thread_id.
-    - In the 'General' topic (thread_id=1), messages may NOT carry message_thread_id at all.
-    - Some Pyrogram builds expose `reply_to_top_id` which equals the topic root.
-    - Forwarded messages keep the original message_thread_id.
-    """
+    """Return True if `msg` belongs to the given source topic (thread)."""
+    # 1. message_thread_id attribute
     tid = getattr(msg, "message_thread_id", None)
     if tid is not None and int(tid) == from_thread_id:
         return True
-    # The topic-starter message itself
+
+    # 2. Topic-creator message itself
     if int(msg.id) == from_thread_id:
         return True
-    # General topic (id=1): messages with no thread marker belong to General
+
+    # 3. General topic (id=1): messages with no thread marker belong to General
     if from_thread_id == 1 and tid is None:
         return True
-    # Fallback: reply_to_top_id (older pyrogram / pyrofork field)
+
+    # 4. reply_to_top_id attribute (older pyrogram / pyrofork field)
     rtt = getattr(msg, "reply_to_top_id", None)
     if rtt is not None and int(rtt) == from_thread_id:
         return True
+
+    # 5. reply_to object fields (pyrogram v2+ / Pyrofork)
+    reply_to = getattr(msg, "reply_to", None)
+    if reply_to:
+        rt_top = getattr(reply_to, "reply_to_top_id", None)
+        if rt_top is not None and int(rt_top) == from_thread_id:
+            return True
+        rt_msg = getattr(reply_to, "reply_to_msg_id", None)
+        if rt_msg is not None and int(rt_msg) == from_thread_id:
+            return True
+
+    # 6. Fallback if reply_to_message exists and has thread_id
+    reply_to_message = getattr(msg, "reply_to_message", None)
+    if reply_to_message:
+        rt_tid = getattr(reply_to_message, "message_thread_id", None)
+        if rt_tid is not None and int(rt_tid) == from_thread_id:
+            return True
+
+    # 7. Fallback if reply_to_message_id is direct reply to topic starter
+    rtm_id = getattr(msg, "reply_to_message_id", None)
+    if rtm_id is not None and int(rtm_id) == from_thread_id:
+        return True
+
     return False
 
 

@@ -266,7 +266,10 @@ async def _warm_peer(client, chat_id) -> None:
     from bot import BOT_INSTANCE
     from plugins.utils import safe_resolve_peer
     try:
-        await safe_resolve_peer(client, ch_id_int, bot=BOT_INSTANCE)
+        resolved = await safe_resolve_peer(client, ch_id_int, bot=BOT_INSTANCE)
+        if resolved:
+            _peer_cache[key] = time.time()
+            return
     except Exception:
         pass
         
@@ -348,6 +351,8 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
         if BOT_INSTANCE and getattr(BOT_INSTANCE, "me", None):
             try:
                 member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+            except UserNotParticipant:
+                raise
             except (PeerIdInvalid, ChannelInvalid):
                 try:
                     resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id)
@@ -355,6 +360,8 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                         member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
                     else:
                         is_channel_invalid = True
+                except UserNotParticipant:
+                    raise
                 except (PeerIdInvalid, ChannelInvalid):
                     is_channel_invalid = True
                 except Exception:

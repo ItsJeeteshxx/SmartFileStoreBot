@@ -32,6 +32,12 @@ class Database:
         self.share_deliveries = self.db.share_deliveries
         self.share_users = self.db.share_users
         
+        # In-memory caches for latency optimization
+        self._ban_status_cache = {}  # {user_id: (ban_status_dict, expiry)}
+        self._bot_cfg_cache = {}     # {bot_id: (cfg_dict, expiry)}
+        self._share_cfg_cache = None  # (cfg_dict, expiry)
+
+        
     async def set_share_bot_token(self, token: str):
         # Migrated: now handles multiple bots via array push, preserving backwards compatibility for singles initially if desired, or just override.
         pass
@@ -102,11 +108,23 @@ class Database:
 
     # ── Global Share Config ──────────────────────────────────────
     async def _share_cfg(self) -> dict:
+        import time as _t
+        now = _t.time()
+        if hasattr(self, '_share_cfg_cache') and self._share_cfg_cache is not None:
+            val, expiry = self._share_cfg_cache
+            if now < expiry:
+                return val
         doc = await self.share_config.find_one({'_id': 'global'})
-        return doc or {}
+        res = doc or {}
+        if hasattr(self, '_share_cfg_cache'):
+            self._share_cfg_cache = (res, now + 30)  # cache global config for 30s
+        return res
 
     async def _set_share_cfg(self, **kwargs):
         await self.share_config.update_one({'_id': 'global'}, {'$set': kwargs}, upsert=True)
+        # Evict cache
+        if hasattr(self, '_share_cfg_cache'):
+            self._share_cfg_cache = None
 
     # Auto-delete (global, minutes)
     async def get_share_autodelete_global(self) -> int:
@@ -138,6 +156,9 @@ class Database:
             await self.share_config.update_one({'_id': 'global'}, {'$unset': {key: ""}}, upsert=True)
         else:
             await self._set_share_cfg(**{key: value})
+        # Evict cache
+        if hasattr(self, '_share_cfg_cache'):
+            self._share_cfg_cache = None
 
     # AI Image Enhancer Config
     async def get_enhancer_config(self) -> dict:
@@ -158,8 +179,18 @@ class Database:
     async def _bot_cfg(self, bot_id: str) -> dict:
         if not bot_id:
             return {}
+        import time as _t
+        now = _t.time()
+        if hasattr(self, '_bot_cfg_cache'):
+            if bot_id in self._bot_cfg_cache:
+                val, expiry = self._bot_cfg_cache[bot_id]
+                if now < expiry:
+                    return val
         doc = await self.share_config.find_one({'_id': f'bot_{bot_id}'})
-        return doc or {}
+        res = doc or {}
+        if hasattr(self, '_bot_cfg_cache'):
+            self._bot_cfg_cache[bot_id] = (res, now + 30)  # cache bot config for 30s
+        return res
 
     async def _set_bot_cfg(self, bot_id: str, **kwargs):
         if not bot_id:
@@ -167,6 +198,9 @@ class Database:
         await self.share_config.update_one(
             {'_id': f'bot_{bot_id}'}, {'$set': kwargs}, upsert=True
         )
+        # Evict cache
+        if hasattr(self, '_bot_cfg_cache'):
+            self._bot_cfg_cache.pop(bot_id, None)
 
     # Per-bot customizable texts (welcome_msg, delete_msg, success_msg, custom_caption, fsub_msg)
     async def get_share_bot_text(self, bot_id: str, key: str, default: str = "") -> str:
@@ -433,6 +467,9 @@ class Database:
             '$set': {'ban_status': ban_status},
             '$unset': {'abuse_strike': ''}
         }, upsert=True)
+        # Evict cache
+        if hasattr(self, '_ban_status_cache'):
+            self._ban_status_cache.pop(int(id), None)
     
     async def ban_user(self, user_id, ban_reason="No Reason"):
         ban_status = dict(
@@ -440,6 +477,9 @@ class Database:
             ban_reason=ban_reason
         )
         await self.col.update_one({'id': int(user_id)}, {'$set': {'ban_status': ban_status}}, upsert=True)
+        # Evict cache
+        if hasattr(self, '_ban_status_cache'):
+            self._ban_status_cache.pop(int(user_id), None)
 
     async def get_ban_status(self, id):
         default = dict(
@@ -451,22 +491,42 @@ class Database:
         except (ValueError, TypeError):
             return default
             
+        # Check cache
+        import time as _t
+        now = _t.time()
+        if hasattr(self, '_ban_status_cache'):
+            if user_id_int in self._ban_status_cache:
+                val, expiry = self._ban_status_cache[user_id_int]
+                if now < expiry:
+                    return val
+
         # 1. Check local bot collection ban status in 'arya' DB
         user = await self.col.find_one({'id': user_id_int})
         if user and user.get('ban_status', {}).get('is_banned'):
-            return user.get('ban_status', default)
+            res = user.get('ban_status', default)
+            if hasattr(self, '_ban_status_cache'):
+                # Cache banned user for 30s
+                self._ban_status_cache[user_id_int] = (res, now + 30)
+            return res
             
         # 2. Check premium_bans collection (same 'arya' DB — used by mini app admin panel)
         try:
             prem_ban = await self.db.premium_bans.find_one({'_id': user_id_int})
             if prem_ban and prem_ban.get('status') in ('banned', 'flagged'):
-                return {
+                res = {
                     'is_banned': True,
                     'ban_reason': prem_ban.get('reason', 'Banned by administrator')
                 }
+                if hasattr(self, '_ban_status_cache'):
+                    # Cache banned user for 30s
+                    self._ban_status_cache[user_id_int] = (res, now + 30)
+                return res
         except Exception:
             pass
             
+        if hasattr(self, '_ban_status_cache'):
+            # Cache non-banned user for 120s
+            self._ban_status_cache[user_id_int] = (default, now + 120)
         return default
 
     async def get_all_users(self):
