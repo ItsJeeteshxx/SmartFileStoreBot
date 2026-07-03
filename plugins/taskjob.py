@@ -136,8 +136,44 @@ def _msg_in_topic(msg, from_thread_id: int) -> bool:
     tid = getattr(msg, "message_thread_id", None)
     if tid is not None and int(tid) == from_thread_id:
         return True
-    if int(msg.id) == from_thread_id:
+    
+    rttm = getattr(msg, "reply_to_story_message_id", None) or getattr(msg, "reply_to_message_id", None)
+    if rttm is not None and int(rttm) == from_thread_id:
         return True
+        
+    m_id = getattr(msg, "id", None)
+    if m_id is not None and int(m_id) == from_thread_id:
+        return True
+
+    # Fallbacks for reply chain lookup
+    reply_to = getattr(msg, "reply_to_message", None)
+    if reply_to is not None:
+        rt_top = getattr(reply_to, "topic_message", None)
+        if rt_top is not None and rt_top == from_thread_id:
+            return True
+        rt_msg = getattr(reply_to, "reply_to_message_id", None)
+        if rt_msg is not None and rt_msg == from_thread_id:
+            return True
+        rt_tid = getattr(reply_to, "message_thread_id", None)
+        if rt_tid is not None and rt_tid == from_thread_id:
+            return True
+        rt_rttm = getattr(reply_to, "reply_to_story_message_id", None) or getattr(reply_to, "reply_to_message_id", None)
+        if rt_rttm is not None and rt_rttm == from_thread_id:
+            return True
+            
+        rtrt = getattr(reply_to, "reply_to_message", None)
+        if rtrt is not None:
+            rtrt_top = getattr(rtrt, "topic_message", None)
+            if rtrt_top is not None and rtrt_top == from_thread_id:
+                return True
+            rtrt_msg = getattr(rtrt, "reply_to_message_id", None)
+            if rtrt_msg is not None and rtrt_msg == from_thread_id:
+                return True
+
+    rtm_id = getattr(reply_to, "id", None) if reply_to is not None else None
+    if rtm_id is not None and rtm_id == from_thread_id:
+        return True
+
     return False
 
 
@@ -451,7 +487,7 @@ async def _run_task_job(job_id: str, user_id: int):
             
             # Filter by source topic if configured
             from_thread = job.get("from_thread")
-            if from_thread:
+            if from_thread and int(from_thread) > 0:
                 from_thread = int(from_thread)
                 valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 

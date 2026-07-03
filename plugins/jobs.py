@@ -467,20 +467,77 @@ def _msg_in_topic(msg, from_thread_id: int) -> bool:
     - Some Pyrogram builds expose `reply_to_top_id` which equals the topic root.
     - Forwarded messages keep the original message_thread_id.
     """
-    tid = getattr(msg, "message_thread_id", None)
-    if tid is not None and int(tid) == from_thread_id:
+    def _to_int(val):
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+
+    from_thread_id = _to_int(from_thread_id)
+    if from_thread_id is None:
+        return False
+
+    # 1. Standard message_thread_id attribute
+    tid = _to_int(getattr(msg, "message_thread_id", None))
+    if tid is not None and tid == from_thread_id:
         return True
-    # The topic-starter message itself
-    if int(msg.id) == from_thread_id:
+
+    # 2. reply_to_top_message_id attribute
+    rttm = _to_int(getattr(msg, "reply_to_top_message_id", None))
+    if rttm is not None and rttm == from_thread_id:
         return True
-    # General topic (id=1): messages with no thread marker belong to General
-    if from_thread_id == 1 and tid is None:
+
+    # 3. Message ID itself matches the topic ID (topic starter message)
+    m_id = _to_int(getattr(msg, "id", None))
+    if m_id is not None and m_id == from_thread_id:
         return True
-    # Fallback: reply_to_top_id (older pyrogram / pyrofork field)
-    rtt = getattr(msg, "reply_to_top_id", None)
-    if rtt is not None and int(rtt) == from_thread_id:
+
+    # 4. reply_to object fields (MessageReplyHeader)
+    reply_to = getattr(msg, "reply_to", None)
+    if reply_to:
+        rt_top = _to_int(getattr(reply_to, "reply_to_top_id", None))
+        if rt_top is not None and rt_top == from_thread_id:
+            return True
+        rt_msg = _to_int(getattr(reply_to, "reply_to_msg_id", None))
+        if rt_msg is not None and rt_msg == from_thread_id:
+            return True
+
+    # 5. Fallback via reply_to_message if loaded
+    reply_to_message = getattr(msg, "reply_to_message", None)
+    if reply_to_message:
+        rt_tid = _to_int(getattr(reply_to_message, "message_thread_id", None))
+        if rt_tid is not None and rt_tid == from_thread_id:
+            return True
+        rt_rttm = _to_int(getattr(reply_to_message, "reply_to_top_message_id", None))
+        if rt_rttm is not None and rt_rttm == from_thread_id:
+            return True
+        rt_reply_to = getattr(reply_to_message, "reply_to", None)
+        if rt_reply_to:
+            rtrt_top = _to_int(getattr(rt_reply_to, "reply_to_top_id", None))
+            if rtrt_top is not None and rtrt_top == from_thread_id:
+                return True
+            rtrt_msg = _to_int(getattr(rt_reply_to, "reply_to_msg_id", None))
+            if rtrt_msg is not None and rtrt_msg == from_thread_id:
+                return True
+
+    # 6. Fallback if reply_to_message_id is direct reply to topic starter
+    rtm_id = _to_int(getattr(msg, "reply_to_message_id", None))
+    if rtm_id is not None and rtm_id == from_thread_id:
         return True
+
+    # 7. General topic (id=1): messages with no thread marker belong to General
+    if from_thread_id == 1:
+        # Check if there is ANY indication of a topic thread
+        has_thread = False
+        if tid is not None: has_thread = True
+        if rttm is not None: has_thread = True
+        if reply_to and (getattr(reply_to, "reply_to_top_id", None) is not None or getattr(reply_to, "reply_to_msg_id", None) is not None):
+            has_thread = True
+        if not has_thread:
+            return True
+
     return False
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1186,7 +1243,7 @@ async def _run_job(job_id: str, user_id: int):
                  
                  # Filter by source topic if configured
                  from_thread = job.get("from_thread")
-                 if from_thread:
+                 if from_thread and int(from_thread) > 0:
                      from_thread = int(from_thread)
                      valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 
@@ -1601,7 +1658,7 @@ async def _run_job(job_id: str, user_id: int):
 
             # Filter by source topic if configured — use fresh DB value (not stale startup snapshot)
             from_thread = fresh.get("from_thread") if fresh else job.get("from_thread")
-            if from_thread:
+            if from_thread and int(from_thread) > 0:
                 from_thread = int(from_thread)
                 before_count = len(new_msgs)
                 new_msgs = [m for m in new_msgs if _msg_in_topic(m, from_thread)]

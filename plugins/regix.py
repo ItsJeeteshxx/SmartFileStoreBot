@@ -285,12 +285,45 @@ async def pub_(bot, message):
               """Return True if msg belongs to the given topic/thread."""
               try:
                   tid = getattr(msg, 'message_thread_id', None)
-                  if tid is None:
-                      tid = getattr(msg, 'reply_to_top_message_id', None)
                   if tid is not None and int(tid) == thread_id:
                       return True
-                  if int(msg.id) == thread_id:
-                      return True  # The root message of the topic itself
+                  
+                  rttm = getattr(msg, "reply_to_story_message_id", None) or getattr(msg, "reply_to_message_id", None)
+                  if rttm is not None and int(rttm) == thread_id:
+                      return True
+                      
+                  m_id = getattr(msg, "id", None)
+                  if m_id is not None and int(m_id) == thread_id:
+                      return True
+
+                  # Fallbacks for reply chain lookup
+                  reply_to = getattr(msg, "reply_to_message", None)
+                  if reply_to is not None:
+                      rt_top = getattr(reply_to, "topic_message", None)
+                      if rt_top is not None and rt_top == thread_id:
+                          return True
+                      rt_msg = getattr(reply_to, "reply_to_message_id", None)
+                      if rt_msg is not None and rt_msg == thread_id:
+                          return True
+                      rt_tid = getattr(reply_to, "message_thread_id", None)
+                      if rt_tid is not None and rt_tid == thread_id:
+                          return True
+                      rt_rttm = getattr(reply_to, "reply_to_story_message_id", None) or getattr(reply_to, "reply_to_message_id", None)
+                      if rt_rttm is not None and rt_rttm == thread_id:
+                          return True
+                          
+                      rtrt = getattr(reply_to, "reply_to_message", None)
+                      if rtrt is not None:
+                          rtrt_top = getattr(rtrt, "topic_message", None)
+                          if rtrt_top is not None and rtrt_top == thread_id:
+                              return True
+                          rtrt_msg = getattr(rtrt, "reply_to_message_id", None)
+                          if rtrt_msg is not None and rtrt_msg == thread_id:
+                              return True
+
+                  rtm_id = getattr(reply_to, "id", None) if reply_to is not None else None
+                  if rtm_id is not None and rtm_id == thread_id:
+                      return True
               except Exception:
                   pass
               return False
@@ -298,7 +331,10 @@ async def pub_(bot, message):
           # Inline topic filter value for this job
           _from_thread = data.get('from_thread', None)
           if _from_thread:
-              try: _from_thread = int(_from_thread)
+              try: 
+                  _from_thread = int(_from_thread)
+                  if _from_thread <= 0:
+                      _from_thread = None
               except: _from_thread = None
 
           # Handle Bot DM fetching logic
@@ -325,6 +361,11 @@ async def pub_(bot, message):
                   
                   if message.empty or message.service:
                       sts.add('deleted')
+                      continue
+                      
+                  # Topic (thread) filtering in direct forward
+                  if _from_thread and not _msg_in_topic(message, _from_thread):
+                      sts.add('filtered')
                       continue
                       
                   msg_ids_to_forward.append(message.id)
