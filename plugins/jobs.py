@@ -464,20 +464,25 @@ def _msg_in_topic(msg, from_thread_id: int) -> bool:
     if tid is not None and int(tid) == from_thread_id:
         return True
 
-    # 2. Topic-creator message itself
+    # 2. reply_to_top_message_id attribute (Pyrofork specific)
+    rttm = getattr(msg, "reply_to_top_message_id", None)
+    if rttm is not None and int(rttm) == from_thread_id:
+        return True
+
+    # 3. Topic-creator message itself
     if int(msg.id) == from_thread_id:
         return True
 
-    # 3. General topic (id=1): messages with no thread marker belong to General
-    if from_thread_id == 1 and tid is None:
+    # 4. General topic (id=1): messages with no thread marker belong to General
+    if from_thread_id == 1 and tid is None and rttm is None:
         return True
 
-    # 4. reply_to_top_id attribute (older pyrogram / pyrofork field)
+    # 5. reply_to_top_id attribute (older pyrogram / pyrofork field)
     rtt = getattr(msg, "reply_to_top_id", None)
     if rtt is not None and int(rtt) == from_thread_id:
         return True
 
-    # 5. reply_to object fields (pyrogram v2+ / Pyrofork)
+    # 6. reply_to object fields (pyrogram v2+ / Pyrofork)
     reply_to = getattr(msg, "reply_to", None)
     if reply_to:
         rt_top = getattr(reply_to, "reply_to_top_id", None)
@@ -487,19 +492,23 @@ def _msg_in_topic(msg, from_thread_id: int) -> bool:
         if rt_msg is not None and int(rt_msg) == from_thread_id:
             return True
 
-    # 6. Fallback if reply_to_message exists and has thread_id
+    # 7. Fallback if reply_to_message exists and has thread_id/top_message_id
     reply_to_message = getattr(msg, "reply_to_message", None)
     if reply_to_message:
         rt_tid = getattr(reply_to_message, "message_thread_id", None)
         if rt_tid is not None and int(rt_tid) == from_thread_id:
             return True
+        rt_rttm = getattr(reply_to_message, "reply_to_top_message_id", None)
+        if rt_rttm is not None and int(rt_rttm) == from_thread_id:
+            return True
 
-    # 7. Fallback if reply_to_message_id is direct reply to topic starter
+    # 8. Fallback if reply_to_message_id is direct reply to topic starter
     rtm_id = getattr(msg, "reply_to_message_id", None)
     if rtm_id is not None and int(rtm_id) == from_thread_id:
         return True
 
     return False
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
