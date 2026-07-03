@@ -168,6 +168,15 @@ def _msg_in_topic(msg, from_thread_id: int) -> bool:
     if rtm_id is not None and int(rtm_id) == from_thread_id:
         return True
 
+    # Log mismatch details if the message belongs to a topic but didn't match
+    actual_topic = tid or rttm or rtt or (getattr(reply_to, "reply_to_top_id", None) if reply_to else None)
+    if actual_topic is not None:
+        logger.warning(
+            f"[Topic Mismatch] Message {msg.id} in source chat belongs to topic {actual_topic}, "
+            f"but job expects topic {from_thread_id}. Attributes checked: "
+            f"tid={tid}, rttm={rttm}, rtt={rtt}, msg.id={msg.id}"
+        )
+
     return False
 
 
@@ -895,7 +904,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
             # Filter by source topic if configured
             from_thread = job.get("from_thread")
-            if from_thread:
+            if from_thread and int(from_thread) > 0:
                 from_thread = int(from_thread)
                 valid = [m for m in valid if _msg_in_topic(m, from_thread)]
 
