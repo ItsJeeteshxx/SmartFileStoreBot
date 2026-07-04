@@ -366,16 +366,17 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
             try:
                 member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
             except UserNotParticipant:
-                raise
+                pass  # member stays None → handled below in the UserNotParticipant block
             except (PeerIdInvalid, ChannelInvalid):
                 try:
                     resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id)
                     if resolved:
-                        member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+                        try:
+                            member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+                        except UserNotParticipant:
+                            pass  # member stays None → handled below
                     else:
                         is_channel_invalid = True
-                except UserNotParticipant:
-                    raise
                 except (PeerIdInvalid, ChannelInvalid):
                     is_channel_invalid = True
                 except Exception:
@@ -899,18 +900,8 @@ async def _process_start(client, message):
                 await message.reply_text(ad_text, reply_markup=ad_buttons, disable_web_page_preview=True)
         else:
             await message.reply_text(thank_txt, reply_markup=donate_btn)
-    except Exception as _te:
-        logger.warning(f"[ThankYou] send failed: {_te}")
     except Exception as e:
-        active_downloads.discard(dl_id)
-        try:
-            await sts.delete()
-        except Exception:
-            pass
-        await message.reply_text(
-            f"<b>‣  Dᴇʟɪᴠᴇʀʏ Eʀʀᴏʀ:</b> <code>{e}</code>\n\n"
-            "<i>The Share Bot must be an admin in the Database Channel to deliver files.</i>"
-        )
+        logger.warning(f"[ThankYou] send failed: {e}")
 
 async def _send_welcome(client, message, bot_id: str = None):
     """Send the welcome message + Help/About buttons."""
