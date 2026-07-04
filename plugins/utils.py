@@ -303,7 +303,7 @@ async def safe_resolve_peer(client, chat_id, bot=None):
     except Exception as e:
         err_str = str(e).upper()
         if 'PEER_ID_INVALID' in err_str or 'CHANNEL_INVALID' in err_str or 'PEER_ID_NOT_HANDLED' in err_str or 'USERNAME_NOT_OCCUPIED' in err_str:
-            if bot and getattr(client, 'session_name', '') != getattr(bot, 'session_name', ''):
+            if bot and getattr(client, 'name', '') != getattr(bot, 'name', ''):
                 try:
                     from pyrogram.raw.types import InputPeerChannel as _IPC
                     _tpeer = await bot.resolve_peer(chat_id)

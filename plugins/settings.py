@@ -1434,8 +1434,6 @@ async def settings_query(bot, query):
       ad_text = custom_text if custom_text else DEFAULT_PREMIUM_AD_TEXT
       
       media = await db.get_bot_premium_ad_media(b_id)
-      
-      from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
       ad_buttons = InlineKeyboardMarkup([
           [
               InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="http://t.me/UseAryaBot/apminibyarya"),
