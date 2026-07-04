@@ -457,23 +457,15 @@ async def sl_callback(bot, query):
     cmd = data[1]
 
     if cmd == "start":
-        active_lb_cnt = 0
-        try:
-            from database import db as _db
-            jobs = [j async for j in _db.db["live_batch_jobs"].find({"user_id": user_id})]
-            active_lb_cnt = len([j for j in jobs if j.get("status") in ("running", "queued")])
-        except Exception:
-            pass
-
         kb = [
             [InlineKeyboardButton("📦 Cᴏᴍᴘʟᴇᴛᴇ Mᴏᴅᴇ (Oɴᴇ-Tɪᴍᴇ)", callback_data="sl#complete")],
-            [InlineKeyboardButton(f"📡 Lɪᴠᴇ Aᴜᴛᴏ-Bᴀᴛᴄʜ ({active_lb_cnt} Active)", callback_data="lb#main")],
+            [InlineKeyboardButton("📡 Lɪᴠᴇ Aᴜᴛᴏ-Bᴀᴛᴄʜ (Oɴɢᴏɪɴɢ)", callback_data="lb#main")],
             [InlineKeyboardButton("✖️ Dɪsᴍɪss", callback_data="close_btn")]
         ]
         await query.message.edit_text(
             "<b><u>Bᴀᴛᴄʜ Lɪɴᴋs Sʏsᴛᴇᴍ</u></b>\n\nChoose your link generation mode:\n\n"
             "• <b>Cᴏᴍᴘʟᴇᴛᴇ Mᴏᴅᴇ:</b> Manually select a range to immediately generate Batch Buttons for existing files.\n"
-            f"• <b>Oɴɢᴏɪɴɢ Lɪᴠᴇ Bᴀᴛᴄʜ:</b> Runs infinitely in the background, bundling and posting new messages as they stream in. (Active: {active_lb_cnt})",
+            "• <b>Oɴɢᴏɪɴɢ Lɪᴠᴇ Bᴀᴛᴄʜ:</b> Runs infinitely in the background, bundling and posting new messages as they stream in.",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 

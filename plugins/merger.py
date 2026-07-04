@@ -2086,7 +2086,11 @@ async def _render_list(bot, uid, msg_or_q, mtype):
             [InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data="settings#main")]
         ])
     else:
-        lines = [f"<b>{icon} Your {label} Merges</b>\n"]
+        active_cnt = len([j for j in jobs if j.get("status") in ("queued", "downloading", "merging", "uploading", "scanning")])
+        lines = [
+            f"<b>{icon} Your {label} Merges</b>\n"
+            f"🟢 <b>Active Tasks:</b> <code>{active_cnt}</code>\n"
+        ]
         for j in jobs:
             st   = _emoji(j.get("status", "stopped"))
             dl   = j.get("downloaded", 0)

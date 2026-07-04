@@ -2029,7 +2029,11 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
         end_idx = start_idx + PAGE_SIZE
         chunk = jobs[start_idx:end_idx]
 
-        lines = [f"<b>Your Live Jobs (Page {page}/{total_pages})</b>\n"]
+        active_cnt = len([j for j in jobs if j.get("status") == "running"])
+        lines = [
+            f"<b>Your Live Jobs (Page {page}/{total_pages})</b>\n"
+            f"🟢 <b>Active Tasks:</b> <code>{active_cnt}</code>\n"
+        ]
         for j in chunk:
             st  = _status_emoji(j.get("status", "stopped"))
             fwd = j.get("forwarded", 0)

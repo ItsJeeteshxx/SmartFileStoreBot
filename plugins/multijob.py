@@ -1106,7 +1106,11 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
             [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
         ])
     else:
-        lines = ["<b>Your Multi Jobs</b>\n"]
+        active_cnt = len([j for j in jobs if j.get("status") in ("running", "queued")])
+        lines = [
+            "<b>Your Multi Jobs</b>\n"
+            f"🟢 <b>Active Tasks:</b> <code>{active_cnt}</code>\n"
+        ]
         for j in jobs:
             st   = _mj_emoji(j.get("status", "stopped"))
             fwd  = j.get("forwarded", 0)
