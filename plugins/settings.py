@@ -53,19 +53,31 @@ async def _sb_set_text_flow(bot, user_id, query, b_id: str, key: str,
     )
     try:
         resp = await bot.listen(chat_id=user_id, timeout=300)
-        txt = resp.text or resp.caption or ""
-        await resp.delete()
-        if txt.strip().lower() in ("/cancel", "cancel"):
+        raw_txt = resp.text or resp.caption or ""
+        if raw_txt.strip().lower() in ("/cancel", "cancel"):
+            try: await resp.delete()
+            except: pass
             return await ask.edit_text(
                 "<i>Process Cancelled Successfully!</i>",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=back_cb)]])
             )
-        if txt.strip() == "/reset":
+        if raw_txt.strip() == "/reset":
+            try: await resp.delete()
+            except: pass
             await db.set_share_bot_text(b_id, key, "")
             return await ask.edit_text(
                 f"»  {label} reset to default.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=back_cb)]])
             )
+        
+        txt = ""
+        if resp.text:
+            txt = resp.text.html
+        elif resp.caption:
+            txt = resp.caption.html
+
+        try: await resp.delete()
+        except: pass
         await db.set_share_bot_text(b_id, key, txt)
         await ask.edit_text(
             f"»  {label} saved!",
@@ -1121,7 +1133,10 @@ async def settings_query(bot, query):
               InlineKeyboardButton('Dᴇʟᴇᴛᴇ Msɢ',      callback_data=f"settings#sb_set_delete_{b_id}"),
               InlineKeyboardButton('Sᴜᴄᴄᴇss Msɢ',    callback_data=f"settings#sb_set_success_{b_id}"),
           ],
-          [InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}")],
+          [
+              InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}"),
+              InlineKeyboardButton('Pʀᴇᴍɪᴜᴍ Aᴅ Msɢ', callback_data=f"settings#sb_premium_ad_{b_id}"),
+          ],
           [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_set_caption_{b_id}")],
           [InlineKeyboardButton('Aᴜᴛᴏ-Dᴇʟᴇᴛᴇ', callback_data=f"settings#sb_set_autodel_{b_id}"),
            InlineKeyboardButton('Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',  callback_data=f"settings#sb_fsub_{b_id}")],
@@ -1260,6 +1275,198 @@ async def settings_query(bot, query):
       await db.set_share_bot_text(b_id, "donation_lang", val)
       query.data = f"settings#sb_donation_{b_id}"
       return await settings_query(bot, query)
+
+  elif type.startswith("sb_premium_ad_") and not any(type.startswith(f"sb_premium_ad_{p}_") for p in ['txt', 'media', 'rm', 'pre']):
+      b_id = type.split("sb_premium_ad_")[1]
+      bots = await db.get_share_bots()
+      bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
+      if not bt: return await query.answer("Bot not found!")
+      
+      custom_text = await db.get_share_bot_text(b_id, "premium_ad_text")
+      media = await db.get_bot_premium_ad_media(b_id)
+      
+      txt_status = "Custom" if custom_text else "Default"
+      media_status = f"Configured ({media.get('media_type', 'unknown')})" if media else "None (Text Only)"
+      
+      btns = [
+          [
+              InlineKeyboardButton("Edit Ad Text", callback_data=f"settings#sb_premium_ad_txt_{b_id}"),
+              InlineKeyboardButton("Edit Ad Media", callback_data=f"settings#sb_premium_ad_media_{b_id}")
+          ],
+          [
+              InlineKeyboardButton("Reset Ad Text", callback_data=f"settings#sb_premium_ad_rm_txt_{b_id}"),
+              InlineKeyboardButton("Reset Ad Media", callback_data=f"settings#sb_premium_ad_rm_media_{b_id}")
+          ],
+          [InlineKeyboardButton("👁 Preview Ad", callback_data=f"settings#sb_premium_ad_pre_{b_id}")],
+          [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      
+      await query.message.edit_text(
+          f"<b>👑 Pʀᴇᴍɪᴜᴍ Aᴅ Sᴇᴛᴛɪɴɢs — {bt['name']}</b>\n\n"
+          f"Configure the advertisement shown randomly post-delivery.\n\n"
+          f"<b>Ad Text:</b> {txt_status}\n"
+          f"<b>Ad Media:</b> {media_status}\n",
+          reply_markup=InlineKeyboardMarkup(btns)
+      )
+
+  elif type.startswith("sb_premium_ad_txt_"):
+      b_id = type.split("sb_premium_ad_txt_")[1]
+      await _sb_set_text_flow(bot, user_id, query, b_id, "premium_ad_text",
+          "Premium Ad Text",
+          "Send the custom advertisement text.\nAny HTML formatting/fonts/lines are accepted.",
+          f"settings#sb_premium_ad_{b_id}")
+
+  elif type.startswith("sb_premium_ad_rm_txt_"):
+      b_id = type.split("sb_premium_ad_rm_txt_")[1]
+      await db.set_share_bot_text(b_id, "premium_ad_text", "")
+      await query.answer("Ad text reset to default!")
+      query.data = f"settings#sb_premium_ad_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_premium_ad_rm_media_"):
+      b_id = type.split("sb_premium_ad_rm_media_")[1]
+      await db.set_bot_premium_ad_media(b_id, {})
+      await query.answer("Ad media removed!")
+      query.data = f"settings#sb_premium_ad_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_premium_ad_media_"):
+      b_id = type.split("sb_premium_ad_media_")[1]
+      await query.message.delete()
+      ask = await bot.send_message(
+          user_id,
+          "<b>🖼 Set Ad Media</b>\n\n"
+          "Send a Photo, GIF, or short Video (max 10s) to show with the premium ad.\n\n"
+          "Send /cancel to abort.",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_premium_ad_{b_id}")]])
+      )
+      try:
+          resp = await bot.listen(chat_id=user_id, timeout=180)
+          if getattr(resp, 'text', None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+              try: await resp.delete()
+              except: pass
+              return await ask.edit_text(
+                  "<i>Process Cancelled Successfully!</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_premium_ad_{b_id}")]])
+              )
+              
+          file_id = None
+          media_type = None
+          if resp.animation:
+              file_id = resp.animation.file_id
+              media_type = 'animation'
+          elif resp.video and resp.video.duration <= 10:
+              file_id = resp.video.file_id
+              media_type = 'video'
+          elif resp.photo:
+              ph = resp.photo
+              file_id = ph.file_id if hasattr(ph, 'file_id') else ph[-1].file_id
+              media_type = 'photo'
+          else:
+              try: await resp.delete()
+              except: pass
+              return await ask.edit_text(
+                  "❌ <b>Unsupported media type.</b>\nPlease send a Photo, GIF, or Video under 10 seconds.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_premium_ad_{b_id}")]])
+              )
+
+          from plugins.share_bot import share_clients
+          sb_client = share_clients.get(str(b_id))
+          final_file_id = file_id
+          sb_status = "⚠️ Share Bot offline"
+          sb_ok = False
+          
+          if sb_client:
+              try:
+                  dl_path = await bot.download_media(resp)
+                  if dl_path:
+                      staged = None
+                      try:
+                          if media_type == 'animation':
+                              staged = await sb_client.send_animation(user_id, animation=dl_path, caption="[Setting up Ad Media...]")
+                          elif media_type == 'video':
+                              staged = await sb_client.send_video(user_id, video=dl_path, caption="[Setting up Ad Media...]")
+                          else:
+                              staged = await sb_client.send_photo(user_id, photo=dl_path, caption="[Setting up Ad Media...]")
+                              
+                          if staged:
+                              if staged.animation: final_file_id = staged.animation.file_id
+                              elif staged.video: final_file_id = staged.video.file_id
+                              elif staged.photo:
+                                  ph2 = staged.photo
+                                  final_file_id = ph2.file_id if hasattr(ph2, 'file_id') else ph2[-1].file_id
+                              
+                              try: await staged.delete()
+                              except: pass
+                              
+                              sb_ok = True
+                              sb_status = "✅ via Share Bot"
+                      except Exception as _fe:
+                          sb_status = f"⚠️ Share Bot error ({type(_fe).__name__})"
+                      try: os.remove(dl_path)
+                      except: pass
+              except Exception as _outer_fe:
+                  sb_status = f"⚠️ Setup error ({type(_outer_fe).__name__})"
+
+          await db.set_bot_premium_ad_media(b_id, {'file_id': final_file_id, 'media_type': media_type})
+          try: await resp.delete()
+          except: pass
+          
+          type_icon = {"animation": "🎞", "video": "🎬", "photo": "🖼"}.get(media_type, "🖼")
+          await ask.edit_text(
+              f"<b>{type_icon} Ad Media Saved!</b>\n\n"
+              f"<b>Type:</b> {media_type}\n"
+              f"<b>Source:</b> {sb_status}\n\n"
+              f"<i>{'Share Bot will send it directly.' if sb_ok else 'Warning: file_id may not display if Share Bot cannot access it.'}</i>",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_premium_ad_{b_id}")]])
+          )
+      except asyncio.TimeoutError:
+          await ask.edit_text(
+              "⏱ <i>Timed out waiting for media. Please try again.</i>",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_premium_ad_{b_id}")]])
+          )
+
+  elif type.startswith("sb_premium_ad_pre_"):
+      b_id = type.split("sb_premium_ad_pre_")[1]
+      
+      custom_text = await db.get_share_bot_text(b_id, "premium_ad_text")
+      from plugins.share_bot import DEFAULT_PREMIUM_AD_TEXT
+      ad_text = custom_text if custom_text else DEFAULT_PREMIUM_AD_TEXT
+      
+      media = await db.get_bot_premium_ad_media(b_id)
+      
+      from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+      ad_buttons = InlineKeyboardMarkup([
+          [
+              InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="http://t.me/UseAryaBot/apminibyarya"),
+              InlineKeyboardButton("Updates", url="https://t.me/AryaPremiumTG")
+          ],
+          [InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Sᴇᴛᴛɪɴɢs", callback_data=f"settings#sb_premium_ad_{b_id}")]
+      ])
+      
+      await query.message.delete()
+      
+      try:
+          if media:
+              mtype = media.get('media_type')
+              fid = media.get('file_id')
+              if mtype == 'animation':
+                  await bot.send_animation(chat_id=user_id, animation=fid, caption=ad_text, reply_markup=ad_buttons)
+              elif mtype == 'video':
+                  await bot.send_video(chat_id=user_id, video=fid, caption=ad_text, reply_markup=ad_buttons)
+              else:
+                  await bot.send_photo(chat_id=user_id, photo=fid, caption=ad_text, reply_markup=ad_buttons)
+          else:
+              await bot.send_message(chat_id=user_id, text=ad_text, reply_markup=ad_buttons, disable_web_page_preview=True)
+      except Exception as e:
+          await bot.send_message(
+              chat_id=user_id,
+              text=f"<b>⚠️ Preview Failed:</b> <code>{e}</code>\n\n"
+                   f"The file_id belongs to the Delivery Bot and cannot be previewed by the main bot.\n\n"
+                   f"<b>Text content:</b>\n\n{ad_text}",
+              reply_markup=ad_buttons,
+              disable_web_page_preview=True
+          )
 
   elif type.startswith("sb_wa_"):
       b_id = type.split("sb_wa_")[1]
@@ -1989,7 +2196,11 @@ async def settings_query(bot, query):
           resp = await bot.listen(chat_id=user_id, timeout=180)
           if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
               return await ask.edit_text("<i>Process Cancelled Successfully!</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_about_{b_id}")]]))
-          txt = resp.text or ""
+          txt = ""
+          if resp.text:
+              txt = resp.text.html
+          elif resp.caption:
+              txt = resp.caption.html
           about = await db.get_share_bot_about(b_id)
           about['custom_text'] = txt
           await db.set_share_bot_about(b_id, about)

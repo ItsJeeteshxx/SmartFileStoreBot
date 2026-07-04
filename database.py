@@ -246,6 +246,19 @@ class Database:
     async def set_share_bot_about(self, bot_id: str, about: dict):
         await self._set_bot_cfg(bot_id, about=about)
 
+    async def get_bot_premium_ad_media(self, bot_id: str) -> dict:
+        return (await self._bot_cfg(bot_id)).get('premium_ad_media', {})
+
+    async def set_bot_premium_ad_media(self, bot_id: str, media: dict):
+        if not media:
+            await self.share_config.update_one(
+                {'_id': f'bot_{bot_id}'}, {'$unset': {'premium_ad_media': ""}}
+            )
+            if hasattr(self, '_bot_cfg_cache'):
+                self._bot_cfg_cache.pop(bot_id, None)
+        else:
+            await self._set_bot_cfg(bot_id, premium_ad_media=media)
+
     # Per-bot delivery counter
     async def increment_bot_delivery_count(self, bot_id: str, count: int = 1):
         """Increment total files delivered by this bot."""

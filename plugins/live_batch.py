@@ -885,6 +885,7 @@ async def _lb_callbacks(bot, update: CallbackQuery):
     elif action == "main":
         jobs = await _lb_get_all_jobs(uid)
         active = [j for j in jobs if j.get("status") not in ("failed", "stopped")]
+        active_cnt = len([j for j in jobs if j.get("status") in ("running", "queued")])
         kb = [[InlineKeyboardButton("➕ Cʀᴇᴀᴛᴇ ʟɪᴠᴇ ʙᴀᴛᴄʜ", callback_data="lb#setup")]]
         
         row = []
@@ -898,7 +899,8 @@ async def _lb_callbacks(bot, update: CallbackQuery):
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ ᴛᴏ Mᴀɪɴ", callback_data="sl#start")])
         
         txt = (
-            "<b><u>📡 Oɴɢᴏɪɴɢ Lɪᴠᴇ Bᴀᴛᴄʜ Sʏsᴛᴇᴍ</u></b>\n\n"
+            "<b><u>📡 Oɴɢᴏɪɴɢ Lɪᴠᴇ Bᴀᴛᴄʜ Sʏsᴛᴇᴍ</u></b>\n"
+            f"🟢 <b>Active Tasks:</b> <code>{active_cnt}</code>\n\n"
             "This daemon seamlessly monitors your Database channel. Once the threshold count is hit, "
             "it effortlessly aggregates the tracked media into structured interactive Batch Buttons and ships them out dynamically."
         )

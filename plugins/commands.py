@@ -22,21 +22,59 @@ async def _safe_edit(bot, query, **kwargs):
 
 async def _main_buttons(user_id: int):
     lang = await db.get_language(user_id)
+    
+    # Query active task counts
+    try:
+        live_active = await db.db.jobs.count_documents({"user_id": user_id, "status": "running"})
+    except Exception:
+        live_active = 0
+        
+    try:
+        mj_active = await db.db.multijobs.count_documents({"user_id": user_id, "status": {"$in": ["running", "queued"]}})
+    except Exception:
+        mj_active = 0
+        
+    try:
+        mg_active = await db.db.mergejobs.count_documents({"user_id": user_id, "status": {"$in": ["queued", "downloading", "merging", "uploading", "scanning"]}})
+    except Exception:
+        mg_active = 0
+        
+    try:
+        lb_active = await db.db.live_batch_jobs.count_documents({"user_id": user_id, "status": {"$in": ["running", "queued"]}})
+    except Exception:
+        lb_active = 0
+
+    btn_jobs_text = _tx(lang, 'btn_jobs')
+    if live_active > 0:
+        btn_jobs_text += f" ({live_active} Active)"
+
+    mj_text = 'Mᴜʟᴛɪ Jᴏʙ'
+    if mj_active > 0:
+        mj_text += f" ({mj_active} Active)"
+
+    mg_text = 'Mᴇʀɢᴇʀ Jᴏʙ'
+    if mg_active > 0:
+        mg_text += f" ({mg_active} Active)"
+
+    lb_text = 'Bᴀᴛᴄʜ Lɪɴᴋs'
+    if lb_active > 0:
+        lb_text += f" ({lb_active} Active)"
+
     return [
         [
             InlineKeyboardButton(_tx(lang, 'btn_settings'), callback_data='settings#main'),
-            InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
+            InlineKeyboardButton(btn_jobs_text,     callback_data='job#list'),
         ],
         [
-            InlineKeyboardButton('Mᴜʟᴛɪ Jᴏʙ',    callback_data='mj#list'),
-            InlineKeyboardButton('Mᴇʀɢᴇʀ Jᴏʙ',   callback_data='mg#main'),
+            InlineKeyboardButton(mj_text,    callback_data='mj#list'),
+            InlineKeyboardButton(mg_text,   callback_data='mg#main'),
         ],
         [
             InlineKeyboardButton('Cʟᴇᴀɴᴇʀ Jᴏʙ', callback_data='cl#main'),
             InlineKeyboardButton('Cʟᴇᴀɴ MSG',    callback_data='settings#cleanmsg'),
         ],
         [
-            InlineKeyboardButton('Bᴀᴛᴄʜ Lɪɴᴋs',  callback_data='sl#start'),
+            InlineKeyboardButton(lb_text,  callback_data='sl#start'),
             InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
         ],
         [
@@ -172,12 +210,29 @@ async def back(bot, query):
 def get_bot_version():
     try:
         import subprocess
-        r = subprocess.run(["git", "log", "-1", "--format=%h (%cs)"], capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
+        r_cnt = subprocess.run(["git", "rev-list", "--count", "HEAD"], capture_output=True, text=True)
+        r_hash = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
+        
+        commit_count = 0
+        if r_cnt.returncode == 0 and r_cnt.stdout.strip():
+            commit_count = int(r_cnt.stdout.strip())
+            
+        short_hash = ""
+        if r_hash.returncode == 0 and r_hash.stdout.strip():
+            short_hash = r_hash.stdout.strip()
+            
+        versions = ["Arya V1", "Arya VX1", "Arya V2X", "Arya Jup X"]
+        selected = versions[commit_count % len(versions)]
+        
+        if short_hash:
+            return f"{selected} ({short_hash})"
+        elif commit_count > 0:
+            return f"{selected} (r{commit_count})"
+        else:
+            return selected
     except Exception:
         pass
-    return "Unknown"
+    return "Arya V1"
 
 def _simplify_commit(msg: str) -> str:
     """Convert a raw git commit message into a simple, user-friendly sentence."""

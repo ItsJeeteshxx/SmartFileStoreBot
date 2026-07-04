@@ -162,8 +162,22 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
 # Arya Bot Font constants
 # 
 ARYA_VERSION = "V1.0"
-UPDATE_LINK   = "https://t.me/MeJeetX"
-SUPPORT_LINK  = "https://t.me/LightchatX"
+UPDATE_LINK   = "https://t.me/AryaBotUpdatesTG"
+SUPPORT_LINK  = "https://t.me/AryaHelpTG"
+
+DEFAULT_PREMIUM_AD_TEXT = (
+    "◎ सूचना: समय और मेहनत दोनों बचाइए!\n\n"
+    "▣ क्या आप ऑटो डिलीट होने वाली फ़ाइलों, बार-बार अलग-अलग चैनल जॉइन करने और कई तरह की पाबंदियों से परेशान हैं?\n\n"
+    "◑ 𝗔𝗿𝘆𝗮 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝗼𝘁 / 𝗠𝗶𝗻𝗶 𝗔𝗽𝗽 पर 220+ Pocket FM, Kuku FM और Pratilipi की स्टोरीज़ हिन्दी व English में उपलब्ध हैं।\n\n"
+    "⧉ किफायती कीमत • सुरक्षित भुगतान • कई भुगतान विकल्प • नई स्टोरीज़ नियमित रूप से जोड़ी जाती हैं।\n\n"
+    "◎ नीचे दिए गए \"𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲\" बटन पर क्लिक करके 𝗔𝗿𝘆𝗮 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗠𝗶𝗻𝗶 𝗔𝗽𝗽 खोलें, अपनी पसंदीदा स्टोरीज़ खरीदें और आसानी से अपनी फ़ाइलें प्राप्त करें।\n\n"
+    "━━━━━━━━━━━━━━━━━━\n\n"
+    "◎ 𝗔𝗟𝗘𝗥𝗧: 𝗦𝗧𝗢𝗣 𝗪𝗔𝗦𝗧𝗜𝗡𝗚 𝗬𝗢𝗨𝗥 𝗧𝗜𝗠𝗘!\n\n"
+    "▣ Tired of Auto Delete Files, joining multiple channels, and unnecessary restrictions?\n\n"
+    "◑ 𝗔𝗿𝘆𝗮 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝗼𝘁 / 𝗠𝗶𝗻𝗶 𝗔𝗽𝗽 gives you access to 220+ Pocket FM, Kuku FM, and Pratilipi stories in Hindi & English.\n\n"
+    "⧉ Affordable Pricing • Secure Payments • Multiple Payment Methods • New Stories Added Regularly.\n\n"
+    "◎ Click the \"𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲\" button below to open the 𝗔𝗿𝘆𝗮 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗠𝗶𝗻𝗶 𝗔𝗽𝗽, purchase your favourite stories, and get your files easily."
+)
 
 # 
 # Helpers
@@ -853,12 +867,38 @@ async def _process_start(client, message):
     
     donate_btn = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Support via UPI", callback_data="sbd#donate"),
-            InlineKeyboardButton("Razorpay", callback_data="sbd#razorpay")
+            InlineKeyboardButton("Support via UPI", callback_data="sbd#donate")
         ]
     ])
     try:
-        await message.reply_text(thank_txt, reply_markup=donate_btn)
+        import random
+        show_ad = random.choice([True, False])
+        
+        if show_ad:
+            custom_ad_text = await db.get_share_bot_text(bot_id, "premium_ad_text")
+            ad_text = custom_ad_text if custom_ad_text else DEFAULT_PREMIUM_AD_TEXT
+            ad_media = await db.get_bot_premium_ad_media(bot_id) if bot_id else None
+            
+            ad_buttons = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="http://t.me/UseAryaBot/apminibyarya"),
+                    InlineKeyboardButton("Updates", url="https://t.me/AryaPremiumTG")
+                ]
+            ])
+            
+            if ad_media:
+                mtype = ad_media.get('media_type')
+                fid = ad_media.get('file_id')
+                if mtype == 'animation':
+                    await message.reply_animation(animation=fid, caption=ad_text, reply_markup=ad_buttons)
+                elif mtype == 'video':
+                    await message.reply_video(video=fid, caption=ad_text, reply_markup=ad_buttons)
+                else:
+                    await message.reply_photo(photo=fid, caption=ad_text, reply_markup=ad_buttons)
+            else:
+                await message.reply_text(ad_text, reply_markup=ad_buttons, disable_web_page_preview=True)
+        else:
+            await message.reply_text(thank_txt, reply_markup=donate_btn)
     except Exception as _te:
         logger.warning(f"[ThankYou] send failed: {_te}")
     except Exception as e:
@@ -970,7 +1010,7 @@ async def _send_help(client, message, bot_id: str = None):
     """Send the Help menu for /start help."""
     txt = _get_help_text(message.from_user)
     buttons = [
-        [InlineKeyboardButton("»  " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
+        [InlineKeyboardButton("»  " + _sc("Support"), url=SUPPORT_LINK)],
         [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
         [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
     ]
@@ -992,7 +1032,7 @@ async def _send_about(client, query_or_msg, bot_id: str = None, edit: bool = Tru
     support_chan = about.get('support_chan', 'Light Chat')
     support_link = about.get('support_link', SUPPORT_LINK)
     from plugins.commands import get_bot_version
-    version      = about.get('version', get_bot_version())
+    version      = get_bot_version()
     about_text   = about.get('custom_text', None)
     
     msg = query_or_msg if hasattr(query_or_msg, 'photo') else getattr(query_or_msg, 'message', query_or_msg)
@@ -1048,7 +1088,7 @@ async def _process_delivery_button(client, query):
         await query.answer()
         txt = _get_help_text(query.from_user)
         buttons = [
-            [InlineKeyboardButton("»  " + _sc("Support"), url="https://t.me/+EAc-6v1bmZ1iMDBl")],
+            [InlineKeyboardButton("»  " + _sc("Support"), url=SUPPORT_LINK)],
             [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
             [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
         ]
@@ -1085,9 +1125,6 @@ async def _process_delivery_button(client, query):
             [
                 InlineKeyboardButton("₹500", callback_data="sbd#pay_upi#500"),
                 InlineKeyboardButton("⧉ Custom Amount", callback_data="sbd#pay_upi#custom")
-            ],
-            [
-                InlineKeyboardButton("◈ Pay via Razorpay", callback_data="sbd#razorpay")
             ]
         ]
         try:
@@ -1119,13 +1156,9 @@ async def _process_delivery_button(client, query):
         encoded_uri = urllib.parse.quote(upi_uri)
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_uri}"
         
-        buttons = [
-            [InlineKeyboardButton("◈ Pay via Razorpay Instead", callback_data="sbd#razorpay")]
-        ]
-        
         try:
             await msg.delete()
-            await client.send_photo(query.from_user.id, photo=qr_url, caption=caption, reply_markup=InlineKeyboardMarkup(buttons))
+            await client.send_photo(query.from_user.id, photo=qr_url, caption=caption)
         except Exception as e:
             logger.error(f"Support QR Error: {e}")
 
@@ -1500,7 +1533,7 @@ def register_share_handlers(app: Client):
         
     async def _cmd_support(client, message):
         txt = "<b>»  " + _sc("Support") + "</b>\n\n<i>" + _sc("If you need help or have any questions, join our support group.") + "</i>"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Support Group"), url="https://t.me/+EAc-6v1bmZ1iMDBl")]])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Support Group"), url=SUPPORT_LINK)]])
         await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
 
     async def _cmd_updates(client, message):
