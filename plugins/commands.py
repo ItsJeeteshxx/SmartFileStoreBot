@@ -223,13 +223,7 @@ def get_bot_version():
             
         versions = ["Arya V1", "Arya VX1", "Arya V2X", "Arya Jup X"]
         selected = versions[commit_count % len(versions)]
-        
-        if short_hash:
-            return f"{selected} ({short_hash})"
-        elif commit_count > 0:
-            return f"{selected} (r{commit_count})"
-        else:
-            return selected
+        return selected
     except Exception:
         pass
     return "Arya V1"

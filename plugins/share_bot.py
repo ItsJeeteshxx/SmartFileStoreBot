@@ -1018,7 +1018,7 @@ async def _send_about(client, query_or_msg, bot_id: str = None, edit: bool = Tru
 
     owner_name   = about.get('owner_name', 'JeetX')
     owner_link   = about.get('owner_link', 'https://t.me/MeJeetX')
-    update_chan  = about.get('update_chan', 'JeetX')
+    update_chan  = about.get('update_chan', 'Arya Bot | Updates')
     update_link  = about.get('update_link', UPDATE_LINK)
     support_chan = about.get('support_chan', 'Light Chat')
     support_link = about.get('support_link', SUPPORT_LINK)
