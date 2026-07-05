@@ -377,15 +377,51 @@ class Database:
         try:
             await self.share_users.update_one(
                 {'bot_id': str(bot_id), 'user_id': int(user_id)},
-                {'$setOnInsert': {'first_seen': time.time()}},
+                {
+                    '$setOnInsert': {'first_seen': time.time()},
+                    '$unset': {'blocked': '', 'deactivated': ''}
+                },
                 upsert=True
             )
         except Exception:
             pass
 
     async def get_share_bot_users(self, bot_id: str) -> list:
-        cursor = self.share_users.find({'bot_id': str(bot_id)})
+        cursor = self.share_users.find({
+            'bot_id': str(bot_id),
+            'blocked': {'$ne': True},
+            'deactivated': {'$ne': True}
+        })
         return [doc['user_id'] async for doc in cursor]
+
+    async def get_share_bot_users_stats(self, bot_id: str) -> dict:
+        total = await self.share_users.count_documents({'bot_id': str(bot_id)})
+        blocked = await self.share_users.count_documents({'bot_id': str(bot_id), 'blocked': True})
+        deactivated = await self.share_users.count_documents({'bot_id': str(bot_id), 'deactivated': True})
+        active = total - blocked - deactivated
+        return {
+            'total': total,
+            'blocked': blocked,
+            'deactivated': deactivated,
+            'active': active
+        }
+
+    async def set_share_bot_user_status(self, bot_id: str, user_id: int, blocked: bool = False, deactivated: bool = False):
+        if not bot_id: return
+        update_doc = {}
+        if blocked:
+            update_doc['blocked'] = True
+        if deactivated:
+            update_doc['deactivated'] = True
+        if update_doc:
+            try:
+                await self.share_users.update_one(
+                    {'bot_id': str(bot_id), 'user_id': int(user_id)},
+                    {'$set': update_doc},
+                    upsert=True
+                )
+            except Exception:
+                pass
 
     # save_share_link — access_hash allows Share Bot to rebuild peer cache at delivery time
     async def save_share_link(self, uuid_str: str, message_ids: list, source_chat,
@@ -567,10 +603,31 @@ class Database:
         return default
 
     async def get_all_users(self):
-        return self.col.find({})
+        return self.col.find({
+            'blocked': {'$ne': True},
+            'deactivated': {'$ne': True}
+        })
     
     async def delete_user(self, user_id):
         await self.col.delete_many({'id': int(user_id)})
+        self._invalidate_user_cache(user_id)
+
+    async def reactivate_user(self, user_id):
+        await self.col.update_one(
+            {'id': int(user_id)},
+            {'$unset': {'blocked': '', 'deactivated': ''}}
+        )
+        self._invalidate_user_cache(user_id)
+
+    async def set_user_status(self, user_id: int, blocked: bool = False, deactivated: bool = False):
+        update_doc = {}
+        if blocked:
+            update_doc['blocked'] = True
+        if deactivated:
+            update_doc['deactivated'] = True
+        if update_doc:
+            await self.col.update_one({'id': int(user_id)}, {'$set': update_doc})
+            self._invalidate_user_cache(user_id)
  
     async def get_banned(self):
         users = self.col.find({'ban_status.is_banned': True})

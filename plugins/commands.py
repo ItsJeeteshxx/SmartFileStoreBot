@@ -81,6 +81,8 @@ async def start(client, message):
     user = message.from_user
     if not await db.is_user_exist(user.id):
         await db.add_user(user.id, user.first_name)
+    else:
+        await db.reactivate_user(user.id)
 
     # Ban check is now handled globally in plugins/banned.py
     configs = await db.get_configs(user.id)

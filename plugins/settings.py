@@ -1921,17 +1921,19 @@ async def settings_query(bot, query):
   #  Stats & Broadcast 
   elif type.startswith("sb_stats_"):
       b_id = type.split("sb_stats_")[1]
-      users = await db.get_share_bot_users(b_id)
-      cnt = len(users)
+      stats = await db.get_share_bot_users_stats(b_id)
       kb = [
-          [InlineKeyboardButton("📤 Export Users Data", callback_data=f"settings#sb_export_{b_id}")],
+          [InlineKeyboardButton("📤 Export Active Users", callback_data=f"settings#sb_export_{b_id}")],
           [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]
       ]
       await query.message.edit_text(
           f"<b>»  SHARE BOT STATS</b>\n\n"
-          f"<b>Total Users:</b> <code>{cnt}</code>\n\n"
-          "<i>These are users who have opened or interacted with this specific bot.</i>\n"
-          "<i>You can export their data into a JSON file for analysis.</i>",
+          f"🟢 <b>Active Users:</b> <code>{stats['active']}</code>\n"
+          f"🚫 <b>Blocked Users:</b> <code>{stats['blocked']}</code>\n"
+          f"❌ <b>Deleted Accounts:</b> <code>{stats['deactivated']}</code>\n"
+          f"📊 <b>Total Registered:</b> <code>{stats['total']}</code>\n\n"
+          "<i>Active users exclude those who blocked the bot or deleted their accounts.</i>\n"
+          "<i>You can export active users data into a JSON file for analysis.</i>",
           reply_markup=InlineKeyboardMarkup(kb)
       )
 

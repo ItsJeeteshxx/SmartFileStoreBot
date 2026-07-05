@@ -1469,9 +1469,14 @@ async def _process_share_broadcast(client, message):
             success += 1
             await asyncio.sleep(0.5)
         else:
-            if sh == "Blocked": blocked += 1
-            elif sh == "Deleted": deleted += 1
-            else: failed += 1
+            if sh == "Blocked":
+                blocked += 1
+                await db.set_share_bot_user_status(bot_id, int(u_id), blocked=True)
+            elif sh == "Deleted":
+                deleted += 1
+                await db.set_share_bot_user_status(bot_id, int(u_id), deactivated=True)
+            else:
+                failed += 1
             
         done += 1
         if done % 20 == 0:

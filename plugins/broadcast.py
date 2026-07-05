@@ -45,10 +45,11 @@ async def broadcast_messages(user_id, message, log):
         await asyncio.sleep(e.x)
         return await broadcast_messages(user_id, message, log)
     except InputUserDeactivated:
-        await db.delete_user(int(user_id))
-        log.info(f"{user_id}-Removed from Database, since deleted account.")
+        await db.set_user_status(int(user_id), deactivated=True)
+        log.info(f"{user_id}-Marked as deactivated in Database.")
         return False, "Deleted"
     except UserIsBlocked:
+        await db.set_user_status(int(user_id), blocked=True)
         log.info(f"{user_id} -Blocked the bot.")
         return False, "Blocked"
     except Exception as e:
