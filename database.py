@@ -223,6 +223,13 @@ class Database:
     async def set_bot_fsub_channels(self, bot_id: str, channels: list):
         await self._set_bot_cfg(bot_id, fsub_channels=channels)
 
+    # Per-bot Custom Buttons
+    async def get_share_bot_buttons(self, bot_id: str) -> list:
+        return (await self._bot_cfg(bot_id)).get('custom_buttons', [])
+
+    async def set_share_bot_buttons(self, bot_id: str, buttons: list):
+        await self._set_bot_cfg(bot_id, custom_buttons=buttons)
+
     # FSub approval tracking
     async def save_user_fsub_approved(self, bot_id: str, user_id: int):
         """Mark user as FSub-approved for this bot"""

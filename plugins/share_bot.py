@@ -197,6 +197,15 @@ def format_msg(text: str, user) -> str:
     except Exception:
         return text
 
+def _get_readable_file_size(size_in_bytes: int) -> str:
+    if not size_in_bytes:
+        return "0 B"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_in_bytes < 1024.0:
+            return f"{size_in_bytes:.2f} {unit}"
+        size_in_bytes /= 1024.0
+    return f"{size_in_bytes:.2f} PB"
+
 def _sc(text: str) -> str:
     return text.translate(str.maketrans(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
@@ -702,7 +711,15 @@ async def _process_start(client, message):
     fail_count = 0
     cap_tpl    = (await db.get_share_bot_text(bot_id, "custom_caption") if bot_id else "") or \
                  await db.get_share_text("custom_caption", "")
-    formatted_cap = format_msg(cap_tpl, message.from_user) if cap_tpl else None
+                 
+    custom_btns_data = await db.get_share_bot_buttons(bot_id) if bot_id else []
+    custom_markup = None
+    if custom_btns_data:
+        row = []
+        for btn in custom_btns_data:
+            row.append(InlineKeyboardButton(text=btn['text'], url=btn['url']))
+        if row:
+            custom_markup = InlineKeyboardMarkup([row])
 
     from pyrogram.errors import FloodWait
     for msg_id in msg_ids:
@@ -712,14 +729,51 @@ async def _process_start(client, message):
         retry_count = 0
         while retry_count < 3:
             try:
+                # Resolve placeholder values for this specific message
+                file_name = "Unknown"
+                file_size_str = "Unknown"
+                orig_caption = ""
+
+                try:
+                    src_msg = await client.get_messages(chat_id=source_chat, message_ids=msg_id)
+                    if src_msg:
+                        orig_caption = src_msg.caption or ""
+                        media = (src_msg.document or src_msg.audio or src_msg.video or
+                                 src_msg.voice or src_msg.video_note or src_msg.photo)
+                        if media:
+                            if hasattr(media, "file_name") and media.file_name:
+                                file_name = media.file_name
+                            elif hasattr(media, "title") and media.title:
+                                file_name = media.title
+                            else:
+                                file_name = "Media_File"
+
+                            if hasattr(media, "file_size") and media.file_size:
+                                file_size_str = _get_readable_file_size(media.file_size)
+                except Exception as _ge:
+                    logger.warning(f"Failed to get source message metadata: {_ge}")
+
+                if cap_tpl:
+                    # First format user variables
+                    rendered_cap = format_msg(cap_tpl, message.from_user)
+                    # Next replace custom fillings placeholders
+                    rendered_cap = rendered_cap.replace("{file_name}", file_name) \
+                                               .replace("{file_size}", file_size_str) \
+                                               .replace("{caption}", orig_caption)
+                else:
+                    rendered_cap = None
+
                 kwargs = {
                     "chat_id": user_id,
                     "from_chat_id": source_chat,
                     "message_id": msg_id,
                     "protect_content": protect_flag,
                 }
-                if formatted_cap:
-                    kwargs["caption"] = formatted_cap
+                if rendered_cap is not None:
+                    kwargs["caption"] = rendered_cap
+                if custom_markup:
+                    kwargs["reply_markup"] = custom_markup
+                    
                 sent = await client.copy_message(**kwargs)
                 if sent:
                     sent_ids.append(sent.id)

@@ -1137,7 +1137,8 @@ async def settings_query(bot, query):
               InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}"),
               InlineKeyboardButton('Pʀᴇᴍɪᴜᴍ Aᴅ Msɢ', callback_data=f"settings#sb_premium_ad_{b_id}"),
           ],
-          [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_set_caption_{b_id}")],
+          [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_caption_menu_{b_id}")],
+          [InlineKeyboardButton('🔗 Custom Buttons',    callback_data=f"settings#sb_buttons_menu_{b_id}")],
           [InlineKeyboardButton('Aᴜᴛᴏ-Dᴇʟᴇᴛᴇ', callback_data=f"settings#sb_set_autodel_{b_id}"),
            InlineKeyboardButton('Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',  callback_data=f"settings#sb_fsub_{b_id}")],
           [InlineKeyboardButton('🎞 Fᴇᴛᴄʜɪɴɢ Mᴇᴅɪᴀ', callback_data=f"settings#sb_fetch_media_{b_id}")],
@@ -1896,12 +1897,160 @@ async def settings_query(bot, query):
           "Send the success/delivery confirmation message.\nAny font is accepted.",
           f"settings#sb_view_{b_id}")
 
-  elif type.startswith("sb_set_caption_"):
-      b_id = type.split("sb_set_caption_")[1]
+  elif type.startswith("sb_caption_menu_"):
+      b_id = type.split("sb_caption_menu_")[1]
+      cur_val = await db.get_share_bot_text(b_id, "custom_caption", "")
+      txt = (
+          "<b><u>📝 Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ</u></b>\n\n"
+          "You can add a custom caption template to your media messages instead of their original caption.\n\n"
+          "<b>Placeholders available:</b>\n"
+          "• <code>{file_name}</code> : File Name\n"
+          "• <code>{file_size}</code> : File Size\n"
+          "• <code>{caption}</code> : Original Caption\n\n"
+          f"<b>Current Caption:</b>\n"
+          f"<code>{cur_val if cur_val else 'None (Using Original Caption)'}</code>"
+      )
+      kb = [
+          [
+              InlineKeyboardButton("✍️ Edit", callback_data=f"settings#sb_caption_edit_{b_id}"),
+              InlineKeyboardButton("👁 See", callback_data=f"settings#sb_caption_see_{b_id}")
+          ],
+          [InlineKeyboardButton("🗑 Delete", callback_data=f"settings#sb_caption_del_{b_id}")],
+          [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+
+  elif type.startswith("sb_caption_edit_"):
+      b_id = type.split("sb_caption_edit_")[1]
       await _sb_set_text_flow(bot, user_id, query, b_id, "custom_caption",
           "Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ",
-          "Send the caption to add to delivered media. Any font is accepted.",
-          f"settings#sb_view_{b_id}")
+          "Send the caption template to add to delivered media. You can use placeholders:\n"
+          "• {file_name} : File Name\n"
+          "• {file_size} : File size\n"
+          "• {caption} : Original Caption",
+          f"settings#sb_caption_menu_{b_id}")
+
+  elif type.startswith("sb_caption_see_"):
+      b_id = type.split("sb_caption_see_")[1]
+      cur_val = await db.get_share_bot_text(b_id, "custom_caption", "")
+      if not cur_val:
+          await query.answer("No custom caption set! Using original caption.", show_alert=True)
+          return
+      preview = cur_val.replace("{file_name}", "Sample_Audio_File.mp3").replace("{file_size}", "45.2 MB").replace("{caption}", "Original file caption text here...")
+      await query.message.edit_text(
+          f"<b>👁 Custom Caption Preview:</b>\n\n"
+          f"{preview}\n\n"
+          f"<i>This is how it will look when delivered to users.</i>",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_caption_menu_{b_id}")]])
+      )
+
+  elif type.startswith("sb_caption_del_"):
+      b_id = type.split("sb_caption_del_")[1]
+      await db.set_share_bot_text(b_id, "custom_caption", "")
+      await query.answer("Custom caption deleted successfully!", show_alert=True)
+      query.data = f"settings#sb_caption_menu_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_buttons_menu_"):
+      b_id = type.split("sb_buttons_menu_")[1]
+      btns = await db.get_share_bot_buttons(b_id)
+      txt = (
+          "<b><u>🔗 Cᴜsᴛᴏᴍ Bᴜᴛᴛᴏɴs</u></b>\n\n"
+          "You can add custom inline buttons to your delivered messages.\n"
+          "• <b>Limit:</b> Maximum 2 buttons (in a single row).\n\n"
+          "<b>Current Buttons:</b>\n"
+      )
+      if btns:
+          for idx, btn in enumerate(btns):
+              txt += f"  {idx+1}. <b>{btn['text']}</b> → <code>{btn['url']}</code>\n"
+      else:
+          txt += "<i>No custom buttons configured.</i>"
+          
+      kb = []
+      if len(btns) < 2:
+          kb.append([InlineKeyboardButton("➕ Add Button", callback_data=f"settings#sb_btn_add_{b_id}")])
+      if btns:
+          row = []
+          for idx in range(len(btns)):
+              row.append(InlineKeyboardButton(f"🗑 Delete Button {idx+1}", callback_data=f"settings#sb_btn_del_{b_id}_{idx}"))
+          kb.append(row)
+      kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")])
+      await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+
+  elif type.startswith("sb_btn_add_"):
+      b_id = type.split("sb_btn_add_")[1]
+      btns = await db.get_share_bot_buttons(b_id)
+      if len(btns) >= 2:
+          return await query.answer("You can only add a maximum of 2 custom buttons!", show_alert=True)
+          
+      await query.message.delete()
+      ask_text = await bot.send_message(
+          user_id,
+          "<b>➕ Add Custom Button (Step 1/2)</b>\n\n"
+          "Please send the <b>text</b> for the button (e.g. <i>Join Channel</i>).\n\n"
+          "Send /cancel to abort."
+      )
+      try:
+          resp_text = await bot.listen(chat_id=user_id, timeout=120)
+          btn_text = (resp_text.text or "").strip()
+          if btn_text.lower() in ("cancel", "/cancel"):
+              try: await resp_text.delete()
+              except: pass
+              return await bot.send_message(
+                  user_id, "<i>Process Cancelled!</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_buttons_menu_{b_id}")]])
+              )
+          try: await resp_text.delete()
+          except: pass
+          
+          await ask_text.edit_text(
+              f"<b>➕ Add Custom Button (Step 2/2)</b>\n\n"
+              f"<b>Button Text:</b> {btn_text}\n\n"
+              f"Please send the <b>URL/link</b> for this button (e.g. <code>https://t.me/example</code>).\n\n"
+              f"Send /cancel to abort."
+          )
+          
+          resp_url = await bot.listen(chat_id=user_id, timeout=120)
+          btn_url = (resp_url.text or "").strip()
+          if btn_url.lower() in ("cancel", "/cancel"):
+              try: await resp_url.delete()
+              except: pass
+              return await bot.send_message(
+                  user_id, "<i>Process Cancelled!</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_buttons_menu_{b_id}")]])
+              )
+              
+          try: await resp_url.delete()
+          except: pass
+          
+          if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/")):
+              return await bot.send_message(
+                  user_id, "❌ <b>Invalid URL!</b> Link must start with http://, https://, or t.me/.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_buttons_menu_{b_id}")]])
+              )
+              
+          btns.append({"text": btn_text, "url": btn_url})
+          await db.set_share_bot_buttons(b_id, btns)
+          await bot.send_message(
+              user_id, "✅ <b>Custom button added successfully!</b>",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_buttons_menu_{b_id}")]])
+          )
+      except asyncio.TimeoutError:
+          await bot.send_message(
+              user_id, "⏱ <i>Timed out waiting for input. Please try again.</i>",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_buttons_menu_{b_id}")]])
+          )
+
+  elif type.startswith("sb_btn_del_"):
+      b_id, _, idx_str = type.split("sb_btn_del_")[1].partition("_")
+      idx = int(idx_str)
+      btns = await db.get_share_bot_buttons(b_id)
+      if 0 <= idx < len(btns):
+          btns.pop(idx)
+          await db.set_share_bot_buttons(b_id, btns)
+          await query.answer("Button deleted!", show_alert=True)
+      query.data = f"settings#sb_buttons_menu_{b_id}"
+      return await settings_query(bot, query)
 
   elif type.startswith("sb_set_autodel_"):
       b_id = type.split("sb_set_autodel_")[1]
