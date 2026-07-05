@@ -19,7 +19,7 @@ import asyncio
 import logging
 from database import db
 from bot import BOT_INSTANCE
-from .test import CLIENT, start_clone_bot, release_client
+from .test import CLIENT, start_clone_bot, release_client, force_evict_client
 from pyrogram import Client, filters, ContinuePropagation, ContinuePropagation
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
@@ -1836,7 +1836,7 @@ async def _run_job(job_id: str, user_id: int):
             if client:
                 client_name = getattr(client, 'name', None)
                 if client_name:
-                    await release_client(client_name)
+                    await force_evict_client(client_name)
                     client = None   # prevent double-stop in finally
             # Don't mark job as error — just pause it so user can restart manually
             await _update_job(job_id, status="paused",

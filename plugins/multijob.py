@@ -22,7 +22,7 @@ import time
 import asyncio
 import logging
 from database import db
-from .test import CLIENT, start_clone_bot
+from .test import CLIENT, start_clone_bot, force_evict_client
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
@@ -1003,6 +1003,11 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             asyncio.create_task(_mj_auto_resume())
         elif "AUTH_KEY_DUPLICATED" in err_str:
             logger.warning(f"[MultiJob {job_id}] AUTH_KEY_DUPLICATED — pausing")
+            if client:
+                client_name = getattr(client, 'name', None)
+                if client_name:
+                    await force_evict_client(client_name)
+                    client = None
             await _mj_update(job_id, status="paused",
                              error="Session conflict (AUTH_KEY_DUPLICATED). Restart the job.")
         else:

@@ -63,6 +63,20 @@ async def _schedule_delete(bot, chat_id, message_id, delay=43200): # 12 hours
     except Exception:
         pass
 
+async def force_evict_client(session_name: str):
+    """Forcefully evicts a client from the cache (e.g. on session conflicts/failures)
+    and stops it, completely bypassing the normal refcount checks."""
+    lock = _get_cache_lock()
+    async with lock:
+        _client_refcount.pop(session_name, None)
+        client = _client_cache.pop(session_name, None)
+        if client:
+            try:
+                await client.stop()
+            except Exception:
+                pass
+            logger.info(f"[ClientCache] Force-evicted & Stopped: {session_name}")
+
 async def start_clone_bot(FwdBot, data=None, force_restart=False):
    """Start a Pyrogram client with deduplication — if a running client for
    this session already exists in the cache, return it immediately without
@@ -82,6 +96,20 @@ async def start_clone_bot(FwdBot, data=None, force_restart=False):
                except Exception: pass
                
        existing = _client_cache.get(cache_key)
+       if existing is not None:
+           # CRITICAL: Verify if session string changed (i.e. user re-added/updated session in DB)
+           existing_session = getattr(existing, "session_string", None)
+           new_session = getattr(FwdBot, "session_string", None)
+           if existing_session and new_session and existing_session != new_session:
+               logger.warning(f"[ClientCache] Session string changed for {cache_key}! Evicting old client.")
+               try:
+                   await existing.stop()
+               except Exception:
+                   pass
+               _client_cache.pop(cache_key, None)
+               _client_refcount.pop(cache_key, None)
+               existing = None
+
        if existing is not None:
            # Verify the cached client is still alive using a cheap MTProto Ping
            try:
