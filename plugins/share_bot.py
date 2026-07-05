@@ -369,7 +369,7 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                 pass  # member stays None → handled below in the UserNotParticipant block
             except (PeerIdInvalid, ChannelInvalid):
                 try:
-                    resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id)
+                    resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id, bot=client)
                     if resolved:
                         try:
                             member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)

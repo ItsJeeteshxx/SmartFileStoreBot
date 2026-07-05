@@ -305,15 +305,40 @@ async def safe_resolve_peer(client, chat_id, bot=None):
         if 'PEER_ID_INVALID' in err_str or 'CHANNEL_INVALID' in err_str or 'PEER_ID_NOT_HANDLED' in err_str or 'USERNAME_NOT_OCCUPIED' in err_str:
             if bot and getattr(client, 'name', '') != getattr(bot, 'name', ''):
                 try:
-                    from pyrogram.raw.types import InputPeerChannel as _IPC
+                    from pyrogram.raw.types import InputPeerChannel as _IPC, InputPeerChat as _IPChat, InputPeerUser as _IPU
                     _tpeer = await bot.resolve_peer(chat_id)
+                    peer_id = None
+                    peer_type = None
+                    access_hash = 0
                     if isinstance(_tpeer, _IPC):
-                        await client.storage.update_peers([(_tpeer.channel_id, _tpeer.access_hash, 'channel', None, None)])
-                        try: await client.get_chat(chat_id)
-                        except: pass
-                        return True
+                        peer_id = _tpeer.channel_id
+                        access_hash = _tpeer.access_hash
+                        peer_type = 'channel'
+                    elif isinstance(_tpeer, _IPChat):
+                        peer_id = _tpeer.chat_id
+                        peer_type = 'chat'
+                    elif isinstance(_tpeer, _IPU):
+                        peer_id = _tpeer.user_id
+                        access_hash = _tpeer.access_hash
+                        peer_type = 'user'
+                    
+                    if peer_id and peer_type:
+                        await client.storage.update_peers([(peer_id, access_hash, peer_type, None, None)])
+                        try:
+                            await client.get_chat(chat_id)
+                            return True
+                        except:
+                            pass
                 except Exception:
                     pass
+            try:
+                # Try direct resolve peer
+                await client.resolve_peer(chat_id)
+                try: await client.get_chat(chat_id)
+                except: await client.get_users(chat_id)
+                return True
+            except Exception:
+                pass
             try:
                 me = await client.get_me()
                 if not getattr(me, 'is_bot', False):
