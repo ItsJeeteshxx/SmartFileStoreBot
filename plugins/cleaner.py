@@ -41,9 +41,9 @@ _cl_bot_ref: dict[str, object] = {}
 _cl_cancel_users: set = set()
 MAX_CONCURRENT = 100  # Allow up to 100 jobs to run visibly without artificial blocks
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-_cl_dl_sem = asyncio.Semaphore(6)
-_cl_ff_sem = asyncio.Semaphore(4)
-_cl_ul_sem = asyncio.Semaphore(3)
+_cl_dl_sem = asyncio.Semaphore(3)
+_cl_ff_sem = asyncio.Semaphore(1)  # Bulletproof on 2-core VPS: runs 1 FFmpeg process at a time to prevent CPU spikes & OOM crashes
+_cl_ul_sem = asyncio.Semaphore(2)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
@@ -508,20 +508,24 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     _prem    = [k for k in ("arya_premium_hi", "arya_premium_en") if k in _ad_local]
                     _chan    = [k for k in ("channel_hi", "channel_en") if k in _ad_local]
                     _bot_ads = [k for k in ("arya_bot_hi", "arya_bot_en") if k in _ad_local]
+                    _mini_app = [k for k in ("mini_app_hi", "mini_app_en") if k in _ad_local]
 
                     _order = []
-                    if len(_prem)    >= 1: _order.append(_prem[0])
-                    if len(_chan)    >= 1: _order.append(_chan[0])
-                    if len(_bot_ads) >= 1: _order.append(_bot_ads[0])
-                    if len(_prem)    >= 2: _order.append(_prem[1])
-                    if len(_chan)    >= 2: _order.append(_chan[1])
-                    if len(_bot_ads) >= 2: _order.append(_bot_ads[1])
-                    if len(_prem)    >= 1: _order.append(_random.choice(_prem))
-                    if len(_chan)    >= 1: _order.append(_random.choice(_chan))
+                    if len(_prem)     >= 1: _order.append(_prem[0])
+                    if len(_chan)     >= 1: _order.append(_chan[0])
+                    if len(_bot_ads)  >= 1: _order.append(_bot_ads[0])
+                    if len(_mini_app) >= 1: _order.append(_mini_app[0])
+                    if len(_prem)     >= 2: _order.append(_prem[1])
+                    if len(_chan)     >= 2: _order.append(_chan[1])
+                    if len(_bot_ads)  >= 2: _order.append(_bot_ads[1])
+                    if len(_mini_app) >= 2: _order.append(_mini_app[1])
+                    if len(_prem)     >= 1: _order.append(_random.choice(_prem))
+                    if len(_chan)     >= 1: _order.append(_random.choice(_chan))
+                    if len(_mini_app)     >= 1: _order.append(_random.choice(_mini_app))
 
                     _pool = _order[:_n_target]
-                    if not _pool and (_prem or _chan or _bot_ads):
-                        _pool = [_random.choice((_prem or _chan or _bot_ads)[0:1])]
+                    if not _pool and (_prem or _chan or _bot_ads or _mini_app):
+                        _pool = [_random.choice((_prem or _chan or _bot_ads or _mini_app)[0:1])]
 
                     if not _pool: continue
                     _random.shuffle(_pool)
@@ -541,9 +545,34 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _ad_schedule[sn] = _at
                             _used.add(sn)
 
+                # Now apply language preference override to the generated schedule
+                ads_lang = job.get("ads_lang", "both")
+                if ads_lang in ("hindi", "english"):
+                    _AD_MAP_TO_HI = {
+                        "arya_premium_en": "arya_premium_hi", "arya_premium_hi": "arya_premium_hi",
+                        "arya_bot_en": "arya_bot_hi", "arya_bot_hi": "arya_bot_hi",
+                        "channel_en": "channel_hi", "channel_hi": "channel_hi",
+                        "mini_app_en": "mini_app_hi", "mini_app_hi": "mini_app_hi",
+                    }
+                    _AD_MAP_TO_EN = {
+                        "arya_premium_hi": "arya_premium_en", "arya_premium_en": "arya_premium_en",
+                        "arya_bot_hi": "arya_bot_en", "arya_bot_en": "arya_bot_en",
+                        "channel_hi": "channel_en", "channel_en": "channel_en",
+                        "mini_app_hi": "mini_app_en", "mini_app_en": "mini_app_en",
+                    }
+                    _map_dict = _AD_MAP_TO_HI if ads_lang == "hindi" else _AD_MAP_TO_EN
+                    new_sched = {}
+                    for sn, old_key in _ad_schedule.items():
+                        new_key = _map_dict.get(old_key, old_key)
+                        if new_key in _ad_local:
+                            new_sched[sn] = new_key
+                        else:
+                            new_sched[sn] = old_key  # fallback
+                    _ad_schedule = new_sched
+
                 logger.info(
                     f"[Cleaner {job_id}] Ad schedule: {len(_ad_schedule)} ads for {n_total_files} files "
-                    f"({_math.ceil(n_total_files/_CHUNK)} chunks): {_ad_schedule}"
+                    f"({_math.ceil(n_total_files/_CHUNK)} chunks) [Language: {ads_lang}]: {_ad_schedule}"
                 )
 
 
@@ -2015,11 +2044,11 @@ async def _create_cl_flow(bot, user_id):
     else:
         saved_ads = {}
 
-    # All 6 expected ad slot keys (3 types × 2 langs)
-    _ALL_AD_KEYS = {"arya_bot_hi", "arya_bot_en", "arya_premium_hi", "arya_premium_en", "channel_hi", "channel_en"}
+    # All 8 expected ad slot keys (4 types × 2 langs)
+    _ALL_AD_KEYS = {"arya_bot_hi", "arya_bot_en", "arya_premium_hi", "arya_premium_en", "channel_hi", "channel_en", "mini_app_hi", "mini_app_en"}
 
     if "yes" in r_ads_text or "edit" in r_ads_text or "reset" in r_ads_text:
-        # Detect missing slots (new EN keys not present in old configs)
+        # Detect missing slots (new keys not present in old configs)
         _missing_keys = _ALL_AD_KEYS - set(saved_ads.keys())
         _needs_upgrade = bool(_missing_keys) and "yes" in r_ads_text and not ("edit" in r_ads_text or "reset" in r_ads_text)
 
@@ -2027,12 +2056,12 @@ async def _create_cl_flow(bot, user_id):
             # Notify user that new ad slots were added and need to be filled
             await bot.send_message(user_id,
                 "🆕 <b>New Ad Slots Detected!</b>\n\n"
-                "<i>Arya Premium (English) and Channel Promo (English) are now supported.\n"
+                "<i>Arya Premium Mini App ads are now supported.\n"
                 "Please upload the missing ads below. You can skip any slot.</i>",
                 reply_markup=ReplyKeyboardRemove())
 
         if "edit" in r_ads_text or "reset" in r_ads_text or not saved_ads or _needs_upgrade:
-            # Ask for each of 6 ad slots individually — each can be skipped
+            # Ask for each of 8 ad slots individually — each can be skipped
             _ad_slots = [
                 ("arya_bot_hi",     "» Aᴅ 1 — Aʀʏᴀ Bᴏᴛ (Hɪɴᴅɪ)",     "Arya Bot Hindi promo (10–30s)."),
                 ("arya_bot_en",     "» Aᴅ 2 — Aʀʏᴀ Bᴏᴛ (Eɴɢʟɪsʜ)",    "Arya Bot English promo (10–30s)."),
@@ -2040,6 +2069,8 @@ async def _create_cl_flow(bot, user_id):
                 ("arya_premium_en", "» Aᴅ 4 — Aʀʏᴀ Pʀᴇᴍɪᴜᴍ (Eɴɢʟɪsʜ)","Arya Premium English promo (10–30s)."),
                 ("channel_hi",      "» Aᴅ 5 — Cʜᴀɴɴᴇʟ Pʀᴏᴍᴏ (Hɪɴᴅɪ)", "Channel Hindi promo (10–30s)."),
                 ("channel_en",      "» Aᴅ 6 — Cʜᴀɴɴᴇʟ Pʀᴏᴍᴏ (Eɴɢʟɪsʜ)","Channel English promo (10–30s)."),
+                ("mini_app_hi",     "» Aᴅ 7 — Mɪɴɪ Aᴘᴘ (Hɪɴᴅɪ)",     "Arya Premium Mini App Hindi promo (10–30s)."),
+                ("mini_app_en",     "» Aᴅ 8 — Mɪɴɪ Aᴘᴘ (Eɴɢʟɪsʜ)",    "Arya Premium Mini App English promo (10–30s)."),
             ]
             ads_config = dict(saved_ads)
             # In upgrade mode, only ask for missing slots
@@ -2076,13 +2107,37 @@ async def _create_cl_flow(bot, user_id):
                 _active = len(ads_config)
                 await bot.send_message(user_id,
                     f"✅ <b>Ads config saved!</b>\n"
-                    f"Active slots: <b>{_active}/6</b>\n"
+                    f"Active slots: <b>{_active}/8</b>\n"
                     f"Types: {', '.join(ads_config.keys()) if ads_config else 'None'}\n\n"
                     f"<i>Starting job with ads enabled...</i>",
                     reply_markup=ReplyKeyboardRemove())
                 inject_ads = True  # auto-enable injection, fall through to job creation
         else:
             ads_config = saved_ads
+
+        # Ask for ad language preference if ads are enabled and we have configured ads
+        ads_lang = "both"
+        if inject_ads and ads_config:
+            r_lang = await _cl_ask(bot, user_id,
+                "<b>🌐 Select Ad Language Preference</b>\n\n"
+                "Choose which language version of ads to inject for this job:\n"
+                "• <b>Hindi & English:</b> Injects both versions randomly/alternately.\n"
+                "• <b>Only Hindi:</b> Map all English ads to Hindi version.\n"
+                "• <b>Only English:</b> Map all Hindi ads to English version.",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["🌐 Hindi & English"],
+                     ["🇮🇳 Only Hindi", "🇬🇧 Only English"],
+                     [CANCEL_BTN]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if _cancelled(r_lang): return await _abort()
+            
+            r_lang_text = (r_lang.text or "").lower()
+            if "hindi" in r_lang_text:
+                ads_lang = "hindi"
+            elif "english" in r_lang_text:
+                ads_lang = "english"
+            else:
+                ads_lang = "both"
 
     # Save and launch
     job_id = str(uuid.uuid4())
@@ -2098,7 +2153,7 @@ async def _create_cl_flow(bot, user_id):
         "convert_videos": convert_videos, "deep_clean": deep_clean,
         "artist": adv_artist, "year": adv_year, "album": adv_album, "genre": adv_genre,
         "cover_file_id": adv_cover, "use_caption": use_caption,
-        "inject_ads": inject_ads, "ads_config": ads_config,
+        "inject_ads": inject_ads, "ads_config": ads_config, "ads_lang": ads_lang,
         "account_id": sel_acc.get("id"), "is_bot": sel_acc.get("is_bot", True),
         "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),
         "target_title": "Source (In-Place)" if ad_inject_only else ("DM" if dest_chat == user_id else "Channel"),
