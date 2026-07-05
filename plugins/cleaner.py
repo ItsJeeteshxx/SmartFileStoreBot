@@ -1524,7 +1524,8 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         df = await _cl_get_defaults(uid)
         txt = (
-            "<b><u>🧹 Aᴜᴅɪᴏ Cʟᴇᴀɴᴇʀ & Rᴇɴᴀᴍᴇʀ</u></b>\n\n"
+            "<b><u>🧹 Aᴜᴅɪᴏ Cʟᴇᴀɴᴇʀ & Rᴇɴᴀᴍᴇʀ</u></b>\n"
+            f"🟢 <b>Active Tasks:</b> <code>{len(active)}</code>\n\n"
             "Stable Turbo v4 — dynaudnorm + parallel pipeline.\n\n"
             f"<b>Defaults:</b>\n"
             f"  • Artist: {df.get('artist','<i>None</i>')}\n"

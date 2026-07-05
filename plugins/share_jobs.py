@@ -457,13 +457,19 @@ async def sl_callback(bot, query):
     cmd = data[1]
 
     if cmd == "start":
+        try:
+            lb_active = await db.db.live_batch_jobs.count_documents({"user_id": user_id, "status": {"$in": ["running", "queued"]}})
+        except Exception:
+            lb_active = 0
         kb = [
             [InlineKeyboardButton("📦 Cᴏᴍᴘʟᴇᴛᴇ Mᴏᴅᴇ (Oɴᴇ-Tɪᴍᴇ)", callback_data="sl#complete")],
             [InlineKeyboardButton("📡 Lɪᴠᴇ Aᴜᴛᴏ-Bᴀᴛᴄʜ (Oɴɢᴏɪɴɢ)", callback_data="lb#main")],
             [InlineKeyboardButton("✖️ Dɪsᴍɪss", callback_data="close_btn")]
         ]
         await query.message.edit_text(
-            "<b><u>Bᴀᴛᴄʜ Lɪɴᴋs Sʏsᴛᴇᴍ</u></b>\n\nChoose your link generation mode:\n\n"
+            "<b><u>Bᴀᴛᴄʜ Lɪɴᴋs Sʏsᴛᴇᴍ</u></b>\n"
+            f"🟢 <b>Active Tasks:</b> <code>{lb_active}</code>\n\n"
+            "Choose your link generation mode:\n\n"
             "• <b>Cᴏᴍᴘʟᴇᴛᴇ Mᴏᴅᴇ:</b> Manually select a range to immediately generate Batch Buttons for existing files.\n"
             "• <b>Oɴɢᴏɪɴɢ Lɪᴠᴇ Bᴀᴛᴄʜ:</b> Runs infinitely in the background, bundling and posting new messages as they stream in.",
             reply_markup=InlineKeyboardMarkup(kb)

@@ -2256,11 +2256,27 @@ async def settings_query(bot, query):
   elif type.startswith("sb_fsub_") and not any(type.startswith(f"sb_fsub_{p}_") for p in ['add', 'jr', 'del']):
       b_id = type.split("sb_fsub_")[1]
       fsub_chs = await db.get_bot_fsub_channels(b_id)
+      
+      # Validate channels in parallel
+      async def _get_ch_err(ch):
+          ch_id = ch.get('chat_id')
+          if not ch_id:
+              return " ⚠️ (Invalid ID)"
+          try:
+              await bot.get_chat(int(ch_id) if str(ch_id).lstrip('-').isdigit() else ch_id)
+              return ""
+          except Exception:
+              return " ⚠️ (Private / Not Admin)"
+
+      import asyncio
+      errs = await asyncio.gather(*[_get_ch_err(ch) for ch in fsub_chs])
+
       lines = []
       btns  = []
       for i, ch in enumerate(fsub_chs):
           jr_lbl = " [JR]" if ch.get('join_request') else ""
-          lines.append(f"{i+1}. {ch.get('title','?')}{jr_lbl}")
+          err_lbl = errs[i]
+          lines.append(f"{i+1}. {ch.get('title','?')}{jr_lbl}{err_lbl}")
           btns.append([
               InlineKeyboardButton(f"Jʀ #{i+1}",  callback_data=f"settings#sb_fsub_jr_{b_id}_{i}"),
               InlineKeyboardButton(f"Dᴇʟ #{i+1}", callback_data=f"settings#sb_fsub_del_{b_id}_{i}"),
@@ -2551,11 +2567,27 @@ async def settings_query(bot, query):
 
   elif type == "sharefsub":
      fsub_chs = await db.get_share_fsub_channels()
+     
+     # Validate channels in parallel
+     async def _get_ch_err(ch):
+         ch_id = ch.get('chat_id')
+         if not ch_id:
+             return " ⚠️ (Invalid ID)"
+         try:
+             await bot.get_chat(int(ch_id) if str(ch_id).lstrip('-').isdigit() else ch_id)
+             return ""
+         except Exception:
+             return " ⚠️ (Private / Not Admin)"
+
+     import asyncio
+     errs = await asyncio.gather(*[_get_ch_err(ch) for ch in fsub_chs])
+
      lines = []
      btns  = []
      for i, ch in enumerate(fsub_chs):
          jr_lbl = " [JR]" if ch.get('join_request') else ""
-         lines.append(f"{i+1}. {ch.get('title','?')}{jr_lbl}")
+         err_lbl = errs[i]
+         lines.append(f"{i+1}. {ch.get('title','?')}{jr_lbl}{err_lbl}")
          btns.append([
              InlineKeyboardButton(f"Tᴏɢɢʟᴇ Jʀ #{i+1}",  callback_data=f"settings#sharefsub_jr_{i}"),
              InlineKeyboardButton(f"Rᴇᴍᴏᴠᴇ #{i+1}", callback_data=f"settings#sharefsub_del_{i}")

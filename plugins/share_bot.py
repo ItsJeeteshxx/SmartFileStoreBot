@@ -369,7 +369,7 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                 pass  # member stays None → handled below in the UserNotParticipant block
             except (PeerIdInvalid, ChannelInvalid):
                 try:
-                    resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id, bot=client)
+                    resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id)
                     if resolved:
                         try:
                             member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
@@ -743,7 +743,7 @@ async def _process_start(client, message):
                 fail_count += 1
                 break  # Skip to next message on non-flood errors
                 
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.8)
 
     try:
         active_downloads.discard(dl_id)

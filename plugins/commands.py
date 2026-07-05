@@ -45,20 +45,9 @@ async def _main_buttons(user_id: int):
         lb_active = 0
 
     btn_jobs_text = _tx(lang, 'btn_jobs')
-    if live_active > 0:
-        btn_jobs_text += f" ({live_active} Active)"
-
     mj_text = 'Mᴜʟᴛɪ Jᴏʙ'
-    if mj_active > 0:
-        mj_text += f" ({mj_active} Active)"
-
     mg_text = 'Mᴇʀɢᴇʀ Jᴏʙ'
-    if mg_active > 0:
-        mg_text += f" ({mg_active} Active)"
-
     lb_text = 'Bᴀᴛᴄʜ Lɪɴᴋs'
-    if lb_active > 0:
-        lb_text += f" ({lb_active} Active)"
 
     return [
         [
