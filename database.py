@@ -32,10 +32,10 @@ class Database:
         self.share_deliveries = self.db.share_deliveries
         self.share_users = self.db.share_users
         
-        # In-memory caches for latency optimization
         self._ban_status_cache = {}  # {user_id: (ban_status_dict, expiry)}
         self._bot_cfg_cache = {}     # {bot_id: (cfg_dict, expiry)}
         self._share_cfg_cache = None  # (cfg_dict, expiry)
+        self._user_cache = {}        # {user_id: (user_doc, expiry)}
 
         
     async def set_share_bot_token(self, token: str):
@@ -457,9 +457,10 @@ class Database:
     async def add_user(self, id, name):
         user = self.new_user(id, name)
         await self.col.insert_one(user)
+        self._invalidate_user_cache(id)
     
     async def is_user_exist(self, id):
-        user = await self.col.find_one({'id':int(id)})
+        user = await self._get_user_doc(id)
         return bool(user)
     
     async def total_users_bots_count(self):
@@ -483,7 +484,29 @@ class Database:
         # Evict cache
         if hasattr(self, '_ban_status_cache'):
             self._ban_status_cache.pop(int(id), None)
+        self._invalidate_user_cache(id)
     
+    async def _get_user_doc(self, user_id: int) -> dict:
+        import time as _t
+        now = _t.time()
+        uid_int = int(user_id)
+        if hasattr(self, '_user_cache') and uid_int in self._user_cache:
+            doc, expiry = self._user_cache[uid_int]
+            if now < expiry:
+                return doc
+        try:
+            doc = await self.col.find_one({'id': uid_int})
+            res = doc or {}
+            if hasattr(self, '_user_cache'):
+                self._user_cache[uid_int] = (res, now + 30)  # cache for 30s
+            return res
+        except Exception:
+            return {}
+
+    def _invalidate_user_cache(self, user_id: int):
+        if hasattr(self, '_user_cache'):
+            self._user_cache.pop(int(user_id), None)
+
     async def ban_user(self, user_id, ban_reason="No Reason"):
         ban_status = dict(
             is_banned=True,
@@ -493,6 +516,7 @@ class Database:
         # Evict cache
         if hasattr(self, '_ban_status_cache'):
             self._ban_status_cache.pop(int(user_id), None)
+        self._invalidate_user_cache(user_id)
 
     async def get_ban_status(self, id):
         default = dict(
@@ -513,8 +537,8 @@ class Database:
                 if now < expiry:
                     return val
 
-        # 1. Check local bot collection ban status in 'arya' DB
-        user = await self.col.find_one({'id': user_id_int})
+        # 1. Check local bot collection ban status in 'arya' DB using cached doc
+        user = await self._get_user_doc(user_id_int)
         if user and user.get('ban_status', {}).get('is_banned'):
             res = user.get('ban_status', default)
             if hasattr(self, '_ban_status_cache'):
@@ -572,6 +596,7 @@ class Database:
 
     async def update_configs(self, id, configs):
         await self.col.update_one({'id': int(id)}, {'$set': {'configs': configs}})
+        self._invalidate_user_cache(id)
          
     async def get_configs(self, id):
         default = {
@@ -601,7 +626,7 @@ class Database:
                'rm_caption': False
             }
         }
-        user = await self.col.find_one({'id':int(id)})
+        user = await self._get_user_doc(id)
         if user:
             user_configs = user.get('configs', {})
             # Merge with default to ensure new fields are populated
@@ -732,13 +757,14 @@ class Database:
        return self.nfy.find({})
     async def get_language(self, user_id: int) -> str:
         """Return user's preferred language: 'en', 'hi', or 'hinglish'. Default 'en'."""
-        user = await self.col.find_one({'id': int(user_id)})
+        user = await self._get_user_doc(user_id)
         if user:
             return user.get('language', 'en')
         return 'en'
 
     async def set_language(self, user_id: int, lang: str):
         await self.col.update_one({'id': int(user_id)}, {'$set': {'language': lang}}, upsert=True)
+        self._invalidate_user_cache(user_id)
 
     async def get_total_users_count(self) -> int:
         return await self.col.count_documents({})

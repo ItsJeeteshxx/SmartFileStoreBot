@@ -23,27 +23,6 @@ async def _safe_edit(bot, query, **kwargs):
 async def _main_buttons(user_id: int):
     lang = await db.get_language(user_id)
     
-    # Query active task counts
-    try:
-        live_active = await db.db.jobs.count_documents({"user_id": user_id, "status": "running"})
-    except Exception:
-        live_active = 0
-        
-    try:
-        mj_active = await db.db.multijobs.count_documents({"user_id": user_id, "status": {"$in": ["running", "queued"]}})
-    except Exception:
-        mj_active = 0
-        
-    try:
-        mg_active = await db.db.mergejobs.count_documents({"user_id": user_id, "status": {"$in": ["queued", "downloading", "merging", "uploading", "scanning"]}})
-    except Exception:
-        mg_active = 0
-        
-    try:
-        lb_active = await db.db.live_batch_jobs.count_documents({"user_id": user_id, "status": {"$in": ["running", "queued"]}})
-    except Exception:
-        lb_active = 0
-
     btn_jobs_text = _tx(lang, 'btn_jobs')
     mj_text = 'Mᴜʟᴛɪ Jᴏʙ'
     mg_text = 'Mᴇʀɢᴇʀ Jᴏʙ'
