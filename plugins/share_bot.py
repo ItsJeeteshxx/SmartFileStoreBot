@@ -797,7 +797,7 @@ async def _process_start(client, message):
                 fail_count += 1
                 break  # Skip to next message on non-flood errors
                 
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(0.05)
 
     try:
         active_downloads.discard(dl_id)
