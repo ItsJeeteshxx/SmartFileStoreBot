@@ -29,6 +29,11 @@ _inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 import uuid
 import httpx
+try:
+    import paytmchecksum
+    PAYTM_LIBS_AVAILABLE = True
+except ImportError:
+    PAYTM_LIBS_AVAILABLE = False
 import logging
 import asyncio
 import urllib.parse
@@ -2534,6 +2539,351 @@ async def oxapay_webhook(request: Request):
     asyncio.create_task(_send_oxapay_success_dm())
 
     return {"success": True, "message": "Payment verified and processed"}
+
+
+# ===== Paytm Payment Gateway: Create Order =====
+@api_router.post("/create-paytm-order")
+async def create_paytm_order(payload: dict):
+    """Create Paytm order and initiate transaction for frontend checkout."""
+    if not PAYTM_LIBS_AVAILABLE:
+        raise HTTPException(status_code=500, detail="paytmchecksum library is not installed. Please run: pip install paytmchecksum")
+        
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    promo_code = payload.get("promo_code", "")
+
+    if not story_ids:
+        raise HTTPException(400, "Cart is empty")
+        
+    arya_db = app.state.db
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    paytm_status = cfg.get("paytm_status", "hidden")
+    if paytm_status == "hidden":
+        raise HTTPException(status_code=400, detail="Paytm payments are currently disabled.")
+    elif paytm_status == "disabled":
+        raise HTTPException(status_code=400, detail="Paytm payments are currently disabled by the admin.")
+        
+    mid = cfg.get("paytm_mid", "").strip()
+    merchant_key = cfg.get("paytm_merchant_key", "").strip()
+    if not mid or not merchant_key:
+        raise HTTPException(status_code=400, detail="Paytm credentials are not configured.")
+
+    from bson.objectid import ObjectId
+    valid_stories = []
+    story_names = []
+    for sid in story_ids:
+        try:
+            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(400, "No valid stories")
+
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal, tg_id)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
+                
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    total = max(0.0, subtotal - discount + platform_fee)
+    
+    import uuid
+    import json
+    orderId = f"PAYTM_{uuid.uuid4().hex[:12].upper()}"
+    is_sandbox = mid.startswith("TEST_") or "sandbox" in mid.lower()
+    domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
+    website = "WEBSTAGING" if is_sandbox else "DEFAULT"
+    
+    callback_url = f"https://aryapremium.store/api/paytm-callback"
+    
+    body = {
+        "requestType": "Payment",
+        "mid": mid,
+        "websiteName": website,
+        "orderId": orderId,
+        "callbackUrl": callback_url,
+        "txnAmount": {
+            "value": f"{total:.2f}",
+            "currency": "INR"
+        },
+        "userInfo": {
+            "custId": f"CUST_{tg_id}" if tg_id else "CUST_GUEST"
+        }
+    }
+    
+    try:
+        body_json = json.dumps(body)
+        signature = paytmchecksum.generateSignature(body_json, merchant_key)
+        
+        payload_data = {
+            "body": body,
+            "head": {
+                "signature": signature
+            }
+        }
+        
+        init_url = f"https://{domain}/theia/api/v1/initiateTransaction?mid={mid}&orderId={orderId}"
+        
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(init_url, json=payload_data, headers={"Content-Type": "application/json"})
+            res_data = r.json()
+            
+        logger.info(f"Paytm raw response: {res_data}")
+        
+        body_res = res_data.get("body", {})
+        result_info = body_res.get("resultInfo", {})
+        if result_info.get("resultStatus") != "S":
+            raise HTTPException(status_code=502, detail=f"Paytm Error: {result_info.get('resultMsg', 'Initiate Failed')}")
+            
+        txn_token = body_res.get("txnToken")
+        if not txn_token:
+            raise HTTPException(status_code=502, detail="Failed to retrieve transaction token from Paytm")
+            
+        # Save pending order
+        order_doc = {
+            "order_id": orderId,
+            "user_id": str(tg_id),
+            "story_ids": [ObjectId(sid) for sid in story_ids],
+            "story_names": story_names,
+            "total": total,
+            "source": "paytm",
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc),
+            "payment_id": None,
+            "promo_code": pcode_clean if pcode_clean else None,
+        }
+        await arya_db.db.orders.insert_one(order_doc)
+        
+        return {
+            "success": True,
+            "mid": mid,
+            "order_id": orderId,
+            "txn_token": txn_token,
+            "amount": total,
+            "is_sandbox": is_sandbox
+        }
+    except Exception as e:
+        logger.error(f"Paytm order creation failed: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== Paytm Payment Gateway: Callback Webhook =====
+@api_router.post("/paytm-callback")
+async def paytm_callback(request: Request):
+    """Callback redirect/webhook from Paytm after successful or failed payment transaction."""
+    if not PAYTM_LIBS_AVAILABLE:
+        raise HTTPException(status_code=500, detail="paytmchecksum library is not installed.")
+        
+    try:
+        form_data = await request.form()
+        form_dict = {k: v for k, v in form_data.items()}
+    except Exception:
+        raise HTTPException(400, "Invalid form data")
+        
+    logger.info(f"Paytm callback payload: {form_dict}")
+    
+    order_id = form_dict.get("ORDERID")
+    checksum = form_dict.get("CHECKSUMHASH")
+    txn_status = form_dict.get("STATUS")
+    txn_id = form_dict.get("TXNID")
+    
+    if not order_id or not checksum:
+        return Response(content="<h3>Invalid callback parameters</h3>", media_type="text/html")
+        
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"order_id": order_id})
+    if not order:
+        return Response(content="<h3>Order not found</h3>", media_type="text/html")
+        
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    mid = cfg.get("paytm_mid", "").strip()
+    merchant_key = cfg.get("paytm_merchant_key", "").strip()
+    
+    paytm_params = {k: v for k, v in form_dict.items() if k != "CHECKSUMHASH"}
+    is_valid = paytmchecksum.verifySignature(paytm_params, merchant_key, checksum)
+    if not is_valid:
+        logger.warning(f"Paytm checksum verification failed for order {order_id}")
+        return Response(content="<h3>Checksum Verification Failed</h3>", media_type="text/html")
+        
+    is_sandbox = mid.startswith("TEST_") or "sandbox" in mid.lower()
+    domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
+    
+    status_verified = False
+    try:
+        import json
+        status_body = {
+            "mid": mid,
+            "orderId": order_id
+        }
+        status_body_json = json.dumps(status_body)
+        status_sig = paytmchecksum.generateSignature(status_body_json, merchant_key)
+        
+        status_payload = {
+            "body": status_body,
+            "head": {
+                "signature": status_sig
+            }
+        }
+        
+        status_url = f"https://{domain}/v3/transactionStatus"
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(status_url, json=status_payload, headers={"Content-Type": "application/json"})
+            status_res = r.json()
+            
+        logger.info(f"Paytm status query response: {status_res}")
+        body_status = status_res.get("body", {})
+        res_info = body_status.get("resultInfo", {})
+        if res_info.get("resultStatus") == "TXN_SUCCESS" and body_status.get("txnId") == txn_id:
+            status_verified = True
+    except Exception as e:
+        logger.error(f"Paytm status query error: {e}")
+        
+    if not status_verified and txn_status == "TXN_SUCCESS":
+        if is_sandbox:
+            status_verified = True
+            
+    if status_verified:
+        if order.get("status") != "paid":
+            await arya_db.db.orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {
+                    "status": "paid",
+                    "payment_id": txn_id,
+                    "paid_at": datetime.now(timezone.utc),
+                }}
+            )
+            
+            user_id = order.get("user_id")
+            story_ids = order.get("story_ids", [])
+            if user_id:
+                for sid in story_ids:
+                    try:
+                        await arya_db.add_purchase(user_id, sid)
+                    except Exception as e:
+                        logger.error(f"add_purchase error for {sid}: {e}")
+                        
+            updated_order = {**order, "status": "paid", "payment_id": txn_id}
+            asyncio.create_task(trigger_payment_log_from_order(updated_order))
+            asyncio.create_task(record_purchased_stories(updated_order))
+            
+            async def _send_paytm_success_dm():
+                try:
+                    bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
+                    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+                    if not bot_token or not user_id:
+                        return
+                    story_names = order.get("story_names", [])
+                    story_list = "\n".join([f"  • {n}" for n in story_names]) if story_names else "  • Your purchased stories"
+                    success_text = (
+                        f"✅ <b>Payment Successful (Paytm)!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Your Paytm payment of ₹{order.get('total', 0)} was successful and stories are now unlocked! 🎉\n\n"
+                        f"<b>Unlocked Stories:</b>\n{story_list}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📚 Open <b>Arya Premium</b> to listen to them now!"
+                    )
+                    keyboard = {"inline_keyboard": [[{
+                        "text": "📚 Open Arya Premium",
+                        "url": f"https://t.me/{bot_username}/app"
+                    }]]}
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            json={"chat_id": int(user_id), "text": success_text, "parse_mode": "HTML",
+                                  "reply_markup": keyboard, "disable_web_page_preview": True}
+                        )
+                except Exception as _e:
+                    logger.warning(f"Paytm DM send failed: {_e}")
+                    
+            asyncio.create_task(_send_paytm_success_dm())
+            
+        success_html = """
+        <html>
+          <head>
+            <title>Payment Successful</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script src="https://telegram.org/js/telegram-web-app.js"></script>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #111; color: #fff; text-align: center; padding: 40px 20px; }
+              .card { background-color: #222; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); max-width: 400px; margin: 0 auto; border: 1px solid #333; }
+              .checkmark { font-size: 60px; color: #4ade80; margin-bottom: 20px; }
+              h2 { margin: 0 0 10px 0; font-size: 22px; }
+              p { color: #aaa; font-size: 14px; line-height: 1.5; margin: 0 0 24px 0; }
+              .btn { background-color: #007aff; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; width: 100%; box-sizing: border-box; }
+            </style>
+            <script>
+              window.onload = function() {
+                const tg = window.Telegram?.WebApp;
+                if (tg) {
+                  tg.expand();
+                  setTimeout(() => { tg.close(); }, 3000);
+                }
+              }
+              function closeWindow() {
+                const tg = window.Telegram?.WebApp;
+                if (tg) { tg.close(); } else { window.close(); }
+              }
+            </script>
+          </head>
+          <body>
+            <div class="card">
+              <div class="checkmark">✓</div>
+              <h2>Payment Successful!</h2>
+              <p>Your payment via Paytm has been confirmed.<br>Your premium stories are now unlocked. You can return to the bot now.</p>
+              <button class="btn" onclick="closeWindow()">Return to Bot</button>
+            </div>
+          </body>
+        </html>
+        """
+        return Response(content=success_html, media_type="text/html")
+        
+    else:
+        fail_html = """
+        <html>
+          <head>
+            <title>Payment Failed</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script src="https://telegram.org/js/telegram-web-app.js"></script>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #111; color: #fff; text-align: center; padding: 40px 20px; }
+              .card { background-color: #222; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); max-width: 400px; margin: 0 auto; border: 1px solid #333; }
+              .crossmark { font-size: 60px; color: #ef4444; margin-bottom: 20px; }
+              h2 { margin: 0 0 10px 0; font-size: 22px; }
+              p { color: #aaa; font-size: 14px; line-height: 1.5; margin: 0 0 24px 0; }
+              .btn { background-color: #ef4444; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; width: 100%; box-sizing: border-box; }
+            </style>
+            <script>
+              function closeWindow() {
+                const tg = window.Telegram?.WebApp;
+                if (tg) { tg.close(); } else { window.close(); }
+              }
+            </script>
+          </head>
+          <body>
+            <div class="card">
+              <div class="crossmark">✗</div>
+              <h2>Payment Failed / Pending</h2>
+              <p>Paytm could not verify your payment transaction.<br>If money was debited, contact support for manual unlocking.</p>
+              <button class="btn" onclick="closeWindow()">Close</button>
+            </div>
+          </body>
+        </html>
+        """
+        return Response(content=fail_html, media_type="text/html")
 
 
 
@@ -7390,6 +7740,9 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "gmail_user": cfg.get("gmail_user", ""),
                 "gmail_app_password": cfg.get("gmail_app_password", ""),
                 "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
+                "paytm_status": cfg.get("paytm_status", "hidden"),
+                "paytm_mid": cfg.get("paytm_mid", ""),
+                "paytm_merchant_key": cfg.get("paytm_merchant_key", ""),
                 "is_owner": is_owner_flag,
             }
         }
@@ -7448,6 +7801,12 @@ async def update_admin_settings(payload: dict):
             update_fields["gmail_app_password"] = str(payload["gmail_app_password"]).strip()
         if "mint_theme_enabled" in payload:
             update_fields["mint_theme_enabled"] = bool(payload["mint_theme_enabled"])
+        if "paytm_status" in payload:
+            update_fields["paytm_status"] = str(payload["paytm_status"]).strip()
+        if "paytm_mid" in payload:
+            update_fields["paytm_mid"] = str(payload["paytm_mid"]).strip()
+        if "paytm_merchant_key" in payload:
+            update_fields["paytm_merchant_key"] = str(payload["paytm_merchant_key"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -7696,6 +8055,8 @@ async def get_public_settings():
             "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
             "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
             "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
+            "paytm_status": cfg.get("paytm_status", "hidden"),
+            "paytm_mid": cfg.get("paytm_mid", ""),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -7713,6 +8074,8 @@ async def get_public_settings():
             "upi_id": os.environ.get("UPI_ID", ""),
             "upi_payee_name": os.environ.get("UPI_PAYEE_NAME", "Arya Premium"),
             "gmail_verification_enabled": False,
+            "paytm_status": "hidden",
+            "paytm_mid": "",
         }
 
 

@@ -8,3 +8,4 @@ qrcode[pil]
 pillow
 deep-translator
 aiofiles
+paytmchecksum
