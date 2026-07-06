@@ -710,7 +710,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
                     fc_parts = [
                         f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=5[base]"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=15[base]"
                     ]
                     prev = "[base]"
                     for i, pos in enumerate(outro_positions):
@@ -718,7 +718,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                         out_lbl = f"[ov{i}]" if i < 3 else "[finalv]"
                         fc_parts.append(
                             f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=5[os{i}];"
+                            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=15[os{i}];"
                             f"{prev}[os{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_lbl}"
                         )
                         prev = out_lbl
@@ -729,17 +729,17 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                     cmd_v += [
                         "-filter_complex",
                         "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=5[v1]",
+                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=15[v1]",
                     ]
                     cmd_v += ["-map", "[v1]", "-map", "1:a"]
 
                 cmd_v += [
                     "-c:v", "libx264",
-                    "-preset", "veryfast",
+                    "-preset", "ultrafast",
                     "-profile:v", "main",
-                    "-crf", "24",
-                    "-maxrate", "3000k",
-                    "-bufsize", "6000k",
+                    "-crf", "30",
+                    "-maxrate", "800k",
+                    "-bufsize", "1600k",
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac",
                     "-b:a", "192k",
@@ -771,7 +771,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
                     fc_parts = [
                         f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=5[base]"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=10[base]"
                     ]
                     prev = "[base]"
                     for i, pos in enumerate(outro_positions):
@@ -779,7 +779,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                         out_lbl = f"[ov{i}]" if i < 3 else "[finalv]"
                         fc_parts.append(
                             f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=5[os{i}];"
+                            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=10[os{i}];"
                             f"{prev}[os{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_lbl}"
                         )
                         prev = out_lbl
@@ -791,7 +791,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                     cmd_v += [
                         "-filter_complex",
                         "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=5[v1]",
+                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=10[v1]",
                     ]
                     cmd_v += ["-map", "[v1]", "-map", "1:a"]
 
@@ -800,9 +800,9 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                     "-preset", "ultrafast",
                     "-tune", "stillimage",
                     "-profile:v", "main",
-                    "-crf", "28",
-                    "-maxrate", "800k",
-                    "-bufsize", "1600k",
+                    "-crf", "32",
+                    "-maxrate", "300k",
+                    "-bufsize", "600k",
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac",
                     "-b:a", "192k",
