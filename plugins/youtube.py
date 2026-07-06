@@ -293,7 +293,11 @@ async def upload_video_to_youtube(video_path, title, description="", tags=None,
                 body=body,
                 media_body=media
             )
-            response = request.execute()
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    logger.info(f"[YouTube Upload] Progress: {int(status.progress() * 100)}%")
             video_id = response['id']
 
             if thumbnail_path and os.path.exists(thumbnail_path):

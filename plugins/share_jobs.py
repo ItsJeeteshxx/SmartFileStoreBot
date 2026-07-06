@@ -15,9 +15,15 @@ from pyrogram.types import (
 )
 from database import db
 from plugins.test import CLIENT
-
 logger = logging.getLogger(__name__)
 _CLIENT = CLIENT()
+
+def _get_short_story_name(name: str) -> str:
+    import re
+    tokens = re.findall(r'[a-zA-Z0-9]+', name)
+    if not tokens:
+        return name
+    return "".join([t[0].upper() for t in tokens])
 
 def to_custom_font(text: str, style: str) -> str:
     if style == "Default": return text
@@ -290,6 +296,32 @@ async def _create_share_flow(bot, user_id, force_live=False):
                 if getattr(msg_story, 'text', None) and any(x in msg_story.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
             new_share_job[user_id]['story'] = (msg_story.text or msg_story.caption or "").strip()
             
+            # ─── STEP 5.5: SHORTEN STORY NAME ───
+            markup_short = ReplyKeyboardMarkup([["✅ Yes, Shorten Name", "❌ No, Keep Full Name"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
+            msg_short = await _ask(bot, user_id,
+                "<b>❪ STEP 5.5: SHORTEN STORY NAME ❫</b>\n\n"
+                f"Do you want to automatically shorten/abbreviate the story name for the public channel post?\n"
+                f"Example: <code>{new_share_job[user_id]['story']}</code> → <code>{_get_short_story_name(new_share_job[user_id]['story'])}</code>\n\n"
+                f"Choose an option:",
+                reply_markup=markup_short
+            )
+            if getattr(msg_short, 'text', None) and any(x in msg_short.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            if getattr(msg_short, "text", None) and any(x in msg_short.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                # Re-ask Step 5
+                msg_story2 = await _ask(bot, user_id,
+                    "<b>❪ STEP 5 (REDO): STORY NAME ❫</b>\n\nEnter the clean name of the Series/Story:",
+                    reply_markup=markup
+                )
+                if getattr(msg_story2, 'text', None) and any(x in msg_story2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                new_share_job[user_id]['story'] = (msg_story2.text or "").strip()
+                msg_short = await _ask(bot, user_id,
+                    "<b>❪ STEP 5.5: SHORTEN STORY NAME ❫</b>\n\nDo you want to shorten/abbreviate the story name?",
+                    reply_markup=markup_short
+                )
+                if getattr(msg_short, 'text', None) and any(x in msg_short.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            
+            new_share_job[user_id]['shorten_story'] = "shorten" in (msg_short.text or "").lower()
+            
             markup_source = ReplyKeyboardMarkup([["»  Regular Channel", "»  Group Topic"], ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True)
             msg_stype = await _ask(bot, user_id, 
                 "<b>❪ STEP 6: SOURCE STRUCTURE ❫</b>\n\nAre the files in a normal Channel (requires start/end IDs)\nor inside a specific Group Topic (auto-scans entire topic)?", 
@@ -297,18 +329,18 @@ async def _create_share_flow(bot, user_id, force_live=False):
             )
             if getattr(msg_stype, 'text', None) and any(x in msg_stype.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
             if getattr(msg_stype, "text", None) and any(x in msg_stype.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-                # Re-ask story name
-                msg_story2 = await _ask(bot, user_id,
-                    "<b>❪ STEP 5 (REDO): STORY NAME ❫</b>\n\nEnter story name:",
-                    reply_markup=markup
+                # Re-ask Step 5.5
+                msg_short2 = await _ask(bot, user_id,
+                    "<b>❪ STEP 5.5 (REDO): SHORTEN STORY NAME ❫</b>\n\nDo you want to shorten/abbreviate the story name?",
+                    reply_markup=markup_short
                 )
-                if getattr(msg_story2, 'text', None) and any(x in msg_story2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                new_share_job[user_id]['story'] = (msg_story2.text or "").strip()
+                if getattr(msg_short2, 'text', None) and any(x in msg_short2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                new_share_job[user_id]['shorten_story'] = "shorten" in (msg_short2.text or "").lower()
                 msg_stype = await _ask(bot, user_id,
                     "<b>❪ STEP 6: SOURCE STRUCTURE ❫</b>\n\nChannel or Group Topic?",
                     reply_markup=markup_source
                 )
-                if getattr(msg_stype, 'text', None) and any(x in msg_stype.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                if getattr(msg_stype, 'text', None) and any(x in msg_stype.text.lower() for x in ['cancel', 'cᴀɴᴄᴇLen', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
             is_topic = "topic" in (msg_stype.text or "").lower()
             new_share_job[user_id]['is_topic'] = is_topic
 
@@ -1378,13 +1410,17 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                         res += c
                 return res
 
+            display_story = story
+            if sj.get('shorten_story'):
+                display_story = _get_short_story_name(story)
+
             font_style = sj.get('font', 'Default')
             if font_style == "Default":
-                story_text = _bold_sans(story)
+                story_text = _bold_sans(display_story)
                 eps_word = "𝗘𝗣𝗦"
                 ep_range = f"{first_ep} - {last_ep}"
             elif font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
-                story_text = to_custom_font(story, font_style)
+                story_text = to_custom_font(display_story, font_style)
                 eps_word = to_custom_font("EPS", font_style)
                 ep_range = to_custom_font(f"{first_ep} - {last_ep}", font_style)
             else:
