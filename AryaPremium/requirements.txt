@@ -9,3 +9,4 @@ pillow
 deep-translator
 aiofiles
 paytmchecksum
+pycryptodome
