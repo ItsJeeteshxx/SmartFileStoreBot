@@ -2604,7 +2604,7 @@ async def create_paytm_order(payload: dict):
     orderId = f"PAYTM_{uuid.uuid4().hex[:12].upper()}"
     is_sandbox = mid.startswith("TEST_") or "sandbox" in mid.lower()
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
-    website = "WEBSTAGING" if is_sandbox else "DEFAULT"
+    website = "WEBSTAGING" if is_sandbox else cfg.get("paytm_website", "DEFAULT").strip()
     
     callback_url = f"https://aryapremium.store/api/paytm-callback"
     
@@ -2630,7 +2630,8 @@ async def create_paytm_order(payload: dict):
         payload_data = {
             "body": body,
             "head": {
-                "signature": signature
+                "signature": signature,
+                "channelId": "WAP"
             }
         }
         
