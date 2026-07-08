@@ -1966,7 +1966,7 @@ async def create_paytm_order(payload: dict):
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
     website = "WEBSTAGING" if is_sandbox else cfg.get("paytm_website", "DEFAULT").strip()
     
-    callback_url = f"https://aryapremium.store/api/paytm-callback"
+    callback_url = cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback").strip()
     
     body = {
         "requestType": "Payment",
@@ -5910,6 +5910,8 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "paytm_status": cfg.get("paytm_status", "hidden"),
                 "paytm_mid": cfg.get("paytm_mid", ""),
                 "paytm_merchant_key": cfg.get("paytm_merchant_key", ""),
+                "paytm_website": cfg.get("paytm_website", "DEFAULT"),
+                "paytm_callback_url": cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback"),
                 "is_owner": is_owner_flag,
             }
         }
@@ -5958,6 +5960,10 @@ async def update_admin_settings(payload: dict):
             update_fields["paytm_mid"] = str(payload["paytm_mid"]).strip()
         if "paytm_merchant_key" in payload:
             update_fields["paytm_merchant_key"] = str(payload["paytm_merchant_key"]).strip()
+        if "paytm_website" in payload:
+            update_fields["paytm_website"] = str(payload["paytm_website"]).strip()
+        if "paytm_callback_url" in payload:
+            update_fields["paytm_callback_url"] = str(payload["paytm_callback_url"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
