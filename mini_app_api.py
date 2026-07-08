@@ -3861,12 +3861,15 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
             
         # Sort and take top 10
         orders = sorted(orders, key=lambda x: x["created_at"], reverse=True)[:10]
+
+        total_orders_count = await arya_db.db.orders.count_documents({}) + await arya_db.db.premium_checkout.count_documents({})
             
         result_data = {
             "total_users": total_users_count,
             "bot_users": bot_users_count,
             "miniapp_users": miniapp_users_count,
             "total_stories": total_stories,
+            "total_orders": total_orders_count,
             "total_revenue": total_revenue,
             "miniapp_revenue": miniapp_revenue,
             "bot_revenue": bot_revenue,
@@ -6083,8 +6086,8 @@ async def get_admin_buyers(telegram_id: str):
                 story_cache_by_oid[str(oid)] = s
         
         # 1. Identify active user IDs from recent checkouts and orders
-        recent_checkouts = await arya_db.db.premium_checkout.find({}, {"user_id": 1}).sort("_id", -1).limit(100).to_list(length=100)
-        recent_orders = await arya_db.db.orders.find({}, {"user_id": 1}).sort("_id", -1).limit(100).to_list(length=100)
+        recent_checkouts = await arya_db.db.premium_checkout.find({}, {"user_id": 1}).sort("_id", -1).limit(20000).to_list(length=20000)
+        recent_orders = await arya_db.db.orders.find({}, {"user_id": 1}).sort("_id", -1).limit(20000).to_list(length=20000)
         
         uids = []
         for c in recent_checkouts:
@@ -6110,10 +6113,10 @@ async def get_admin_buyers(telegram_id: str):
         uids_clean = list(set(uids_clean))
         
         # 2. Fetch ALL checkouts and ALL orders for these specific active users
-        checkouts = await arya_db.db.premium_checkout.find({"user_id": {"$in": uids_clean}}).to_list(length=10000)
-        orders = await arya_db.db.orders.find({"user_id": {"$in": uids_clean}}).to_list(length=10000)
+        checkouts = await arya_db.db.premium_checkout.find({"user_id": {"$in": uids_clean}}).to_list(length=100000)
+        orders = await arya_db.db.orders.find({"user_id": {"$in": uids_clean}}).to_list(length=100000)
         
-        user_docs_list = await arya_db.db.users.find({"id": {"$in": uids_clean}}).to_list(length=500)
+        user_docs_list = await arya_db.db.users.find({"id": {"$in": uids_clean}}).to_list(length=20000)
         
         user_cache = {}
         for u in user_docs_list:
