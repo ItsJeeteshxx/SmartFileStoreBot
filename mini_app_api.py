@@ -3730,7 +3730,7 @@ async def get_my_purchases(telegram_id: str):
 import time
 _admin_stats_cache = None
 _admin_stats_cache_time = 0.0
-ADMIN_STATS_CACHE_TTL = 300.0  # 5 minutes cache
+ADMIN_STATS_CACHE_TTL = 60.0  # 1 minute cache (reduced for fresher data)
 # -------------------------
 
 @api_router.get("/admin/stats")
@@ -3863,6 +3863,11 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         orders = sorted(orders, key=lambda x: x["created_at"], reverse=True)[:10]
 
         total_orders_count = await arya_db.db.orders.count_documents({}) + await arya_db.db.premium_checkout.count_documents({})
+        
+        # Total Buyers = unique users who have at least one checkout or order
+        buyer_uids_from_checkout = await arya_db.db.premium_checkout.distinct("user_id")
+        buyer_uids_from_orders = await arya_db.db.orders.distinct("user_id")
+        total_buyers_count = len(set(str(u) for u in buyer_uids_from_checkout + buyer_uids_from_orders if u is not None))
             
         result_data = {
             "total_users": total_users_count,
@@ -3870,6 +3875,7 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
             "miniapp_users": miniapp_users_count,
             "total_stories": total_stories,
             "total_orders": total_orders_count,
+            "total_buyers": total_buyers_count,
             "total_revenue": total_revenue,
             "miniapp_revenue": miniapp_revenue,
             "bot_revenue": bot_revenue,
@@ -6344,7 +6350,7 @@ async def get_admin_buyers(telegram_id: str):
             
         buyers.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
             
-        return {"success": True, "data": buyers[:200]}
+        return {"success": True, "data": buyers, "total": len(buyers)}
     except Exception as e:
         logger.error(f"Error fetching buyers: {e}")
         return {"success": False, "data": []}
