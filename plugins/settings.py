@@ -1437,7 +1437,7 @@ async def settings_query(bot, query):
       media = await db.get_bot_premium_ad_media(b_id)
       ad_buttons = InlineKeyboardMarkup([
           [
-              InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="http://t.me/UseAryaBot/apminibyarya"),
+              InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="https://t.me/UseAryaBot/apminibyarya"),
               InlineKeyboardButton("Updates", url="https://t.me/AryaPremiumTG")
           ],
           [InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Sᴇᴛᴛɪɴɢs", callback_data=f"settings#sb_premium_ad_{b_id}")]

@@ -936,7 +936,7 @@ async def _process_start(client, message):
             
             ad_buttons = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="http://t.me/UseAryaBot/apminibyarya"),
+                    InlineKeyboardButton("𝗢𝗽𝗲𝗻 𝗦𝘁𝗼𝗿𝗲", url="https://t.me/UseAryaBot/apminibyarya"),
                     InlineKeyboardButton("Updates", url="https://t.me/AryaPremiumTG")
                 ]
             ])
@@ -1037,7 +1037,7 @@ async def _send_premium_menu(client, query_or_msg, edit: bool = False):
     buttons = [
         [
             InlineKeyboardButton("»  " + _sc("Bot"), url="https://t.me/UseAryaBot"),
-            InlineKeyboardButton("»  " + _sc("Mini App"), url="http://t.me/UseAryaBot/apminibyarya")
+            InlineKeyboardButton("»  " + _sc("Mini App"), url="https://t.me/UseAryaBot/apminibyarya")
         ],
         [
             InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")
