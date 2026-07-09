@@ -3862,11 +3862,15 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         # Sort and take top 10
         orders = sorted(orders, key=lambda x: x["created_at"], reverse=True)[:10]
 
-        total_orders_count = await arya_db.db.orders.count_documents({}) + await arya_db.db.premium_checkout.count_documents({})
+        # Total Orders = only successfully paid/completed orders (not failed/pending)
+        # Mini App orders use status="paid", Bot checkouts use status="approved"
+        paid_miniapp_orders = await arya_db.db.orders.count_documents({"status": "paid"})
+        approved_bot_orders = await arya_db.db.premium_checkout.count_documents({"status": "approved"})
+        total_orders_count = paid_miniapp_orders + approved_bot_orders
         
-        # Total Buyers = unique users who have at least one checkout or order
-        buyer_uids_from_checkout = await arya_db.db.premium_checkout.distinct("user_id")
-        buyer_uids_from_orders = await arya_db.db.orders.distinct("user_id")
+        # Total Buyers = unique users who have minimum 1 successfully paid/approved order
+        buyer_uids_from_checkout = await arya_db.db.premium_checkout.distinct("user_id", {"status": "approved"})
+        buyer_uids_from_orders = await arya_db.db.orders.distinct("user_id", {"status": "paid"})
         total_buyers_count = len(set(str(u) for u in buyer_uids_from_checkout + buyer_uids_from_orders if u is not None))
             
         result_data = {
