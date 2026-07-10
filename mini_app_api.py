@@ -2602,9 +2602,10 @@ async def create_paytm_order(payload: dict):
     import uuid
     import json
     orderId = f"PAYTM_{uuid.uuid4().hex[:12].upper()}"
-    is_sandbox = mid.startswith("TEST_") or "sandbox" in mid.lower()
+    paytm_env = cfg.get("paytm_env", "staging").strip().lower()
+    is_sandbox = (paytm_env == "staging" or mid.startswith("TEST_") or "sandbox" in mid.lower())
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
-    website = "WEBSTAGING" if is_sandbox else cfg.get("paytm_website", "DEFAULT").strip()
+    website = cfg.get("paytm_website", "WEBSTAGING" if is_sandbox else "DEFAULT").strip()
     
     callback_url = cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback").strip()
     
@@ -2720,7 +2721,8 @@ async def paytm_callback(request: Request):
         logger.warning(f"Paytm checksum verification failed for order {order_id}")
         return Response(content="<h3>Checksum Verification Failed</h3>", media_type="text/html")
         
-    is_sandbox = mid.startswith("TEST_") or "sandbox" in mid.lower()
+    paytm_env = cfg.get("paytm_env", "staging").strip().lower()
+    is_sandbox = (paytm_env == "staging" or mid.startswith("TEST_") or "sandbox" in mid.lower())
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
     
     status_verified = False
@@ -7759,6 +7761,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "paytm_merchant_key": cfg.get("paytm_merchant_key", ""),
                 "paytm_website": cfg.get("paytm_website", "DEFAULT"),
                 "paytm_callback_url": cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback"),
+                "paytm_env": cfg.get("paytm_env", "staging"),
                 "is_owner": is_owner_flag,
             }
         }
@@ -7827,6 +7830,8 @@ async def update_admin_settings(payload: dict):
             update_fields["paytm_website"] = str(payload["paytm_website"]).strip()
         if "paytm_callback_url" in payload:
             update_fields["paytm_callback_url"] = str(payload["paytm_callback_url"]).strip()
+        if "paytm_env" in payload:
+            update_fields["paytm_env"] = str(payload["paytm_env"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
