@@ -1985,7 +1985,7 @@ async def create_paytm_order(payload: dict):
     }
     
     try:
-        body_json = json.dumps(body)
+        body_json = json.dumps(body, separators=(',', ':'))
         signature = paytmchecksum.generateSignature(body_json, merchant_key)
         
         payload_data = {
@@ -2092,7 +2092,7 @@ async def paytm_callback(request: Request):
             "mid": mid,
             "orderId": order_id
         }
-        status_body_json = json.dumps(status_body)
+        status_body_json = json.dumps(status_body, separators=(',', ':'))
         status_sig = paytmchecksum.generateSignature(status_body_json, merchant_key)
         
         status_payload = {
