@@ -718,7 +718,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 dp = None
                 last_err = None
                 skipped = False
-                for attempt in range(1, 4):
+                attempt = 1
+                while attempt <= 3:
                     try:
                         # Heal/ensure client is alive before downloading
                         if attempt > 1 or not getattr(client, 'is_connected', True):
@@ -753,6 +754,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         else:
                             raise FileNotFoundError("Downloaded path does not exist")
 
+                    except FloodWait as fw:
+                        logger.warning(f"[Cleaner {job_id}] FloodWait during download (attempt {attempt}): sleeping for {fw.value + 5}s...")
+                        await asyncio.sleep(fw.value + 5)
+                        continue
+
                     except (asyncio.TimeoutError, Exception) as e:
                         last_err = e
                         logger.warning(f"[Cleaner {job_id}] Download attempt {attempt} failed for mid={m.id}: {e}")
@@ -767,6 +773,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                         if attempt < 3:
                             await asyncio.sleep(5)
+                            attempt += 1
                         else:
                             break
 
