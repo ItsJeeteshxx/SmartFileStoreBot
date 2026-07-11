@@ -942,11 +942,24 @@ async def _lb_callbacks(bot, update: CallbackQuery):
             kb.append([InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ Rᴇᴄᴏʀᴅ", callback_data=f"lb#del#{jid}")])
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="lb#main")])
         
+        # Get active bot info
+        acc_lbl = "Default"
+        acc_id = job.get("account_id")
+        if not acc_id or acc_id == "bot":
+            acc_lbl = "Main Bot"
+        else:
+            acc = await db.get_bot(uid, acc_id)
+            if acc:
+                kind = "Bot" if acc.get("is_bot", True) else "Userbot"
+                name = acc.get("username") or acc.get("name") or "Unknown"
+                acc_lbl = f"{kind}: @{name} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name} (<code>{acc['id']}</code>)"
+
         src_display = str(job.get("source", "?"))
         dup_st = "✅ Enabled" if job.get("duplicate_handling") == "yes" else "❌ Disabled"
         txt = (
             f"<b>📡 Lɪᴠᴇ Bᴀᴛᴄʜ Sᴛᴀᴛᴜs</b>\n\n"
             f"<b>📖 Sᴛᴏʀʏ:</b> <code>{job.get('story')}</code>\n"
+            f"<b>👤 Aᴄᴄᴏᴜɴᴛ:</b> {acc_lbl}\n"
             f"<b>📥 Sᴏᴜʀᴄᴇ:</b> <code>{src_display}</code>\n"
             f"<b>ℹ️ Sᴛᴀᴛᴜs:</b> <code>{st.upper()}</code>\n"
             f"<b>🔄 Dᴜᴘʟɪᴄᴀᴛᴇ Hᴀɴᴅʟɪɴɢ:</b> <code>{dup_st}</code>\n"

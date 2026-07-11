@@ -2187,10 +2187,21 @@ async def job_info_cb(bot, query):
     if job.get("notify_large_file_mb"):
         size_lbl += f"\n<b>Large file alert:</b> ≥ {job['notify_large_file_mb']} MB → DM to owner"
 
+    # Account info
+    acc_lbl = "Default"
+    acc_id = job.get("account_id")
+    if acc_id:
+        acc = await db.get_bot(job["user_id"], acc_id)
+        if acc:
+            kind = "Bot" if acc.get("is_bot", True) else "Userbot"
+            name = acc.get("username") or acc.get("name") or "Unknown"
+            acc_lbl = f"{kind}: @{name} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name} (<code>{acc['id']}</code>)"
+
     text = (
         f"<b>Live Job Info</b>\n\n"
         f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
         f"<b>Name:</b> {job.get('name', 'Default')}\n"
+        f"<b>Account:</b> {acc_lbl}\n"
         f"<b>Status:</b> {st} {job.get('status','?')}\n"
         f"<b>Source:</b> {job.get('from_title','?')}\n"
         f"<b>Dest 1:</b> {job.get('to_title','?')}{topic_lbl}"

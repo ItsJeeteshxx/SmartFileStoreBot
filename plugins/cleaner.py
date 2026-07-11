@@ -158,7 +158,7 @@ def _sanitize_for_filename(text: str) -> str:
 
 
 # ─── Info Text Builder ────────────────────────────────────────────────────────
-def _build_cl_info(job: dict) -> str:
+async def _build_cl_info(job: dict) -> str:
     status = job.get("status", "stopped")
     name   = job.get("base_name", "Cleaner")
     done   = job.get("files_done", 0)
@@ -175,9 +175,20 @@ def _build_cl_info(job: dict) -> str:
         rate = (time.time() - ts) / done
         eta_str = f"\n  ⏱ <b>ETA:</b> ~{_tm(rate * (total - done))}"
 
+    # Account info
+    acc_lbl = "Default"
+    acc_id = job.get("account_id")
+    if acc_id:
+        acc = await db.get_bot(job["user_id"], acc_id)
+        if acc:
+            kind = "Bot" if acc.get("is_bot", True) else "Userbot"
+            name_acc = acc.get("username") or acc.get("name") or "Unknown"
+            acc_lbl = f"{kind}: @{name_acc} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name_acc} (<code>{acc['id']}</code>)"
+
     lines = [
         f"<b>{ic} 🧹 {name} [{job.get('job_id','')[-6:]}]</b>",
         f"Status: {ic} {status.title()}",
+        f"  👤 <b>Account:</b> {acc_lbl}",
         f"  <code>{bar}</code>",
         "",
         f"  📁 <b>Processed:</b> {done}/{total}",
@@ -1617,7 +1628,7 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         if st in ("completed", "stopped", "failed"):
             kb.append([InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ Rᴇᴄᴏʀᴅ", callback_data=f"cl#del#{jid}")])
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="cl#main")])
-        try: await update.message.edit_text(_build_cl_info(job), reply_markup=InlineKeyboardMarkup(kb))
+        try: await update.message.edit_text(await _build_cl_info(job), reply_markup=InlineKeyboardMarkup(kb))
         except: pass
 
     elif action == "pause":

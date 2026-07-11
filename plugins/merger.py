@@ -195,7 +195,7 @@ def _ist_str(fmt='%d %b %Y %I:%M:%S %p IST') -> str:
 from typing import Optional
 
 
-def _build_info_text(job: dict, now_ts: Optional[float] = None) -> str:
+async def _build_info_text(job: dict, now_ts: Optional[float] = None) -> str:
     """Build the premium info panel text for a merge job."""
     if now_ts is None:
         now_ts = time.time()
@@ -322,11 +322,22 @@ def _build_info_text(job: dict, now_ts: Optional[float] = None) -> str:
         if has_yt and not yt_done_flag: remaining += yt_eta
         total_eta_str = f"~{_tm(remaining)}" if remaining else "Calculating…"
 
+    # Account info
+    acc_lbl = "Default"
+    acc_id = job.get("account_id")
+    if acc_id:
+        acc = await db.get_bot(job["user_id"], acc_id)
+        if acc:
+            kind = "Bot" if acc.get("is_bot", True) else "Userbot"
+            name_acc = acc.get("username") or acc.get("name") or "Unknown"
+            acc_lbl = f"{kind}: @{name_acc} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name_acc} (<code>{acc['id']}</code>)"
+
     # ── Assemble ───────────────────────────────────────────────────────────
     header = f"{_emoji(status)} <b>{icon} {name}</b>  [{job.get('job_id','')[-6:]}]"
     lines = [
         header,
         f"  Status: <b>{status.title()}</b>  •  Range: {job.get('start_id')}→{job.get('end_id')}",
+        f"  👤 Account: {acc_lbl}",
         f"  <code>{prog_bar}</code>",
         "",
         "<b>Phase Progress:</b>",
@@ -2233,7 +2244,7 @@ async def mg_cb(bot, query):
         job = await _db_get(param)
         if not job: return await query.answer("Not found!", show_alert=True)
         mtype = job.get("merge_type", "audio")
-        text = _build_info_text(job)
+        text = await _build_info_text(job)
 
         info_btns = [
             [InlineKeyboardButton("🔄 Rᴇꜰʀᴇsʜ", callback_data=f"mg#info#{param}")],

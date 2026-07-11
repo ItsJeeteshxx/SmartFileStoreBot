@@ -1262,10 +1262,21 @@ async def mj_info_cb(bot, query):
     smart_val = job.get("smart_order", True)
     smart_lbl = "🧠 ON" if smart_val else "⚡ OFF (raw)"
 
+    # Account info
+    acc_lbl = "Default"
+    acc_id = job.get("account_id")
+    if acc_id:
+        acc = await db.get_bot(job["user_id"], acc_id)
+        if acc:
+            kind = "Bot" if acc.get("is_bot", True) else "Userbot"
+            name = acc.get("username") or acc.get("name") or "Unknown"
+            acc_lbl = f"{kind}: @{name} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name} (<code>{acc['id']}</code>)"
+
     text = (
         f"<b>Multi Job Info</b>\n\n"
         f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
         f"<b>Name:</b> {job.get('name', 'Default')}\n"
+        f"<b>Account:</b> {acc_lbl}\n"
         f"<b>Status:</b> {st} {job.get('status','?')}\n"
         f"<b>Source:</b> {job.get('from_title','?')}\n"
         f"<b>Dest 1:</b> {job.get('to_title','?')}{topic_lbl}"

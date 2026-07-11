@@ -811,9 +811,20 @@ async def tj_info_cb(bot, query):
     end_id  = job.get("end_id", 0)
     end_lbl = f"ID {end_id}" if end_id else "∞ (all messages)"
 
+    # Account info
+    acc_lbl = "Default"
+    acc_id = job.get("account_id")
+    if acc_id:
+        acc = await db.get_bot(job["user_id"], acc_id)
+        if acc:
+            kind = "Bot" if acc.get("is_bot", True) else "Userbot"
+            name = acc.get("username") or acc.get("name") or "Unknown"
+            acc_lbl = f"{kind}: @{name} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name} (<code>{acc['id']}</code>)"
+
     text = (
         f"<b>»  Task Job Info</b>\n\n"
         f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
+        f"<b>Account:</b> {acc_lbl}\n"
         f"<b>Status:</b> {st} {job.get('status', '?')}\n"
         f"<b>Source:</b> {job.get('from_title', '?')}\n"
         f"<b>Target:</b> {job.get('to_title', '?')}\n"
