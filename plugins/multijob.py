@@ -246,33 +246,30 @@ async def _mj_forward(
 
         for _send_attempt in range(15):
             try:
-                if not hasattr(client, '_network_lock'):
-                    client._network_lock = asyncio.Lock()
-                async with client._network_lock:
-                    if use_forward_tag:
-                        try:
-                            await client.forward_messages(
-                                chat_id=chat, from_chat_id=msg.chat.id,
-                                message_ids=msg.id, **kw
-                            )
-                            return True
-                        except Exception as fwd_err:
-                            logger.warning(
-                                f"[MultiJob _send_one] Native forward failed for msg {msg.id}: {fwd_err}. "
-                                "Falling back to copy_message."
-                            )
-                            use_forward_tag = False
+                if use_forward_tag:
+                    try:
+                        await client.forward_messages(
+                            chat_id=chat, from_chat_id=msg.chat.id,
+                            message_ids=msg.id, **kw
+                        )
+                        return True
+                    except Exception as fwd_err:
+                        logger.warning(
+                            f"[MultiJob _send_one] Native forward failed for msg {msg.id}: {fwd_err}. "
+                            "Falling back to copy_message."
+                        )
+                        use_forward_tag = False
 
-                    if not use_forward_tag:
-                        if is_text_replaced and not msg.media:
-                            if not new_text or not new_text.strip():
-                                return True  # silently skip empty text
-                            await client.send_message(chat_id=chat, text=new_text, **kw)
-                        else:
-                            await client.copy_message(
-                                chat_id=chat, from_chat_id=msg.chat.id,
-                                message_id=msg.id, **kw
-                            )
+                if not use_forward_tag:
+                    if is_text_replaced and not msg.media:
+                        if not new_text or not new_text.strip():
+                            return True  # silently skip empty text
+                        await client.send_message(chat_id=chat, text=new_text, **kw)
+                    else:
+                        await client.copy_message(
+                            chat_id=chat, from_chat_id=msg.chat.id,
+                            message_id=msg.id, **kw
+                        )
                 return True  # success
             except FloodWait as fw:
                 # Respect Telegram's rate limit — wait and retry
@@ -286,10 +283,7 @@ async def _mj_forward(
                 if "RESTRICTED" in err or "PROTECTED" in err:
                     # Try copy → forward fallback once for protected content
                     try:
-                        if not hasattr(client, '_network_lock'):
-                            client._network_lock = asyncio.Lock()
-                        async with client._network_lock:
-                            await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
+                        await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
                         return True
                     except Exception:
                         pass
@@ -313,7 +307,7 @@ async def _mj_forward(
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as dl_e:
                                     err_dl = str(dl_e).upper()
-                                    if "TIMEOUT" in err_dl or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err_dl or "DISCONNECT" in err_dl:
+                                    if "TIMEOUT" in err_dl or "CONNECTION" in err_dl or "BROKEN PIPE" in err_dl or "ERRNO 32" in err_dl or "DISCONNECT" in err_dl:
                                         await asyncio.sleep(5)
                                         continue
                                     break
@@ -325,16 +319,13 @@ async def _mj_forward(
                             uploaded = False
                             for _ul_try in range(15):
                                 try:
-                                    if not hasattr(client, '_network_lock'):
-                                        client._network_lock = asyncio.Lock()
-                                    async with client._network_lock:
-                                        if msg.photo:      await client.send_photo(photo=fp, **up_kw)
-                                        elif msg.video:    await client.send_video(video=fp, file_name=original_name, **up_kw)
-                                        elif msg.document: await client.send_document(document=fp, file_name=original_name, **up_kw)
-                                        elif msg.audio:    await client.send_audio(audio=fp, file_name=original_name, **up_kw)
-                                        elif msg.voice:    await client.send_voice(voice=fp, **up_kw)
-                                        elif msg.animation: await client.send_animation(animation=fp, **up_kw)
-                                        elif msg.sticker:  await client.send_sticker(sticker=fp, **up_kw)
+                                    if msg.photo:      await client.send_photo(photo=fp, **up_kw)
+                                    elif msg.video:    await client.send_video(video=fp, file_name=original_name, **up_kw)
+                                    elif msg.document: await client.send_document(document=fp, file_name=original_name, **up_kw)
+                                    elif msg.audio:    await client.send_audio(audio=fp, file_name=original_name, **up_kw)
+                                    elif msg.voice:    await client.send_voice(voice=fp, **up_kw)
+                                    elif msg.animation: await client.send_animation(animation=fp, **up_kw)
+                                    elif msg.sticker:  await client.send_sticker(sticker=fp, **up_kw)
                                     uploaded = True
                                     break
                                 except FloodWait as fw:
@@ -353,10 +344,7 @@ async def _mj_forward(
                             await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(fp)) if fp and os.path.exists(str(fp)) else 0)
                             if os.path.exists(fp): os.remove(fp)
                         else:
-                            if not hasattr(client, '_network_lock'):
-                                client._network_lock = asyncio.Lock()
-                            async with client._network_lock:
-                                await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
+                            await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
                         return True
                     except Exception as fallback_e:
                         logger.debug(f"[MultiJob _send_one] Fallback failed to {chat}: {fallback_e}")
