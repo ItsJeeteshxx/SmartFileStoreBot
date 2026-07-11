@@ -27,19 +27,19 @@ _S = {}   # populated below; we use a plain dict for clarity
 #  START_TXT 
 _S["START_TXT"] = {
     "en": (
-        "<i>Hello </i><a href='tg://user?id={}'>{}</a>\n"
+        "Hello <a href='tg://user?id={}'>{}</a>\n"
         "\n"
-        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.</i>\n"
+        "I am ᴀʀʏᴀ ʙᴏᴛ, a multi-functional bot that ᴄᴀɴ ғᴏʀᴡᴀʀᴅ messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.\n"
     ),
     "hi": (
-        "<i>Hello </i><a href='tg://user?id={}'>{}</a>\n"
+        "Hello <a href='tg://user?id={}'>{}</a>\n"
         "\n"
-        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.</i>\n"
+        "I am ᴀʀʏᴀ ʙᴏᴛ, a multi-functional bot that ᴄᴀɴ ғᴏʀᴡᴀʀᴅ messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.\n"
     ),
     "hinglish": (
-        "<i>Hello </i><a href='tg://user?id={}'>{}</a>\n"
+        "Hello <a href='tg://user?id={}'>{}</a>\n"
         "\n"
-        "<i>I am </i>ᴀʀʏᴀ ʙᴏᴛ<i>, a multi-functional bot that </i>ᴄᴀɴ ғᴏʀᴡᴀʀᴅ<i> messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.</i>\n"
+        "I am ᴀʀʏᴀ ʙᴏᴛ, a multi-functional bot that ᴄᴀɴ ғᴏʀᴡᴀʀᴅ messages across channels and groups. I fully support normal forwarding, multi-job batches, live syncing, the media merger system (audio), batch link generation, and bulk message cleaning.\n"
     ),
 }
 
