@@ -221,8 +221,16 @@ async def _dl_worker(worker_id, dl_queue, up_queue, client, to_chat, thread_id):
                     if caption is not None: kw["caption"] = caption
                     
                     if forward_tag:
-                        await client.forward_messages(chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
-                    else:
+                        try:
+                            await client.forward_messages(chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
+                        except Exception as fwd_err:
+                            logger.warning(
+                                f"[TaskJob worker] Native forward failed for msg {msg.id}: {fwd_err}. "
+                                "Falling back to copy_message."
+                            )
+                            forward_tag = False
+
+                    if not forward_tag:
                         if is_text_replaced and not getattr(msg, 'media', None):
                             if not new_text or not new_text.strip():
                                 await up_queue.put((seq_idx, 'skip', None, None))
@@ -426,25 +434,35 @@ async def _run_task_job(job_id: str, user_id: int):
             batch_ids = list(range(current, batch_end + 1))
 
             #  Fetch messages 
+            msgs = []
             try:
-                if is_bot:
+                # 1. Prefer get_chat_history (robust, does not return fake empty messages under rate limit)
+                # offset_id = batch_end + 1 retrieves messages with ID <= batch_end downwards.
+                batch_hist = []
+                async for m in client.get_chat_history(from_chat, limit=BATCH_SIZE, offset_id=batch_end + 1):
+                    if m.id < current:
+                        # Since get_chat_history goes backwards, once we see ID < current, we can stop fetching
+                        break
+                    batch_hist.append(m)
+                # Reverse to make it chronological (current -> batch_end)
+                msgs = list(reversed(batch_hist))
+            except Exception as hist_err:
+                logger.warning(f"[TaskJob {job_id}] get_chat_history failed: {hist_err}. Falling back to get_messages.")
+                # 2. Fallback to get_messages by specific IDs
+                try:
                     msgs = await client.get_messages(from_chat, batch_ids)
                     if not isinstance(msgs, list): msgs = [msgs]
-                else:
-                    # Userbot: get_messages by ID also works
-                    msgs = await client.get_messages(from_chat, batch_ids)
-                    if not isinstance(msgs, list): msgs = [msgs]
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 2)
-                continue
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[TaskJob {job_id}] Fetch error at {current}: {e}")
-                await asyncio.sleep(10)
-                current += BATCH_SIZE   # skip bad batch
-                await _tj_update(job_id, current_id=current)
-                continue
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 2)
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[TaskJob {job_id}] Fetch error at {current}: {e}")
+                    await asyncio.sleep(10)
+                    current += BATCH_SIZE   # skip bad batch
+                    await _tj_update(job_id, current_id=current)
+                    continue
 
             #  Sort & filter 
             valid = [m for m in msgs if m and not m.empty]

@@ -250,11 +250,20 @@ async def _mj_forward(
                     client._network_lock = asyncio.Lock()
                 async with client._network_lock:
                     if use_forward_tag:
-                        await client.forward_messages(
-                            chat_id=chat, from_chat_id=msg.chat.id,
-                            message_ids=msg.id, **kw
-                        )
-                    else:
+                        try:
+                            await client.forward_messages(
+                                chat_id=chat, from_chat_id=msg.chat.id,
+                                message_ids=msg.id, **kw
+                            )
+                            return True
+                        except Exception as fwd_err:
+                            logger.warning(
+                                f"[MultiJob _send_one] Native forward failed for msg {msg.id}: {fwd_err}. "
+                                "Falling back to copy_message."
+                            )
+                            use_forward_tag = False
+
+                    if not use_forward_tag:
                         if is_text_replaced and not msg.media:
                             if not new_text or not new_text.strip():
                                 return True  # silently skip empty text
@@ -294,10 +303,8 @@ async def _mj_forward(
                             fp = None
                             for _dl_try in range(15):
                                 try:
-                                    if not hasattr(client, '_network_lock'):
-                                        client._network_lock = asyncio.Lock()
-                                    async with client._network_lock:
-                                        fp = await client.download_media(msg, file_name=safe_name)
+                                    # We don't need client._network_lock for download_media since it's a read-only transport call.
+                                    fp = await client.download_media(msg, file_name=safe_name)
                                     if fp: 
                                         import os
                                         await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
@@ -771,54 +778,54 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             batch_ids = list(range(current, batch_end + 1))
 
             # Fetch messages
-            # For userbot + DM/username source: get_messages() uses
-            # messages.GetMessages WITHOUT a peer → looks up IDs in global inbox
-            # (returns wrong messages from saved msgs or other chats).
-            # Always use get_chat_history for non-channel DM sources.
+            msgs = []
             try:
-                if not is_bot and is_dm_source:
-                    # get_chat_history paginates newest→oldest; reverse to get chronological
-                    batch_hist = []
-                    async for m in client.get_chat_history(from_chat, limit=BATCH_SIZE, offset_id=current):
-                        batch_hist.append(m)
-                    msgs = list(reversed(batch_hist))
-                    if not isinstance(msgs, list):
-                        msgs = [msgs]
-                else:
+                # 1. Prefer get_chat_history (robust, does not return fake empty messages under rate limit)
+                # offset_id = batch_end + 1 retrieves messages with ID <= batch_end downwards.
+                batch_hist = []
+                async for m in client.get_chat_history(from_chat, limit=BATCH_SIZE, offset_id=batch_end + 1):
+                    if m.id < current:
+                        # Since get_chat_history goes backwards, once we see ID < current, we can stop fetching
+                        break
+                    batch_hist.append(m)
+                # Reverse to make it chronological (current -> batch_end)
+                msgs = list(reversed(batch_hist))
+            except Exception as hist_err:
+                logger.warning(f"[MultiJob {job_id}] get_chat_history failed: {hist_err}. Falling back to get_messages.")
+                # 2. Fallback to get_messages by specific IDs
+                try:
                     msgs = await client.get_messages(from_chat, batch_ids)
                     if not isinstance(msgs, list):
                         msgs = [msgs]
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 2)
-                continue
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                err_str = str(e).upper()
-                if any(x in err_str for x in ["PEER_ID_INVALID", "CHANNEL_INVALID", "USERNAME_INVALID", "CHAT_ID_INVALID"]):
-                    logger.error(f"[MultiJob {job_id}] Fatal Source Error: {e}")
-                    await _mj_update(job_id, status="error", error=f"Source Invalid: {e}")
-                    break
-                    
-                is_transient = any(k in err_str for k in (
-                    "TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "DISCONNECT",
-                    "NOT BEEN STARTED", "NOT CONNECTED", "CLOSED DATABASE",
-                    "NETWORK", "SOCKET", "PING", "MULTIJOB_RECONNECT_FAILED"
-                ))
-                if is_transient:
-                    logger.warning(f"[MultiJob {job_id}] Transient fetch error at {current}: {e}. Healing client...")
-                    try:
-                        client = await _mj_ensure_client_alive(client)
-                    except Exception: pass
-                    # CRITICAL: Do NOT advance current — retry the same batch.
-                    await asyncio.sleep(10)
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 2)
                     continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    err_str = str(e).upper()
+                    if any(x in err_str for x in ["PEER_ID_INVALID", "CHANNEL_INVALID", "USERNAME_INVALID", "CHAT_ID_INVALID"]):
+                        logger.error(f"[MultiJob {job_id}] Fatal Source Error: {e}")
+                        await _mj_update(job_id, status="error", error=f"Source Invalid: {e}")
+                        break
+                        
+                    is_transient = any(k in err_str for k in (
+                        "TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "DISCONNECT",
+                        "NOT BEEN STARTED", "NOT CONNECTED", "CLOSED DATABASE",
+                        "NETWORK", "SOCKET", "PING", "MULTIJOB_RECONNECT_FAILED"
+                    ))
+                    if is_transient:
+                        logger.warning(f"[MultiJob {job_id}] Transient fetch error at {current}: {e}. Healing client...")
+                        try:
+                            client = await _mj_ensure_client_alive(client)
+                        except Exception: pass
+                        await asyncio.sleep(10)
+                        continue
 
-                # Unknown / non-transient API error — do NOT skip hundreds of IDs.
-                # Sleep and retry; if it keeps happening the outer handler will catch it.
-                logger.warning(f"[MultiJob {job_id}] Unknown fetch error at {current}: {e} — retrying batch in 30s")
-                await asyncio.sleep(30)
-                continue
+                    # Unknown / non-transient API error — do NOT skip hundreds of IDs.
+                    logger.warning(f"[MultiJob {job_id}] Unknown fetch error at {current}: {e} — retrying batch in 30s")
+                    await asyncio.sleep(30)
+                    continue
 
             valid = [m for m in msgs if m and not m.empty]
             if job.get("smart_order", True):

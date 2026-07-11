@@ -56,9 +56,8 @@ def _get_ffmpeg_lock() -> asyncio.Lock:
 
 
 # ─── FFmpeg CPU throttle ──────────────────────────────────────────────────────
-# 1 thread per process + OS-level niceness 15 = ~40-60% CPU sustained.
-# cpulimit (if installed on VPS) wraps the command for a hard % cap.
-FFMPEG_THREADS = "1"
+# 2 threads per process + OS-level niceness 15 = optimal speed on 2-OCPU VPS.
+FFMPEG_THREADS = "2"
 FFMPEG_CPU_LIMIT = 70      # max % CPU per ffmpeg process (used with cpulimit)
 FFMPEG_NICE      = 15      # OS niceness: 0=normal, 19=lowest; 15 keeps bot alive
 
@@ -977,6 +976,19 @@ MAX_CHUNK_GB = 2.0         # Abort a single chunk if it somehow exceeds this
 async def _run_job(jid, uid, bot):
     job = await _db_get(jid)
     if not job: return
+
+    if not _check_ffmpeg():
+        await _db_up(jid, status="error", error="FFmpeg not installed")
+        try:
+            await bot.send_message(
+                uid,
+                "❌ <b>Merger Error: FFmpeg is not installed on the system!</b>\n\n"
+                "Merger requires FFmpeg to join audio/video files.\n"
+                "Please run this command on your VPS to install it:\n"
+                "<code>sudo apt-get update && sudo apt-get install -y ffmpeg</code>"
+            )
+        except Exception: pass
+        return
 
     ev = _mg_paused.get(jid)
     if not ev:

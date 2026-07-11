@@ -587,11 +587,11 @@ async def _forward_message(
                 is_text_replaced = True
 
     async def _send_one(chat, thread):
-        nonlocal forward_tag
+        use_forward_tag = forward_tag
         if new_caption is not None or is_text_replaced:
             # Telegram CANNOT modify text/captions of natively forwarded messages.
             # If the user wants to wipe captions, remove links, or replace text, we MUST use copy_message.
-            forward_tag = False
+            use_forward_tag = False
 
         kw = {"message_thread_id": thread} if thread else {}
         if new_caption is not None:
@@ -604,9 +604,18 @@ async def _forward_message(
                 if not hasattr(client, '_network_lock'):
                     client._network_lock = asyncio.Lock()
                 async with client._network_lock:
-                    if forward_tag:
-                        await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
-                    else:
+                    if use_forward_tag:
+                        try:
+                            await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
+                            return True
+                        except Exception as fwd_err:
+                            logger.warning(
+                                f"[Job] Native forward failed for msg {msg.id} in {msg.chat.id}: {fwd_err}. "
+                                "Falling back to copy_message/send_message."
+                            )
+                            use_forward_tag = False
+
+                    if not use_forward_tag:
                         if is_text_replaced and not msg.media:
                             if not new_text or not new_text.strip():
                                 return True # Silently skip since it's an empty text msg after stripping
@@ -649,10 +658,8 @@ async def _forward_message(
                     # Internal retry for download
                     for dl_attempt in range(5):
                         try:
-                            if not hasattr(client, '_network_lock'):
-                                client._network_lock = asyncio.Lock()
-                            async with client._network_lock:
-                                fp = await client.download_media(msg, file_name=safe_name)
+                            # We don't need client._network_lock for download_media since it's a read-only transport call.
+                            fp = await client.download_media(msg, file_name=safe_name)
                             if fp: 
                                 await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                                 break

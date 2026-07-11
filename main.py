@@ -154,7 +154,94 @@ async def ping_server():
             logging.error(f"Self-ping failed: {e}")
 
 
+def _ensure_ffmpeg_installed():
+    import shutil
+    import os
+    import subprocess
+    import platform
+    import urllib.request
+    import logging
+
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        logging.info("[FFmpeg Auto-Install] FFmpeg is already installed and available in PATH.")
+        return True
+
+    logging.info("[FFmpeg Auto-Install] FFmpeg/FFprobe missing. Attempting to install...")
+
+    # 1. Try apt-get system install first
+    if shutil.which("apt-get"):
+        try:
+            logging.info("[FFmpeg Auto-Install] Found apt-get. Running 'sudo apt-get update && sudo apt-get install -y ffmpeg'...")
+            subprocess.run(["sudo", "apt-get", "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+            r = subprocess.run(["sudo", "apt-get", "install", "-y", "ffmpeg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+            if r.returncode == 0 and shutil.which("ffmpeg") and shutil.which("ffprobe"):
+                logging.info("[FFmpeg Auto-Install] Successfully installed FFmpeg via apt-get!")
+                return True
+        except Exception as e:
+            logging.warning(f"[FFmpeg Auto-Install] apt-get install failed: {e}")
+
+    # 2. Try download static binaries if apt-get failed/unsupported
+    try:
+        arch = platform.machine().lower()
+        logging.info(f"[FFmpeg Auto-Install] Downloading static binaries for architecture: {arch}")
+        
+        if "aarch64" in arch or "arm64" in arch:
+            url = "https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-arm64-static.tar.xz"
+        else:
+            url = "https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz"
+
+        local_bin_dir = os.path.abspath("ffmpeg_bin")
+        os.makedirs(local_bin_dir, exist_ok=True)
+
+        ffmpeg_path = os.path.join(local_bin_dir, "ffmpeg")
+        ffprobe_path = os.path.join(local_bin_dir, "ffprobe")
+
+        if local_bin_dir not in os.environ["PATH"]:
+            os.environ["PATH"] = local_bin_dir + os.pathsep + os.environ["PATH"]
+
+        if os.path.exists(ffmpeg_path) and os.path.exists(ffprobe_path):
+            logging.info("[FFmpeg Auto-Install] Static binaries already downloaded and found in local bin.")
+            return True
+
+        tar_path = os.path.join(local_bin_dir, "ffmpeg.tar.xz")
+        logging.info(f"[FFmpeg Auto-Install] Downloading static build from {url}...")
+        urllib.request.urlretrieve(url, tar_path)
+
+        logging.info("[FFmpeg Auto-Install] Download complete. Extracting using system tar...")
+        subprocess.run(["tar", "-xf", tar_path, "-C", local_bin_dir], check=True, timeout=60)
+
+        extracted_dirs = [d for d in os.listdir(local_bin_dir) if os.path.isdir(os.path.join(local_bin_dir, d))]
+        for d in extracted_dirs:
+            src_ffmpeg = os.path.join(local_bin_dir, d, "ffmpeg")
+            src_ffprobe = os.path.join(local_bin_dir, d, "ffprobe")
+            if os.path.exists(src_ffmpeg) and os.path.exists(src_ffprobe):
+                import shutil as _sh
+                _sh.move(src_ffmpeg, ffmpeg_path)
+                _sh.move(src_ffprobe, ffprobe_path)
+                break
+
+        if os.path.exists(tar_path):
+            os.remove(tar_path)
+        for d in extracted_dirs:
+            try:
+                import shutil as _sh
+                _sh.rmtree(os.path.join(local_bin_dir, d))
+            except Exception: pass
+
+        os.chmod(ffmpeg_path, 0o755)
+        os.chmod(ffprobe_path, 0o755)
+
+        if os.path.exists(ffmpeg_path) and os.path.exists(ffprobe_path):
+            logging.info("[FFmpeg Auto-Install] Successfully downloaded and set up static FFmpeg binaries locally!")
+            return True
+    except Exception as e:
+        logging.error(f"[FFmpeg Auto-Install] Failed to download and extract static FFmpeg: {e}")
+
+    return shutil.which("ffmpeg") is not None
+
+
 async def main():
+    _ensure_ffmpeg_installed()
     bot = Bot()
     await bot.start()
 

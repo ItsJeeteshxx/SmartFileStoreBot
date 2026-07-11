@@ -236,7 +236,7 @@ async def _ffmpeg_async(cmd: list) -> tuple:
 
 def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clean: bool = False, force_reencode: bool = False) -> list:
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-           "-threads", "1",
+           "-threads", "2",
            "-analyzeduration", "2M", "-probesize", "2M",
            "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
            "-i", input_path]
@@ -268,14 +268,14 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
 
     if deep_clean:
         cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
-        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1",
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "2",
                 "-write_xing", "0", "-id3v2_version", "3"]
     elif in_ext == out_ext and not force_reencode:
         cmd += ["-c:a", "copy"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-c:v", "copy", "-movflags", "+faststart"]
     else:
-        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1",
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "2",
                 "-write_xing", "0", "-id3v2_version", "3"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-movflags", "+faststart"]
@@ -319,6 +319,21 @@ async def _cl_run_job(job_id: str, bot=None):
 async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
     job = await _cl_get_job(job_id)
     if not job or job.get("status") in ("completed", "failed", "stopped"): return
+
+    if not shutil.which("ffmpeg"):
+        await _cl_update_job(job_id, {"status": "failed", "error": "FFmpeg not installed"})
+        _bot = bot or _cl_bot_ref.get(job_id)
+        if _bot:
+            try:
+                await _bot.send_message(
+                    job["user_id"],
+                    "❌ <b>Cleaner Error: FFmpeg is not installed on the system!</b>\n\n"
+                    "Cleaner requires FFmpeg to process files.\n"
+                    "Please run this command on your VPS to install it:\n"
+                    "<code>sudo apt-get update && sudo apt-get install -y ffmpeg</code>"
+                )
+            except Exception: pass
+        return
 
     # FIX #3: Clear force_active flag
     if job.get("force_active"):
@@ -685,83 +700,71 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                        or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
                 ipath = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_in_{job_id}_{m.id}{ext}"))
 
-                # Size-aware timeout: 1s per 200KB, min 300s, max 600s
+                # Size-aware timeout: minimum 1800s (30m), scales up for larger files
                 fsize = getattr(m_obj, 'file_size', 0) or 0
-                dl_timeout = min(600, max(300, fsize // (200 * 1024)))
+                dl_timeout = max(1800, fsize // (30 * 1024)) # ~30 KB/s min speed threshold
 
-                try:
-                    async with _cl_dl_sem:
-                        if not hasattr(client, '_network_lock'):
-                            client._network_lock = asyncio.Lock()
-                        async with client._network_lock:
+                dp = None
+                last_err = None
+                skipped = False
+                for attempt in range(1, 4):
+                    try:
+                        # Heal/ensure client is alive before downloading
+                        if attempt > 1 or not getattr(client, 'is_connected', True):
+                            try:
+                                client = await _ensure_alive(client)
+                                await asyncio.sleep(2)
+                            except Exception: pass
+
+                        async with _cl_dl_sem:
+                            # We don't need client._network_lock for downloading media
+                            # since it's a read-only MTProto transport call.
                             coro = client.download_media(m, file_name=ipath)
                             if coro is None:
-                                # Media reference is gone — skip this message silently
                                 logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (media expired/deleted)")
-                                await _remove_file_async(ipath)
-                                continue
+                                skipped = True
+                                break # Skip this file since it's deleted/expired
 
                             dp = await asyncio.wait_for(coro, timeout=dl_timeout)
 
-                    if dp and os.path.exists(str(dp)):
-                        _dl_bytes = os.path.getsize(str(dp))
-                        if _dl_bytes == 0:
-                            await _remove_file_async(str(dp))
-                            raise ValueError("File size equals to 0 B")
-                        # Track download in global stats (shown in /status)
-                        try:
-                            asyncio.create_task(db.update_global_stats(
-                                total_files_downloaded=1, total_data_usage_bytes=_dl_bytes
-                            ))
-                        except Exception: pass
-                        return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
-                    else:
-                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: download resolved to None (media expired)")
+                        if dp and os.path.exists(str(dp)):
+                            _dl_bytes = os.path.getsize(str(dp))
+                            if _dl_bytes > 0:
+                                # Track download in global stats
+                                try:
+                                    asyncio.create_task(db.update_global_stats(
+                                        total_files_downloaded=1, total_data_usage_bytes=_dl_bytes
+                                    ))
+                                except Exception: pass
+                                return m, str(dp), m_obj, m.id, lbl, ext   # ✓ Success!
+                            else:
+                                raise ValueError("Downloaded file size is 0 B")
+                        else:
+                            raise FileNotFoundError("Downloaded path does not exist")
+
+                    except (asyncio.TimeoutError, Exception) as e:
+                        last_err = e
+                        logger.warning(f"[Cleaner {job_id}] Download attempt {attempt} failed for mid={m.id}: {e}")
                         await _remove_file_async(ipath)
-                        continue
+                        
+                        # Check for permanent errors where retry won't help
+                        err_upper = str(e).upper()
+                        if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: permanent download error ({e}) — skipping file")
+                            skipped = True
+                            break
 
-                except asyncio.TimeoutError:
-                    await _remove_file_async(ipath)
-                    # On timeout: try to reconnect client before raising so resume can work
-                    try:
-                        client = await _ensure_alive(client)
-                    except Exception: pass
-                    raise Exception(f"Download timed out (>{dl_timeout}s) for mid={m.id}")
+                        if attempt < 3:
+                            await asyncio.sleep(5)
+                        else:
+                            break
 
-                except Exception as e:
-                    err_upper = str(e).upper()
-                    estr_lower = str(e).lower()
-                    await _remove_file_async(ipath)
-                    if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
-                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: media reference expired ({e}) — skipping")
-                        continue
-                    # Connection errors: reconnect and retry download once before raising
-                    is_conn_err = any(k in estr_lower for k in (
-                        "not been started", "not connected", "disconnected",
-                        "connectionerror", "connection reset", "connection refused", "broken pipe", "errno 32"
-                    ))
-                    if is_conn_err:
-                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: connection error during download, reconnecting...")
-                        try:
-                            client = await _ensure_alive(client)
-                            await asyncio.sleep(3)
-                            # Retry download once with healed connection
-                            async with _cl_dl_sem:
-                                if not hasattr(client, '_network_lock'):
-                                    client._network_lock = asyncio.Lock()
-                                async with client._network_lock:
-                                    coro2 = client.download_media(m, file_name=ipath)
-                                    if coro2 is not None:
-                                        dp2 = await asyncio.wait_for(coro2, timeout=dl_timeout)
-                                        if dp2 and os.path.exists(str(dp2)):
-                                            if os.path.getsize(str(dp2)) == 0:
-                                                await _remove_file_async(str(dp2))
-                                                raise ValueError("File size equals to 0 B")
-                                            return m, str(dp2), m_obj, m.id, lbl, ext
-                        except Exception as _re:
-                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: reconnect-retry also failed: {_re}")
-                        # If retry also fails, still raise so job pauses cleanly
-                    raise Exception(f"Download error at mid={m.id}: {type(e).__name__}: {e}")
+                # If the file was deleted/expired/skipped
+                if skipped:
+                    continue
+
+                # Raise the last error if all attempts failed
+                raise Exception(f"Download failed after 3 attempts: {last_err}")
 
             return None  # no more messages in range
 
@@ -2002,6 +2005,7 @@ async def _create_cl_flow(bot, user_id):
 
     inject_ads = False
     ads_config = {}
+    ads_lang = "both"
     r_ads_text = (r_ads.text or "").lower()
 
     if "reset" in r_ads_text:
