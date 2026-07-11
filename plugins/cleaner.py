@@ -289,7 +289,7 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "2",
                 "-write_xing", "0", "-id3v2_version", "3"]
         if out_ext in (".mp4", ".mkv", ".webm"):
-            cmd += ["-movflags", "+faststart"]
+            cmd += ["-c:v", "copy", "-movflags", "+faststart"]
 
     # Preserve all existing metadata from input (title, artist, album, cover, etc.)
     # Individual -metadata flags below will override specific fields
@@ -1164,7 +1164,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _ff_inj_one += [
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
-                                "-threads", "1",
+                                "-threads", "2",
                                 "-write_xing", "0", "-id3v2_version", "3",
                                 _inj_out
                             ]
@@ -1258,50 +1258,47 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         for att in range(4):
                             try:
                                 async with _cl_ul_sem:
-                                    if not hasattr(u_cli, '_network_lock'):
-                                        u_cli._network_lock = asyncio.Lock()
-                                    async with u_cli._network_lock:
-                                        if repl_mode:
-                                            edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
-                                            from pyrogram.types import InputMediaAudio, InputMediaVideo
-                                            
-                                            # Rename physical file to enforce file_name for InputMedia since it ignores file_name kwarg
-                                            _ul_dir = os.path.join(os.path.dirname(p_out), f"ul_{job_id}_{c_mid}")
-                                            os.makedirs(_ul_dir, exist_ok=True)
-                                            _real_name = c_file if c_file else f"file_{c_mid}{out_ext}"
-                                            _new_p_out = os.path.join(_ul_dir, _real_name)
-                                            try:
-                                                await _move_file_async(p_out, _new_p_out)
-                                                p_out = _new_p_out
-                                            except: pass
+                                    if repl_mode:
+                                        edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
+                                        from pyrogram.types import InputMediaAudio, InputMediaVideo
+                                        
+                                        # Rename physical file to enforce file_name for InputMedia since it ignores file_name kwarg
+                                        _ul_dir = os.path.join(os.path.dirname(p_out), f"ul_{job_id}_{c_mid}")
+                                        os.makedirs(_ul_dir, exist_ok=True)
+                                        _real_name = c_file if c_file else f"file_{c_mid}{out_ext}"
+                                        _new_p_out = os.path.join(_ul_dir, _real_name)
+                                        try:
+                                            await _move_file_async(p_out, _new_p_out)
+                                            p_out = _new_p_out
+                                        except: pass
 
-                                            if job.get("ad_inject_only"):
-                                                # Direct upload + edit — preserve original title/performer
-                                                if is_ff or is_aud:
-                                                    _im = InputMediaAudio(p_out, caption=cap,
-                                                        title=c_title or None, performer=art or None)
-                                                elif is_vid:
-                                                    _im = InputMediaVideo(p_out, caption=cap)
-                                                else: break
-                                                await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
-                                            else:
-                                                # Normal replace mode: direct file upload → edit
-                                                if is_ff or is_aud:
-                                                    _im = InputMediaAudio(p_out, caption=cap,
-                                                        title=c_title or None, performer=art or None,
-                                                        thumb=thumb)
-                                                elif is_vid:
-                                                    _im = InputMediaVideo(p_out, caption=cap, thumb=thumb)
-                                                else: break
-                                                await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
-
-                                        else:
+                                        if job.get("ad_inject_only"):
+                                            # Direct upload + edit — preserve original title/performer
                                             if is_ff or is_aud:
-                                                await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
+                                                _im = InputMediaAudio(p_out, caption=cap,
+                                                    title=c_title or None, performer=art or None)
                                             elif is_vid:
-                                                await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
-                                            else:
-                                                await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
+                                                _im = InputMediaVideo(p_out, caption=cap)
+                                            else: break
+                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
+                                        else:
+                                            # Normal replace mode: direct file upload → edit
+                                            if is_ff or is_aud:
+                                                _im = InputMediaAudio(p_out, caption=cap,
+                                                    title=c_title or None, performer=art or None,
+                                                    thumb=thumb)
+                                            elif is_vid:
+                                                _im = InputMediaVideo(p_out, caption=cap, thumb=thumb)
+                                            else: break
+                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
+
+                                    else:
+                                        if is_ff or is_aud:
+                                            await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
+                                        elif is_vid:
+                                            await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
+                                        else:
+                                            await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                     break
                             except FloodWait as fw:
                                 logger.warning(f"[Cleaner bg-up {job_id}] FloodWait {fw.value}s during upload (att={att})")
