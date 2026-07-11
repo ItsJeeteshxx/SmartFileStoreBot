@@ -614,8 +614,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         async def _fill_cache(start: int):
             """Fetch up to 100 messages. Reconnects on ConnectionError, retries twice, then raises so job pauses."""
             nonlocal client
-            ids = list(range(start, min(start + 100, eid + 1)))
+            end_id = min(start + 100, eid + 1) - 1
+            if end_id < start: return
+            
+            ids = list(range(start, end_id + 1))
             if not ids: return
+
             for attempt in range(3):
                 try:
                     # Heal connection before every batch fetch
@@ -625,6 +629,20 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             await asyncio.sleep(2)
                         except Exception as _re:
                             logger.warning(f"[Cleaner {job_id}] reconnect attempt {attempt+1}: {_re}")
+
+                    # 1. Try robust get_chat_history first (does not return fake empty messages under rate limit)
+                    try:
+                        limit_val = end_id - start + 1
+                        async for m in client.get_chat_history(from_ch, limit=limit_val, offset_id=end_id + 1):
+                            if m.id < start:
+                                break
+                            if m and not m.empty:
+                                _msg_cache[m.id] = m
+                        return
+                    except Exception as hist_err:
+                        logger.warning(f"[Cleaner {job_id}] get_chat_history failed: {hist_err}. Falling back to get_messages.")
+
+                    # 2. Fallback to get_messages
                     if not hasattr(client, '_network_lock'):
                         client._network_lock = asyncio.Lock()
                     async with client._network_lock:
