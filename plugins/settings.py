@@ -1127,6 +1127,45 @@ async def settings_query(bot, query):
       bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
       if not bt: return await query.answer("Bot not found!")
 
+      buttons = [
+          [InlineKeyboardButton('Wᴇʟᴄᴏᴍᴇ & Aʙᴏᴜᴛ', callback_data=f"settings#sb_wa_{b_id}")],
+          [InlineKeyboardButton('📡 Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ', callback_data=f"settings#sb_lblive_{b_id}")],
+          [
+              InlineKeyboardButton('Dᴇʟᴇᴛᴇ Msɢ',      callback_data=f"settings#sb_set_delete_{b_id}"),
+              InlineKeyboardButton('Sᴜᴄᴄᴇss Msɢ',    callback_data=f"settings#sb_set_success_{b_id}"),
+          ],
+          [
+              InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}"),
+              InlineKeyboardButton('Pʀᴇᴍɪᴜᴍ Aᴅ Msɢ', callback_data=f"settings#sb_premium_ad_{b_id}"),
+          ],
+          [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_caption_menu_{b_id}")],
+          [InlineKeyboardButton('🔗 Custom Buttons',    callback_data=f"settings#sb_buttons_menu_{b_id}")],
+          [InlineKeyboardButton('Aᴜᴛᴏ-Dᴇʟᴇᴛᴇ', callback_data=f"settings#sb_set_autodel_{b_id}"),
+           InlineKeyboardButton('Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',  callback_data=f"settings#sb_fsub_{b_id}")],
+          [InlineKeyboardButton('🎞 Fᴇᴛᴄʜɪɴɢ Mᴇᴅɪᴀ', callback_data=f"settings#sb_fetch_media_{b_id}")],
+          [
+              InlineKeyboardButton('Sᴛᴀᴛs',           callback_data=f"settings#sb_stats_{b_id}"),
+              InlineKeyboardButton('Bʀᴏᴀᴅᴄᴀsᴛ',       callback_data=f"settings#sb_broadcast_{b_id}")
+          ],
+          [InlineKeyboardButton('🧹 Pᴜʀɢᴇ DM Fɪʟᴇs',      callback_data=f"settings#sb_purge_{b_id}")],
+          [InlineKeyboardButton('Rᴇᴍᴏᴠᴇ Bᴏᴛ',      callback_data=f"settings#sb_remove_{b_id}")],
+          [InlineKeyboardButton('❮ Bᴀᴄᴋ',               callback_data="settings#sharebot")],
+      ]
+      await query.message.edit_text(
+          f"<b>❪ SHARE BOT PROFILE ❫</b>\n\n"
+          f"<b>»  Name:</b> {bt['name']}\n"
+          f"<b>»  Username:</b> @{bt['username']}\n"
+          f"<b>🆔 ID:</b> <code>{bt['id']}</code>\n\n"
+          "<i>All settings below are specific to this bot.</i>",
+          reply_markup=InlineKeyboardMarkup(buttons)
+      )
+
+  elif type.startswith("sb_lblive_"):
+      b_id = type.split("sb_lblive_")[1]
+      bots = await db.get_share_bots()
+      bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
+      if not bt: return await query.answer("Bot not found!")
+
       # Find active Live Batch Jobs (which generate batch links) for this share bot
       active_live = []
       b_id_variants = [str(b_id)]
@@ -1160,36 +1199,13 @@ async def settings_query(bot, query):
       live_text = "\n\n".join(live_details) if live_details else "<i>No active live jobs for this bot.</i>"
 
       buttons = [
-          [InlineKeyboardButton('Wᴇʟᴄᴏᴍᴇ & Aʙᴏᴜᴛ', callback_data=f"settings#sb_wa_{b_id}")],
-          [
-              InlineKeyboardButton('Dᴇʟᴇᴛᴇ Msɢ',      callback_data=f"settings#sb_set_delete_{b_id}"),
-              InlineKeyboardButton('Sᴜᴄᴄᴇss Msɢ',    callback_data=f"settings#sb_set_success_{b_id}"),
-          ],
-          [
-              InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}"),
-              InlineKeyboardButton('Pʀᴇᴍɪᴜᴍ Aᴅ Msɢ', callback_data=f"settings#sb_premium_ad_{b_id}"),
-          ],
-          [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_caption_menu_{b_id}")],
-          [InlineKeyboardButton('🔗 Custom Buttons',    callback_data=f"settings#sb_buttons_menu_{b_id}")],
-          [InlineKeyboardButton('Aᴜᴛᴏ-Dᴇʟᴇᴛᴇ', callback_data=f"settings#sb_set_autodel_{b_id}"),
-           InlineKeyboardButton('Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',  callback_data=f"settings#sb_fsub_{b_id}")],
-          [InlineKeyboardButton('🎞 Fᴇᴛᴄʜɪɴɢ Mᴇᴅɪᴀ', callback_data=f"settings#sb_fetch_media_{b_id}")],
-          [
-              InlineKeyboardButton('Sᴛᴀᴛs',           callback_data=f"settings#sb_stats_{b_id}"),
-              InlineKeyboardButton('Bʀᴏᴀᴅᴄᴀsᴛ',       callback_data=f"settings#sb_broadcast_{b_id}")
-          ],
-          [InlineKeyboardButton('🧹 Pᴜʀɢᴇ DM Fɪʟᴇs',      callback_data=f"settings#sb_purge_{b_id}")],
-          [InlineKeyboardButton('Rᴇᴍᴏᴠᴇ Bᴏᴛ',      callback_data=f"settings#sb_remove_{b_id}")],
-          [InlineKeyboardButton('❮ Bᴀᴄᴋ',               callback_data="settings#sharebot")],
+          [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_view_{b_id}")]
       ]
       await query.message.edit_text(
-          f"<b>❪ SHARE BOT PROFILE ❫</b>\n\n"
-          f"<b>»  Name:</b> {bt['name']}\n"
-          f"<b>»  Username:</b> @{bt['username']}\n"
-          f"<b>🆔 ID:</b> <code>{bt['id']}</code>\n\n"
-          f"<b>⚡ Active Live Jobs ({len(active_live)}):</b>\n"
-          f"{live_text}\n\n"
-          "<i>All settings below are specific to this bot.</i>",
+          f"<b>📡 ❪ Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ ❫</b>\n\n"
+          f"<b>Delivery Bot:</b> @{bt['username']}\n"
+          f"<b>Active Tasks count:</b> <code>{len(active_live)}</code>\n\n"
+          f"{live_text}",
           reply_markup=InlineKeyboardMarkup(buttons)
       )
 
