@@ -252,7 +252,7 @@ async def _mj_forward(
                             chat_id=chat, from_chat_id=msg.chat.id,
                             message_ids=msg.id, **kw
                         )
-                        return True
+                        return True, None, False
                     except Exception as fwd_err:
                         logger.warning(
                             f"[MultiJob _send_one] Native forward failed for msg {msg.id}: {fwd_err}. "
@@ -263,14 +263,14 @@ async def _mj_forward(
                 if not use_forward_tag:
                     if is_text_replaced and not msg.media:
                         if not new_text or not new_text.strip():
-                            return True  # silently skip empty text
+                            return True, None, False  # silently skip empty text
                         await client.send_message(chat_id=chat, text=new_text, **kw)
                     else:
                         await client.copy_message(
                             chat_id=chat, from_chat_id=msg.chat.id,
                             message_id=msg.id, **kw
                         )
-                return True  # success
+                return True, None, False  # success
             except FloodWait as fw:
                 # Respect Telegram's rate limit — wait and retry
                 logger.warning(f"[MultiJob _send_one] FloodWait {fw.value}s to {chat}")
@@ -284,7 +284,7 @@ async def _mj_forward(
                     # Try copy → forward fallback once for protected content
                     try:
                         await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
-                        return True
+                        return True, None, False
                     except Exception:
                         pass
                     
@@ -307,11 +307,16 @@ async def _mj_forward(
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as dl_e:
                                     err_dl = str(dl_e).upper()
+                                    if any(x in err_dl for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                                        logger.warning(f"[MultiJob _send_one] Permanent download error for msg {msg.id}: {dl_e}")
+                                        return False, str(dl_e), True
                                     if "TIMEOUT" in err_dl or "CONNECTION" in err_dl or "BROKEN PIPE" in err_dl or "ERRNO 32" in err_dl or "DISCONNECT" in err_dl:
                                         await asyncio.sleep(5)
                                         continue
                                     break
-                            if not fp: raise Exception("DownloadFailed")
+                            if not fp:
+                                logger.warning(f"[MultiJob _send_one] Msg {msg.id}: download_media returned None (media expired/deleted)")
+                                return False, "MediaExpiredOrDeleted", True
                             
                             up_kw = {"chat_id": chat, "caption": kw.get("caption", msg.caption or "")}
                             if thread: up_kw["message_thread_id"] = thread
@@ -345,33 +350,35 @@ async def _mj_forward(
                             if os.path.exists(fp): os.remove(fp)
                         else:
                             await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
-                        return True
+                        return True, None, False
                     except Exception as fallback_e:
+                        fb_err = str(fallback_e).upper()
+                        if any(x in fb_err for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                            logger.warning(f"[MultiJob _send_one] Permanent error in fallback for msg {msg.id}: {fallback_e}")
+                            return False, str(fallback_e), True
                         logger.debug(f"[MultiJob _send_one] Fallback failed to {chat}: {fallback_e}")
-                        return False
+                        return False, str(fallback_e), False
 
                 # If transient, try to heal before retrying
                 is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED", "PING", "FLOOD"))
-                if is_transient:
-                    try:
-                        pass 
-                    except Exception:
-                        pass
                 
                 # For transient errors, retry up to 4 attempts
                 if _send_attempt >= 3:
                     logger.warning(f"[MultiJob _send_one] All retries exhausted for msg {msg.id} to {chat}: {exc}")
                     if is_transient:
                         raise ConnectionError(f"Transient error persisted after 4 retries: {exc}")
-                    return False
+                    return False, str(exc), False
                 await asyncio.sleep(5 * (_send_attempt + 1))
                 continue
 
-    success1 = await _send_one(to_chat, thread_id)
-    success2 = False
+    success1, err1, skip1 = await _send_one(to_chat, thread_id)
+    success2, err2, skip2 = False, None, False
     if to_chat_2:
-        success2 = await _send_one(to_chat_2, thread_id_2)
-    return success1 or success2
+        success2, err2, skip2 = await _send_one(to_chat_2, thread_id_2)
+    if to_chat_2:
+        return (success1 and success2), (err1 or err2), (skip1 or skip2)
+    else:
+        return success1, err1, skip1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -926,15 +933,19 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 client = await _mj_ensure_client_alive(client)
 
                 _remove_links = 'links' in disabled_types
-                success = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                success, err, skipped = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
 
-                # Advance cursor past this message in all cases.
-                await mark_msg_processed(msg.id)
-                if success:
-                    await _mj_inc(job_id, 1)
+                if success or skipped:
+                    # Advance cursor past this message only if it succeeded or was skipped due to a permanent error
+                    await mark_msg_processed(msg.id)
+                    if success:
+                        await _mj_inc(job_id, 1)
+                    else:
+                        logger.warning(f"[MultiJob {job_id}] Skipped msg {msg.id} due to permanent error: {err}")
                 else:
-                    logger.warning(f"[MultiJob {job_id}] Forward of msg {msg.id} failed after retries — advancing past it")
+                    # Transient/general failure — raise exception to pause job at this message ID so it is NOT skipped!
+                    raise Exception(f"Forward failed for message ID {msg.id}: {err or 'Unknown error'}")
 
                 await asyncio.sleep(sleep_secs)
 
