@@ -1127,6 +1127,38 @@ async def settings_query(bot, query):
       bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
       if not bt: return await query.answer("Bot not found!")
 
+      # Find active Live Batch Jobs (which generate batch links) for this share bot
+      active_live = []
+      b_id_variants = [str(b_id)]
+      if str(b_id).isdigit():
+          b_id_variants.append(int(b_id))
+      async for j in db.db["live_batch_jobs"].find({
+          "share_bot_id": {"$in": b_id_variants},
+          "status": "running"
+      }):
+          active_live.append(j)
+
+      live_details = []
+      for j in active_live:
+          story = j.get("story", "Unnamed")
+          source = j.get("source", "Unknown")
+          target = j.get("target", "Unknown")
+          buf_count = len(j.get("buffer_mids", []))
+          thresh = j.get("threshold", 5)
+          fwd = j.get("forwarded", 0)
+          
+          src_str = f"<code>{source}</code>"
+          tgt_str = f"<code>{target}</code>"
+          
+          live_details.append(
+              f"• <b>{story}</b>\n"
+              f"  ├ Source: {src_str}\n"
+              f"  ├ Target: {tgt_str}\n"
+              f"  └ Buffer: <code>{buf_count}/{thresh}</code> | Forwarded: <code>{fwd}</code>"
+          )
+      
+      live_text = "\n\n".join(live_details) if live_details else "<i>No active live jobs for this bot.</i>"
+
       buttons = [
           [InlineKeyboardButton('Wᴇʟᴄᴏᴍᴇ & Aʙᴏᴜᴛ', callback_data=f"settings#sb_wa_{b_id}")],
           [
@@ -1155,6 +1187,8 @@ async def settings_query(bot, query):
           f"<b>»  Name:</b> {bt['name']}\n"
           f"<b>»  Username:</b> @{bt['username']}\n"
           f"<b>🆔 ID:</b> <code>{bt['id']}</code>\n\n"
+          f"<b>⚡ Active Live Jobs ({len(active_live)}):</b>\n"
+          f"{live_text}\n\n"
           "<i>All settings below are specific to this bot.</i>",
           reply_markup=InlineKeyboardMarkup(buttons)
       )
