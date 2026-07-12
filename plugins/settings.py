@@ -1180,23 +1180,9 @@ async def settings_query(bot, query):
       live_details = []
       for j in active_live:
           story = j.get("story", "Unnamed")
-          source = j.get("source", "Unknown")
-          target = j.get("target", "Unknown")
-          buf_count = len(j.get("buffer_mids", []))
-          thresh = j.get("threshold", 5)
-          fwd = j.get("forwarded", 0)
-          
-          src_str = f"<code>{source}</code>"
-          tgt_str = f"<code>{target}</code>"
-          
-          live_details.append(
-              f"• <b>{story}</b>\n"
-              f"  ├ Source: {src_str}\n"
-              f"  ├ Target: {tgt_str}\n"
-              f"  └ Buffer: <code>{buf_count}/{thresh}</code> | Forwarded: <code>{fwd}</code>"
-          )
+          live_details.append(f"• <b>{story}</b>")
       
-      live_text = "\n\n".join(live_details) if live_details else "<i>No active live jobs for this bot.</i>"
+      live_text = "\n".join(live_details) if live_details else "<i>No active live jobs for this bot.</i>"
 
       buttons = [
           [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_view_{b_id}")]
