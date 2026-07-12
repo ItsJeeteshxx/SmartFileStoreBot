@@ -244,7 +244,7 @@ async def _mj_forward(
         if new_caption is not None:
             kw["caption"] = new_caption
 
-        for _send_attempt in range(15):
+        for _send_attempt in range(30):
             try:
                 if use_forward_tag:
                     try:
@@ -295,7 +295,7 @@ async def _mj_forward(
                         if msg.media:
                             safe_name = f"downloads/{msg.id}_{original_name}" if original_name else f"downloads/{msg.id}"
                             fp = None
-                            for _dl_try in range(15):
+                            for _dl_try in range(30):
                                 try:
                                     # We don't need client._network_lock for download_media since it's a read-only transport call.
                                     fp = await client.download_media(msg, file_name=safe_name)
@@ -310,10 +310,11 @@ async def _mj_forward(
                                     if any(x in err_dl for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
                                         logger.warning(f"[MultiJob _send_one] Permanent download error for msg {msg.id}: {dl_e}")
                                         return False, str(dl_e), True
-                                    if "TIMEOUT" in err_dl or "CONNECTION" in err_dl or "BROKEN PIPE" in err_dl or "ERRNO 32" in err_dl or "DISCONNECT" in err_dl:
-                                        await asyncio.sleep(5)
-                                        continue
-                                    break
+                                    
+                                    # Retry on any other transient error (timeout, socket, connection resets, etc.)
+                                    logger.warning(f"[MultiJob _send_one] Transient download error for msg {msg.id} (attempt {_dl_try + 1}/30): {dl_e}. Retrying in 5s...")
+                                    await asyncio.sleep(5)
+                                    continue
                             if not fp:
                                 logger.warning(f"[MultiJob _send_one] Msg {msg.id}: download_media returned None (media expired/deleted)")
                                 return False, "MediaExpiredOrDeleted", True
@@ -322,7 +323,7 @@ async def _mj_forward(
                             if thread: up_kw["message_thread_id"] = thread
                             
                             uploaded = False
-                            for _ul_try in range(15):
+                            for _ul_try in range(30):
                                 try:
                                     if msg.photo:      await client.send_photo(photo=fp, **up_kw)
                                     elif msg.video:    await client.send_video(video=fp, file_name=original_name, **up_kw)
@@ -337,10 +338,14 @@ async def _mj_forward(
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as ul_e:
                                     err_ul = str(ul_e).upper()
-                                    if any(x in err_ul for x in ["TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECT", "NOT CONNECTED", "PING", "FLOOD"]):
-                                        await asyncio.sleep(5)
-                                        continue
-                                    break
+                                    if any(x in err_ul for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                                        logger.warning(f"[MultiJob _send_one] Permanent upload error for msg {msg.id}: {ul_e}")
+                                        return False, str(ul_e), True
+                                    
+                                    # Retry on any other transient error (timeout, socket, connection resets, etc.)
+                                    logger.warning(f"[MultiJob _send_one] Transient upload error for msg {msg.id} (attempt {_ul_try + 1}/30): {ul_e}. Retrying in 5s...")
+                                    await asyncio.sleep(5)
+                                    continue
                                     
                             if not uploaded:
                                 raise Exception("UploadFailed")
@@ -362,11 +367,11 @@ async def _mj_forward(
                 # If transient, try to heal before retrying
                 is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED", "PING", "FLOOD"))
                 
-                # For transient errors, retry up to 4 attempts
-                if _send_attempt >= 3:
+                # For transient errors, retry up to 30 attempts
+                if _send_attempt >= 29:
                     logger.warning(f"[MultiJob _send_one] All retries exhausted for msg {msg.id} to {chat}: {exc}")
                     if is_transient:
-                        raise ConnectionError(f"Transient error persisted after 4 retries: {exc}")
+                        raise ConnectionError(f"Transient error persisted after 30 retries: {exc}")
                     return False, str(exc), False
                 await asyncio.sleep(5 * (_send_attempt + 1))
                 continue
@@ -774,17 +779,28 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
             # Fetch messages
             msgs = []
+            from_thread = job.get("from_thread")
+            use_get_messages = False
+            if from_thread and int(from_thread) > 0:
+                use_get_messages = True
+
             try:
-                # 1. Prefer get_chat_history (robust, does not return fake empty messages under rate limit)
-                # offset_id = batch_end + 1 retrieves messages with ID <= batch_end downwards.
-                batch_hist = []
-                async for m in client.get_chat_history(from_chat, limit=BATCH_SIZE, offset_id=batch_end + 1):
-                    if m.id < current:
-                        # Since get_chat_history goes backwards, once we see ID < current, we can stop fetching
-                        break
-                    batch_hist.append(m)
-                # Reverse to make it chronological (current -> batch_end)
-                msgs = list(reversed(batch_hist))
+                if use_get_messages:
+                    # Fetch by exact IDs to prevent mixed-topic pagination skipped messages
+                    msgs = await client.get_messages(from_chat, batch_ids)
+                    if not isinstance(msgs, list):
+                        msgs = [msgs]
+                else:
+                    # 1. Prefer get_chat_history (robust, does not return fake empty messages under rate limit)
+                    # offset_id = batch_end + 1 retrieves messages with ID <= batch_end downwards.
+                    batch_hist = []
+                    async for m in client.get_chat_history(from_chat, limit=BATCH_SIZE, offset_id=batch_end + 1):
+                        if m.id < current:
+                            # Since get_chat_history goes backwards, once we see ID < current, we can stop fetching
+                            break
+                        batch_hist.append(m)
+                    # Reverse to make it chronological (current -> batch_end)
+                    msgs = list(reversed(batch_hist))
             except Exception as hist_err:
                 logger.warning(f"[MultiJob {job_id}] get_chat_history failed: {hist_err}. Falling back to get_messages.")
                 # 2. Fallback to get_messages by specific IDs
