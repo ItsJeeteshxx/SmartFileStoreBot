@@ -437,7 +437,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             try:
                 coro = (_bot or client).download_media(cov_fid, file_name=local_cover)
                 if coro is not None:
-                    import asyncio
                     dl = await asyncio.wait_for(coro, timeout=30)
                     if not dl or os.path.getsize(local_cover) < 1024: local_cover = None
                 else: local_cover = None
@@ -482,7 +481,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     await _remove_file_async(_ap)
                     coro = _ad_dl_cli.download_media(_afid, file_name=_ap)
                     if coro is None: continue
-                    import asyncio
                     dlr = await asyncio.wait_for(coro, timeout=30)
                     if not dlr or not os.path.exists(_ap): continue
                 except asyncio.TimeoutError:

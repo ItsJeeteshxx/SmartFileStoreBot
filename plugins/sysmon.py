@@ -101,6 +101,15 @@ def _level_emoji(pct: float) -> str:
 
 # ── System snapshot ───────────────────────────────────────────────────────────
 def _sys_snapshot() -> dict:
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6')
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
     ram    = psutil.virtual_memory()
     cpu    = psutil.cpu_percent(interval=None)   # non-blocking — uses cached sample
     disk   = psutil.disk_usage("/")
