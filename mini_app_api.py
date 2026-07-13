@@ -608,47 +608,63 @@ async def get_stories():
         stories = await arya_db.get_all_stories()
 
         # Aggregate purchases (orders with status paid/delivered) in the last 30 days
-        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-        purchase_pipeline = [
-            {"$match": {
-                "status": {"$in": ["paid", "delivered"]},
-                "created_at": {"$gte": thirty_days_ago}
-            }},
-            {"$unwind": "$story_ids"},
-            {"$group": {
-                "_id": "$story_ids",
-                "purchases": {"$sum": 1}
-            }}
-        ]
-        purchases_agg = await arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None)
-        purchase_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in purchases_agg}
+        purchase_map = {}
+        try:
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            purchase_pipeline = [
+                {"$match": {
+                    "status": {"$in": ["paid", "delivered"]},
+                    "created_at": {"$gte": thirty_days_ago}
+                }},
+                {"$unwind": "$story_ids"},
+                {"$group": {
+                    "_id": "$story_ids",
+                    "purchases": {"$sum": 1}
+                }}
+            ]
+            import asyncio
+            purchases_agg = await asyncio.wait_for(
+                arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None),
+                timeout=0.6
+            )
+            purchase_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in purchases_agg}
+        except Exception as pe:
+            logger.warning(f"Failed to aggregate purchases: {pe}")
 
         # Aggregate story views (clicks) in the last 7 days
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        views_pipeline = [
-            {"$match": {
-                "type": "view_story",
-                "timestamp": {"$gte": seven_days_ago}
-            }},
-            {"$project": {
-                "story_id": {
-                    "$cond": {
-                        "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
-                        "then": "$story_id",
-                        "else": "$data.story_id"
+        views_map = {}
+        try:
+            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            views_pipeline = [
+                {"$match": {
+                    "type": "view_story",
+                    "timestamp": {"$gte": seven_days_ago}
+                }},
+                {"$project": {
+                    "story_id": {
+                        "$cond": {
+                            "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
+                            "then": "$story_id",
+                            "else": "$data.story_id"
+                        }
                     }
-                }
-            }},
-            {"$match": {
-                "story_id": {"$ne": None}
-            }},
-            {"$group": {
-                "_id": "$story_id",
-                "views": {"$sum": 1}
-            }}
-        ]
-        views_agg = await arya_db.db.mini_app_analytics.aggregate(views_pipeline).to_list(length=None)
-        views_map = {str(v["_id"]): int(v.get("views", 0)) for v in views_agg}
+                }},
+                {"$match": {
+                    "story_id": {"$ne": None}
+                }},
+                {"$group": {
+                    "_id": "$story_id",
+                    "views": {"$sum": 1}
+                }}
+            ]
+            import asyncio
+            views_agg = await asyncio.wait_for(
+                arya_db.db.mini_app_analytics.aggregate(views_pipeline).to_list(length=None),
+                timeout=0.6
+            )
+            views_map = {str(v["_id"]): int(v.get("views", 0)) for v in views_agg}
+        except Exception as ve:
+            logger.warning(f"Failed to aggregate views: {ve}")
 
         formatted = []
         for s in stories:
@@ -3573,7 +3589,43 @@ async def get_my_purchases(telegram_id: str):
         
         # In AryaPremium, purchases are in user.purchases
         user = await arya_db.db.users.find_one({"id": user_id_int})
-        purchased_story_ids = user.get("purchases", []) if user else []
+        purchased_story_ids = list(user.get("purchases", [])) if user else []
+
+        # Robust fallback: fetch story IDs from all successfully paid/delivered orders
+        try:
+            order_story_ids = await asyncio.wait_for(
+                arya_db.db.orders.distinct(
+                    "story_ids",
+                    {
+                        "user_id": {"$in": [user_id_int, user_id_str]},
+                        "status": {"$in": ["paid", "delivered"]}
+                    }
+                ),
+                timeout=1.5
+            )
+            if order_story_ids:
+                for sid in order_story_ids:
+                    if sid and sid not in purchased_story_ids:
+                        purchased_story_ids.append(sid)
+        except Exception as oe:
+            logger.warning(f"Failed to fetch purchased story IDs from orders distinct query: {oe}")
+
+        # Robust fallback: fetch story IDs from premium_purchases
+        try:
+            pp_story_ids = await asyncio.wait_for(
+                arya_db.db.premium_purchases.distinct(
+                    "story_id",
+                    {"user_id": {"$in": [user_id_int, user_id_str]}}
+                ),
+                timeout=1.5
+            )
+            if pp_story_ids:
+                for sid in pp_story_ids:
+                    sid_str = str(sid)
+                    if sid_str and sid_str not in purchased_story_ids:
+                        purchased_story_ids.append(sid_str)
+        except Exception as pe:
+            logger.warning(f"Failed to fetch purchased story IDs from premium_purchases distinct query: {pe}")
         
         # ── BULK FETCH: all stories in ONE query instead of N separate queries ──
         story_oid_list = []
