@@ -3591,7 +3591,26 @@ async def get_my_purchases(telegram_id: str):
         user = await arya_db.db.users.find_one({"id": user_id_int})
         purchased_story_ids = list(user.get("purchases", [])) if user else []
 
-        # Robust fallback: fetch story IDs from premium_purchases (only active granted access)
+        # Robust fallback: fetch story IDs from all successfully paid/delivered orders
+        try:
+            order_story_ids = await asyncio.wait_for(
+                arya_db.db.orders.distinct(
+                    "story_ids",
+                    {
+                        "user_id": {"$in": [user_id_int, user_id_str]},
+                        "status": {"$in": ["paid", "delivered"]}
+                    }
+                ),
+                timeout=1.5
+            )
+            if order_story_ids:
+                for sid in order_story_ids:
+                    if sid and sid not in purchased_story_ids:
+                        purchased_story_ids.append(sid)
+        except Exception as oe:
+            logger.warning(f"Failed to fetch purchased story IDs from orders distinct query: {oe}")
+
+        # Robust fallback: fetch story IDs from premium_purchases
         try:
             pp_story_ids = await asyncio.wait_for(
                 arya_db.db.premium_purchases.distinct(
@@ -6639,193 +6658,67 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
         arya_db = app.state.db
         
         if action == "wipe":
-            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
-            await arya_db.db.users.update_one({"id": target_uid}, {"$set": {"purchases": []}})
+            await arya_db.db.users.delete_one({"id": target_uid})
             await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
             await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
-            await arya_db.db.premium_purchases.delete_many({
-                "user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}
-            })
-            return {"success": True, "message": "User purchase data wiped completely."}
+            return {"success": True, "message": "User data wiped completely."}
             
         elif action == "ban":
-            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
+            await arya_db.db.users.delete_one({"id": target_uid})
             await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
             await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
-            await arya_db.db.premium_purchases.delete_many({
-                "user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}
-            })
             await arya_db.db.users.update_one(
                 {"id": target_uid},
-                {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App", "purchases": []}},
+                {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App"}},
                 upsert=True
             )
-            return {"success": True, "message": "User banned and purchases cleared."}
+            return {"success": True, "message": "User wiped and banned."}
             
         elif action == "remove_story":
             story_id_str = payload.get("story_id")
             if not story_id_str:
                 raise HTTPException(status_code=400, detail="Missing story_id")
             
-            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
+            # 1. Pull the story_id from users collection purchases
+            await arya_db.db.users.update_one(
+                {"id": target_uid},
+                {"$pull": {"purchases": story_id_str}}
+            )
             
-            if story_id_str == "all":
-                # Remove all access
-                await arya_db.db.users.update_one(
-                    {"id": target_uid},
-                    {"$set": {"purchases": []}}
-                )
-                await arya_db.db.premium_purchases.delete_many({
-                    "user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}
-                })
-                # Update all paid/delivered orders to failed
-                await arya_db.db.orders.update_many(
-                    {
-                        "user_id": {"$in": [target_uid, str(target_uid)]},
-                        "status": {"$in": ["paid", "delivered"]}
-                    },
-                    {"$set": {"story_ids": [], "status": "failed"}}
-                )
-            else:
-                # Remove specific story access
-                await arya_db.db.users.update_one(
-                    {"id": target_uid},
-                    {"$pull": {"purchases": story_id_str}}
-                )
-                
-                from bson.objectid import ObjectId
-                story_id_filter = [story_id_str]
-                try:
-                    story_id_filter.append(ObjectId(story_id_str))
-                except Exception:
-                    pass
-                    
+            # 2. Delete the record from premium_purchases
+            from bson.objectid import ObjectId
+            try:
+                target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
                 await arya_db.db.premium_purchases.delete_many({
                     "user_id": {"$in": [target_uid, str(target_uid), target_uid_int]},
-                    "story_id": {"$in": story_id_filter}
+                    "story_id": ObjectId(story_id_str)
                 })
+            except Exception as ex:
+                logger.error(f"Error deleting premium_purchases: {ex}")
                 
-                async for order in arya_db.db.orders.find({
-                    "user_id": {"$in": [target_uid, str(target_uid)]},
-                    "status": {"$in": ["paid", "delivered"]},
-                    "story_ids": story_id_str
-                }):
-                    new_story_ids = [sid for sid in order.get("story_ids", []) if sid != story_id_str]
-                    if not new_story_ids:
-                        await arya_db.db.orders.update_one(
-                            {"_id": order["_id"]},
-                            {"$set": {"story_ids": [], "status": "failed"}}
-                        )
-                    else:
-                        await arya_db.db.orders.update_one(
-                            {"_id": order["_id"]},
-                            {"$set": {"story_ids": new_story_ids}}
-                        )
-            
-            global _stories_cache
-            _stories_cache = None
-            return {"success": True, "message": "Access removed successfully."}
-
-        elif action == "grant_story":
-            story_id_str = payload.get("story_id")
-            if not story_id_str:
-                raise HTTPException(status_code=400, detail="Missing story_id")
-            
-            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
-            
-            if story_id_str == "all":
-                # Grant all access
-                stories = await arya_db.get_all_stories()
-                all_sids = [s.get("story_id") or str(s["_id"]) for s in stories]
-                
-                await arya_db.db.users.update_one(
-                    {"id": target_uid},
-                    {"$set": {"purchases": all_sids}},
-                    upsert=True
-                )
-                
-                from bson.objectid import ObjectId
-                for sid in all_sids:
-                    try:
-                        story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)}) if len(sid) == 24 else None
-                        if not story:
-                            story = await arya_db.db.premium_stories.find_one({"story_id": sid})
-                        bot_id = story.get("bot_id") if story else None
-                        
-                        story_id_filter = [sid]
-                        try:
-                            story_id_filter.append(ObjectId(sid))
-                        except Exception:
-                            pass
-                            
-                        existing = await arya_db.db.premium_purchases.find_one({
-                            "user_id": target_uid_int,
-                            "story_id": {"$in": story_id_filter}
-                        })
-                        if not existing:
-                            story_oid = None
-                            try:
-                                story_oid = ObjectId(sid)
-                            except Exception:
-                                pass
-                            await arya_db.db.premium_purchases.insert_one({
-                                "user_id": target_uid_int,
-                                "story_id": story_oid if story_oid else sid,
-                                "bot_id": bot_id,
-                                "purchased_at": datetime.now(timezone.utc),
-                                "source": "manual_admin",
-                                "amount": story.get("price", 0) if story else 0,
-                                "reference": "grant_all",
-                                "order_id": f"GRANT_ALL_{target_uid_int}_{int(datetime.now().timestamp())}"
-                            })
-                    except Exception as ge:
-                        logger.error(f"Error granting story {sid}: {ge}")
-            else:
-                # Grant specific story access
-                await arya_db.db.users.update_one(
-                    {"id": target_uid},
-                    {"$addToSet": {"purchases": story_id_str}},
-                    upsert=True
-                )
-                
-                from bson.objectid import ObjectId
-                story_id_filter = [story_id_str]
-                try:
-                    story_id_filter.append(ObjectId(story_id_str))
-                except Exception:
-                    pass
+            # 3. Pull/modify in orders collection to decrement trending/popular count
+            async for order in arya_db.db.orders.find({
+                "user_id": {"$in": [target_uid, str(target_uid)]},
+                "status": {"$in": ["paid", "delivered"]},
+                "story_ids": story_id_str
+            }):
+                new_story_ids = [sid for sid in order.get("story_ids", []) if sid != story_id_str]
+                if not new_story_ids:
+                    await arya_db.db.orders.update_one(
+                        {"_id": order["_id"]},
+                        {"$set": {"story_ids": [], "status": "failed"}}
+                    )
+                else:
+                    await arya_db.db.orders.update_one(
+                        {"_id": order["_id"]},
+                        {"$set": {"story_ids": new_story_ids}}
+                    )
                     
-                existing = await arya_db.db.premium_purchases.find_one({
-                    "user_id": target_uid_int,
-                    "story_id": {"$in": story_id_filter}
-                })
-                if not existing:
-                    try:
-                        story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id_str)}) if len(story_id_str) == 24 else None
-                        if not story:
-                            story = await arya_db.db.premium_stories.find_one({"story_id": story_id_str})
-                        bot_id = story.get("bot_id") if story else None
-                        story_oid = None
-                        try:
-                            story_oid = ObjectId(story_id_str)
-                        except Exception:
-                            pass
-                        await arya_db.db.premium_purchases.insert_one({
-                            "user_id": target_uid_int,
-                            "story_id": story_oid if story_oid else story_id_str,
-                            "bot_id": bot_id,
-                            "purchased_at": datetime.now(timezone.utc),
-                            "source": "manual_admin",
-                            "amount": story.get("price", 0) if story else 0,
-                            "reference": "grant_story",
-                            "order_id": f"GRANT_{target_uid_int}_{int(datetime.now().timestamp())}"
-                        })
-                    except Exception as ge:
-                        logger.error(f"Error granting specific story {story_id_str}: {ge}")
-            
+            # 4. Invalidate global stories cache so trending/popular counts update immediately
             global _stories_cache
             _stories_cache = None
-            return {"success": True, "message": "Access granted successfully."}
+            
+            return {"success": True, "message": "Story removed successfully from user."}
             
         raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
