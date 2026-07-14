@@ -6628,7 +6628,6 @@ async def manual_purchase(data: ManualPurchase):
 
 @api_router.post("/admin/buyers/{user_id}/action")
 async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
-    global _stories_cache
     from AryaPremium.config import Config
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
@@ -6723,6 +6722,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                             {"$set": {"story_ids": new_story_ids}}
                         )
             
+            global _stories_cache
             _stories_cache = None
             return {"success": True, "message": "Access removed successfully."}
 
@@ -6823,6 +6823,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                     except Exception as ge:
                         logger.error(f"Error granting specific story {story_id_str}: {ge}")
             
+            global _stories_cache
             _stories_cache = None
             return {"success": True, "message": "Access granted successfully."}
             
