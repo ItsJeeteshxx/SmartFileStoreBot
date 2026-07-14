@@ -4867,15 +4867,19 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
         arya_db = app.state.db
         
         if action == "wipe":
+            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
             await arya_db.db.users.delete_one({"id": target_uid})
-            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
-            await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
             return {"success": True, "message": "User data wiped completely."}
             
         elif action == "ban":
+            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
             await arya_db.db.users.delete_one({"id": target_uid})
-            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid)]}})
-            await arya_db.db.premium_checkout.delete_many({"user_id": target_uid})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
             await arya_db.db.users.update_one(
                 {"id": target_uid},
                 {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App"}},
