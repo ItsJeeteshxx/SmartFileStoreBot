@@ -7020,62 +7020,85 @@ async def _process_callback(client, query):
 
         if method == "upi":
             # Direct UPI Transfer Screen
-            bt = await db.db.premium_bots.find_one({"id": client.me.id})
-            bt_cfg = bt.get("config", {}) if bt else {}
-            upi_id, p_name = await _get_rotated_upi(bt_cfg)
-            
-            s_price = str(story["price"])
-            s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+            logger.info(f"[PAY2] User {user_id} clicked Direct UPI option for story {s_id}")
+            try:
+                bt = await db.db.premium_bots.find_one({"id": client.me.id})
+                logger.info(f"[PAY2] Loaded bot config: {bool(bt)}")
+                bt_cfg = bt.get("config", {}) if bt else {}
+                upi_id, p_name = await _get_rotated_upi(bt_cfg)
+                logger.info(f"[PAY2] Rotated UPI resolved: upi_id={upi_id}, payee={p_name}")
+                
+                s_price = str(story["price"])
+                s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+                logger.info(f"[PAY2] Story details: price={s_price}, name={s_name}")
+            except Exception as ex:
+                logger.error(f"[PAY2] Error setting up variables: {ex}", exc_info=True)
+                return await query.answer(f"Setup error: {ex}", show_alert=True)
             
             # Generate Premium UPI Card
             qr_card = None
             try:
+                logger.info("[PAY2] Attempting to generate UPI card image...")
                 qr_card = generate_upi_card(upi_id, s_price, s_name, payee_name=p_name)
+                logger.info(f"[PAY2] UPI card generation result: {'SUCCESS' if qr_card else 'FAILED'}")
             except Exception as e:
-                logger.error(f"UPI Card generation failed: {e}")
+                logger.error(f"[PAY2] UPI Card generation raised exception: {e}", exc_info=True)
                 qr_card = None
 
-            upi_uri = _build_upi_uri(
-                upi_id=upi_id,
-                payee_name=p_name,
-                amount=int(story["price"]),
-                note=f"Payment for {s_name[:20]}"
-            )
+            try:
+                upi_uri = _build_upi_uri(
+                    upi_id=upi_id,
+                    payee_name=p_name,
+                    amount=int(story["price"]),
+                    note=f"Payment for {s_name[:20]}"
+                )
+                logger.info(f"[PAY2] Built UPI URI: {upi_uri}")
 
-            slice_api_url = (getattr(Config, "SLICEURL_API_URL", "") or "").strip()
-            slice_api_key = (getattr(Config, "SLICEURL_API_KEY", "") or "").strip()
-            slice_direct = ""
-            if slice_api_url and slice_api_key.startswith("slc_"):
-                slice_direct = await _sliceurl_api_shorten(upi_uri)
-            button_url = slice_direct
+                slice_api_url = (getattr(Config, "SLICEURL_API_URL", "") or "").strip()
+                slice_api_key = (getattr(Config, "SLICEURL_API_KEY", "") or "").strip()
+                slice_direct = ""
+                if slice_api_url and slice_api_key.startswith("slc_"):
+                    slice_direct = await _sliceurl_api_shorten(upi_uri)
+                button_url = slice_direct
+                logger.info(f"[PAY2] Shortened URL: {button_url}")
+            except Exception as ex:
+                logger.error(f"[PAY2] Error building UPI URI / Shortener: {ex}", exc_info=True)
 
-            await db.db.premium_checkout.update_one(
-                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
-                {"$set": {
-                    "status": "pending_gateway",
-                    "bot_username": client.me.username,
-                    "username": query.from_user.username or "",
-                    "first_name": query.from_user.first_name or "",
-                    "method": "upi",
-                    "amount": int(story["price"]),
-                    "upi_uri": upi_uri,
-                    "pay_link_copy": button_url,
-                    "upi_id_shown": upi_id,
-                    "upi_payee_name_shown": p_name,
-                    "updated_at": datetime.utcnow(),
-                }, "$setOnInsert": {"created_at": datetime.utcnow()}},
-                upsert=True
-            )
+            try:
+                logger.info("[PAY2] Updating checkout in DB...")
+                await db.db.premium_checkout.update_one(
+                    {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+                    {"$set": {
+                        "status": "pending_gateway",
+                        "bot_username": client.me.username,
+                        "username": query.from_user.username or "",
+                        "first_name": query.from_user.first_name or "",
+                        "method": "upi",
+                        "amount": int(story["price"]),
+                        "upi_uri": upi_uri,
+                        "pay_link_copy": button_url,
+                        "upi_id_shown": upi_id,
+                        "upi_payee_name_shown": p_name,
+                        "updated_at": datetime.utcnow(),
+                    }, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                    upsert=True
+                )
+                logger.info("[PAY2] Checkout updated.")
+            except Exception as ex:
+                logger.error(f"[PAY2] Database checkout update failed: {ex}", exc_info=True)
 
             p_name = (bt_cfg.get("upi_name") or "Merchant").strip()
 
-            # Set pending_utr_story_id so _process_text knows which story
-            # the user is paying for when they type their UTR number
-            await db.db.users.update_one(
-                {"id": user_id},
-                {"$set": {"pending_utr_story_id": s_id}},
-                upsert=True
-            )
+            try:
+                logger.info("[PAY2] Setting pending_utr_story_id in user doc...")
+                await db.db.users.update_one(
+                    {"id": user_id},
+                    {"$set": {"pending_utr_story_id": s_id}},
+                    upsert=True
+                )
+                logger.info("[PAY2] User doc updated.")
+            except Exception as ex:
+                logger.error(f"[PAY2] Database user update failed: {ex}", exc_info=True)
 
             if lang == 'hi':
                 txt = (
@@ -7114,18 +7137,45 @@ async def _process_callback(client, query):
                     [InlineKeyboardButton(f"« Back", callback_data=f"mb#pay_back#{s_id}")]
                 ]
             
-            await query.message.delete()
+            try:
+                logger.info("[PAY2] Deleting previous inline message...")
+                await query.message.delete()
+                logger.info("[PAY2] Previous message deleted.")
+            except Exception as ex:
+                logger.warning(f"[PAY2] Failed to delete previous message: {ex}")
+
             try:
                 if qr_card:
-                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+                    logger.info("[PAY2] Sending generated UPI QR Card photo...")
+                    # We remove parse_mode or check if it throws
+                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+                    logger.info("[PAY2] Photo sent successfully.")
                 else:
                     import urllib.parse
                     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=1&data={urllib.parse.quote(upi_uri)}"
-                    await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+                    logger.info(f"[PAY2] Sending fallback QR code URL: {qr_url}")
+                    await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+                    logger.info("[PAY2] Fallback QR code photo sent successfully.")
             except Exception as e:
-                logger.warning(f"UPI payment screen send failed: {e}")
+                logger.error(f"[PAY2] Failed to send photo (both custom and qrserver): {e}", exc_info=True)
                 kb2 = [[InlineKeyboardButton("« वापस" if lang=='hi' else "« Back", callback_data=f"mb#pay_back#{s_id}")]]
-                await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb2), parse_mode=enums.ParseMode.HTML)
+                try:
+                    logger.info("[PAY2] Attempting to send text-only fallback message...")
+                    await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb2))
+                    logger.info("[PAY2] Text-only fallback message sent.")
+                except Exception as ex2:
+                    logger.critical(f"[PAY2] Text-only fallback message ALSO failed: {ex2}", exc_info=True)
+                    # Try a very basic text send
+                    try:
+                        await client.send_message(user_id, "❌ Error sending checkout screen. Please contact support.")
+                    except:
+                        pass
+            
+            # Answer the callback query to stop the loading spinner
+            try:
+                await query.answer()
+            except:
+                pass
 
         elif method == "crypto":
             # OxaPay Crypto Invoice generation
