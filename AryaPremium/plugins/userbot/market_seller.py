@@ -3622,8 +3622,6 @@ async def _process_text(client, message):
 
         return
 
-
-
     # -- UTR Payment handler: user sends their UTR number in chat --
     # When UPI page is open, pending_utr_story_id is set in DB.
     # User types their UTR → we store it as last_utr_entered → show confirm + button.
@@ -3631,10 +3629,10 @@ async def _process_text(client, message):
 
     pending_s_id_utr = user.get("pending_utr_story_id")
     if pending_s_id_utr and not user.get("state"):
-        utr_candidate = txt.strip()
+        raw_input = txt.strip()
 
         # Handle cancellation text
-        is_cancel = utr_candidate.lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "वापस"]
+        is_cancel = raw_input.lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "वापस"]
         if is_cancel:
             await db.db.users.update_one({"id": user_id}, {"$unset": {"pending_utr_story_id": 1, "last_utr_entered": 1}})
             await message.reply_text(
@@ -3643,9 +3641,15 @@ async def _process_text(client, message):
             )
             return await _send_main_menu(client, user_id, message.from_user, lang)
 
-        # Validate UTR format: must be numeric, 12-22 digits
-        if utr_candidate.isdigit() and 12 <= len(utr_candidate) <= 22:
-            # Store UTR for button click to use
+        # ── Aggressive sanitization: extract ONLY ASCII digits ──
+        # Users often copy-paste UTRs from payment apps which insert
+        # non-breaking spaces (\xa0), thin spaces, or other Unicode separators.
+        # We strip everything that is not a plain ASCII digit 0-9.
+        utr_candidate = ''.join(c for c in raw_input if c in '0123456789')
+
+        # Validate UTR format: must be 12-22 ASCII digits after cleaning
+        if len(utr_candidate) >= 12 and len(utr_candidate) <= 22:
+            # Store clean UTR for button click to use
             await db.db.users.update_one(
                 {"id": user_id},
                 {"$set": {"last_utr_entered": utr_candidate}},
@@ -3674,7 +3678,15 @@ async def _process_text(client, message):
                 ]])
             )
             return  # Handled
-        # Not a UTR → let normal text handling continue
+        elif len(utr_candidate) > 0:
+            # User sent something with digits but wrong length — give friendly error
+            await message.reply_text(
+                f"❌ <b>Invalid UTR!</b>\nExtracted digits: <code>{utr_candidate}</code> ({len(utr_candidate)} digits)\n"
+                f"A UTR must be <b>12–22 digits</b>. Please check your payment app and send the correct number.",
+                parse_mode=enums.ParseMode.HTML
+            )
+            return  # Stay in pending state — user can try again
+        # Not a UTR (no digits) → let normal text handling continue
 
 
     pending_s_id = user.get("dm_story_id_pending")
@@ -7088,10 +7100,21 @@ async def _process_callback(client, query):
                 import imaplib, email as email_lib
                 result = {"verified": False, "amount_mismatch": False, "mismatched_amount": None, "error": None}
                 try:
+                    # ── Sanitize UTR: extract only ASCII digits before IMAP search ──
+                    # imaplib encodes commands as ASCII; any non-ASCII char (\xa0, etc.) causes UnicodeEncodeError
+                    utr_clean = ''.join(c for c in utr if c in '0123456789')
+                    if not utr_clean or len(utr_clean) < 8:
+                        result["error"] = f"Invalid UTR after sanitization: '{utr_clean}'"
+                        return result
+
                     mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
                     mail.login(gmail_user, gmail_password)
                     mail.select("INBOX")
-                    status, messages = mail.search(None, "TEXT", utr)
+
+                    # Use byte literal for IMAP search to bypass ASCII encoding issues
+                    search_criteria = b'TEXT "' + utr_clean.encode('ascii') + b'"'
+                    status, messages = mail.search(None, search_criteria)
+
                     if status == "OK" and messages[0]:
                         for mail_id in reversed(messages[0].split()):
                             res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
@@ -7104,7 +7127,8 @@ async def _process_callback(client, query):
                                     if "noreply@slice.bank.in" not in from_header.lower():
                                         continue
                                     body = get_email_body(email_msg)
-                                    if utr in body:
+                                    # Check both clean and original UTR in email body
+                                    if utr_clean in body or utr in body:
                                         if verify_amount_in_email(body, expected_total):
                                             result["verified"] = True
                                         else:
