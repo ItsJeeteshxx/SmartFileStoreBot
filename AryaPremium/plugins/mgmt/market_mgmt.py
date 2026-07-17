@@ -228,22 +228,28 @@ async def _render_settings(client, query):
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     mini_app_on = cfg.get("mini_app_enabled", True)
     tnc_on = cfg.get("tnc_enabled", True)
+    checkout_mode = cfg.get("checkout_mode", "v1")
 
     mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
     tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
+    chk_v1_btn = f"🛒 Checkout Page 1 (Razorpay+UPI): {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
+    chk_v2_btn = f"🛒 Checkout Page 2 (UPI+Crypto): {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
 
     kb = [
         [InlineKeyboardButton("💳 Set UPI ID", callback_data="mk#set_upi")],
         [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
         [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
         [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
+        [InlineKeyboardButton(chk_v1_btn, callback_data="mk#toggle_checkout_v1")],
+        [InlineKeyboardButton(chk_v2_btn, callback_data="mk#toggle_checkout_v2")],
         [InlineKeyboardButton("« Back", callback_data="mk#back")]
     ]
     txt = (
         "<b>⚙️ Ecosystem Settings</b>\n\n"
         "<b>💳 Payment:</b> Configure UPI & AI integrations.\n"
-        "<b>📱 Mini App Deep Links:</b> When ON, story buy links open in Mini App. When OFF, they open in Bot only (old behavior).\n"
-        "<b>📜 T&amp;C Requirement:</b> When ON, users must accept Terms before purchasing. When OFF, T&amp;C is auto-accepted.\n\n"
+        "<b>📱 Mini App Deep Links:</b> When ON, story buy links open in Mini App. When OFF, they open in Bot only.\n"
+        "<b>📜 T&amp;C Requirement:</b> When ON, users must accept Terms before purchasing.\n"
+        "<b>🛒 Checkout Page:</b> Switch between <b>Page 1</b> (Razorpay + Manual UPI) and <b>Page 2</b> (Direct UPI + Crypto Payment).\n\n"
         "<i>Tap any toggle button below to switch it.</i>"
     )
     await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -346,6 +352,20 @@ async def market_callback(client, query):
             )
             status = "✅ ON" if new_val else "❌ OFF"
             await query.answer(f"T&C Requirement: {status}", show_alert=True)
+            await _render_settings(client, query)
+
+        elif cmd in ("toggle_checkout_v1", "toggle_checkout_v2"):
+            await _safe_answer(query)
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            current = cfg.get("checkout_mode", "v1")
+            new_val = "v2" if current == "v1" else "v1"
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": {"checkout_mode": new_val}},
+                upsert=True
+            )
+            status = "Page 1 (Razorpay+UPI)" if new_val == "v1" else "Page 2 (UPI+Crypto)"
+            await query.answer(f"Checkout Mode Set To: {status}", show_alert=True)
             await _render_settings(client, query)
 
         # ── Support Panel (Feedback/Suggestions) ──

@@ -371,6 +371,88 @@ async def _sliceurl_api_shorten(url: str) -> str:
 
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# OxaPay (Crypto) helpers — used by SECURE CHECKOUT - 2
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def _create_oxapay_invoice_bot(amount_inr: int, story_name: str) -> tuple:
+    """
+    Create an OxaPay crypto invoice for a given INR amount.
+    Returns (payLink: str, trackId: str) on success, or (None, error_msg) on failure.
+    Minimum: $0.50 USD (≈ ₹43).
+    """
+    oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
+    if not oxapay_key:
+        return None, "OXAPAY_KEY not configured in .env — crypto payments disabled."
+
+    # INR → USD (approximate rate ₹84 = $1, adjust as needed)
+    usd_amount = round(amount_inr / 84.0, 2)
+    if usd_amount < 0.50:
+        usd_amount = 0.50
+
+    try:
+        import aiohttp
+        payload = {
+            "merchant": oxapay_key,
+            "amount": usd_amount,
+            "currency": "USD",
+            "lifeTime": 60,          # invoice valid 60 minutes
+            "feePaidByPayer": 1,     # buyer pays network fee
+            "description": f"Arya Premium: {story_name[:50]}",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.oxapay.com/merchants/request",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                data = await resp.json()
+
+        if data.get("result") == 100 and data.get("trackId"):
+            return data.get("payLink", ""), data["trackId"]
+
+        return None, data.get("message", f"OxaPay error code: {data.get('result', 'unknown')}")
+
+    except Exception as e:
+        logger.error(f"OxaPay invoice creation failed: {e}")
+        return None, str(e)
+
+
+async def _check_oxapay_invoice_bot(track_id: str) -> str:
+    """
+    Poll OxaPay to check an invoice's current status.
+    Returns: 'paid' | 'waiting' | 'expired' | 'error'
+    """
+    oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
+    if not oxapay_key:
+        return "error"
+    try:
+        import aiohttp
+        payload = {"merchant": oxapay_key, "trackId": track_id}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.oxapay.com/merchants/inquiry",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                data = await resp.json()
+
+        status = str(data.get("status", "")).strip().lower()
+        if status in ("paid", "confirmed"):
+            return "paid"
+        if status == "expired":
+            return "expired"
+        return "waiting"
+
+    except Exception as e:
+        logger.error(f"OxaPay status check failed: {e}")
+        return "error"
+
+
+
+
+
+
 
 def _make_qr_png_bytes(data: str, *, logo_png_bytes: bytes | None = None) -> bytes:
 
@@ -1922,6 +2004,16 @@ def _upi_availability(bot_cfg: dict) -> dict:
 
 async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict = None):
 
+    # ── Checkout Mode Routing ──────────────────────────────────────────────────
+    # Admin can switch between V1 (Razorpay + Manual UPI) and V2 (Direct UPI + Crypto)
+    try:
+        _feat = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        if _feat.get("checkout_mode", "v1") == "v2":
+            return await _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg=bot_cfg)
+    except Exception:
+        pass  # fallback to V1 on any DB error
+    # ──────────────────────────────────────────────────────────────────────────
+
     from pyrogram.types import Message, CallbackQuery
 
     from pyrogram import enums
@@ -1933,6 +2025,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     
 
     bot_cfg = bot_cfg or {}
+
 
     name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
 
@@ -2192,6 +2285,150 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
 
     )
 
+
+
+async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dict = None):
+    from pyrogram.types import Message, CallbackQuery
+    from pyrogram import enums
+    is_msg = isinstance(msg_or_query, Message)
+    user_id = msg_or_query.chat.id if is_msg else msg_or_query.from_user.id
+    
+    bot_cfg = bot_cfg or {}
+    name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
+    price = int(story.get('price', 1))
+    
+    if price > 0:
+        if price <= 50: mrp = 149
+        elif price <= 100: mrp = 299
+        elif price <= 200: mrp = 599
+        elif price <= 300: mrp = 899
+        else: mrp = int(price * 2.5)
+        calc_off = int(((mrp - price) / mrp) * 100)
+        p_str = f"<s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>"
+    else:
+        p_str = f"<b>₹{price}</b>"
+    
+    if lang == 'hi':
+        title = "⟦ सुरक्षित चेकआउट ⟧ - 2"
+        item_lbl = "आइटम"
+        price_lbl = "कुल कीमत"
+        
+        upi_title = "🏦 डायरेक्ट UPI ट्रांसफर (Direct UPI)"
+        upi_desc = "• <b>प्रोसेस:</b> पे करें -> स्क्रीनशॉट भेजें -> एडमिन चेक करेगा।\n• <b>पेमेंट मोड:</b> केवल UPI ऐप्स (PhonePe, GPay, etc.)।\n• <b>वेरिफिकेशन:</b> एडमिन द्वारा 5-10 मिनट में।"
+        
+        crypto_title = "₿ क्रिप्टो से भुगतान (Pay with Crypto)"
+        crypto_desc = "• <b>फायदे:</b> स्वचालित वेरिफिकेशन (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> BTC, USDT, ETH, LTC, Doge & 300+ अन्य।\n• <b>वेरिफिकेशन:</b> भुगतान सफल होते ही तत्काल डिलीवरी।"
+        
+        pay_upi_btn = "🏦 डायरेक्ट यूपीआई (Direct UPI)"
+        pay_crypto_btn = "₿ क्रिप्टो भुगतान (Pay with Crypto) ⚡️"
+        unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
+        back_btn = "❮ वापस"
+    else:
+        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧ - 2"
+        item_lbl = "Item"
+        price_lbl = "Total Price"
+        
+        upi_title = "🏦 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)"
+        upi_desc = "• <b>Process:</b> Pay directly → Upload Screenshot → Admin Verify.\n• <b>Modes:</b> Only UPI Apps (PhonePe, GPay, etc.).\n• <b>Verification:</b> Manual verification (Takes 5-10 mins)."
+        
+        crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
+        crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
+        
+        pay_upi_btn = f"🏦 {_sc('DIRECT UPI TRANSFER')}"
+        pay_crypto_btn = f"₿ {_sc('PAY WITH CRYPTO')} ⚡️"
+        unavailable_upi = "UPI Currently Unavailable"
+        back_btn = f"❮ {_sc('BACK')}"
+
+    # UPI availability check
+    from .market_seller import _upi_availability
+    upi_status = _upi_availability(bot_cfg)
+    upi_ok = upi_status['available']
+
+    if upi_ok:
+        upi_block = f"<blockquote expandable=\"true\">{upi_title}\n{upi_desc}</blockquote>"
+    else:
+        if upi_status['reason'] == 'schedule':
+            until_note = upi_status.get('until', '6:00 AM IST')
+            if lang == 'hi':
+                upi_block = (
+                    f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी उपलब्ध नहीं है।</b>\n\n"
+                    f"• रात्रि 9 बजे से सुबह 6 बजे के बीच सुरक्षा कारणों से डायरेक्ट UPI बंद रहता है।\n"
+                    f"• UPI फिर से उपलब्ध होगा: <b>{until_note}</b>\n\n"
+                    f"कृपया 'Pay with Crypto' या अन्य माध्यम का उपयोग करें।</blockquote>"
+                )
+            else:
+                upi_block = (
+                    f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is currently unavailable.</b>\n\n"
+                    f"• Direct UPI is paused between 9 PM – 6 AM IST for security.\n"
+                    f"• UPI will be available again at: <b>{until_note}</b>\n\n"
+                    f"Please use 'Pay with Crypto' or other methods.</blockquote>"
+                )
+        else:
+            if lang == 'hi':
+                upi_block = (
+                    f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
+                    f"• एडमिन ने फिलहाल डायरेक्ट UPI बंद किया है।\n"
+                    f"• कृपया भुगतान के लिए क्रिप्टो विकल्प का उपयोग करें।</blockquote>"
+                )
+            else:
+                upi_block = (
+                    f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is temporarily unavailable.</b>\n\n"
+                    f"• The admin has disabled Direct UPI for now.\n"
+                    f"• Please use 'Pay with Crypto' to complete your payment.</blockquote>"
+                )
+
+    crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>"
+
+    txt = (
+        f"<b>{title}</b>\n\n"
+        f"<b>{item_lbl} :</b> <code>{name}</code>\n"
+        f"<b>{price_lbl} :</b> {p_str}\n\n"
+        f"{upi_block}\n"
+        f"{crypto_block}"
+    )
+
+    story_methods = story.get("payment_methods", ["upi", "razorpay"])
+    # For V2 checkout, we map 'upi' to upi, and we always allow 'crypto' if OXAPAY_KEY is configured
+    show_upi = "upi" in story_methods
+    oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
+    show_crypto = bool(oxapay_key)
+
+    kb = []
+    if show_upi:
+        if upi_ok:
+            kb.append([InlineKeyboardButton(pay_upi_btn, callback_data=f"mb#pay2#upi#{str(story['_id'])}")])
+        else:
+            kb.append([InlineKeyboardButton(f"⏸ {unavailable_upi}", callback_data="mb#noop")])
+
+    if show_crypto:
+        kb.append([InlineKeyboardButton(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}")])
+    else:
+        # If admin didn't configure OXAPAY_KEY but user wants V2 checkout
+        if lang == 'hi':
+            kb.append([InlineKeyboardButton("⚠️ क्रिप्टो भुगतान अभी अनुपलब्ध है", callback_data="mb#noop")])
+        else:
+            kb.append([InlineKeyboardButton("⚠️ Crypto Payment Unavailable", callback_data="mb#noop")])
+
+    kb.append([InlineKeyboardButton(back_btn, callback_data="mb#return_main")])
+    markup = InlineKeyboardMarkup(kb)
+
+    IMG_URL = "https://files.catbox.moe/4ud7fx.png"
+
+    try:
+        if is_msg:
+            await msg_or_query.delete()
+        else:
+            await msg_or_query.message.delete()
+    except Exception:
+        pass
+
+    await client.send_photo(
+        chat_id=user_id,
+        photo=IMG_URL,
+        caption=txt,
+        reply_markup=markup,
+        parse_mode=enums.ParseMode.HTML
+    )
 
 
 async def _process_start(client, message):
@@ -4094,9 +4331,13 @@ async def _process_callback(client, query):
 
         elif cmd == "pay": act = f"Selected Payment Method: {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
 
+        elif cmd == "pay2": act = f"Selected Payment Method (V2): {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
+
         elif cmd.endswith("_check"): act = f"Clicked Verify Payment for Story ID {data[2] if len(data)>2 else ''}"
 
         elif cmd == "upi_done": act = f"Clicked Payment Done for Manual UPI (Story ID {data[2] if len(data)>2 else ''})"
+
+        elif cmd == "upi2_done": act = f"Clicked Payment Done for Direct UPI (Story ID {data[2] if len(data)>2 else ''})"
 
         if act: asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, act))
 
@@ -5630,6 +5871,10 @@ async def _process_callback(client, query):
 
                     "manual_upi": f"Manual UPI (₹{amount_paid})",
 
+                    "crypto":     f"Crypto (₹{amount_paid})",
+
+                    "oxapay":     f"Crypto (₹{amount_paid})",
+
                 }.get(src, f"{src.capitalize()} (₹{amount_paid})")
 
 
@@ -6279,6 +6524,301 @@ async def _process_callback(client, query):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« {_sc('BACK')}", callback_data=f"mb#pay#upi#{s_id}")]])
 
             )
+
+
+
+    # ── SECURE CHECKOUT - 2 handlers ──
+
+    elif cmd == "pay2":
+        method = data[2]
+        s_id = data[3]
+        from bson.objectid import ObjectId
+        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        if not story: return await query.answer("Story not found!", show_alert=True)
+
+        if method == "upi":
+            # Direct UPI Transfer Screen
+            upi_id = await db.get_config("upi_id") or "heyjeetx@naviaxis"
+            bt = await db.db.premium_bots.find_one({"id": client.me.id})
+            bt_cfg = bt.get("config", {}) if bt else {}
+            
+            s_price = str(story["price"])
+            s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+            
+            # Generate Premium UPI Card
+            qr_card = None
+            try:
+                p_name = (bt_cfg.get("upi_name") or "Merchant").strip()
+                qr_card = generate_upi_card(upi_id, s_price, s_name, payee_name=p_name)
+            except Exception as e:
+                logger.error(f"UPI Card generation failed: {e}")
+                qr_card = None
+
+            upi_uri = _build_upi_uri(
+                upi_id=upi_id,
+                payee_name=(bt_cfg.get("upi_name") or "").strip(),
+                amount=int(story["price"]),
+                note=f"Payment for {s_name[:20]}"
+            )
+
+            slice_api_url = (getattr(Config, "SLICEURL_API_URL", "") or "").strip()
+            slice_api_key = (getattr(Config, "SLICEURL_API_KEY", "") or "").strip()
+            slice_direct = ""
+            if slice_api_url and slice_api_key.startswith("slc_"):
+                slice_direct = await _sliceurl_api_shorten(upi_uri)
+            button_url = slice_direct
+
+            await db.db.premium_checkout.update_one(
+                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+                {"$set": {
+                    "status": "pending_gateway",
+                    "bot_username": client.me.username,
+                    "username": query.from_user.username or "",
+                    "first_name": query.from_user.first_name or "",
+                    "method": "upi",
+                    "amount": int(story["price"]),
+                    "upi_uri": upi_uri,
+                    "pay_link_copy": button_url,
+                    "updated_at": datetime.utcnow(),
+                }, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                upsert=True
+            )
+
+            p_name = (bt_cfg.get("upi_name") or "Merchant").strip()
+            
+            if lang == 'hi':
+                txt = (
+                    f"<b>⟦ {_sc('डायरेक्ट UPI ट्रांसफर')} ⟧</b>\n\n"
+                    f"<b>स्टेप 𝟷: ₹{s_price} का भुगतान करें</b>\n\n"
+                    f"<blockquote>• QR कोड स्कैन करें या नीचे दिए गए विवरण का उपयोग करें:</blockquote>\n"
+                    f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
+                    f"<b>नाम:</b> <code>{p_name}</code>\n"
+                    f"<b>राशि:</b> <code>₹{s_price}</code></blockquote>\n\n"
+                    f"• सुनिश्चित करें कि राशि सही भरी गई है।\n\n"
+                    f"<b>स्टेप य: भुगतान का सत्यापन</b>\n\n"
+                    f"• भुगतान के बाद, अपना स्क्रीनशॉट अपलोड करने के लिए <b>पेमेंट हो गया</b> पर क्लिक करें।\n"
+                    f"────────────────────"
+                )
+                kb = [
+                    [InlineKeyboardButton("☑️ पेमेंट हो गया", callback_data=f"mb#upi2_done#{s_id}")],
+                    [InlineKeyboardButton("« ❮ वापस", callback_data=f"mb#pay_back#{s_id}")]
+                ]
+            else:
+                txt = (
+                    f"<b>⟦ {_sc('DIRECT UPI TRANSFER')} ⟧</b>\n\n"
+                    f"<b>𝚂𝚝𝚎𝚙 𝟷: Pay ₹{s_price}</b>\n\n"
+                    f"<blockquote>• Scan the QR code or pay using the details below:</blockquote>\n"
+                    f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
+                    f"<b>Name:</b> <code>{p_name}</code>\n"
+                    f"<b>Amount:</b> <code>₹{s_price}</code></blockquote>\n\n"
+                    f"• Make sure the amount is entered correctly.\n\n"
+                    f"<b>𝚂𝚝𝚎𝚙 𝟸: Verify Payment</b>\n\n"
+                    f"• After payment, click <b>PAYMENT DONE</b> to upload your screenshot.\n"
+                    f"────────────────────"
+                )
+                kb = [
+                    [InlineKeyboardButton(f"☑️ {_sc('PAYMENT DONE')}", callback_data=f"mb#upi2_done#{s_id}")],
+                    [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data=f"mb#pay_back#{s_id}")]
+                ]
+            
+            await query.message.delete()
+            try:
+                if qr_card:
+                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+                else:
+                    import urllib.parse
+                    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=1&data={urllib.parse.quote(upi_uri)}"
+                    await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+            except Exception as e:
+                logger.warning(f"UPI payment screen send failed: {e}")
+                kb2 = [[InlineKeyboardButton(f"☑️ {'पेमेंट हो गया' if lang=='hi' else _sc('PAYMENT DONE')}", callback_data=f"mb#upi2_done#{s_id}")]]
+                await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb2))
+
+        elif method == "crypto":
+            # OxaPay Crypto Invoice generation
+            await query.message.edit_text(f"🔐 <b>{_sc('PREPARING YOUR SECURE CHECKOUT')}...</b>\n<i>{_sc('Please wait a moment while we connect to the gateway.')}</i>")
+            price = int(story["price"])
+            s_name = story.get('story_name_en', 'Premium Content')
+            
+            url, track_id = await _create_oxapay_invoice_bot(price, s_name)
+            if not url:
+                err_msg = track_id or "Could not generate crypto payment link."
+                return await query.message.edit_text(
+                    f"❌ Could not generate payment gateway link for <b>Crypto</b>.\n\n<code>{err_msg}</code>\n\nPlease try Direct UPI Transfer.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"❮ {_sc('BACK')}", callback_data=f"mb#pay_back#{s_id}")]])
+                )
+
+            # Record checkout in DB
+            await db.db.premium_checkout.update_one(
+                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+                {"$set": {
+                    "status": "pending_gateway",
+                    "bot_username": client.me.username,
+                    "username": query.from_user.username or "",
+                    "first_name": query.from_user.first_name or "",
+                    "method": "crypto",
+                    "payment_id": track_id,
+                    "amount": price,
+                    "pay_link_copy": url,
+                    "updated_at": datetime.utcnow(),
+                }, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                upsert=True
+            )
+
+            usd_amount = round(price / 84.0, 2)
+            if usd_amount < 0.50:
+                usd_amount = 0.50
+
+            lbl_pay = "सुरक्षित क्रिप्टो भुगतान करें" if lang == 'hi' else f"₿ Pay securely via Crypto"
+            lbl_ver = "क्रिप्टो भुगतान सत्यापित करें" if lang == 'hi' else "🔄 Verify Crypto Payment"
+            lbl_bck = "‹ वापस" if lang == 'hi' else "‹ Back"
+
+            kb = [
+                [InlineKeyboardButton(lbl_pay, url=url)],
+                [InlineKeyboardButton(lbl_ver, callback_data=f"mb#crypto2_check#{s_id}")],
+                [InlineKeyboardButton(lbl_bck, callback_data=f"mb#pay_back#{s_id}")]
+            ]
+
+            if lang == "hi":
+                check_txt = (
+                    f"💸 <b>सुरक्षित चेकआउट - 2</b>\n\n"
+                    f"<b>📖 कहानी:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
+                    f"<b>💰 कुल कीमत:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n"
+                    f"<blockquote expandable>"
+                    f"<b>🛡 क्रिप्टो से भुगतान कैसे करें?</b>\n\n"
+                    f"1. नीचे दिए गए '{lbl_pay}' बटन पर क्लिक करें।\n"
+                    f"2. आपको OxaPay के सुरक्षित गेटवे पर भेजा जाएगा।\n"
+                    f"3. समर्थित कॉइन (USDT, BTC, LTC आदि) चुनें और भुगतान करें।\n"
+                    f"4. भुगतान पूरा होने के बाद वापस आकर '{lbl_ver}' पर क्लिक करें।\n"
+                    f"5. बॉट तुरंत सत्यापित करके आपकी फ़ाइल भेज देगा।"
+                    f"</blockquote>\n\n"
+                    f"<i>⚡ 24/7 स्वचालित सत्यापन और तत्काल डिलीवरी।</i>"
+                )
+            else:
+                check_txt = (
+                    f"💸 <b>SECURE CHECKOUT - 2</b>\n\n"
+                    f"<b>📖 Story Name:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
+                    f"<b>💰 Total Price:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n"
+                    f"<blockquote expandable>"
+                    f"<b>🛡 How to pay via Crypto (OxaPay):</b>\n\n"
+                    f"1. Click the '{lbl_pay}' button below.\n"
+                    f"2. Select your preferred coin (USDT, BTC, LTC, etc.) on OxaPay.\n"
+                    f"3. Send the exact amount shown to the payment address.\n"
+                    f"4. Once transaction is complete, return here and click '{lbl_ver}'.\n"
+                    f"5. The bot will automatically verify and grant instant access."
+                    f"</blockquote>\n\n"
+                    f"<i>⚡ 24/7 automated verification & instant delivery.</i>"
+                )
+            
+            await query.message.edit_text(check_txt, reply_markup=InlineKeyboardMarkup(kb))
+
+    elif cmd == "upi2_done":
+        s_id = data[2]
+        from bson.objectid import ObjectId
+        await db.db.premium_checkout.update_one(
+            {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+            {"$set": {"status": "waiting_screenshot", "updated_at": datetime.utcnow()}}
+        )
+        if lang == 'hi':
+            await query.answer("कृपया अपना स्क्रीनशॉट भेजें।", show_alert=True)
+            await query.message.reply_text(
+                "<b>📸 पेमेंट स्क्रीनशॉट भेजें</b>\n\n"
+                "सत्यापन शुरू करने के लिए कृपया अपने सफल भुगतान का स्क्रीनशॉट यहाँ भेजें।",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« वापस", callback_data=f"mb#pay2#upi#{s_id}")]])
+            )
+        else:
+            await query.answer(_sc("Please send your screenshot."), show_alert=True)
+            await query.message.reply_text(
+                f"<b>📸 {_sc('SEND PAYMENT SCREENSHOT')}</b>\n\n"
+                f"{_sc('Please send your successful payment screenshot here to begin verification.')}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« {_sc('BACK')}", callback_data=f"mb#pay2#upi#{s_id}")]])
+            )
+
+    elif cmd == "crypto2_check":
+        s_id = data[2] if len(data) > 2 else None
+        if not s_id: return await query.answer("Invalid.", show_alert=True)
+        
+        from bson.objectid import ObjectId
+        checkout = await db.db.premium_checkout.find_one(
+            {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id), "status": "pending_gateway"}
+        )
+        if not checkout or not checkout.get("payment_id"):
+            return await query.answer("No pending payment found. Generate link again.", show_alert=True)
+
+        await query.answer("Checking payment status... please wait.", show_alert=False)
+        m = await query.message.edit_text(f"🛡️ <b>{_sc('VERIFYING PAYMENT')}...</b>\n<i>{_sc('Checking crypto blockchain status via OxaPay.')}</i>")
+        
+        status = await _check_oxapay_invoice_bot(checkout["payment_id"])
+        
+        if status == "paid":
+            # Payment confirmed!
+            await db.db.premium_checkout.update_one(
+                {"_id": checkout["_id"]},
+                {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
+            )
+            await m.edit_text("✅ <b>Crypto Payment Confirmed successfully!</b>\nAdding to your unlocked stories...")
+            
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            
+            if not await db.has_purchase(user_id, str(s_id)):
+                import random, string
+                order_id = f"OD-{user_id}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+                
+                await db.db.premium_purchases.insert_one({
+                    "user_id": user_id,
+                    "story_id": ObjectId(s_id),
+                    "bot_id": client.me.id,
+                    "purchased_at": datetime.utcnow(),
+                    "source": "crypto",
+                    "amount": checkout.get("amount", 0),
+                    "reference": checkout.get("payment_id"),
+                    "order_id": order_id
+                })
+                await db.add_purchase(user_id, str(s_id))
+                
+                # Log success
+                from utils import log_payment, log_arya_event
+                user_info = await db.get_user(user_id, from_user=query.from_user)
+                s_name = story.get("story_name_en") if story else "Unknown"
+                
+                asyncio.create_task(log_arya_event(
+                    event_type="PAYMENT PROCESSED",
+                    user_id=user_id,
+                    user_info=user_info,
+                    details=f"Story: {s_name}\nGateway: CRYPTO (OxaPay)\nOrder ID: <code>{order_id}</code>\nAmount: ₹{checkout.get('amount', 0)}"
+                ))
+                
+                asyncio.create_task(log_payment(
+                    user_id=user_id,
+                    user_first_name=user_info.get("first_name", "User"),
+                    username=user_info.get('username', ''),
+                    s_name=s_name,
+                    amount=checkout.get("amount", 0),
+                    method="crypto",
+                    receipt_id=checkout.get("payment_id", ""),
+                    pay_link=checkout.get("pay_link_copy", ""),
+                    order_id=order_id,
+                    user_last_name=user_info.get("last_name", "")
+                ))
+            
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            return await dispatch_delivery_choice(client, user_id, story)
+            
+        else:
+            await query.answer("Payment pending. Please complete transaction or try again in a minute.", show_alert=True)
+            savage_msg = (
+                f"<b>❌ 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 𝗡𝗼𝘁 𝗙𝗼𝘂𝗻𝗱!</b>\n"
+                f"<b>Status:</b> <code>{status.upper()}</code>\n\n"
+                f"If you paid, wait a moment for blockchain confirmation, then click Verify again."
+            )
+            await m.edit_text(
+                savage_msg,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Verify Again", callback_data=f"mb#crypto2_check#{s_id}")],
+                    [InlineKeyboardButton("« Back", callback_data=f"mb#show_tc#{s_id}")]
+                ])
+            )
+
 
 
 
