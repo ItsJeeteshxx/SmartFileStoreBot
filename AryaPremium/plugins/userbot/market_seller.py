@@ -3832,18 +3832,19 @@ async def _process_text(client, message):
                 )
 
             try:
+                from datetime import datetime as _dt
                 # ✅ Payment VERIFIED — record purchase and grant access
                 logger.info(f"[UTR] PAYMENT VERIFIED: user={user_id}, story={pending_s_id_utr}, utr={utr_candidate}")
 
                 await db.db.verified_utrs.insert_one({
                     "utr": utr_candidate, "amount": expected_total,
-                    "user_id": user_id, "verified_at": datetime.utcnow()
+                    "user_id": user_id, "verified_at": _dt.utcnow()
                 })
                 logger.info("[UTR] DB: verified_utrs record inserted.")
 
                 await db.db.premium_checkout.update_one(
                     {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(pending_s_id_utr)},
-                    {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
+                    {"$set": {"status": "approved", "updated_at": _dt.utcnow()}}
                 )
                 logger.info("[UTR] DB: premium_checkout updated to approved.")
 
@@ -3851,7 +3852,7 @@ async def _process_text(client, message):
                 order_id = "OD-" + str(user_id) + "-" + ''.join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
                 await db.db.premium_purchases.insert_one({
                     "user_id": user_id, "story_id": ObjectId(pending_s_id_utr),
-                    "bot_id": client.me.id, "purchased_at": datetime.utcnow(),
+                    "bot_id": client.me.id, "purchased_at": _dt.utcnow(),
                     "source": "upi", "amount": expected_total,
                     "reference": utr_candidate, "order_id": order_id
                 })
