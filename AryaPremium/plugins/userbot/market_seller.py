@@ -566,6 +566,42 @@ def _get_base_header(user) -> str:
 
 
 
+async def _get_rotated_upi(bt_cfg):
+    try:
+        from AryaPremium.database import db
+    except ImportError:
+        from database import db
+        
+    cfg_feat = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    upi_options = []
+    
+    u1 = cfg_feat.get("upi_id", "").strip() or (await db.get_config("upi_id") or "").strip()
+    pn1 = cfg_feat.get("upi_payee_name", "").strip() or (bt_cfg.get("upi_name") or "Merchant").strip()
+    if u1:
+        upi_options.append((u1, pn1))
+        
+    u2 = cfg_feat.get("upi_id_2", "").strip()
+    pn2 = cfg_feat.get("upi_payee_name_2", "").strip() or (bt_cfg.get("upi_name") or "Merchant").strip()
+    if u2:
+        upi_options.append((u2, pn2))
+        
+    u3 = cfg_feat.get("upi_id_3", "").strip()
+    pn3 = cfg_feat.get("upi_payee_name_3", "").strip() or (bt_cfg.get("upi_name") or "Merchant").strip()
+    if u3:
+        upi_options.append((u3, pn3))
+        
+    u4 = cfg_feat.get("upi_id_4", "").strip()
+    pn4 = cfg_feat.get("upi_payee_name_4", "").strip() or (bt_cfg.get("upi_name") or "Merchant").strip()
+    if u4:
+        upi_options.append((u4, pn4))
+        
+    if not upi_options:
+        upi_options = [("heyjeetx@naviaxis", (bt_cfg.get("upi_name") or "Merchant").strip())]
+        
+    import random
+    return random.choice(upi_options)
+
+
 # Language Texts
 
 T = {
@@ -6237,13 +6273,11 @@ async def _process_callback(client, query):
 
         elif method == "upi":
 
-            upi_id = await db.get_config("upi_id") or "heyjeetx@naviaxis"
-
             bt = await db.db.premium_bots.find_one({"id": client.me.id})
 
             bt_cfg = bt.get("config", {}) if bt else {}
 
-            
+            upi_id, p_name = await _get_rotated_upi(bt_cfg)
 
             s_price = str(story["price"])
 
@@ -6256,10 +6290,6 @@ async def _process_callback(client, query):
             qr_card = None
 
             try:
-
-                # Pass the configured payee name to match the official bank record
-
-                p_name = (bt_cfg.get("upi_name") or "Merchant").strip()
 
                 qr_card = generate_upi_card(upi_id, s_price, s_name, payee_name=p_name)
 
@@ -6275,7 +6305,7 @@ async def _process_callback(client, query):
 
                 upi_id=upi_id,
 
-                payee_name=(bt_cfg.get("upi_name") or "").strip(),
+                payee_name=p_name,
 
                 amount=int(story["price"]),
 
@@ -6320,6 +6350,10 @@ async def _process_callback(client, query):
                     "upi_uri": upi_uri,
 
                     "pay_link_copy": button_url,
+
+                    "upi_id_shown": upi_id,
+
+                    "upi_payee_name_shown": p_name,
 
                     "updated_at": datetime.utcnow(),
 
@@ -6538,9 +6572,9 @@ async def _process_callback(client, query):
 
         if method == "upi":
             # Direct UPI Transfer Screen
-            upi_id = await db.get_config("upi_id") or "heyjeetx@naviaxis"
             bt = await db.db.premium_bots.find_one({"id": client.me.id})
             bt_cfg = bt.get("config", {}) if bt else {}
+            upi_id, p_name = await _get_rotated_upi(bt_cfg)
             
             s_price = str(story["price"])
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
@@ -6548,7 +6582,6 @@ async def _process_callback(client, query):
             # Generate Premium UPI Card
             qr_card = None
             try:
-                p_name = (bt_cfg.get("upi_name") or "Merchant").strip()
                 qr_card = generate_upi_card(upi_id, s_price, s_name, payee_name=p_name)
             except Exception as e:
                 logger.error(f"UPI Card generation failed: {e}")
@@ -6556,7 +6589,7 @@ async def _process_callback(client, query):
 
             upi_uri = _build_upi_uri(
                 upi_id=upi_id,
-                payee_name=(bt_cfg.get("upi_name") or "").strip(),
+                payee_name=p_name,
                 amount=int(story["price"]),
                 note=f"Payment for {s_name[:20]}"
             )
@@ -6579,6 +6612,8 @@ async def _process_callback(client, query):
                     "amount": int(story["price"]),
                     "upi_uri": upi_uri,
                     "pay_link_copy": button_url,
+                    "upi_id_shown": upi_id,
+                    "upi_payee_name_shown": p_name,
                     "updated_at": datetime.utcnow(),
                 }, "$setOnInsert": {"created_at": datetime.utcnow()}},
                 upsert=True

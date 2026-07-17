@@ -234,6 +234,16 @@ async def _render_settings(client, query):
     gmail_pwd = cfg.get("gmail_app_password", "")
     gmail_verify_on = cfg.get("gmail_verification_enabled", False)
 
+    upi1 = cfg.get("upi_id", "") or (await db.get_config("upi_id") or "")
+    upi2 = cfg.get("upi_id_2", "")
+    upi3 = cfg.get("upi_id_3", "")
+    upi4 = cfg.get("upi_id_4", "")
+
+    upi1_status = f"✅ ({upi1[:8]}…)" if upi1 else "❌"
+    upi2_status = f"✅ ({upi2[:8]}…)" if upi2 else "❌"
+    upi3_status = f"✅ ({upi3[:8]}…)" if upi3 else "❌"
+    upi4_status = f"✅ ({upi4[:8]}…)" if upi4 else "❌"
+
     mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
     tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
     chk_v1_btn = f"🛒 Checkout Page 1 (Razorpay+UPI): {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
@@ -244,7 +254,14 @@ async def _render_settings(client, query):
     gmail_verify_btn = f"🔌 Gmail Auto-Verify: {'✅ ON' if gmail_verify_on else '❌ OFF'}"
 
     kb = [
-        [InlineKeyboardButton("💳 Set UPI ID", callback_data="mk#set_upi")],
+        [
+            InlineKeyboardButton(f"💳 UPI 1: {upi1_status}", callback_data="mk#set_upi_1"),
+            InlineKeyboardButton(f"💳 UPI 2: {upi2_status}", callback_data="mk#set_upi_2")
+        ],
+        [
+            InlineKeyboardButton(f"💳 UPI 3: {upi3_status}", callback_data="mk#set_upi_3"),
+            InlineKeyboardButton(f"💳 UPI 4: {upi4_status}", callback_data="mk#set_upi_4")
+        ],
         [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
         [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
         [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
@@ -676,7 +693,7 @@ async def market_callback(client, query):
                 await query.answer()
             return await _render_home(client, user_id, edit_message=query.message)
 
-        elif cmd in ["set_upi", "set_groq", "set_gmail_user", "set_gmail_pwd"]:
+        elif cmd in ["set_groq", "set_gmail_user", "set_gmail_pwd"] or cmd.startswith("set_upi"):
             await query.message.delete()
             asyncio.create_task(_settings_flow(client, user_id, cmd))
 
@@ -1945,13 +1962,87 @@ async def _fb_reply_flow(client, user_id, fb_id: str, target_uid: int):
 async def _settings_flow(client, user_id, cmd):
 
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
-    if cmd == "set_upi":
-        msg = await native_ask(client, user_id, "<b>❪ SET UPI ID ❫</b>\n\nEnter your UPI ID (e.g. <code>heyjeetx@naviaxis</code>):", reply_markup=cancel_kb)
+    if cmd.startswith("set_upi"):
+        parts = cmd.split("_")
+        upi_idx = parts[2] if len(parts) > 2 else "1"
+        
+        id_key = "upi_id" if upi_idx == "1" else f"upi_id_{upi_idx}"
+        name_key = "upi_payee_name" if upi_idx == "1" else f"upi_payee_name_{upi_idx}"
+        
+        cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        curr_val = cfg.get(id_key, "")
+        if not curr_val and upi_idx == "1":
+            curr_val = await db.get_config("upi_id") or ""
+            
+        current_hint = f"\n\n<i>Current UPI ID: <code>{curr_val}</code></i>" if curr_val else ""
+        
+        msg = await native_ask(
+            client,
+            user_id,
+            f"<b>❪ SET UPI ID {upi_idx} ❫</b>{current_hint}\n\n"
+            "Enter the UPI ID (e.g. <code>heyjeetx@naviaxis</code>) or reply <code>skip</code> / <code>clear</code> to clear this slot:",
+            reply_markup=cancel_kb
+        )
         from pyrogram.types import CallbackQuery as _CQ
         if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
-            return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>")
-        await db.set_config("upi_id", msg.text.strip())
-        await client.send_message(user_id, f"✅ UPI ID updated to <code>{msg.text.strip()}</code>", reply_markup=ReplyKeyboardRemove())
+            return await client.send_message(
+                user_id,
+                "<i>Process Cancelled. UPI ID unchanged.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+            )
+            
+        entered = msg.text.strip()
+        if entered.lower() in ("skip", "/skip", "clear", "none"):
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": {id_key: "", name_key: ""}},
+                upsert=True
+            )
+            if upi_idx == "1":
+                await db.set_config("upi_id", "")
+            return await client.send_message(
+                user_id,
+                f"✅ UPI ID {upi_idx} cleared successfully!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+            )
+            
+        new_upi = entered
+        
+        curr_name = cfg.get(name_key, "")
+        current_name_hint = f"\n\n<i>Current Payee Name: <code>{curr_name}</code></i>" if curr_name else ""
+        
+        msg_name = await native_ask(
+            client,
+            user_id,
+            f"<b>❪ SET PAYEE NAME FOR UPI ID {upi_idx} ❫</b>{current_name_hint}\n\n"
+            f"Enter the Payee (Merchant) Name for <code>{new_upi}</code>:",
+            reply_markup=cancel_kb
+        )
+        if isinstance(msg_name, _CQ) or not getattr(msg_name, 'text', None):
+            return await client.send_message(
+                user_id,
+                "<i>Process Cancelled. UPI ID unchanged.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+            )
+            
+        new_name = msg_name.text.strip()
+        
+        await db.db.mini_app_config.update_one(
+            {"_key": "feature_toggles"},
+            {"$set": {id_key: new_upi, name_key: new_name}},
+            upsert=True
+        )
+        if upi_idx == "1":
+            await db.set_config("upi_id", new_upi)
+            
+        await client.send_message(
+            user_id,
+            f"✅ <b>UPI ID {upi_idx} saved!</b>\n"
+            f"<b>UPI ID:</b> <code>{new_upi}</code>\n"
+            f"<b>Payee Name:</b> <code>{new_name}</code>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
 
     elif cmd == "set_groq":
         from pyrogram.types import CallbackQuery as _CQ

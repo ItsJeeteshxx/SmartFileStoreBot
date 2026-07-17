@@ -270,10 +270,11 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
         if order_id:
             try:
                 res = await db.db.orders.find_one_and_update(
-                    {"order_id": order_id, "payment_log_sent": {"$ne": True}},
-                    {"$set": {"payment_log_sent": True}}
+                    {"order_id": order_id},
+                    {"$set": {"payment_log_sent": True}},
+                    upsert=True
                 )
-                if not res:
+                if res and res.get("payment_log_sent") is True:
                     import logging; logging.getLogger(__name__).info(f"Payment log already sent or sending for order {order_id}, skipping duplicate log request.")
                     return
             except Exception as e:
