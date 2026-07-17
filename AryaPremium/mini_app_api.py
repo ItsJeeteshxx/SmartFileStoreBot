@@ -4342,6 +4342,8 @@ async def get_admin_bans(telegram_id: str):
             b["_id"] = str(b["_id"])
             if "banned_at" in b and isinstance(b["banned_at"], datetime):
                 b["banned_at"] = b["banned_at"].isoformat()
+            if "ips" in b and isinstance(b["ips"], list):
+                b["ip_details"] = [{"ip": ip, "universal": _is_universal_ip(ip)} for ip in b["ips"]]
                 
         # Fetch live activity attempts (last 100)
         activity = await arya_db.db.premium_ban_activity.find().sort("timestamp", -1).to_list(length=100)
@@ -4353,6 +4355,52 @@ async def get_admin_bans(telegram_id: str):
         return {"success": True, "bans": bans, "activity": activity}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/scan-universal-ips")
+async def scan_and_clean_universal_ips(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    if not is_admin(str(telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    arya_db = app.state.db
+    if not arya_db:
+        raise HTTPException(status_code=500, detail="Database not available")
+        
+    bans_cursor = arya_db.db.premium_bans.find()
+    bans = await bans_cursor.to_list(length=None)
+    
+    cleaned_records = 0
+    total_universal_removed = 0
+    removed_report = []
+    
+    for ban in bans:
+        ips = ban.get("ips", [])
+        if not ips:
+            continue
+            
+        universal_ips = [ip for ip in ips if _is_universal_ip(ip)]
+        if universal_ips:
+            # Filter them out
+            clean_ips = [ip for ip in ips if not _is_universal_ip(ip)]
+            await arya_db.db.premium_bans.update_one(
+                {"_id": ban["_id"]},
+                {"$set": {"ips": clean_ips}}
+            )
+            cleaned_records += 1
+            total_universal_removed += len(universal_ips)
+            removed_report.append({
+                "telegram_id": str(ban["_id"]),
+                "name": ban.get("name", "Unknown"),
+                "removed_ips": universal_ips
+            })
+            
+    return {
+        "success": True,
+        "cleaned_records_count": cleaned_records,
+        "total_universal_removed": total_universal_removed,
+        "report": removed_report
+    }
+
 
 @api_router.post("/admin/ban")
 async def admin_ban_user(payload: dict):
@@ -4384,7 +4432,7 @@ async def admin_ban_user(payload: dict):
         
         # Get historical IPs and Device IDs of target_id
         historical_ips = await arya_db.db.mini_app_analytics.distinct("ip", {"user_id": target_id_int})
-        ips = [ip for ip in historical_ips if ip and ip not in ("unknown", "127.0.0.1", "::1") and not ip.startswith(("192.168.", "10.", "172."))]
+        ips = [ip for ip in historical_ips if ip and not _is_universal_ip(ip)]
         
         historical_device_ids = await arya_db.db.mini_app_analytics.distinct("fingerprint_id", {"user_id": target_id_int})
         device_ids = [d for d in historical_device_ids if d]
@@ -4945,6 +4993,44 @@ def _is_private_or_local_ip(ip: str) -> bool:
                 return True
         except (ValueError, IndexError):
             pass
+    return False
+
+
+UNIVERSAL_CARRIER_PREFIXES = {
+    # Jio CGNAT ranges (India)
+    "49.32.", "49.33.", "49.34.", "49.35.", "49.36.", "49.37.",
+    "49.44.", "49.45.", "49.46.", "49.47.",
+    "157.32.", "157.33.", "157.34.", "157.35.", "157.36.", "157.37.",
+    "157.38.", "157.39.", "157.40.", "157.41.",
+    "103.57.", "103.58.", "103.59.",
+    # Jio IPv6 ranges (starts with 2409:40)
+    "2409:40",
+    # Airtel CGNAT ranges
+    "182.68.", "182.69.", "182.70.", "182.71.", "182.72.",
+    "49.205.", "49.206.", "49.207.",
+    "122.160.", "122.161.", "122.162.", "122.163.", "122.164.", "122.165.",
+    # Airtel IPv6 ranges
+    "2401:49", "2402:3a", "2402:81",
+    # BSNL
+    "117.193.", "117.194.", "117.195.", "117.196.",
+    "110.224.", "110.225.", "110.226.", "110.227.",
+    # Vodafone India
+    "202.138.", "202.139.",
+    "27.4.", "27.5.", "27.6.", "27.7.",
+    # Vi (Idea)
+    "203.101.", "203.102.",
+}
+
+def _is_universal_ip(ip: str) -> bool:
+    """Returns True if IP is a known shared CGNAT carrier IP (Jio/Airtel/BSNL/Vodafone India) or local."""
+    if not ip:
+        return False
+    ip = ip.strip().lower()
+    if _is_private_or_local_ip(ip):
+        return True
+    for prefix in UNIVERSAL_CARRIER_PREFIXES:
+        if ip.startswith(prefix):
+            return True
     return False
 
 
@@ -7136,7 +7222,7 @@ async def ban_guard_middleware(request: Request, call_next):
             # 2. CHECK BLOCKED STATUS
             is_local = not ip or ip in ("unknown", "127.0.0.1", "::1") or ip.startswith(("192.168.", "10.", "172."))
             banned_by_ip = None
-            if not is_local:
+            if not is_local and not _is_universal_ip(ip):
                 banned_by_ip = await db.db.premium_bans.find_one({"ips": ip, "status": {"$in": ["banned", "flagged"]}})
                 
             banned_by_device = None
@@ -7208,14 +7294,16 @@ async def ban_guard_middleware(request: Request, call_next):
                 user_name = "Banned User"
                 
                 # We will update the corresponding database document to add any new IPs or Device IDs they try to use.
+                # However, we STRICTLY do not add universal/shared IPs to the blocked IPs array.
                 update_fields = {}
-                if ip and not is_local:
+                if ip and not is_local and not _is_universal_ip(ip):
                     update_fields["ips"] = ip
                 if device_id:
                     update_fields["device_ids"] = device_id
                 
                 # Rule A: Banned user changing IP/Device (VPN Evasion)
-                if banned_by_tg and not banned_by_ip and not is_local:
+                # Ignore VPN evasion check if they are on a universal/shared IP.
+                if banned_by_tg and not banned_by_ip and not is_local and not _is_universal_ip(ip):
                     reason = banned_by_tg.get("reason", "Banned by administrator")
                     user_name = banned_by_tg.get("name", f"User {tg_id}")
                     if update_fields:
