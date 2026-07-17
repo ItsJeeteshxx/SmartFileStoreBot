@@ -2350,7 +2350,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         price_lbl = "कुल कीमत"
         
         upi_title = "🏦 डायरेक्ट UPI ट्रांसफर (Direct UPI)"
-        upi_desc = "• <b>प्रोसेस:</b> पे करें -> स्क्रीनशॉट भेजें -> एडमिन चेक करेगा।\n• <b>पेमेंट मोड:</b> केवल UPI ऐप्स (PhonePe, GPay, etc.)।\n• <b>वेरिफिकेशन:</b> एडमिन द्वारा 5-10 मिनट में।"
+        upi_desc = "• <b>प्रोसेस:</b> अपने UPI ऐप से भुगतान करें → 12-अंकों का UTR दर्ज करें → तत्काल सत्यापन।\n• <b>पेमेंट मोड:</b> PhonePe, GPay, Paytm, BHIM, आदि।\n• <b>वेरिफिकेशन:</b> स्वचालित वेरिफिकेशन (1-2 मिनट में)।"
         
         crypto_title = "₿ क्रिप्टो से भुगतान (Pay with Crypto)"
         crypto_desc = "• <b>फायदे:</b> स्वचालित वेरिफिकेशन (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> BTC, USDT, ETH, LTC, Doge & 300+ अन्य।\n• <b>वेरिफिकेशन:</b> भुगतान सफल होते ही तत्काल डिलीवरी।"
@@ -2365,7 +2365,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         price_lbl = "Total Price"
         
         upi_title = "🏦 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)"
-        upi_desc = "• <b>Process:</b> Pay directly → Upload Screenshot → Admin Verify.\n• <b>Modes:</b> Only UPI Apps (PhonePe, GPay, etc.).\n• <b>Verification:</b> Manual verification (Takes 5-10 mins)."
+        upi_desc = "• <b>Process:</b> Pay directly using any UPI App → Enter 12-digit UTR → Auto Verify.\n• <b>Modes:</b> PhonePe, GPay, Paytm, BHIM, etc.\n• <b>Verification:</b> Automatic verification (Takes 1-2 mins)."
         
         crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
@@ -2448,7 +2448,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     kb.append([InlineKeyboardButton(back_btn, callback_data="mb#return_main")])
     markup = InlineKeyboardMarkup(kb)
 
-    IMG_URL = "https://files.catbox.moe/4ud7fx.png"
+    IMG_URL = "https://files.catbox.moe/a6xw61.png"
 
     try:
         if is_msg:
@@ -6759,17 +6759,19 @@ async def _process_callback(client, query):
         prompt_txt = (
             "<b>✍️ ENTER 12-DIGIT UTR NUMBER</b>\n\n"
             "Please enter the 12-digit UTR / Transaction ID of your payment.\n"
-            "<i>Example: 2026XXXXXXXX or similar.</i>"
+            "<i>Example: 2026XXXXXXXX or similar.</i>\n\n"
+            "📖 <a href=\"https://t.me/StoriesLinkopningguide/25\">How it works ?</a>"
         )
         if lang == 'hi':
             prompt_txt = (
                 "<b>✍️ UTR नंबर दर्ज करें (12 अंक)</b>\n\n"
                 "कृपया अपने भुगतान का 12-अंकों का UTR / ट्रांजैक्शन आईडी यहाँ लिखें।\n"
-                "<i>उदाहरण: 2026XXXXXXXX या समतुल्य।</i>"
+                "<i>उदाहरण: 2026XXXXXXXX या समतुल्य।</i>\n\n"
+                "📖 <a href=\"https://t.me/StoriesLinkopningguide/25\">How it works ?</a>"
             )
             
         try:
-            msg = await native_ask(client, user_id, prompt_txt, reply_markup=cancel_kb, timeout=120)
+            msg = await native_ask(client, user_id, prompt_txt, reply_markup=cancel_kb, timeout=120, parse_mode="html")
         except asyncio.TimeoutError:
             return await client.send_message(user_id, "❌ Verification timeout. Please try again.")
 
