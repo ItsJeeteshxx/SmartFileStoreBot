@@ -4,6 +4,7 @@ import sys
 import os
 import httpx
 from datetime import datetime, timezone
+from pyrogram import enums
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ async def _send_plain_text_log(text: str) -> None:
             await bot_client.send_message(
                 chat_id=target_chat_id,
                 text=text,
-                parse_mode='html',
+                parse_mode=enums.ParseMode.HTML,
                 disable_web_page_preview=True
             )
             return
@@ -83,7 +84,7 @@ async def _send_plain_text_log(text: str) -> None:
             await mgmt_client.send_message(
                 chat_id=target_chat_id,
                 text=text,
-                parse_mode='html',
+                parse_mode=enums.ParseMode.HTML,
                 disable_web_page_preview=True
             )
             return

@@ -1,4 +1,4 @@
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from database import db
 from config import Config
@@ -193,7 +193,7 @@ async def _do_payment(bot: Client, query, story_id: str, story: dict):
             photo=resp_msg.photo.file_id,
             caption=caption,
             reply_markup=approval_btns,
-            parse_mode="html"
+            parse_mode=enums.ParseMode.HTML
         )
     except Exception:
         await bot.send_message(query.message.chat.id, "Error notifying admins. Please contact support.")

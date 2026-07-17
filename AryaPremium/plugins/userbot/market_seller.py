@@ -6951,7 +6951,7 @@ async def _process_callback(client, query):
                 )
                 
             try:
-                msg = await native_ask(client, user_id, prompt_txt, reply_markup=cancel_kb, timeout=120, parse_mode="html")
+                msg = await native_ask(client, user_id, prompt_txt, reply_markup=cancel_kb, timeout=120, parse_mode=enums.ParseMode.HTML)
             except asyncio.TimeoutError:
                 return await client.send_message(user_id, "❌ Verification timeout. Please try again.")
 
