@@ -297,6 +297,23 @@ async def lifespan(app: FastAPI):
                     logger.info(f"✅ Database Migration: Updated {mig_res.modified_count} flagged records to strictly banned")
             except Exception as mig_err:
                 logger.warning(f"Failed to migrate flagged records: {mig_err}")
+                
+            # Automatically scan and clean universal/carrier IPs from premium_bans collection
+            try:
+                bans_cursor = arya_db.db.premium_bans.find()
+                async for ban in bans_cursor:
+                    ips = ban.get("ips", [])
+                    if ips:
+                        universal_ips = [ip for ip in ips if _is_universal_ip(ip)]
+                        if universal_ips:
+                            clean_ips = [ip for ip in ips if not _is_universal_ip(ip)]
+                            await arya_db.db.premium_bans.update_one(
+                                {"_id": ban["_id"]},
+                                {"$set": {"ips": clean_ips}}
+                            )
+                            logger.info(f"✅ Startup Cleaned: Removed universal IPs {universal_ips} from banned user {ban['_id']}")
+            except Exception as clean_err:
+                logger.warning(f"Failed to clean startup universal IPs: {clean_err}")
         except Exception as idx_err:
             logger.warning(f"Failed to create indexes: {idx_err}")
             
