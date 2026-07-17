@@ -33,8 +33,8 @@ _e4 = _parse_env(os.path.join(_PARENT_DIR, "config.env"))
 
 def _env(key, default=""):
     return (environ.get(key)
-            or _e1.get(key) or _e2.get(key)
-            or _e3.get(key) or _e4.get(key)
+            or _e2.get(key) or _e1.get(key)
+            or _e4.get(key) or _e3.get(key)
             or default)
 
 class Config:

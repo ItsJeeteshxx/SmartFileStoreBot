@@ -6798,10 +6798,40 @@ async def _process_callback(client, query):
         gmail_user = cfg.get("gmail_user", "").strip()
         gmail_password = cfg.get("gmail_app_password", "").strip()
         
+        # If database settings are empty, look in env and configs (with dynamic reload)
         if not gmail_user or not gmail_password:
-            gmail_user = (getattr(Config, "GMAIL_USER", "") or "").strip()
-            gmail_password = (getattr(Config, "GMAIL_APP_PASSWORD", "") or "").strip()
-            
+            try:
+                from dotenv import load_dotenv
+                import os
+                import sys
+                this_dir = os.path.dirname(os.path.abspath(__file__))
+                parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(this_dir)))
+                sub_dir = os.path.dirname(os.path.dirname(this_dir))
+                
+                load_dotenv(os.path.join(parent_dir, ".env"), override=True)
+                load_dotenv(os.path.join(sub_dir, ".env"), override=True)
+            except Exception as dotenv_err:
+                logger.warning(f"Dotenv dynamic reload warning: {dotenv_err}")
+
+            # Try env vars
+            if not gmail_user:
+                gmail_user = os.environ.get("GMAIL_USER", "").strip() or os.environ.get("gmail_user", "").strip()
+            if not gmail_password:
+                gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "").strip() or os.environ.get("gmail_app_password", "").strip()
+
+            # Try Config reload
+            if not gmail_user or not gmail_password:
+                try:
+                    import importlib
+                    from AryaPremium.config import Config as PremConfig
+                    importlib.reload(sys.modules['AryaPremium.config'])
+                    if not gmail_user:
+                        gmail_user = getattr(PremConfig, "GMAIL_USER", "").strip()
+                    if not gmail_password:
+                        gmail_password = getattr(PremConfig, "GMAIL_APP_PASSWORD", "").strip()
+                except Exception as e:
+                    logger.warning(f"Config reload warning: {e}")
+                    
         if not gmail_enabled and gmail_user and gmail_password:
             gmail_enabled = True
             
