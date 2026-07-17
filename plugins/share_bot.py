@@ -163,7 +163,7 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
 # 
 ARYA_VERSION = "V1.0"
 UPDATE_LINK   = "https://t.me/AryaBotUpdatesTG"
-SUPPORT_LINK  = "https://t.me/AryaHelpTG"
+SUPPORT_LINK  = "https://t.me/+gFudInzITpo1Yjg1"
 
 DEFAULT_PREMIUM_AD_TEXT = (
     "◎ सूचना: समय और मेहनत दोनों बचाइए!\n\n"
@@ -865,7 +865,7 @@ async def _process_start(client, message):
                 f"⧉ Having trouble with the bot? Tap \"Arya Help\" below."
             )
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
+            InlineKeyboardButton("Arya Help", url="https://t.me/+gFudInzITpo1Yjg1"),
             InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         notice = await message.reply_text(txt, reply_markup=kb_help)
@@ -882,7 +882,7 @@ async def _process_start(client, message):
                     f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
                     f"⧉ Having trouble with the bot? Tap \"Arya Help\" below.")
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
+            InlineKeyboardButton("Arya Help", url="https://t.me/+gFudInzITpo1Yjg1"),
             InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         await message.reply_text(txt, reply_markup=kb_help)

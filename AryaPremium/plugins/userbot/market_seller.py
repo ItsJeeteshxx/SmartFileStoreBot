@@ -3628,7 +3628,7 @@ async def _process_text(client, message):
     # pending_utr_story_id is set in DB when user opens the Direct UPI page.
 
     pending_s_id_utr = user.get("pending_utr_story_id")
-    if pending_s_id_utr and not user.get("state"):
+    if pending_s_id_utr:
         raw_input = txt.strip()
 
         # Extract ONLY ASCII digits — handles copy-paste with \xa0, thin-spaces, etc.
@@ -3820,7 +3820,7 @@ async def _process_text(client, message):
                             f"No bank alert for UTR <code>{utr_candidate}</code> (₹{expected_total:.0f})\n\n"
                             "<i>If you just paid, wait 15–30 seconds for the bank email, then send your UTR again.</i>"
                         )
-                _retry_btn = "पुनः प्रयास करें" if lang == 'hi' else "🔄 Retry"
+                _retry_btn = "पुनः प्रयास करें" if lang == 'hi' else "Retry"
                 _back_btn = "« वापस" if lang == 'hi' else "« Back"
                 return await message.reply_text(
                     err_text,
@@ -4173,6 +4173,9 @@ async def _process_text(client, message):
         if not story:
 
             return await message.reply_text("<i>Story not found or removed.</i>", parse_mode=enums.ParseMode.HTML)
+
+        # Clear search state upon story selection
+        await db.db.users.update_one({"id": user_id}, {"$unset": {"state": 1}})
 
 
 
@@ -4722,7 +4725,7 @@ async def _show_help_menu(client, query):
 
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
 
-            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/ItsNewtonPlanet")],
+            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
 
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
 
@@ -4776,7 +4779,7 @@ async def _show_help_menu(client, query):
 
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
 
-            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/ItsNewtonPlanet")],
+            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
 
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
 
@@ -9002,7 +9005,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
             [InlineKeyboardButton(f"⟳ {_sc('Regenerate Files')}", callback_data=f"mb#deliver_dm#{story_id_str}")],
 
-            [InlineKeyboardButton("🆘 Arya Help", url="https://t.me/AryaHelpTG")],
+            [InlineKeyboardButton("🆘 Arya Help", url="https://t.me/+gFudInzITpo1Yjg1")],
 
         ]
 
