@@ -229,11 +229,19 @@ async def _render_settings(client, query):
     mini_app_on = cfg.get("mini_app_enabled", True)
     tnc_on = cfg.get("tnc_enabled", True)
     checkout_mode = cfg.get("checkout_mode", "v1")
+    
+    gmail_user = cfg.get("gmail_user", "")
+    gmail_pwd = cfg.get("gmail_app_password", "")
+    gmail_verify_on = cfg.get("gmail_verification_enabled", False)
 
     mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
     tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
     chk_v1_btn = f"🛒 Checkout Page 1 (Razorpay+UPI): {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
     chk_v2_btn = f"🛒 Checkout Page 2 (UPI+Crypto): {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
+    
+    gmail_user_status = f"✅ Set ({gmail_user[:8]}…)" if gmail_user else "❌ Not Set"
+    gmail_pwd_status = "✅ Set" if gmail_pwd else "❌ Not Set"
+    gmail_verify_btn = f"🔌 Gmail Auto-Verify: {'✅ ON' if gmail_verify_on else '❌ OFF'}"
 
     kb = [
         [InlineKeyboardButton("💳 Set UPI ID", callback_data="mk#set_upi")],
@@ -242,14 +250,18 @@ async def _render_settings(client, query):
         [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
         [InlineKeyboardButton(chk_v1_btn, callback_data="mk#toggle_checkout_v1")],
         [InlineKeyboardButton(chk_v2_btn, callback_data="mk#toggle_checkout_v2")],
+        [InlineKeyboardButton(f"📧 Set Gmail [{gmail_user_status}]", callback_data="mk#set_gmail_user")],
+        [InlineKeyboardButton(f"🔑 Set Gmail Pwd [{gmail_pwd_status}]", callback_data="mk#set_gmail_pwd")],
+        [InlineKeyboardButton(gmail_verify_btn, callback_data="mk#toggle_gmail_verify")],
         [InlineKeyboardButton("« Back", callback_data="mk#back")]
     ]
     txt = (
         "<b>⚙️ Ecosystem Settings</b>\n\n"
         "<b>💳 Payment:</b> Configure UPI & AI integrations.\n"
-        "<b>📱 Mini App Deep Links:</b> When ON, story buy links open in Mini App. When OFF, they open in Bot only.\n"
+        "<b>📱 Mini App Deep Links:</b> When ON, story buy links open in Mini App. When OFF, story buy links open in Bot.\n"
         "<b>📜 T&amp;C Requirement:</b> When ON, users must accept Terms before purchasing.\n"
-        "<b>🛒 Checkout Page:</b> Switch between <b>Page 1</b> (Razorpay + Manual UPI) and <b>Page 2</b> (Direct UPI + Crypto Payment).\n\n"
+        "<b>🛒 Checkout Page:</b> Switch between <b>Page 1</b> (Razorpay + Manual UPI) and <b>Page 2</b> (Direct UPI + Crypto Payment).\n"
+        "<b>📧 Gmail Verification:</b> Auto-verify Direct UPI payments via Gmail secure IMAP (Slice Bank alerts).\n\n"
         "<i>Tap any toggle button below to switch it.</i>"
     )
     await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -366,6 +378,20 @@ async def market_callback(client, query):
             )
             status = "Page 1 (Razorpay+UPI)" if new_val == "v1" else "Page 2 (UPI+Crypto)"
             await query.answer(f"Checkout Mode Set To: {status}", show_alert=True)
+            await _render_settings(client, query)
+
+        elif cmd == "toggle_gmail_verify":
+            await _safe_answer(query)
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            current = cfg.get("gmail_verification_enabled", False)
+            new_val = not current
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": {"gmail_verification_enabled": new_val}},
+                upsert=True
+            )
+            status = "✅ ON" if new_val else "❌ OFF"
+            await query.answer(f"Gmail Auto-Verify: {status}", show_alert=True)
             await _render_settings(client, query)
 
         # ── Support Panel (Feedback/Suggestions) ──
@@ -650,7 +676,7 @@ async def market_callback(client, query):
                 await query.answer()
             return await _render_home(client, user_id, edit_message=query.message)
 
-        elif cmd in ["set_upi", "set_groq"]:
+        elif cmd in ["set_upi", "set_groq", "set_gmail_user", "set_gmail_pwd"]:
             await query.message.delete()
             asyncio.create_task(_settings_flow(client, user_id, cmd))
 
@@ -1953,6 +1979,76 @@ async def _settings_flow(client, user_id, cmd):
             user_id,
             f"✅ <b>Groq AI Key saved!</b>\n<code>{new_key[:12]}…</code>\n\n"
             "<i>New stories and edits will now use Groq AI for Hindi transliteration and translation.</i>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    elif cmd == "set_gmail_user":
+        from pyrogram.types import CallbackQuery as _CQ
+        cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        current_email = cfg.get("gmail_user", "")
+        current_hint = f"\n\n<i>Current Gmail: <code>{current_email}</code></i>" if current_email else ""
+        
+        msg = await native_ask(
+            client, user_id,
+            f"<b>❪ SET GMAIL EMAIL ADDRESS ❫</b>{current_hint}\n\n"
+            "Enter the Gmail email address used for transaction notifications:\n"
+            "<i>This must be the Gmail inbox receiving Slice Bank alerts.</i>",
+            reply_markup=cancel_kb
+        )
+        if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
+            return await client.send_message(
+                user_id, 
+                "<i>Process Cancelled. Gmail email address unchanged.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+            )
+            
+        new_email = msg.text.strip()
+        await db.db.mini_app_config.update_one(
+            {"_key": "feature_toggles"},
+            {"$set": {"gmail_user": new_email}},
+            upsert=True
+        )
+        await db.set_config("gmail_user", new_email)
+        
+        await client.send_message(
+            user_id,
+            f"✅ <b>Gmail Email Address saved!</b>\n<code>{new_email}</code>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
+        
+    elif cmd == "set_gmail_pwd":
+        from pyrogram.types import CallbackQuery as _CQ
+        cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        current_pwd = cfg.get("gmail_app_password", "")
+        current_hint = f"\n\n<i>Current Password: <code>{(current_pwd or '')[:6]}…</code></i>" if current_pwd else ""
+        
+        msg = await native_ask(
+            client, user_id,
+            f"<b>❪ SET GMAIL APP PASSWORD ❫</b>{current_hint}\n\n"
+            "Enter the 16-character Google App Password (not your main password):\n"
+            "<i>Generate this app-specific password via your Google Account Settings under 2-Step Verification.</i>",
+            reply_markup=cancel_kb
+        )
+        if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
+            return await client.send_message(
+                user_id, 
+                "<i>Process Cancelled. Gmail App Password unchanged.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+            )
+            
+        new_pwd = msg.text.strip().replace(" ", "")
+        await db.db.mini_app_config.update_one(
+            {"_key": "feature_toggles"},
+            {"$set": {"gmail_app_password": new_pwd}},
+            upsert=True
+        )
+        await db.set_config("gmail_app_password", new_pwd)
+        
+        await client.send_message(
+            user_id,
+            f"✅ <b>Gmail App Password saved!</b>\n<code>{new_pwd[:4]}…</code>",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]]),
             parse_mode=enums.ParseMode.HTML
         )
