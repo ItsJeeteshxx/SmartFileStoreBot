@@ -3831,54 +3831,86 @@ async def _process_text(client, message):
                     ])
                 )
 
-            # ✅ Payment VERIFIED — record purchase and grant access
-            logger.info(f"[UTR] PAYMENT VERIFIED: user={user_id}, story={pending_s_id_utr}, utr={utr_candidate}")
+            try:
+                # ✅ Payment VERIFIED — record purchase and grant access
+                logger.info(f"[UTR] PAYMENT VERIFIED: user={user_id}, story={pending_s_id_utr}, utr={utr_candidate}")
 
-            await db.db.verified_utrs.insert_one({
-                "utr": utr_candidate, "amount": expected_total,
-                "user_id": user_id, "verified_at": datetime.utcnow()
-            })
-            await db.db.premium_checkout.update_one(
-                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(pending_s_id_utr)},
-                {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
-            )
-            import random, string as _string
-            order_id = "OD-" + str(user_id) + "-" + ''.join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
-            await db.db.premium_purchases.insert_one({
-                "user_id": user_id, "story_id": ObjectId(pending_s_id_utr),
-                "bot_id": client.me.id, "purchased_at": datetime.utcnow(),
-                "source": "upi", "amount": expected_total,
-                "reference": utr_candidate, "order_id": order_id
-            })
-            await db.add_purchase(user_id, pending_s_id_utr)
+                await db.db.verified_utrs.insert_one({
+                    "utr": utr_candidate, "amount": expected_total,
+                    "user_id": user_id, "verified_at": datetime.utcnow()
+                })
+                logger.info("[UTR] DB: verified_utrs record inserted.")
 
-            from utils import log_payment, log_arya_event
-            s_name = story.get("story_name_en", "Unknown")
-            asyncio.create_task(log_arya_event(
-                event_type="PAYMENT PROCESSED", user_id=user_id,
-                user_info={"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")},
-                details=f"Story: {s_name}\nGateway: Direct UPI (IMAP Auto-Verify)\nUTR: <code>{utr_candidate}</code>\nAmount: ₹{expected_total:.0f}\nOrder: {order_id}"
-            ))
-            asyncio.create_task(log_payment(
-                user_id=user_id, user_first_name=getattr(message.from_user, "first_name", "User"),
-                username=getattr(message.from_user, "username", ""), s_name=s_name,
-                amount=expected_total, method="upi", receipt_id=utr_candidate,
-                order_id=order_id, user_last_name=getattr(message.from_user, "last_name", "")
-            ))
-
-            if lang == 'hi':
-                await message.reply_text(
-                    "✅ <b>पेमेंट सफलतापूर्वक वेरिफाई हो गया!</b>\n<i>कहानी डिलीवरी तैयार हो रही है...</i>",
-                    parse_mode=enums.ParseMode.HTML
+                await db.db.premium_checkout.update_one(
+                    {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(pending_s_id_utr)},
+                    {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
                 )
-            else:
-                await message.reply_text(
-                    "✅ <b>Payment Verified Successfully!</b>\n<i>Access granted. Preparing your story delivery...</i>",
-                    parse_mode=enums.ParseMode.HTML
-                )
+                logger.info("[UTR] DB: premium_checkout updated to approved.")
 
-            story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id_utr)})
-            return await dispatch_delivery_choice(client, user_id, story)
+                import random, string as _string
+                order_id = "OD-" + str(user_id) + "-" + ''.join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
+                await db.db.premium_purchases.insert_one({
+                    "user_id": user_id, "story_id": ObjectId(pending_s_id_utr),
+                    "bot_id": client.me.id, "purchased_at": datetime.utcnow(),
+                    "source": "upi", "amount": expected_total,
+                    "reference": utr_candidate, "order_id": order_id
+                })
+                logger.info(f"[UTR] DB: premium_purchases inserted. order_id={order_id}")
+
+                await db.add_purchase(user_id, pending_s_id_utr)
+                logger.info("[UTR] DB: Purchase access added to user profile.")
+
+                from utils import log_payment, log_arya_event
+                s_name = story.get("story_name_en", "Unknown")
+                asyncio.create_task(log_arya_event(
+                    event_type="PAYMENT PROCESSED", user_id=user_id,
+                    user_info={"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")},
+                    details=f"Story: {s_name}\nGateway: Direct UPI (IMAP Auto-Verify)\nUTR: <code>{utr_candidate}</code>\nAmount: ₹{expected_total:.0f}\nOrder: {order_id}"
+                ))
+                asyncio.create_task(log_payment(
+                    user_id=user_id, user_first_name=getattr(message.from_user, "first_name", "User"),
+                    username=getattr(message.from_user, "username", ""), s_name=s_name,
+                    amount=expected_total, method="upi", receipt_id=utr_candidate,
+                    order_id=order_id, user_last_name=getattr(message.from_user, "last_name", "")
+                ))
+                logger.info("[UTR] Spawning log payment tasks.")
+
+                if lang == 'hi':
+                    await message.reply_text(
+                        "✅ <b>पेमेंट सफलतापूर्वक वेरिफाई हो गया!</b>\n<i>कहानी डिलीवरी तैयार हो रही है...</i>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                else:
+                    await message.reply_text(
+                        "✅ <b>Payment Verified Successfully!</b>\n<i>Access granted. Preparing your story delivery...</i>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                logger.info("[UTR] Success message sent to user.")
+
+                story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id_utr)})
+                logger.info(f"[UTR] Refetched story details: {story.get('story_name_en') if story else 'None'}")
+
+                logger.info("[UTR] Dispatching delivery choice options...")
+                await dispatch_delivery_choice(client, user_id, story)
+                logger.info("[UTR] Delivery choice options dispatched successfully.")
+                return
+            except Exception as success_err:
+                logger.error(f"[UTR] Exception in payment verification success block: {success_err}", exc_info=True)
+                err_msg = (
+                    "❌ <b>Access Grant Error!</b>\n"
+                    "Payment was verified, but we encountered an error while granting access to the story.\n"
+                    f"Error details: <code>{success_err}</code>\n\n"
+                    "<i>Please contact support with your UTR to manually get the files.</i>"
+                )
+                if lang == 'hi':
+                    err_msg = (
+                        "❌ <b>एक्सेस देने में त्रुटि!</b>\n"
+                        "पेमेंट वेरिफाई हो गया है, लेकिन कहानी का एक्सेस देने में त्रुटि हुई है।\n"
+                        f"विवरण: <code>{success_err}</code>\n\n"
+                        "<i>कृपया UTR के साथ सहायता (Support) से संपर्क करें।</i>"
+                    )
+                await message.reply_text(err_msg, parse_mode=enums.ParseMode.HTML)
+                return
 
         elif len(utr_candidate) > 0 and len(utr_candidate) != 12:
             # Wrong digit count — friendly error
