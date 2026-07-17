@@ -566,6 +566,185 @@ def _get_base_header(user) -> str:
 
 
 
+def clean_extracted_name(name: str) -> str:
+    import re
+    # Remove extra spaces
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    # Split into words and stop at any common non-name keywords
+    stop_words = {
+        "amount", "utr", "rrn", "txn", "txnid", "date", "ref", "rs", "inr", "upi", 
+        "payment", "status", "type", "received", "credited", "transferred", "has", 
+        "been", "via", "on", "in", "to", "your", "my", "account", "bank", "slice",
+        "customer", "user", "card", "rupees", "id", "no", "reference", "credited",
+        "debit", "credit", "wallet", "balance", "success", "failed", "pending"
+    }
+    
+    words = name.split()
+    valid_words = []
+    for w in words:
+        # Strip trailing punctuation from the word for checking
+        w_clean = re.sub(r'[^a-zA-Z]', '', w).lower()
+        if w_clean in stop_words:
+            break
+        valid_words.append(w)
+        
+    cleaned = " ".join(valid_words).strip()
+    # Clean any trailing punctuation or special chars from the name
+    cleaned = re.sub(r'[^a-zA-Z\s\.\-\&]', '', cleaned).strip()
+    # Strip any trailing punctuation like dots or dashes from the end of the cleaned name
+    cleaned = cleaned.rstrip('. - &').strip()
+    return cleaned
+
+def extract_payer_name_from_email(body: str) -> str:
+    import re
+    """Helper to extract sender name from slice email notifications."""
+    if not body:
+        return ""
+    
+    # Normalize spaces and strip HTML tags if present
+    body_clean = re.sub(r'<[^>]+>', ' ', body)
+    body_clean = re.sub(r'\s+', ' ', body_clean).strip()
+    
+    # We will search with multiple regex patterns. We order them from most specific to general.
+    patterns = [
+        # Explicit fields in tables or lists (e.g. "Payer: John Doe" or "Payer Name: John Doe")
+        r'(?:payer|sender|remitter)(?:\s+name)?\s*[:\-]\s*([a-zA-Z\s\.\-\&]{3,40})',
+        
+        # Sentences like "received from John Doe via UPI" or "transferred by John Doe"
+        # We allow an optional colon after from/by as well
+        r'\b(?:from|by)\s*:?\s*([a-zA-Z\s\.\-\&]{3,40})'
+    ]
+    
+    words_to_skip = {
+        "your", "my", "slice", "account", "bank", "upi", "card", "rs", "rupees", "inr", 
+        "customer", "user", "payment", "has", "been", "credited", "received", "transferred", 
+        "by", "via", "on", "in", "to"
+    }
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_clean, re.IGNORECASE):
+            name = match.group(1).strip()
+            cleaned_name = clean_extracted_name(name)
+            
+            if len(cleaned_name) >= 3 and cleaned_name.lower() not in words_to_skip:
+                return cleaned_name.title()
+                
+    return ""
+
+def extract_amount_from_email(body: str) -> float | None:
+    import re
+    # Normalize body: replace newlines/tabs with space
+    normalized = body.replace("\n", " ").replace("\r", " ")
+    body_lower = normalized.lower()
+    
+    # Let's search using the same patterns as verify_amount_in_email
+    patterns = [
+        r'(?:received|credited|deposit|transfer|payment|added)\s+(?:value\s+)?(?:of\s+)?(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)',
+        r'(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:received|credited|deposited|added|transfer)',
+        r'(?:received|credited|deposit)\s+(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                # Ignore values like 0 or very small or extremely large values that might be balances/dates
+                if 1.0 <= val <= 100000.0:
+                    return val
+            except ValueError:
+                continue
+                
+    # Fallback to general currency match
+    fallback_patterns = [
+        r'(?:rs\.?|₹|inr)\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    for pattern in fallback_patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if 1.0 <= val <= 100000.0:
+                    return val
+            except ValueError:
+                continue
+                
+    return None
+
+def verify_amount_in_email(body: str, expected_amount: float) -> bool:
+    import re
+    # Normalize body: replace newlines/tabs with space
+    normalized = body.replace("\n", " ").replace("\r", " ")
+    
+    # Normalize regex formatting of expected amount (e.g. 149.00 or 149)
+    amt_str1 = f"{expected_amount:.2f}"
+    amt_str2 = f"{int(expected_amount)}" if expected_amount.is_integer() else f"{expected_amount:.1f}"
+    
+    body_lower = normalized.lower()
+    
+    # We want to match:
+    # - received/credited ... amount
+    # - amount ... received/credited
+    patterns = [
+        r'(?:received|credited|deposit|transfer|payment|added)\s+(?:value\s+)?(?:of\s+)?(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)',
+        r'(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:received|credited|deposited|added|transfer)',
+        r'(?:received|credited|deposit)\s+(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if abs(val - expected_amount) < 0.01:
+                    return True
+            except ValueError:
+                continue
+                
+    # Fallback checking
+    if any(x in body_lower for x in ["received", "credited", "deposit", "added"]):
+        for currency in ["₹", "rs", "inr"]:
+            if f"{currency}{amt_str1}" in body_lower or f"{currency} {amt_str1}" in body_lower:
+                return True
+            if f"{currency}{amt_str2}" in body_lower or f"{currency} {amt_str2}" in body_lower:
+                return True
+            if f"{currency}.{amt_str1}" in body_lower or f"{currency}. {amt_str1}" in body_lower:
+                return True
+            if f"{currency}.{amt_str2}" in body_lower or f"{currency}. {amt_str2}" in body_lower:
+                return True
+                
+    return False
+
+def get_email_body(msg) -> str:
+    import re
+    """Helper to extract text body from email message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            cdisp = str(part.get("Content-Disposition"))
+            if ctype == "text/plain" and "attachment" not in cdisp:
+                try:
+                    return part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+            elif ctype == "text/html" and "attachment" not in cdisp:
+                try:
+                    html_content = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    # simple html to text stripping
+                    text_content = re.sub(r'<[^>]+>', ' ', html_content)
+                    text_content = re.sub(r'\s+', ' ', text_content)
+                    return text_content
+                except Exception:
+                    pass
+    else:
+        try:
+            return msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    return ""
+
+
 async def _get_rotated_upi(bt_cfg):
     try:
         from AryaPremium.database import db
@@ -2355,8 +2534,8 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         crypto_title = "₿ क्रिप्टो से भुगतान (Pay with Crypto)"
         crypto_desc = "• <b>फायदे:</b> स्वचालित वेरिफिकेशन (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> BTC, USDT, ETH, LTC, Doge & 300+ अन्य।\n• <b>वेरिफिकेशन:</b> भुगतान सफल होते ही तत्काल डिलीवरी।"
         
-        pay_upi_btn = "🏦 डायरेक्ट यूपीआई (Direct UPI)"
-        pay_crypto_btn = "₿ क्रिप्टो भुगतान (Pay with Crypto) ⚡️"
+        pay_upi_btn = "Pay Via UPI [ QR ]"
+        pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
     else:
@@ -2370,8 +2549,8 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
         
-        pay_upi_btn = f"🏦 {_sc('DIRECT UPI TRANSFER')}"
-        pay_crypto_btn = f"₿ {_sc('PAY WITH CRYPTO')} ⚡️"
+        pay_upi_btn = "Pay Via UPI [ QR ]"
+        pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "UPI Currently Unavailable"
         back_btn = f"❮ {_sc('BACK')}"
 
@@ -6748,249 +6927,256 @@ async def _process_callback(client, query):
             await query.message.edit_text(check_txt, reply_markup=InlineKeyboardMarkup(kb))
 
     elif cmd == "verify2_utr":
-        s_id = data[2]
-        from bson.objectid import ObjectId
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-        if not story: return await query.answer("Story not found!", show_alert=True)
+        try:
+            s_id = data[2]
+            from bson.objectid import ObjectId
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            if not story: return await query.answer("Story not found!", show_alert=True)
 
-        await query.answer()
-        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ Cancel / वापस", callback_data="ask_cancel")]])
-        
-        prompt_txt = (
-            "<b>✍️ ENTER 12-DIGIT UTR NUMBER</b>\n\n"
-            "Please enter the 12-digit UTR / Transaction ID of your payment.\n"
-            "<i>Example: 2026XXXXXXXX or similar.</i>\n\n"
-            "📖 <a href=\"https://t.me/StoriesLinkopningguide/25\">How it works ?</a>"
-        )
-        if lang == 'hi':
+            await query.answer()
+            cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ Cancel / वापस", callback_data="ask_cancel")]])
+            
             prompt_txt = (
-                "<b>✍️ UTR नंबर दर्ज करें (12 अंक)</b>\n\n"
-                "कृपया अपने भुगतान का 12-अंकों का UTR / ट्रांजैक्शन आईडी यहाँ लिखें।\n"
-                "<i>उदाहरण: 2026XXXXXXXX या समतुल्य।</i>\n\n"
+                "<b>✍️ ENTER 12-DIGIT UTR NUMBER</b>\n\n"
+                "Please enter the 12-digit UTR / Transaction ID of your payment.\n"
+                "<i>Example: 2026XXXXXXXX or similar.</i>\n\n"
                 "📖 <a href=\"https://t.me/StoriesLinkopningguide/25\">How it works ?</a>"
             )
-            
-        try:
-            msg = await native_ask(client, user_id, prompt_txt, reply_markup=cancel_kb, timeout=120, parse_mode="html")
-        except asyncio.TimeoutError:
-            return await client.send_message(user_id, "❌ Verification timeout. Please try again.")
-
-        from pyrogram.types import CallbackQuery as _CQ
-        if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
-            return await client.send_message(user_id, "❌ Verification cancelled.")
-            
-        utr = str(msg.text).strip()
-        if not utr.isdigit() or not (12 <= len(utr) <= 22):
-            return await client.send_message(
-                user_id, 
-                "❌ <b>Invalid UTR Format!</b>\nUTR must be a 12 to 22 digit number. Please check and try again.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again", callback_data=f"mb#verify2_utr#{s_id}")]])
-            )
-            
-        existing_utr = await db.db.verified_utrs.find_one({"utr": utr})
-        if existing_utr:
-            return await client.send_message(
-                user_id,
-                "❌ <b>UTR already claimed!</b>\nThis transaction reference has already been used for another purchase.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]])
-            )
-            
-        cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-        gmail_enabled = cfg.get("gmail_verification_enabled", False)
-        gmail_user = cfg.get("gmail_user", "").strip()
-        gmail_password = cfg.get("gmail_app_password", "").strip()
-        
-        # If database settings are empty, look in env and configs (with dynamic reload)
-        if not gmail_user or not gmail_password:
-            try:
-                from dotenv import load_dotenv
-                import os
-                import sys
-                this_dir = os.path.dirname(os.path.abspath(__file__))
-                parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(this_dir)))
-                sub_dir = os.path.dirname(os.path.dirname(this_dir))
+            if lang == 'hi':
+                prompt_txt = (
+                    "<b>✍️ UTR नंबर दर्ज करें (12 अंक)</b>\n\n"
+                    "कृपया अपने भुगतान का 12-अंकों का UTR / ट्रांजैक्शन आईडी यहाँ लिखें।\n"
+                    "<i>उदाहरण: 2026XXXXXXXX या समतुल्य।</i>\n\n"
+                    "📖 <a href=\"https://t.me/StoriesLinkopningguide/25\">How it works ?</a>"
+                )
                 
-                load_dotenv(os.path.join(parent_dir, ".env"), override=True)
-                load_dotenv(os.path.join(sub_dir, ".env"), override=True)
-            except Exception as dotenv_err:
-                logger.warning(f"Dotenv dynamic reload warning: {dotenv_err}")
+            try:
+                msg = await native_ask(client, user_id, prompt_txt, reply_markup=cancel_kb, timeout=120, parse_mode="html")
+            except asyncio.TimeoutError:
+                return await client.send_message(user_id, "❌ Verification timeout. Please try again.")
 
-            # Try env vars
-            if not gmail_user:
-                gmail_user = os.environ.get("GMAIL_USER", "").strip() or os.environ.get("gmail_user", "").strip()
-            if not gmail_password:
-                gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "").strip() or os.environ.get("gmail_app_password", "").strip()
-
-            # Try Config reload
-            if not gmail_user or not gmail_password:
-                try:
-                    import importlib
-                    from AryaPremium.config import Config as PremConfig
-                    importlib.reload(sys.modules['AryaPremium.config'])
-                    if not gmail_user:
-                        gmail_user = getattr(PremConfig, "GMAIL_USER", "").strip()
-                    if not gmail_password:
-                        gmail_password = getattr(PremConfig, "GMAIL_APP_PASSWORD", "").strip()
-                except Exception as e:
-                    logger.warning(f"Config reload warning: {e}")
-                    
-        if not gmail_enabled and gmail_user and gmail_password:
-            gmail_enabled = True
-            
-        if not gmail_enabled or not gmail_user or not gmail_password:
-            return await client.send_message(
-                user_id,
-                "❌ <b>Auto-verification unavailable!</b>\nAutomatic payment verification is not configured or disabled by the admin.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]])
-            )
-            
-        ver_msg = await client.send_message(user_id, "⏳ <b>Verifying your payment UTR... Please wait.</b>\n<i>Checking Slice Bank alerts via secure IMAP.</i>")
-        expected_total = float(story["price"])
-        
-        verified = False
-        payer_name = ""
-        amount_mismatch = False
-        mismatched_amount = None
-        
-        try:
-            import imaplib
-            import email
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-            mail.login(gmail_user, gmail_password)
-            mail.select("INBOX")
-            
-            status, messages = mail.search(None, 'TEXT', utr)
-            if status == "OK" and messages[0]:
-                mail_ids = messages[0].split()
-                for mail_id in reversed(mail_ids):
-                    res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
-                    if res_status != "OK":
-                        continue
-                    for response_part in msg_data:
-                        if isinstance(response_part, tuple):
-                            email_msg = email.message_from_bytes(response_part[1])
-                            from_header = email_msg.get("From", "")
-                            if "noreply@slice.bank.in" not in from_header.lower():
-                                continue
-                            
-                            body = get_email_body(email_msg)
-                            if utr in body:
-                                if verify_amount_in_email(body, expected_total):
-                                    verified = True
-                                    payer_name = extract_payer_name_from_email(body)
-                                    break
-                                else:
-                                    amount_mismatch = True
-                                    parsed_amount = extract_amount_from_email(body)
-                                    if parsed_amount is not None:
-                                        mismatched_amount = parsed_amount
-                                    break
-                    if verified or amount_mismatch:
-                        break
-            mail.close()
-            mail.logout()
-            
-        except Exception as e:
-            logger.error(f"Gmail IMAP check failed: {e}")
-            await ver_msg.delete()
-            return await client.send_message(
-                user_id,
-                "❌ <b>Verification failed!</b>\nAn error occurred while connecting to the verification server. Please try again later.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"mb#verify2_utr#{s_id}")]])
-            )
-            
-        await ver_msg.delete()
-        
-        if not verified:
-            if amount_mismatch:
-                err_text = (
-                    f"❌ <b>Amount Mismatch!</b>\n"
-                    f"Expected: ₹{expected_total:.2f}\n"
-                    f"Detected: ₹{mismatched_amount:.2f}\n\n"
-                    f"Please pay the exact amount and try again."
-                )
-                if lang == 'hi':
-                    err_text = (
-                        f"❌ <b>भुगतान राशि में अंतर!</b>\n"
-                        f"अपेक्षित राशि: ₹{expected_total:.2f}\n"
-                        f"प्राप्त राशि: ₹{mismatched_amount:.2f}\n\n"
-                        f"कृपया सटीक राशि का भुगतान करें और पुनः प्रयास करें।"
-                    )
-                return await client.send_message(user_id, err_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]]))
-            else:
-                err_text = (
-                    f"❌ <b>Payment not found!</b>\n"
-                    f"We could not find a matching Slice Bank alert with UTR: <code>{utr}</code> and amount: <b>₹{expected_total}</b>.\n\n"
-                    f"If you just made the payment, please wait 15-30 seconds for the bank email to arrive, then click Retry."
-                )
-                if lang == 'hi':
-                    err_text = (
-                        f"❌ <b>भुगतान प्राप्त नहीं हुआ!</b>\n"
-                        f"हमें UTR: <code>{utr}</code> और राशि: <b>₹{expected_total}</b> के लिए कोई Slice Bank सूचना नहीं मिली।\n\n"
-                        f"यदि आपने अभी भुगतान किया है, तो कृपया बैंक ईमेल आने के लिए 15-30 सेकंड प्रतीक्षा करें, फिर पुनः प्रयास करें।"
-                    )
+            from pyrogram.types import CallbackQuery as _CQ
+            if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
+                return await client.send_message(user_id, "❌ Verification cancelled.")
+                
+            utr = str(msg.text).strip()
+            if not utr.isdigit() or not (12 <= len(utr) <= 22):
                 return await client.send_message(
                     user_id, 
-                    err_text, 
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Retry / पुनः प्रयास करें", callback_data=f"mb#verify2_utr#{s_id}")],
-                        [InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]
-                    ])
+                    "❌ <b>Invalid UTR Format!</b>\nUTR must be a 12 to 22 digit number. Please check and try again.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again", callback_data=f"mb#verify2_utr#{s_id}")]])
                 )
                 
-        await db.db.verified_utrs.insert_one({
-            "utr": utr,
-            "amount": expected_total,
-            "user_id": user_id,
-            "verified_at": datetime.utcnow()
-        })
-        
-        await db.db.premium_checkout.update_one(
-            {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
-            {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
-        )
-        
-        import random, string
-        order_id = f"OD-{user_id}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-        
-        await db.db.premium_purchases.insert_one({
-            "user_id": user_id,
-            "story_id": ObjectId(s_id),
-            "bot_id": client.me.id,
-            "purchased_at": datetime.utcnow(),
-            "source": "upi",
-            "amount": expected_total,
-            "reference": utr,
-            "order_id": order_id
-        })
-        await db.add_purchase(user_id, str(s_id))
-        
-        from utils import log_payment, log_arya_event
-        user_info = await db.get_user(user_id, from_user=query.from_user)
-        s_name = story.get("story_name_en") if story else "Unknown"
-        
-        asyncio.create_task(log_arya_event(
-            event_type="PAYMENT PROCESSED",
-            user_id=user_id,
-            user_info=user_info,
-            details=f"Story: {s_name}\nGateway: Direct UPI (Gmail Auto-Verify)\nUTR ID: <code>{utr}</code>\nAmount: ₹{expected_total}"
-        ))
-        
-        asyncio.create_task(log_payment(
-            user_id=user_id,
-            user_first_name=user_info.get("first_name", "User"),
-            username=user_info.get('username', ''),
-            s_name=s_name,
-            amount=expected_total,
-            method="upi",
-            receipt_id=utr,
-            order_id=order_id,
-            user_last_name=user_info.get("last_name", "")
-        ))
-        
-        await client.send_message(user_id, "✅ <b>Payment verified successfully! Access granted.</b>")
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-        return await dispatch_delivery_choice(client, user_id, story)
+            existing_utr = await db.db.verified_utrs.find_one({"utr": utr})
+            if existing_utr:
+                return await client.send_message(
+                    user_id,
+                    "❌ <b>UTR already claimed!</b>\nThis transaction reference has already been used for another purchase.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]])
+                )
+                
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            gmail_enabled = cfg.get("gmail_verification_enabled", False)
+            gmail_user = cfg.get("gmail_user", "").strip()
+            gmail_password = cfg.get("gmail_app_password", "").strip()
+            
+            # If database settings are empty, look in env and configs (with dynamic reload)
+            if not gmail_user or not gmail_password:
+                try:
+                    from dotenv import load_dotenv
+                    import os
+                    import sys
+                    this_dir = os.path.dirname(os.path.abspath(__file__))
+                    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(this_dir)))
+                    sub_dir = os.path.dirname(os.path.dirname(this_dir))
+                    
+                    load_dotenv(os.path.join(parent_dir, ".env"), override=True)
+                    load_dotenv(os.path.join(sub_dir, ".env"), override=True)
+                except Exception as dotenv_err:
+                    logger.warning(f"Dotenv dynamic reload warning: {dotenv_err}")
+
+                # Try env vars
+                if not gmail_user:
+                    gmail_user = os.environ.get("GMAIL_USER", "").strip() or os.environ.get("gmail_user", "").strip()
+                if not gmail_password:
+                    gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "").strip() or os.environ.get("gmail_app_password", "").strip()
+
+                # Try Config reload
+                if not gmail_user or not gmail_password:
+                    try:
+                        import importlib
+                        from AryaPremium.config import Config as PremConfig
+                        importlib.reload(sys.modules['AryaPremium.config'])
+                        if not gmail_user:
+                            gmail_user = getattr(PremConfig, "GMAIL_USER", "").strip()
+                        if not gmail_password:
+                            gmail_password = getattr(PremConfig, "GMAIL_APP_PASSWORD", "").strip()
+                    except Exception as e:
+                        logger.warning(f"Config reload warning: {e}")
+                        
+            if not gmail_enabled and gmail_user and gmail_password:
+                gmail_enabled = True
+                
+            if not gmail_enabled or not gmail_user or not gmail_password:
+                return await client.send_message(
+                    user_id,
+                    "❌ <b>Auto-verification unavailable!</b>\nAutomatic payment verification is not configured or disabled by the admin.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]])
+                )
+                
+            ver_msg = await client.send_message(user_id, "⏳ <b>Verifying your payment UTR... Please wait.</b>\n<i>Checking Slice Bank alerts via secure IMAP.</i>")
+            expected_total = float(story["price"])
+            
+            verified = False
+            payer_name = ""
+            amount_mismatch = False
+            mismatched_amount = None
+            
+            try:
+                import imaplib
+                import email
+                mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+                mail.login(gmail_user, gmail_password)
+                mail.select("INBOX")
+                
+                status, messages = mail.search(None, 'TEXT', utr)
+                if status == "OK" and messages[0]:
+                    mail_ids = messages[0].split()
+                    for mail_id in reversed(mail_ids):
+                        res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
+                        if res_status != "OK":
+                            continue
+                        for response_part in msg_data:
+                            if isinstance(response_part, tuple):
+                                email_msg = email.message_from_bytes(response_part[1])
+                                from_header = email_msg.get("From", "")
+                                if "noreply@slice.bank.in" not in from_header.lower():
+                                    continue
+                                
+                                body = get_email_body(email_msg)
+                                if utr in body:
+                                    if verify_amount_in_email(body, expected_total):
+                                        verified = True
+                                        payer_name = extract_payer_name_from_email(body)
+                                        break
+                                    else:
+                                        amount_mismatch = True
+                                        parsed_amount = extract_amount_from_email(body)
+                                        if parsed_amount is not None:
+                                            mismatched_amount = parsed_amount
+                                        break
+                        if verified or amount_mismatch:
+                            break
+                mail.close()
+                mail.logout()
+                
+            except Exception as e:
+                logger.error(f"Gmail IMAP check failed: {e}")
+                await ver_msg.delete()
+                return await client.send_message(
+                    user_id,
+                    "❌ <b>Verification failed!</b>\nAn error occurred while connecting to the verification server. Please try again later.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"mb#verify2_utr#{s_id}")]])
+                )
+                
+            await ver_msg.delete()
+            
+            if not verified:
+                if amount_mismatch:
+                    err_text = (
+                        f"❌ <b>Amount Mismatch!</b>\n"
+                        f"Expected: ₹{expected_total:.2f}\n"
+                        f"Detected: ₹{mismatched_amount:.2f}\n\n"
+                        f"Please pay the exact amount and try again."
+                    )
+                    if lang == 'hi':
+                        err_text = (
+                            f"❌ <b>भुगतान राशि में अंतर!</b>\n"
+                            f"अपेक्षित राशि: ₹{expected_total:.2f}\n"
+                            f"प्राप्त राशि: ₹{mismatched_amount:.2f}\n\n"
+                            f"कृपया सटीक राशि का भुगतान करें और पुनः प्रयास करें।"
+                        )
+                    return await client.send_message(user_id, err_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]]))
+                else:
+                    err_text = (
+                        f"❌ <b>Payment not found!</b>\n"
+                        f"We could not find a matching Slice Bank alert with UTR: <code>{utr}</code> and amount: <b>₹{expected_total}</b>.\n\n"
+                        f"If you just made the payment, please wait 15-30 seconds for the bank email to arrive, then click Retry."
+                    )
+                    if lang == 'hi':
+                        err_text = (
+                            f"❌ <b>भुगतान प्राप्त नहीं हुआ!</b>\n"
+                            f"हमें UTR: <code>{utr}</code> और राशि: <b>₹{expected_total}</b> के लिए कोई Slice Bank सूचना नहीं मिली।\n\n"
+                            f"यदि आपने अभी भुगतान किया है, तो कृपया बैंक ईमेल आने के लिए 15-30 सेकंड प्रतीक्षा करें, फिर पुनः प्रयास करें।"
+                        )
+                    return await client.send_message(
+                        user_id, 
+                        err_text, 
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔄 Retry / पुनः प्रयास करें", callback_data=f"mb#verify2_utr#{s_id}")],
+                            [InlineKeyboardButton("« Back", callback_data=f"mb#pay_back#{s_id}")]
+                        ])
+                    )
+                    
+            await db.db.verified_utrs.insert_one({
+                "utr": utr,
+                "amount": expected_total,
+                "user_id": user_id,
+                "verified_at": datetime.utcnow()
+            })
+            
+            await db.db.premium_checkout.update_one(
+                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+                {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
+            )
+            
+            import random, string
+            order_id = f"OD-{user_id}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+            
+            await db.db.premium_purchases.insert_one({
+                "user_id": user_id,
+                "story_id": ObjectId(s_id),
+                "bot_id": client.me.id,
+                "purchased_at": datetime.utcnow(),
+                "source": "upi",
+                "amount": expected_total,
+                "reference": utr,
+                "order_id": order_id
+            })
+            await db.add_purchase(user_id, str(s_id))
+            
+            from utils import log_payment, log_arya_event
+            user_info = await db.get_user(user_id, from_user=query.from_user)
+            s_name = story.get("story_name_en") if story else "Unknown"
+            
+            asyncio.create_task(log_arya_event(
+                event_type="PAYMENT PROCESSED",
+                user_id=user_id,
+                user_info=user_info,
+                details=f"Story: {s_name}\nGateway: Direct UPI (Gmail Auto-Verify)\nUTR ID: <code>{utr}</code>\nAmount: ₹{expected_total}"
+            ))
+            
+            asyncio.create_task(log_payment(
+                user_id=user_id,
+                user_first_name=user_info.get("first_name", "User"),
+                username=user_info.get('username', ''),
+                s_name=s_name,
+                amount=expected_total,
+                method="upi",
+                receipt_id=utr,
+                order_id=order_id,
+                user_last_name=user_info.get("last_name", "")
+            ))
+            
+            await client.send_message(user_id, "✅ <b>Payment verified successfully! Access granted.</b>")
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            return await dispatch_delivery_choice(client, user_id, story)
+        except Exception as e:
+            logger.exception(f"Error in verify2_utr: {e}")
+            try:
+                await query.answer(f"❌ Error: {e}", show_alert=True)
+            except Exception:
+                pass
 
     elif cmd == "crypto2_check":
         s_id = data[2] if len(data) > 2 else None
