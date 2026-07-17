@@ -26,9 +26,9 @@ cd ..
 git pull origin main
 
 echo "Starting Premium Ecosystem and Delivery Bot in background..."
-screen -dmS arya_bot bash -c 'cd ~/bot/TryAryaForwardBot && python3 main.py & cd ~/bot/TryAryaForwardBot/AryaPremium && source venv/bin/activate && python3 main.py'
+screen -dmS arya_bot bash -c 'cd ~/bot/TryAryaForwardBot && while true; do python3 main.py; echo "Share bot exited. Restarting in 5s..."; sleep 5; done & cd ~/bot/TryAryaForwardBot/AryaPremium && source venv/bin/activate && while true; do python3 main.py; echo "Premium bot exited. Restarting in 5s..."; sleep 5; done'
 
 echo "Starting API in background..."
-screen -dmS arya_api bash -c 'cd ~/bot/TryAryaForwardBot && python3 -m uvicorn mini_app_api:app --host 0.0.0.0 --port 8000 --workers 1'
+screen -dmS arya_api bash -c 'cd ~/bot/TryAryaForwardBot && while true; do python3 -m uvicorn mini_app_api:app --host 0.0.0.0 --port 8000 --workers 1; echo "API exited. Restarting in 5s..."; sleep 5; done'
 
 echo "Ecosystem successfully started! Type 'screen -ls' to see the running bots."

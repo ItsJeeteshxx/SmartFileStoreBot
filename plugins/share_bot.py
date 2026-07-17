@@ -862,10 +862,10 @@ async def _process_start(client, message):
                 f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ {del_str_sc}.\n\n"
                 f"◑ To access them again, simply open the same link button.{fail_note}\n\n"
                 f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
-                f"⧉ Having trouble with the bot? Tap \"Arya Help\" below."
+                f"⧉ Having trouble with the bot? Tap \"Arya Premium Chat [ Help ]\" below."
             )
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Arya Help", url="https://t.me/+gFudInzITpo1Yjg1"),
+            InlineKeyboardButton("Arya Premium Chat [ Help ]", url="https://t.me/+gFudInzITpo1Yjg1"),
             InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         notice = await message.reply_text(txt, reply_markup=kb_help)
@@ -880,9 +880,9 @@ async def _process_start(client, message):
                     f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ 3 ʜᴏᴜʀꜱ.\n\n"
                     f"◑ To access them again, simply open the same link button.{fail_note}\n\n"
                     f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
-                    f"⧉ Having trouble with the bot? Tap \"Arya Help\" below.")
+                    f"⧉ Having trouble with the bot? Tap \"Arya Premium Chat [ Help ]\" below.")
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Arya Help", url="https://t.me/+gFudInzITpo1Yjg1"),
+            InlineKeyboardButton("Arya Premium Chat [ Help ]", url="https://t.me/+gFudInzITpo1Yjg1"),
             InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         await message.reply_text(txt, reply_markup=kb_help)

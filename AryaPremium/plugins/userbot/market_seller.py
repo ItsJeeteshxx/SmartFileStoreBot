@@ -8995,7 +8995,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
                     + f"\n\n{autodel_text}\n\n"
 
-                    + f"<blockquote>💡 <b>{_sc('Tip')}:</b> {_sc('Files missing or something went wrong? Use the Regenerate button below or contact us via')} <b>Arya Help</b>.</blockquote>"
+                    + f"<blockquote>💡 <b>{_sc('Tip')}:</b> {_sc('Files missing or something went wrong? Use the Regenerate button below or contact us via')} <b>Arya Premium Chat [ Help ]</b>.</blockquote>"
 
                 )
 
@@ -9005,7 +9005,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
             [InlineKeyboardButton(f"⟳ {_sc('Regenerate Files')}", callback_data=f"mb#deliver_dm#{story_id_str}")],
 
-            [InlineKeyboardButton("🆘 Arya Help", url="https://t.me/+gFudInzITpo1Yjg1")],
+            [InlineKeyboardButton("🆘 Arya Premium Chat [ Help ]", url="https://t.me/+gFudInzITpo1Yjg1")],
 
         ]
 
