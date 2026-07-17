@@ -7813,6 +7813,12 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
                 "upi_id": cfg.get("upi_id", ""),
                 "upi_payee_name": cfg.get("upi_payee_name", "Arya Premium"),
+                "upi_id_2": cfg.get("upi_id_2", ""),
+                "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
+                "upi_id_3": cfg.get("upi_id_3", ""),
+                "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
+                "upi_id_4": cfg.get("upi_id_4", ""),
+                "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
                 "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
                 "gmail_user": cfg.get("gmail_user", ""),
                 "gmail_app_password": cfg.get("gmail_app_password", ""),
@@ -7873,6 +7879,18 @@ async def update_admin_settings(payload: dict):
             update_fields["upi_id"] = str(payload["upi_id"]).strip()
         if "upi_payee_name" in payload:
             update_fields["upi_payee_name"] = str(payload["upi_payee_name"]).strip()
+        if "upi_id_2" in payload:
+            update_fields["upi_id_2"] = str(payload["upi_id_2"]).strip()
+        if "upi_payee_name_2" in payload:
+            update_fields["upi_payee_name_2"] = str(payload["upi_payee_name_2"]).strip()
+        if "upi_id_3" in payload:
+            update_fields["upi_id_3"] = str(payload["upi_id_3"]).strip()
+        if "upi_payee_name_3" in payload:
+            update_fields["upi_payee_name_3"] = str(payload["upi_payee_name_3"]).strip()
+        if "upi_id_4" in payload:
+            update_fields["upi_id_4"] = str(payload["upi_id_4"]).strip()
+        if "upi_payee_name_4" in payload:
+            update_fields["upi_payee_name_4"] = str(payload["upi_payee_name_4"]).strip()
         if "gmail_verification_enabled" in payload:
             update_fields["gmail_verification_enabled"] = bool(payload["gmail_verification_enabled"])
         if "gmail_user" in payload:
@@ -8139,6 +8157,12 @@ async def get_public_settings():
             "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
             "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
             "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
+            "upi_id_2": cfg.get("upi_id_2", ""),
+            "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
+            "upi_id_3": cfg.get("upi_id_3", ""),
+            "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
+            "upi_id_4": cfg.get("upi_id_4", ""),
+            "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
             "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
             "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
             "paytm_status": cfg.get("paytm_status", "hidden"),
@@ -8159,6 +8183,12 @@ async def get_public_settings():
             "upi_manual_enabled": False,
             "upi_id": os.environ.get("UPI_ID", ""),
             "upi_payee_name": os.environ.get("UPI_PAYEE_NAME", "Arya Premium"),
+            "upi_id_2": "",
+            "upi_payee_name_2": "",
+            "upi_id_3": "",
+            "upi_payee_name_3": "",
+            "upi_id_4": "",
+            "upi_payee_name_4": "",
             "gmail_verification_enabled": False,
             "paytm_status": "hidden",
             "paytm_mid": "",
