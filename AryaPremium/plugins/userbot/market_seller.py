@@ -3622,71 +3622,277 @@ async def _process_text(client, message):
 
         return
 
-    # -- UTR Payment handler: user sends their UTR number in chat --
-    # When UPI page is open, pending_utr_story_id is set in DB.
-    # User types their UTR → we store it as last_utr_entered → show confirm + button.
-    # Actual IMAP verification only runs when user clicks VERIFY PAYMENT (UTR) button.
+    # -- UTR Payment handler: user sends their 12-digit UTR in chat --
+    # Flow: User sees UPI page → sends 12-digit UTR → bot INSTANTLY verifies via IMAP
+    # No confirmation step, no button click needed.
+    # pending_utr_story_id is set in DB when user opens the Direct UPI page.
 
     pending_s_id_utr = user.get("pending_utr_story_id")
     if pending_s_id_utr and not user.get("state"):
         raw_input = txt.strip()
 
-        # Handle cancellation text
-        is_cancel = raw_input.lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "वापस"]
-        if is_cancel:
-            await db.db.users.update_one({"id": user_id}, {"$unset": {"pending_utr_story_id": 1, "last_utr_entered": 1}})
-            await message.reply_text(
-                "<i>❌ UTR input cancelled.</i>" if lang != 'hi' else "<i>❌ UTR इनपुट रद्द किया गया।</i>",
-                parse_mode=enums.ParseMode.HTML
-            )
-            return await _send_main_menu(client, user_id, message.from_user, lang)
-
-        # ── Aggressive sanitization: extract ONLY ASCII digits ──
-        # Users often copy-paste UTRs from payment apps which insert
-        # non-breaking spaces (\xa0), thin spaces, or other Unicode separators.
-        # We strip everything that is not a plain ASCII digit 0-9.
+        # Extract ONLY ASCII digits — handles copy-paste with \xa0, thin-spaces, etc.
         utr_candidate = ''.join(c for c in raw_input if c in '0123456789')
 
-        # Validate UTR format: must be 12-22 ASCII digits after cleaning
-        if len(utr_candidate) >= 12 and len(utr_candidate) <= 22:
-            # Store clean UTR for button click to use
+        # Accept exactly 12 digits (standard UPI UTR/Reference Number)
+        if len(utr_candidate) == 12:
+            logger.info(f"[UTR] User {user_id} sent UTR: {utr_candidate} for story {pending_s_id_utr}")
+
+            # Clear state immediately to prevent double-processing
             await db.db.users.update_one(
                 {"id": user_id},
-                {"$set": {"last_utr_entered": utr_candidate}},
-                upsert=True
+                {"$unset": {"pending_utr_story_id": 1, "last_utr_entered": 1, "state": 1}}
             )
+
+            from bson.objectid import ObjectId
+
+            # Check duplicate UTR
+            existing_utr = await db.db.verified_utrs.find_one({"utr": utr_candidate})
+            if existing_utr:
+                logger.warning(f"[UTR] Duplicate UTR: {utr_candidate} by user {user_id}")
+                if lang == 'hi':
+                    err_txt = (
+                        "❌ <b>UTR पहले से उपयोग हो चुका है!</b>\n"
+                        f"<code>{utr_candidate}</code> — यह UTR पहले ही किसी अन्य खरीद के लिए उपयोग हो चुका है।\n\n"
+                        "<i>यदि यह आपका सही UTR है तो सहायता से संपर्क करें।</i>"
+                    )
+                else:
+                    err_txt = (
+                        "❌ <b>UTR Already Claimed!</b>\n"
+                        f"<code>{utr_candidate}</code> — This UTR has already been used for another purchase.\n\n"
+                        "<i>If you believe this is a mistake, please contact support.</i>"
+                    )
+                return await message.reply_text(
+                    err_txt,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            "🔄 दूसरा UTR भेजें" if lang == 'hi' else "🔄 Send a Different UTR",
+                            callback_data=f"mb#pay2#upi#{pending_s_id_utr}"
+                        )]
+                    ])
+                )
+
+            # Check already purchased
+            if await db.has_purchase(user_id, pending_s_id_utr):
+                _own_msg = "आप पहले से इस कहानी के मालिक हैं!" if lang == 'hi' else "You already own this story!"
+                return await message.reply_text(f"✅ <b>{_own_msg}</b>", parse_mode=enums.ParseMode.HTML)
+
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id_utr)})
+            if not story:
+                logger.error(f"[UTR] Story not found: {pending_s_id_utr}")
+                return await message.reply_text("❌ Story not found. Contact support.", parse_mode=enums.ParseMode.HTML)
+
+            # Load Gmail credentials
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            gmail_user = cfg.get("gmail_user", "").strip()
+            gmail_password = cfg.get("gmail_app_password", "").strip()
+            import os as _os
+            if not gmail_user:
+                gmail_user = _os.environ.get("GMAIL_USER", "").strip() or _os.environ.get("gmail_user", "").strip()
+            if not gmail_password:
+                gmail_password = _os.environ.get("GMAIL_APP_PASSWORD", "").strip() or _os.environ.get("gmail_app_password", "").strip()
+
+            logger.info(f"[UTR] Gmail credentials: user={'OK' if gmail_user else 'MISSING'}, pass={'OK' if gmail_password else 'MISSING'}")
+
+            if not gmail_user or not gmail_password:
+                _no_cfg = "ऑटो-वेरिफिकेशन कॉन्फिगर नहीं है। Admin से संपर्क करें।" if lang == 'hi' else "Auto-verification not configured. Contact admin."
+                return await message.reply_text(
+                    f"❌ <b>{_no_cfg}</b>\n\n<i>Your UTR: <code>{utr_candidate}</code> — save for manual verification.</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+
+            # Show verifying status message
             if lang == 'hi':
-                confirm_txt = (
-                    f"✅ <b>UTR प्राप्त हुआ!</b>\n\n"
-                    f"आपका UTR: <code>{utr_candidate}</code>\n\n"
-                    f"अब नीचे <b>पेमेंट वेरिफाई करें (UTR)</b> बटन दबाएं।"
+                ver_msg = await message.reply_text(
+                    "⏳ <b>पेमेंट वेरिफाई हो रहा है... कृपया इंतजार करें।</b>\n<i>Bank alert check हो रहा है...</i>",
+                    parse_mode=enums.ParseMode.HTML
                 )
             else:
-                confirm_txt = (
-                    f"✅ <b>UTR Received!</b>\n\n"
-                    f"Your UTR: <code>{utr_candidate}</code>\n\n"
-                    f"Now click the <b>VERIFY PAYMENT (UTR)</b> button below."
+                ver_msg = await message.reply_text(
+                    "⏳ <b>Verifying your payment... Please wait.</b>\n<i>Checking bank transaction alert via IMAP.</i>",
+                    parse_mode=enums.ParseMode.HTML
                 )
-            await message.reply_text(
-                confirm_txt,
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "☑️ पेमेंट वेरिफाई करें (UTR)" if lang == 'hi' else "☑️ VERIFY PAYMENT (UTR)",
-                        callback_data=f"mb#verify2_utr#{pending_s_id_utr}"
-                    )
-                ]])
+
+            expected_total = float(story["price"])
+
+            def _check_imap_utr_sync():
+                import imaplib, email as _email_lib
+                result = {"verified": False, "amount_mismatch": False, "mismatched_amount": None, "error": None}
+                try:
+                    imap = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+                    imap.login(gmail_user, gmail_password)
+                    imap.select("INBOX")
+                    # Use bytes to bypass imaplib ASCII encoding limitation (\xa0 fix)
+                    search_bytes = b'TEXT "' + utr_candidate.encode('ascii') + b'"'
+                    status, messages = imap.search(None, search_bytes)
+                    logger.info(f"[UTR][IMAP] Search {utr_candidate}: status={status}, hits={bool(messages[0] if messages else None)}")
+                    if status == "OK" and messages and messages[0]:
+                        for mail_id in reversed(messages[0].split()):
+                            res_status, msg_data = imap.fetch(mail_id, "(RFC822)")
+                            if res_status != "OK":
+                                continue
+                            for part in msg_data:
+                                if isinstance(part, tuple):
+                                    email_msg = _email_lib.message_from_bytes(part[1])
+                                    from_hdr = email_msg.get("From", "")
+                                    if "noreply@slice.bank.in" not in from_hdr.lower():
+                                        logger.info(f"[UTR][IMAP] Skip email from: {from_hdr}")
+                                        continue
+                                    body = get_email_body(email_msg)
+                                    if utr_candidate in body:
+                                        if verify_amount_in_email(body, expected_total):
+                                            result["verified"] = True
+                                            logger.info(f"[UTR][IMAP] VERIFIED UTR {utr_candidate}")
+                                        else:
+                                            result["amount_mismatch"] = True
+                                            parsed = extract_amount_from_email(body)
+                                            result["mismatched_amount"] = parsed
+                                            logger.warning(f"[UTR][IMAP] Amount mismatch: expected={expected_total}, found={parsed}")
+                                        break
+                            if result["verified"] or result["amount_mismatch"]:
+                                break
+                    else:
+                        logger.warning(f"[UTR][IMAP] No emails found for UTR: {utr_candidate}")
+                    imap.close()
+                    imap.logout()
+                except Exception as ex:
+                    result["error"] = str(ex)
+                    logger.error(f"[UTR][IMAP] Exception for UTR {utr_candidate}: {ex}")
+                return result
+
+            try:
+                imap_result = await asyncio.to_thread(_check_imap_utr_sync)
+            except Exception as ex:
+                logger.error(f"[UTR] asyncio.to_thread failed: {ex}")
+                await ver_msg.delete()
+                return await message.reply_text(
+                    f"❌ <b>Verification error!</b>\n<i>{ex}</i>",
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"mb#pay2#upi#{pending_s_id_utr}")]])
+                )
+
+            await ver_msg.delete()
+
+            if imap_result.get("error"):
+                err = imap_result["error"]
+                logger.error(f"[UTR] IMAP returned error for {utr_candidate}: {err}")
+                _retry_lbl = "पुनः प्रयास करें" if lang == 'hi' else "Retry"
+                return await message.reply_text(
+                    f"❌ <b>Verification failed!</b>\n<i>{err}</i>",
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🔄 {_retry_lbl}", callback_data=f"mb#pay2#upi#{pending_s_id_utr}")]])
+                )
+
+            if not imap_result["verified"]:
+                if imap_result["amount_mismatch"]:
+                    mismatched = imap_result["mismatched_amount"]
+                    if lang == 'hi':
+                        err_text = (
+                            "❌ <b>राशि सही नहीं है!</b>\n"
+                            f"अपेक्षित: ₹{expected_total:.0f}\n"
+                            f"भेजी गई: ₹{mismatched:.0f}\n\n"
+                            "सही राशि भेजें और पुनः प्रयास करें।"
+                        )
+                    else:
+                        err_text = (
+                            "❌ <b>Amount Mismatch!</b>\n"
+                            f"Expected: ₹{expected_total:.0f}\n"
+                            f"Detected: ₹{mismatched:.0f}\n\n"
+                            "Please pay the exact amount and try again."
+                        )
+                else:
+                    if lang == 'hi':
+                        err_text = (
+                            "❌ <b>पेमेंट नहीं मिला!</b>\n"
+                            f"UTR <code>{utr_candidate}</code> और ₹{expected_total:.0f} का bank alert नहीं मिला।\n\n"
+                            "<i>अगर अभी भुगतान किया है तो 15–30 सेकंड इंतजार करें और UTR दोबारा भेजें।</i>"
+                        )
+                    else:
+                        err_text = (
+                            "❌ <b>Payment Not Found!</b>\n"
+                            f"No bank alert for UTR <code>{utr_candidate}</code> (₹{expected_total:.0f})\n\n"
+                            "<i>If you just paid, wait 15–30 seconds for the bank email, then send your UTR again.</i>"
+                        )
+                _retry_btn = "पुनः प्रयास करें" if lang == 'hi' else "🔄 Retry"
+                _back_btn = "« वापस" if lang == 'hi' else "« Back"
+                return await message.reply_text(
+                    err_text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"🔄 {_retry_btn}", callback_data=f"mb#pay2#upi#{pending_s_id_utr}")],
+                        [InlineKeyboardButton(_back_btn, callback_data=f"mb#pay_back#{pending_s_id_utr}")]
+                    ])
+                )
+
+            # ✅ Payment VERIFIED — record purchase and grant access
+            logger.info(f"[UTR] PAYMENT VERIFIED: user={user_id}, story={pending_s_id_utr}, utr={utr_candidate}")
+
+            await db.db.verified_utrs.insert_one({
+                "utr": utr_candidate, "amount": expected_total,
+                "user_id": user_id, "verified_at": datetime.utcnow()
+            })
+            await db.db.premium_checkout.update_one(
+                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(pending_s_id_utr)},
+                {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
             )
-            return  # Handled
-        elif len(utr_candidate) > 0:
-            # User sent something with digits but wrong length — give friendly error
-            await message.reply_text(
-                f"❌ <b>Invalid UTR!</b>\nExtracted digits: <code>{utr_candidate}</code> ({len(utr_candidate)} digits)\n"
-                f"A UTR must be <b>12–22 digits</b>. Please check your payment app and send the correct number.",
-                parse_mode=enums.ParseMode.HTML
-            )
-            return  # Stay in pending state — user can try again
-        # Not a UTR (no digits) → let normal text handling continue
+            import random, string as _string
+            order_id = "OD-" + str(user_id) + "-" + ''.join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
+            await db.db.premium_purchases.insert_one({
+                "user_id": user_id, "story_id": ObjectId(pending_s_id_utr),
+                "bot_id": client.me.id, "purchased_at": datetime.utcnow(),
+                "source": "upi", "amount": expected_total,
+                "reference": utr_candidate, "order_id": order_id
+            })
+            await db.add_purchase(user_id, pending_s_id_utr)
+
+            from utils import log_payment, log_arya_event
+            s_name = story.get("story_name_en", "Unknown")
+            asyncio.create_task(log_arya_event(
+                event_type="PAYMENT PROCESSED", user_id=user_id,
+                user_info={"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")},
+                details=f"Story: {s_name}\nGateway: Direct UPI (IMAP Auto-Verify)\nUTR: <code>{utr_candidate}</code>\nAmount: ₹{expected_total:.0f}\nOrder: {order_id}"
+            ))
+            asyncio.create_task(log_payment(
+                user_id=user_id, user_first_name=getattr(message.from_user, "first_name", "User"),
+                username=getattr(message.from_user, "username", ""), s_name=s_name,
+                amount=expected_total, method="upi", receipt_id=utr_candidate,
+                order_id=order_id, user_last_name=getattr(message.from_user, "last_name", "")
+            ))
+
+            if lang == 'hi':
+                await message.reply_text(
+                    "✅ <b>पेमेंट सफलतापूर्वक वेरिफाई हो गया!</b>\n<i>कहानी डिलीवरी तैयार हो रही है...</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+            else:
+                await message.reply_text(
+                    "✅ <b>Payment Verified Successfully!</b>\n<i>Access granted. Preparing your story delivery...</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id_utr)})
+            return await dispatch_delivery_choice(client, user_id, story)
+
+        elif len(utr_candidate) > 0 and len(utr_candidate) != 12:
+            # Wrong digit count — friendly error
+            if lang == 'hi':
+                _inv_msg = (
+                    f"❌ <b>गलत UTR!</b>\n"
+                    f"आपके नंबर में <code>{len(utr_candidate)}</code> digits हैं। "
+                    f"UTR exactly 12 digits का होना चाहिए।\n"
+                    f"<i>Payment app का Transaction ID दोबारा check करें।</i>"
+                )
+            else:
+                _inv_msg = (
+                    f"❌ <b>Invalid UTR!</b>\n"
+                    f"Your input has <code>{len(utr_candidate)}</code> digits. "
+                    f"A UTR must be exactly 12 digits.\n"
+                    f"<i>Please check the Transaction ID in your payment app.</i>"
+                )
+            await message.reply_text(_inv_msg, parse_mode=enums.ParseMode.HTML)
+            return  # Stay in pending state
+        # No digits or non-UTR message → let normal text handling continue
 
 
     pending_s_id = user.get("dm_story_id_pending")
@@ -6879,15 +7085,14 @@ async def _process_callback(client, query):
                     f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
                     f"<b>नाम:</b> <code>{p_name}</code>\n"
                     f"<b>राशि:</b> <code>₹{s_price}</code></blockquote>\n\n"
-                    f"<b>𝗦𝘁𝗲𝗽 𝟮: पेमेंट वेरिफाई करें</b>\n\n"
+                    f"<b>𝗦𝘁𝗲𝗽 𝟮: पेमेंट वेरिफाई</b>\n\n"
                     f"<blockquote>"
-                    f"💳 भुगतान करने के बाद, अपनी Payment App (Paytm, PhonePe, GPay) के <b>Transaction Page</b> से <b>12 अंकों का UPI Reference Number / UTR Number</b> यहाँ इस चैट में <b>भेजें</b>।\n\n"
-                    f"✅ सही UTR भेजना जरूरी है — फिर नीचे <b>पेमेंट वेरिफाई करें (UTR)</b> बटन दबाएं।"
+                    f"💳 भुगतान के बाद, अपनी Payment App (Paytm, PhonePe, GPay) के <b>Transaction Page</b> से <b>12 अंकों का UPI Reference Number / UTR Number</b> कॉपी करके यहाँ इस चैट में <b>भेजें</b>।\n\n"
+                    f"⚡ UTR भेजते ही बोट तुरंत वेरिफाई करेगा — कोई बटन दबाने की जरूरत नहीं।"
                     f"</blockquote>\n"
                     f"────────────────────"
                 )
                 kb = [
-                    [InlineKeyboardButton("☑️ पेमेंट वेरिफाई करें (UTR)", callback_data=f"mb#verify2_utr#{s_id}")],
                     [InlineKeyboardButton("« वापस", callback_data=f"mb#pay_back#{s_id}")]
                 ]
             else:
@@ -6900,27 +7105,26 @@ async def _process_callback(client, query):
                     f"<b>Amount:</b> <code>₹{s_price}</code></blockquote>\n\n"
                     f"<b>𝗦𝘁𝗲𝗽 𝟮: Verify Payment</b>\n\n"
                     f"<blockquote>"
-                    f"💳 After payment, go to your Payment App (Paytm, PhonePe, GPay) → open the <b>Transaction Page</b> → find and <b>send the 12-digit UPI Reference Number / UTR Number</b> here in this chat.\n\n"
-                    f"✅ Make sure the UTR is correct — then click the <b>VERIFY PAYMENT (UTR)</b> button below."
+                    f"💳 After payment, open your Payment App (Paytm, PhonePe, GPay) → go to <b>Transaction Page</b> → copy the <b>12-digit UPI Reference Number / UTR Number</b> and <b>send it here in this chat.</b>\n\n"
+                    f"⚡ As soon as you send the UTR, the bot will <b>instantly verify</b> your payment — no button needed."
                     f"</blockquote>\n"
                     f"────────────────────"
                 )
                 kb = [
-                    [InlineKeyboardButton(f"☑️ VERIFY PAYMENT (UTR)", callback_data=f"mb#verify2_utr#{s_id}")],
                     [InlineKeyboardButton(f"« Back", callback_data=f"mb#pay_back#{s_id}")]
                 ]
             
             await query.message.delete()
             try:
                 if qr_card:
-                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
                 else:
                     import urllib.parse
                     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=1&data={urllib.parse.quote(upi_uri)}"
-                    await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+                    await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
             except Exception as e:
                 logger.warning(f"UPI payment screen send failed: {e}")
-                kb2 = [[InlineKeyboardButton("☑️ पेमेंट वेरिफाई करें (UTR)" if lang=='hi' else "☑️ VERIFY PAYMENT (UTR)", callback_data=f"mb#verify2_utr#{s_id}")]]
+                kb2 = [[InlineKeyboardButton("« वापस" if lang=='hi' else "« Back", callback_data=f"mb#pay_back#{s_id}")]]
                 await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb2), parse_mode=enums.ParseMode.HTML)
 
         elif method == "crypto":
