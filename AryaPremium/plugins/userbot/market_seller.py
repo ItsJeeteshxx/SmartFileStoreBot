@@ -3693,7 +3693,13 @@ async def _process_text(client, message):
             if not gmail_password:
                 gmail_password = _os.environ.get("GMAIL_APP_PASSWORD", "").strip() or _os.environ.get("gmail_app_password", "").strip()
 
+            gmail_user = gmail_user.replace("\xa0", "").replace(" ", "").strip()
+            gmail_password = gmail_password.replace("\xa0", "").replace(" ", "").strip()
+
             logger.info(f"[UTR] Gmail credentials: user={'OK' if gmail_user else 'MISSING'}, pass={'OK' if gmail_password else 'MISSING'}")
+
+            gmail_user = gmail_user.replace("\xa0", "").replace(" ", "").strip()
+            gmail_password = gmail_password.replace("\xa0", "").replace(" ", "").strip()
 
             if not gmail_user or not gmail_password:
                 _no_cfg = "ऑटो-वेरिफिकेशन कॉन्फिगर नहीं है। Admin से संपर्क करें।" if lang == 'hi' else "Auto-verification not configured. Contact admin."

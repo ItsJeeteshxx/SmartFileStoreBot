@@ -1865,6 +1865,9 @@ async def verify_upi_utr(payload: dict):
     if not gmail_enabled and gmail_user and gmail_password:
         gmail_enabled = True
 
+    gmail_user = gmail_user.replace("\xa0", "").replace(" ", "").strip()
+    gmail_password = gmail_password.replace("\xa0", "").replace(" ", "").strip()
+
     payer_name = ""
     if gmail_enabled:
         if not gmail_user or not gmail_password:
