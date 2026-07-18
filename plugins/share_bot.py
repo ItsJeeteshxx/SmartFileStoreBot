@@ -862,10 +862,10 @@ async def _process_start(client, message):
                 f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ {del_str_sc}.\n\n"
                 f"◑ To access them again, simply open the same link button.{fail_note}\n\n"
                 f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
-                f"⧉ Having trouble with the bot? Tap \"Arya Premium Chat [ Help ]\" below."
+                f"⧉ Having trouble with the bot? Tap \"Arya Help\" below."
             )
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Arya Premium Chat [ Help ]", url="https://t.me/+gFudInzITpo1Yjg1"),
+            InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
             InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         notice = await message.reply_text(txt, reply_markup=kb_help)
@@ -880,9 +880,9 @@ async def _process_start(client, message):
                     f"▣ ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ʀᴇꜱᴛʀɪᴄᴛɪᴏɴꜱ, ᴀʟʟ ꜰɪʟᴇꜱ ᴀɴᴅ ᴍᴇꜱꜱᴀɢᴇꜱ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʀᴇᴍᴏᴠᴇᴅ ᴀꜰᴛᴇʀ 3 ʜᴏᴜʀꜱ.\n\n"
                     f"◑ To access them again, simply open the same link button.{fail_note}\n\n"
                     f"⧉ Missing a file or looking for a specific episode? Tap \"Stories Chat\" below.\n\n"
-                    f"⧉ Having trouble with the bot? Tap \"Arya Premium Chat [ Help ]\" below.")
+                    f"⧉ Having trouble with the bot? Tap \"Arya Help\" below.")
         kb_help = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Arya Premium Chat [ Help ]", url="https://t.me/+gFudInzITpo1Yjg1"),
+            InlineKeyboardButton("Arya Help", url="https://t.me/AryaHelpTG"),
             InlineKeyboardButton("Stories Chat", url="https://t.me/+EAc-6v1bmZ1iMDBl"),
         ]])
         await message.reply_text(txt, reply_markup=kb_help)
@@ -1157,7 +1157,7 @@ async def _process_delivery_button(client, query):
             "◎ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗔𝗥𝗬𝗔\n\n"
             "▣ Your support helps keep our servers running and allows us to continue delivering high-quality content.\n\n"
             "◈ Direct UPI Details\n\n"
-            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
+            "▸ UPI ID: <code>Q56571430@ybl</code>\n"
             "▸ Name: Jeetesh Meena\n\n"
             "◑ Select an amount below to generate a direct payment QR code."
         )
@@ -1183,16 +1183,16 @@ async def _process_delivery_button(client, query):
         await query.answer()
         
         if am == "custom":
-            upi_uri = "upi://pay?pa=heyjeetx@naviaxis&pn=Jeetesh%20Meena&cu=INR"
+            upi_uri = "upi://pay?pa=Q56571430@ybl&pn=Jeetesh%20Meena&tn=Payment%20for%20Support%20%5B%20Arya%20%5D&cu=INR"
             am_val = "Custom Amount"
         else:
-            upi_uri = f"upi://pay?pa=heyjeetx@naviaxis&pn=Jeetesh%20Meena&am={am}&cu=INR"
+            upi_uri = f"upi://pay?pa=Q56571430@ybl&pn=Jeetesh%20Meena&am={am}&tn=Payment%20for%20Support%20%5B%20Arya%20%5D&cu=INR"
             am_val = f"₹{am}"
             
         caption = (
             "◎ 𝗦𝗖𝗔𝗡 𝗢𝗥 𝗧𝗔𝗣 𝗧𝗢 𝗦𝗨𝗣𝗣𝗢𝗥𝗧\n\n"
             f"▸ Amount: {am_val}\n"
-            "▸ UPI ID: <code>heyjeetx@naviaxis</code>\n"
+            "▸ UPI ID: <code>Q56571430@ybl</code>\n"
             "▸ Name: Jeetesh Meena\n\n"
             "◑ Scan the QR code above or use the payment options below to complete your support."
         )
@@ -1218,7 +1218,7 @@ async def _process_delivery_button(client, query):
                 "▣ Unable to generate a Razorpay payment link at this time.\n\n"
                 "◈ Razorpay keys are not configured.\n\n"
                 "◑ Please use the UPI payment method instead.\n\n"
-                "▸ UPI ID: <code>heyjeetx@naviaxis</code>"
+                "▸ UPI ID: <code>Q56571430@ybl</code>"
             )
             try:
                 await client.send_message(
@@ -1359,7 +1359,7 @@ async def _process_delivery_button(client, query):
                 "▣ Unable to generate a Razorpay payment link at this time.\n\n"
                 f"◈ {err_detail}\n\n"
                 "◑ Please use the UPI payment method instead.\n\n"
-                "▸ UPI ID: <code>heyjeetx@naviaxis</code>"
+                "▸ UPI ID: <code>Q56571430@ybl</code>"
             )
             await gen_msg.edit_text(
                 error_txt,
