@@ -717,7 +717,16 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         r'(?:ep(?:isode)?s?|#)?\s*(\d+)\s*[-\u2013to]+\s*(\d+)',
                         f"{_fn_chk} {_cp_chk}", __import__('re').IGNORECASE
                     )
-                    _is_grp_file = bool(_grp_chk and int(_grp_chk.group(2)) > int(_grp_chk.group(1)))
+                    _is_grp_file = False
+                    if _grp_chk:
+                        _g1, _g2 = int(_grp_chk.group(1)), int(_grp_chk.group(2))
+                        if _g2 > _g1 and (_g2 - _g1 <= 150):
+                            _pos = _grp_chk.end()
+                            _full_str = f"{_fn_chk} {_cp_chk}"
+                            _suffix = _full_str[_pos:_pos+15].lower()
+                            if not __import__('re').match(r'^\s*(?:kbps|kb/s|kb|k|hz|khz)\b', _suffix):
+                                if _g1 <= exp_curr <= _g2:
+                                    _is_grp_file = True
                     if not _is_grp_file:
                         return m, None, m_obj, m.id, lbl, None
                     # Group file — fall through to download for episode-based injection
@@ -1056,10 +1065,26 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     )
                     if _m_range:
                         _g1, _g2 = int(_m_range.group(1)), int(_m_range.group(2))
-                        if _g2 > _g1:
-                            _grp_start, _grp_end = _g1, _g2
+                        if _g2 > _g1 and (_g2 - _g1 <= 150):
+                            _pos = _m_range.end()
+                            _suffix = _fname_check[_pos:_pos+15].lower()
+                            if not _re_inj.match(r'^\s*(?:kbps|kb/s|kb|k|hz|khz)\b', _suffix):
+                                if _g1 <= curr_num <= _g2:
+                                    _grp_start, _grp_end = _g1, _g2
 
                     _is_group = _grp_start is not None
+
+                    # Probe duration early to check validity of group file
+                    _dur = await _probe_dur_async(out_path)
+
+                    if _is_group:
+                        _grp_ep_cnt = _grp_end - _grp_start + 1
+                        # If duration is too short for the claimed number of episodes
+                        # (at least 2 minutes per episode), cancel group mode.
+                        if _dur < _grp_ep_cnt * 120:
+                            logger.info(f"[Cleaner {job_id}] Group file Ep {_grp_start}-{_grp_end} duration ({_dur}s) is too short for {_grp_ep_cnt} episodes -> treating as single episode")
+                            _is_group = False
+                            _grp_start = _grp_end = None
 
                     # ── Decide whether to inject ───────────────────────────────
                     _inj_types: list = []
@@ -1095,7 +1120,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         # ALL ad positions and concatenates them in one FFmpeg call.
                         # Replaces N sequential FFmpeg calls (each re-encoding the
                         # growing file) with a single decode+encode pass → ~8× faster.
-                        _dur = await _probe_dur_async(out_path)
+                        # _dur is already probed above
                         _n_inj = len(_inj_types)
 
                         # Calculate all split points relative to total duration
