@@ -3447,17 +3447,17 @@ async def main_buttons(user_id=None):
   if mode == 'merger':
       #  MERGER MODE: Clean separate menu
       buttons = [[
-           InlineKeyboardButton('Aᴄᴄᴏᴜɴᴛs',
+           InlineKeyboardButton('• Accounts •',
                         callback_data='settings#accounts'),
-           InlineKeyboardButton('Cʜᴀɴɴᴇʟs',
+           InlineKeyboardButton('• Channels •',
                         callback_data='settings#channels')
            ],[
-           InlineKeyboardButton('Aᴜᴅɪᴏ Mᴇʀɢᴇ',
+           InlineKeyboardButton('• Audio Merge •',
                         callback_data='mg#audio_list')
            ],[
-           InlineKeyboardButton('Dʟᴠʀ Bᴏᴛ Sᴇᴛᴜᴘ',
+           InlineKeyboardButton('• Dlvr Bot Setup •',
                         callback_data='settings#sharebot'),
-           InlineKeyboardButton('📊 Sᴛᴀᴛs',
+           InlineKeyboardButton('• Stats •',
                         callback_data='settings#stats')
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
@@ -3466,29 +3466,29 @@ async def main_buttons(user_id=None):
   else:
       #  FORWARD MODE: Full original menu
       buttons = [[
-           InlineKeyboardButton('Aᴄᴄᴏᴜɴᴛs',
+           InlineKeyboardButton('• Accounts •',
                         callback_data='settings#accounts'),
-           InlineKeyboardButton('Cʜᴀɴɴᴇʟs',
+           InlineKeyboardButton('• Channels •',
                         callback_data='settings#channels')
            ],[
-           InlineKeyboardButton('Fɪʟᴛᴇʀs',
+           InlineKeyboardButton('• Filters •',
                         callback_data='settings#filters'),
-           InlineKeyboardButton('Exᴛʀᴀ Sᴇᴛᴛɪɴɢs',
+           InlineKeyboardButton('• Ex Settings •',
                         callback_data='settings#nextfilters')
            ],[
-           InlineKeyboardButton('Dʟᴠʀ Bᴏᴛ Sᴇᴛᴜᴘ',
+           InlineKeyboardButton('• Dlvr Bot Setup •',
                         callback_data='settings#sharebot'),
-           InlineKeyboardButton('Lᴇᴛ\'s Eɴʜᴀɴᴄᴇ',
+           InlineKeyboardButton('• Let\'s Enhance •',
                         callback_data='settings#enhancer')
            ],[
-           InlineKeyboardButton('EN/हि',
+           InlineKeyboardButton('• Lang •',
                         callback_data='settings#lang'),
-           InlineKeyboardButton('🔗 Sʜᴏʀᴛᴇɴᴇʀs',
+           InlineKeyboardButton('• Shorteners •',
                         callback_data='settings#shorteners')
            ],[
-           InlineKeyboardButton('👑 Oᴡɴᴇʀ Pᴀɴᴇʟ',
+           InlineKeyboardButton('• Owner Panel •',
                         callback_data='settings#owners'),
-           InlineKeyboardButton('📊 Sᴛᴀᴛs',
+           InlineKeyboardButton('• Stats •',
                         callback_data='settings#stats')
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')

@@ -497,8 +497,8 @@ _S["<i>Process Cancelled Successfully!</i>"] = {
     "hi": "»  प्रक्रिया रद्द की गई।",
     "hinglish": "»  Process cancel ho gaya.",
 }
-_S["btn_settings"] = {"en": "⚙️ Sᴇᴛᴛɪɴɢs", "hi": "⚙️ Sᴇᴛᴛɪɴɢs", "hinglish": "⚙️ Sᴇᴛᴛɪɴɢs"}
-_S["btn_jobs"] = {"en": "📋 Lɪᴠᴇ Jᴏʙs", "hi": "📋 Lɪᴠᴇ Jᴏʙs", "hinglish": "📋 Lɪᴠᴇ Jᴏʙs"}
+_S["btn_settings"] = {"en": "• Settings •", "hi": "• Settings •", "hinglish": "• Settings •"}
+_S["btn_jobs"] = {"en": "• Live Jobs •", "hi": "• Live Jobs •", "hinglish": "• Live Jobs •"}
 _S["btn_help"] = {"en": "🙋 Hᴇʟᴘ", "hi": "🙋 Hᴇʟᴘ", "hinglish": "🙋 Hᴇʟᴘ"}
 _S["btn_about"] = {"en": "💁 Aʙᴏᴜᴛ", "hi": "💁 Aʙᴏᴜᴛ", "hinglish": "💁 Aʙᴏᴜᴛ"}
 _S["btn_close"] = {"en": "‣  Close", "hi": "‣  बंद करें", "hinglish": "‣  Close"}

@@ -24,9 +24,9 @@ async def _main_buttons(user_id: int):
     lang = await db.get_language(user_id)
     
     btn_jobs_text = _tx(lang, 'btn_jobs')
-    mj_text = 'Mᴜʟᴛɪ Jᴏʙ'
-    mg_text = 'Mᴇʀɢᴇʀ Jᴏʙ'
-    lb_text = 'Bᴀᴛᴄʜ Lɪɴᴋs'
+    mj_text = '• Multi Jobs •'
+    mg_text = '• Merger Job •'
+    lb_text = '• Batch Links •'
 
     return [
         [
@@ -38,16 +38,16 @@ async def _main_buttons(user_id: int):
             InlineKeyboardButton(mg_text,   callback_data='mg#main'),
         ],
         [
-            InlineKeyboardButton('Cʟᴇᴀɴᴇʀ Jᴏʙ', callback_data='cl#main'),
-            InlineKeyboardButton('Cʟᴇᴀɴ MSG',    callback_data='settings#cleanmsg'),
+            InlineKeyboardButton('• Cleaner Job •', callback_data='cl#main'),
+            InlineKeyboardButton('• Clean Msg •',    callback_data='settings#cleanmsg'),
         ],
         [
             InlineKeyboardButton(lb_text,  callback_data='sl#start'),
-            InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
+            InlineKeyboardButton('• Status •',         callback_data='status'),
         ],
         [
-            InlineKeyboardButton('🔗 URL Bypass',   callback_data='ub#bypass'),
-            InlineKeyboardButton('Aʙᴏᴜᴛ',          callback_data='about'),
+            InlineKeyboardButton('• Url Bypass •',   callback_data='ub#bypass'),
+            InlineKeyboardButton('• About •',          callback_data='about'),
         ],
     ]
 
@@ -58,19 +58,19 @@ _STATIC_BUTTONS = [
         InlineKeyboardButton('💬 Support Group', url='https://t.me/+1p2hcQ4ZaupjNjI1'),
     ],
     [
-        InlineKeyboardButton('⚙️ Settings', callback_data='settings#main'),
-        InlineKeyboardButton('📋 Live Jobs', callback_data='job#list'),
+        InlineKeyboardButton('• Settings •', callback_data='settings#main'),
+        InlineKeyboardButton('• Live Jobs •', callback_data='job#list'),
     ],
     [
-        InlineKeyboardButton('»  Mᴜʟᴛɪ Jᴏʙ',   callback_data='mj#list'),
-        InlineKeyboardButton('»  Bᴀᴛᴄʜ Lɪɴᴋs', callback_data='sl#start'),
+        InlineKeyboardButton('• Multi Jobs •',   callback_data='mj#list'),
+        InlineKeyboardButton('• Batch Links •', callback_data='sl#start'),
     ],
     [
-        InlineKeyboardButton('»  Cʟᴇᴀɴᴇʀ Jᴏʙ', callback_data='cl#main'),
+        InlineKeyboardButton('• Cleaner Job •', callback_data='cl#main'),
     ],
     [
-        InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
-        InlineKeyboardButton('Aʙᴏᴜᴛ',           callback_data='about'),
+        InlineKeyboardButton('• Status •',         callback_data='status'),
+        InlineKeyboardButton('• About •',           callback_data='about'),
     ],
 ]
 
