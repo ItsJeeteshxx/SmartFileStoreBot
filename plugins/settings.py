@@ -513,6 +513,65 @@ async def settings_query(bot, query):
      else:
          await query.message.edit_text(text, reply_markup=markup)
           
+  elif type=="stats":
+     # Find active Live Jobs (which forward messages) for all accounts of this user
+     running_jobs = [j async for j in db.db.jobs.find({"user_id": user_id, "status": "running"})]
+     bots = await db.get_bots(user_id)
+     
+     # Group jobs by account_id
+     bot_map = {str(b["id"]): b for b in bots}
+     groups = {}
+     default_group = []
+     
+     for j in running_jobs:
+         acc_id = j.get("account_id")
+         if acc_id and str(acc_id) in bot_map:
+             groups.setdefault(str(acc_id), []).append(j)
+         else:
+             default_group.append(j)
+             
+     lines = [
+         "<b>📊 ❪ Lɪᴠᴇ Jᴏʙs Sᴛᴀᴛs ❫</b>\n",
+         f"Total Active Jobs: <code>{len(running_jobs)}</code>\n",
+         "────────────────────"
+     ]
+     
+     # 1. Default/Main account group
+     if default_group or not bots:
+         lines.append("👤 <b>Main Bot / Default Account</b>")
+         lines.append(f"└ Active Tasks: <code>{len(default_group)}</code>")
+         for j in default_group:
+             job_name = j.get("name") or f"Job {j['job_id'][-6:]}"
+             from_title = j.get("from_title", "Source")
+             to_title = j.get("to_title", "Dest")
+             lines.append(f"  • <b>{job_name}</b> (<i>{from_title} ➝ {to_title}</i>)")
+         lines.append("────────────────────")
+         
+     # 2. Configured Userbots/Bots groups
+     for b in bots:
+         b_id_str = str(b["id"])
+         j_list = groups.get(b_id_str, [])
+         kind = "Bot" if b.get('is_bot', True) else "Userbot"
+         active_mark = " (Active)" if b.get('active') else ""
+         lines.append(f"🤖 <b>{kind}: {b['name']}</b>{active_mark}")
+         if b.get('username'):
+             lines.append(f"└ Username: @{b['username']}")
+         lines.append(f"└ Active Tasks: <code>{len(j_list)}</code>")
+         for j in j_list:
+             job_name = j.get("name") or f"Job {j['job_id'][-6:]}"
+             from_title = j.get("from_title", "Source")
+             to_title = j.get("to_title", "Dest")
+             lines.append(f"  • <b>{job_name}</b> (<i>{from_title} ➝ {to_title}</i>)")
+         lines.append("────────────────────")
+         
+     # Remove last divider for neatness
+     if len(lines) > 3:
+         lines.pop()
+         
+     text = "\n".join(lines)
+     buttons = [[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")]]
+     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+          
   elif type=="accounts":
      bots = await db.get_bots(user_id)
      normal_bots = [b for b in bots if b.get('is_bot', True)]
@@ -3397,7 +3456,9 @@ async def main_buttons(user_id=None):
                         callback_data='mg#audio_list')
            ],[
            InlineKeyboardButton('Dʟᴠʀ Bᴏᴛ Sᴇᴛᴜᴘ',
-                        callback_data='settings#sharebot')
+                        callback_data='settings#sharebot'),
+           InlineKeyboardButton('📊 Sᴛᴀᴛs',
+                        callback_data='settings#stats')
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
            ]]
@@ -3426,7 +3487,9 @@ async def main_buttons(user_id=None):
                         callback_data='settings#shorteners')
            ],[
            InlineKeyboardButton('👑 Oᴡɴᴇʀ Pᴀɴᴇʟ',
-                        callback_data='settings#owners')
+                        callback_data='settings#owners'),
+           InlineKeyboardButton('📊 Sᴛᴀᴛs',
+                        callback_data='settings#stats')
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
            ]]
