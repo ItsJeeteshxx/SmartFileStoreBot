@@ -1394,84 +1394,109 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
 
         #  PHASE 3: Post to target channel 
-        post_count = 0
-        for i in range(0, len(raw_buttons), buttons_per_post):
-            chunk = raw_buttons[i : i + buttons_per_post]
-            first_ep = chunk[0]["ep_start"]
-            last_ep  = chunk[-1]["ep_end"]
-            def _bold_sans(s):
-                res = ''
-                for c in str(s):
-                    if 'A' <= c <= 'Z':
-                        res += chr(0x1D5D4 + ord(c) - ord('A'))
-                    elif 'a' <= c <= 'z':
-                        res += chr(0x1D5D4 + ord(c) - ord('a'))
-                    else:
-                        res += c
-                return res
+        def _bold_sans(s):
+            res = ''
+            for c in str(s):
+                if 'A' <= c <= 'Z':
+                    res += chr(0x1D5D4 + ord(c) - ord('A'))
+                elif 'a' <= c <= 'z':
+                    res += chr(0x1D5D4 + ord(c) - ord('a'))
+                else:
+                    res += c
+            return res
 
-            display_story = story
-            if sj.get('shorten_story'):
-                display_story = _get_short_story_name(story)
+        display_story = story
+        if sj.get('shorten_story'):
+            display_story = _get_short_story_name(story)
 
-            font_style = sj.get('font', 'Default')
-            if font_style == "Default":
-                story_text = _bold_sans(display_story)
-                eps_word = "𝗘𝗣𝗦"
-                ep_range = f"{first_ep} - {last_ep}"
-            elif font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
-                story_text = to_custom_font(display_story, font_style)
-                eps_word = to_custom_font("EPS", font_style)
-                ep_range = to_custom_font(f"{first_ep} - {last_ep}", font_style)
-            else:
-                # Custom prefix entered by user
-                story_text = font_style
-                eps_word = "EPS"
-                ep_range = f"{first_ep} - {last_ep}"
-            
-            cv = sj.get('caption_version', 1)
-            buy_link = sj.get('premium_buy_link', '#')
-            
-            if sj.get('post_format') == "missing":
-                ep_strs = []
-                for b_s, b_e, _ in _buckets_to_use:
-                    if b_s == "Extra": continue
-                    if font_style in ["𝑅𝑒𝑔𝑢𝑙𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
-                        lbl = to_custom_font(str(b_s), font_style) if b_s == b_e else f"{to_custom_font(str(b_s), font_style)}-{to_custom_font(str(b_e), font_style)}"
-                    else:
-                        lbl = f"{b_s}" if b_s == b_e else f"{b_s}-{b_e}"
-                    ep_strs.append(f"• {lbl}")
-                
-                # Split roughly to line wrap nicely
-                formatted_eps = ""
-                for idx, ev in enumerate(ep_strs):
-                    formatted_eps += ev + "  "
-                    if (idx + 1) % 4 == 0: formatted_eps += "\n"
-                formatted_eps = formatted_eps.strip()
+        font_style = sj.get('font', 'Default')
+        if font_style == "Default":
+            story_text = _bold_sans(display_story)
+        elif font_style in ["𝑅𝑒𝑔𝑢𝓁𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+            story_text = to_custom_font(display_story, font_style)
+        else:
+            story_text = font_style
 
-                txt = (
-                    f"👉🏻 {story_text} (English) •\n"
-                    f"<blockquote expandable>{story_text} Missing Episode\n"
-                    f"{formatted_eps}</blockquote>\n"
-                    f"<blockquote expandable>Note :\n"
-                    f"Comment Below 👇 I'll Add Missing Episodes As Soon As Possible</blockquote>"
-                )
-            else:
-                txt = f"{story_text} {eps_word} {ep_range}"
+        if sj.get('post_format') == "missing":
+            ep_strs = []
+            _buckets_to_use = buckets_final if 'buckets_final' in locals() else buckets
+            for b_s, b_e, mids in _buckets_to_use:
+                if not mids or b_s == "Extra":
+                    continue
+                if font_style in ["𝑅𝑒𝑔𝑢𝓁𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+                    lbl = to_custom_font(str(b_s), font_style) if b_s == b_e else f"{to_custom_font(str(b_s), font_style)}-{to_custom_font(str(b_e), font_style)}"
+                else:
+                    lbl = f"{b_s}" if b_s == b_e else f"{b_s}-{b_e}"
+                ep_strs.append(lbl)
 
-            keyboard = []
-            for j in range(0, len(chunk), 2):
-                row = [c["btn"] for c in chunk[j:j + 2]]
-                keyboard.append(row)
-            keyboard.append([
-                InlineKeyboardButton(_sc("tutorial"), url=("https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5")),
-                InlineKeyboardButton(_sc("support"), url="https://t.me/+gFudInzITpo1Yjg1")
-            ])
+            # Collect all mids across all buckets
+            all_mids = []
+            for _, _, mids in _buckets_to_use:
+                all_mids.extend(mids)
+
+            # Generate single secure link for all missing episodes
+            uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
+            await db.save_share_link(
+                uuid_str, all_mids, source_chat_id,
+                protect=protect, access_hash=db_access_hash
+            )
+            try:
+                import asyncio as _aio
+                import plugins.arya_logger as _alog
+                _aio.create_task(_alog.log_batch_link(
+                    uuid=uuid_str,
+                    source_chat=source_chat_id,
+                    msg_ids=all_mids,
+                    story=story,
+                    ep_range="Missing List",
+                ))
+            except Exception:
+                pass
+
+            url = f"https://t.me/{bot_usr}?start={uuid_str}"
+
+            # Shorten URL
+            short_choice = sj.get('shortener')
+            if short_choice:
+                apis = await db.get_shortener_apis()
+                api_key = apis.get("arolinks") if short_choice == "arolinks" else apis.get("urlshortx")
+                if api_key:
+                    try:
+                        import aiohttp
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "application/json, text/plain, */*"
+                        }
+                        async with aiohttp.ClientSession(headers=headers) as session:
+                            domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.io"
+                            api_url = f"https://{domain}/api?api={api_key}&url={url}"
+                            async with session.get(api_url, timeout=10) as resp:
+                                data = await resp.json()
+                                if data.get("status") == "success" and "shortenedUrl" in data:
+                                    url = data["shortenedUrl"]
+                    except Exception as e:
+                        logger.error(f"Error shortening url: {e}")
+
+            # Build list of hyperlinked episodes pointing to the same single URL
+            formatted_list = [f"<a href='{url}'>{lbl}</a>" for lbl in ep_strs]
+            formatted_eps = " • ".join(formatted_list)
+            if formatted_eps:
+                formatted_eps = "• " + formatted_eps
+
+            # Format caption text
+            txt = (
+                f"{story_text} Missing Episode\n\n"
+                f"{formatted_eps}\n\n"
+                f"<blockquote>❏ Note :</blockquote>\n"
+                f"<blockquote>Comment Below 👇 I'll Add Missing Episodes As Soon As Possible</blockquote>"
+            )
+
+            # Send single message to target
             for attempt in range(6):
                 try:
                     await poster.send_message(
                         chat_id=sj['target'], text=txt,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        reply_markup=None,
                         reply_to_message_id=sj.get('target_topic_id')
                     )
                     break
@@ -1483,16 +1508,75 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                         wait_secs = (int(mw.group(1)) + 2) if mw else 35
                         await safe_edit(f"<i>»  Rate limit... waiting {wait_secs}s</i>")
                         await asyncio.sleep(wait_secs)
-                        continue
                     else:
-                        return await safe_edit(
-                            f"<b>‣  Failed to post to target channel:</b> <code>{e}</code>\n\n"
-                            f"<i>Make sure the selected account is an admin in the target channel.</i>"
+                        await safe_edit(f"<b>❌ Error posting missing message:</b> <code>{e}</code>")
+                        break
+
+            # Finish execution of share links builder
+            # Set variables for final report block so it prints correctly
+            post_count = 1
+            raw_buttons = [{"btn": None, "ep_start": 0, "ep_end": 0}]  # dummy to satisfy report len(raw_buttons)
+            await safe_edit("<b>✅ Successfully posted missing episode report in one link!</b>")
+        else:
+            post_count = 0
+            for i in range(0, len(raw_buttons), buttons_per_post):
+                chunk = raw_buttons[i : i + buttons_per_post]
+                first_ep = chunk[0]["ep_start"]
+                last_ep  = chunk[-1]["ep_end"]
+
+                font_style = sj.get('font', 'Default')
+                if font_style == "Default":
+                    story_text = _bold_sans(display_story)
+                    eps_word = "𝗘𝗣𝗦"
+                    ep_range = f"{first_ep} - {last_ep}"
+                elif font_style in ["𝑅𝑒𝑔𝑢𝓁𝑢𝑠", "𝑨𝒍𝒕𝒂𝒊𝒓", "𝐋𝐔𝐃"]:
+                    story_text = to_custom_font(display_story, font_style)
+                    eps_word = to_custom_font("EPS", font_style)
+                    ep_range = to_custom_font(f"{first_ep} - {last_ep}", font_style)
+                else:
+                    # Custom prefix entered by user
+                    story_text = font_style
+                    eps_word = "EPS"
+                    ep_range = f"{first_ep} - {last_ep}"
+                
+                cv = sj.get('caption_version', 1)
+                buy_link = sj.get('premium_buy_link', '#')
+                txt = f"{story_text} {eps_word} {ep_range}"
+
+                keyboard = []
+                for j in range(0, len(chunk), 2):
+                    row = [c["btn"] for c in chunk[j:j + 2]]
+                    keyboard.append(row)
+                keyboard.append([
+                    InlineKeyboardButton(_sc("tutorial"), url=("https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5")),
+                    InlineKeyboardButton(_sc("support"), url="https://t.me/+gFudInzITpo1Yjg1")
+                ])
+                for attempt in range(6):
+                    try:
+                        await poster.send_message(
+                            chat_id=sj['target'], text=txt,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            reply_to_message_id=sj.get('target_topic_id')
                         )
-            else:
-                return await safe_edit("‣  Posting aborted after 6 retries due to FloodWait.")
-            post_count += 1
-            await asyncio.sleep(1)
+                        break
+                    except Exception as e:
+                        err_str = str(e)
+                        import re as _re2
+                        if "FLOOD_WAIT" in err_str or "420" in err_str:
+                            mw = _re2.search(r'wait of (\d+)', err_str)
+                            wait_secs = (int(mw.group(1)) + 2) if mw else 35
+                            await safe_edit(f"<i>»  Rate limit... waiting {wait_secs}s</i>")
+                            await asyncio.sleep(wait_secs)
+                            continue
+                        else:
+                            return await safe_edit(
+                                f"<b>‣  Failed to post to target channel:</b> <code>{e}</code>\n\n"
+                                f"<i>Make sure the selected account is an admin in the target channel.</i>"
+                            )
+                else:
+                    return await safe_edit("‣  Posting aborted after 6 retries due to FloodWait.")
+                post_count += 1
+                await asyncio.sleep(1)
 
         #  FINAL REPORT 
         mode_str = "🗂 Grouped files (1 button/file)" if GROUPED_MODE else f"📑 Individual (batch size: {batch_size})"
