@@ -49,6 +49,78 @@ IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
 _FFMPEG_POOL = cf.ThreadPoolExecutor(max_workers=MAX_CONCURRENT + 2, thread_name_prefix="cl_ff")
 
+def _apply_watermark(cover_path: str, wm_pos: str) -> bool:
+    try:
+        from PIL import Image
+        import os
+
+        # 1. Resolve watermark image path
+        wm_path = "WatermarkIMG.png"
+        if not os.path.exists(wm_path):
+            wm_path = "C:\\Users\\User\\Downloads\\IMAGE\\WatermarkIMG.png"
+            
+        if not os.path.exists(wm_path):
+            logger.warning(f"Watermark image not found at {wm_path}")
+            return False
+
+        # 2. Open cover and watermark images
+        cov_img = Image.open(cover_path).convert("RGBA")
+        wm_img = Image.open(wm_path).convert("RGBA")
+
+        cov_w, cov_h = cov_img.size
+        wm_w, wm_h = wm_img.size
+
+        # 3. Scale the watermark according to position preference
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_filter = Image.ANTIALIAS
+
+        if wm_pos == "full_width":
+            new_w = cov_w
+            new_h = int(wm_h * (new_w / wm_w))
+            wm_img = wm_img.resize((new_w, new_h), resample_filter)
+        else:
+            max_w = int(cov_w * 0.85)
+            if wm_w > max_w or wm_h > int(cov_h * 0.85):
+                ratio = min(max_w / wm_w, (cov_h * 0.85) / wm_h)
+                new_w = int(wm_w * ratio)
+                new_h = int(wm_h * ratio)
+                wm_img = wm_img.resize((new_w, new_h), resample_filter)
+
+        wm_w, wm_h = wm_img.size
+
+        # 4. Calculate position coordinates
+        if wm_pos == "centre":
+            x = (cov_w - wm_w) // 2
+            y = (cov_h - wm_h) // 2
+        elif wm_pos == "upper":
+            x = (cov_w - wm_w) // 2
+            y = int(cov_h * 0.08)
+        elif wm_pos == "lower":
+            x = (cov_w - wm_w) // 2
+            y = cov_h - wm_h - int(cov_h * 0.08)
+        elif wm_pos == "full_width":
+            x = 0
+            y = cov_h - wm_h
+        else:
+            return False
+
+        # 5. Create a new transparency layer and paste the watermark
+        overlay = Image.new("RGBA", cov_img.size, (0, 0, 0, 0))
+        overlay.paste(wm_img, (x, y), mask=wm_img)
+
+        # 6. Alpha composite the two images
+        final_img = Image.alpha_composite(cov_img, overlay)
+
+        # 7. Convert back to RGB and save over the original cover file
+        final_img.convert("RGB").save(cover_path, "JPEG", quality=95)
+        logger.info(f"Watermark ({wm_pos}) applied successfully to {cover_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to apply watermark: {e}", exc_info=True)
+        return False
+
 
 async def _remove_file_async(path: str):
     if not path:
@@ -443,6 +515,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             except: local_cover = None
         elif not cov_fid:
             local_cover = None
+
+        # Apply Watermark if enabled in defaults
+        if local_cover and os.path.exists(local_cover):
+            try:
+                df_cl = await _cl_get_defaults(uid)
+                wm_pos = df_cl.get("watermark_pos", "off")
+                if wm_pos != "off":
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, _apply_watermark, local_cover, wm_pos)
+            except Exception as wme:
+                logger.error(f"[Cleaner {job_id}] Watermark error: {wme}", exc_info=True)
 
         # ── Audio Ad Injection Setup ───────────────────────────────────────
         # Download ad files once for the entire job, reuse for each injection
@@ -1586,9 +1669,10 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         
         kb = [
             [InlineKeyboardButton("➕ Sᴛᴀʀᴛ Nᴇᴡ Cʟᴇᴀɴᴇʀ Jᴏʙ", callback_data="cl#new")],
-            [InlineKeyboardButton("⚙️ Sᴇᴛ Cᴏᴠᴇʀ",  callback_data="cl#cfg#cover"),
+            [InlineKeyboardButton("⚙️ Sᴇᴛ Cᴏᴠᴇ r",  callback_data="cl#cfg#cover"),
              InlineKeyboardButton("⚙️ Sᴇᴛ Aʀᴛɪsᴛ", callback_data="cl#cfg#artist")],
-            [InlineKeyboardButton("⚙️ Sᴇᴛ Gᴇɴʀᴇ",  callback_data="cl#cfg#genre")],
+            [InlineKeyboardButton("⚙️ Sᴇᴛ Gᴇɴʀᴇ",  callback_data="cl#cfg#genre"),
+             InlineKeyboardButton("🖼 Wᴀᴛᴇʀᴍᴀʀᴋ",  callback_data="cl#watermark_menu")],
         ]
         
         if active:
@@ -1606,6 +1690,8 @@ async def _cl_callbacks(bot, update: CallbackQuery):
 
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         df = await _cl_get_defaults(uid)
+        wm_label = df.get('watermark_pos', 'off').replace('_', ' ').title()
+        if wm_label == "Off": wm_label = "<i>Disabled</i>"
         txt = (
             "<b><u>🧹 Aᴜᴅɪᴏ Cʟᴇᴀɴᴇʀ & Rᴇɴᴀᴍᴇʀ</u></b>\n"
             f"🟢 <b>Active Tasks:</b> <code>{len(active)}</code>\n\n"
@@ -1614,6 +1700,7 @@ async def _cl_callbacks(bot, update: CallbackQuery):
             f"  • Artist: {df.get('artist','<i>None</i>')}\n"
             f"  • Genre:  {df.get('genre','<i>None</i>')}\n"
             f"  • Cover:  {'<i>Set</i> ✅' if df.get('cover') else '<i>None</i>'}\n"
+            f"  • Watermark: {wm_label}\n"
         )
         return await update.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
 
@@ -1636,6 +1723,32 @@ async def _cl_callbacks(bot, update: CallbackQuery):
             await bot.send_message(uid, f"✅ Default <b>{cfg_type}</b> updated!")
         except: pass
         update.data = "cl#main"; return await _cl_callbacks(bot, update)
+
+    elif action == "watermark_menu":
+        df = await _cl_get_defaults(uid)
+        pref = df.get("watermark_pos") or "off"
+        
+        def _mark(val): return "✅ " if pref == val else ""
+        
+        buttons = [
+            [InlineKeyboardButton(f"{_mark('off')}Turn OFF", callback_data="cl#set_wm#off")],
+            [InlineKeyboardButton(f"{_mark('centre')}Center", callback_data="cl#set_wm#centre"),
+             InlineKeyboardButton(f"{_mark('upper')}Upper", callback_data="cl#set_wm#upper")],
+            [InlineKeyboardButton(f"{_mark('lower')}Lower", callback_data="cl#set_wm#lower"),
+             InlineKeyboardButton(f"{_mark('full_width')}Full Width", callback_data="cl#set_wm#full_width")],
+            [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="cl#main")]
+        ]
+        await update.message.edit_text(
+            "<b>🖼 Watermark Settings</b>\n\n"
+            "Choose the position of the watermark overlay on the cover art image.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif action == "set_wm":
+        pos = data[2]
+        await _cl_save_default(uid, "watermark_pos", pos)
+        update.data = "cl#watermark_menu"
+        return await _cl_callbacks(bot, update)
 
     elif action == "new":
         try: await update.message.delete()
