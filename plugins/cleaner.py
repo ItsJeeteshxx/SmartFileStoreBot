@@ -54,8 +54,9 @@ def _apply_watermark(cover_path: str, wm_pos: str) -> bool:
         from PIL import Image
         import os
 
-        # 1. Resolve watermark image path
-        wm_path = "WatermarkIMG.png"
+        # 1. Resolve watermark image path relative to script location
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        wm_path = os.path.join(base_dir, "WatermarkIMG.png")
         if not os.path.exists(wm_path):
             wm_path = "C:\\Users\\User\\Downloads\\IMAGE\\WatermarkIMG.png"
             
@@ -516,11 +517,10 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         elif not cov_fid:
             local_cover = None
 
-        # Apply Watermark if enabled in defaults
+        # Apply Watermark if enabled in the job configuration
         if local_cover and os.path.exists(local_cover):
             try:
-                df_cl = await _cl_get_defaults(uid)
-                wm_pos = df_cl.get("watermark_pos", "off")
+                wm_pos = job.get("watermark_pos", "off")
                 if wm_pos != "off":
                     loop = asyncio.get_event_loop()
                     await loop.run_in_executor(None, _apply_watermark, local_cover, wm_pos)
@@ -1933,6 +1933,7 @@ async def _create_cl_flow(bot, user_id):
         convert_videos = False
         deep_clean = False
         adv_artist = ""; adv_year = ""; adv_album = ""; adv_genre = ""; adv_cover = None
+        wm_pos = "off"
         use_caption = True
         base_name = ""
         start_num = 1
@@ -2143,6 +2144,31 @@ async def _create_cl_flow(bot, user_id):
             elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
                 adv_cover = r_cov.document.file_id
 
+        # Watermark position query (Step 8a)
+        wm_pos = "off"
+        if adv_cover:
+            default_wm_pos = df.get("watermark_pos", "off")
+            r_wm = await _cl_ask(bot, user_id,
+                f"<b>> Step 8a — Cover Watermark Position</b>\n\n"
+                f"Choose the position of the watermark overlay on the cover art.\n"
+                f"<i>Current Default: {default_wm_pos.replace('_', ' ').title()}</i>",
+                reply_markup=ReplyKeyboardMarkup([
+                    ["❌ Turn OFF", "Center"],
+                    ["Upper", "Lower"],
+                    ["Full Width", SKIP_BTN],
+                    [CANCEL_BTN]
+                ], resize_keyboard=True, one_time_keyboard=True))
+            if _cancelled(r_wm): return await _abort()
+            wm_text = (r_wm.text or "").strip().lower()
+            if "center" in wm_text: wm_pos = "centre"
+            elif "upper" in wm_text: wm_pos = "upper"
+            elif "lower" in wm_text: wm_pos = "lower"
+            elif "full width" in wm_text: wm_pos = "full_width"
+            elif _skip(wm_text):
+                wm_pos = default_wm_pos
+            else:
+                wm_pos = "off"
+
         # Caption
         r_cap = await _cl_ask(bot, user_id,
             "<b>» Step 9/9 — Add Caption?</b>\n\nAdd filename as caption in target channel?",
@@ -2320,7 +2346,7 @@ async def _create_cl_flow(bot, user_id):
         "name_format": name_format, "rename_files": rename_files, "smart_rename": smart_rename,
         "convert_videos": convert_videos, "deep_clean": deep_clean,
         "artist": adv_artist, "year": adv_year, "album": adv_album, "genre": adv_genre,
-        "cover_file_id": adv_cover, "use_caption": use_caption,
+        "cover_file_id": adv_cover, "watermark_pos": wm_pos, "use_caption": use_caption,
         "inject_ads": inject_ads, "ads_config": ads_config, "ads_lang": ads_lang,
         "account_id": sel_acc.get("id"), "is_bot": sel_acc.get("is_bot", True),
         "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),
