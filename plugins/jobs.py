@@ -1066,7 +1066,7 @@ async def _run_job(job_id: str, user_id: int):
                     remove_links   = 'links' in disabled_types
                     cap_tpl        = configs.get('caption')
                     forward_tag    = configs.get('forward_tag', False)
-                    sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                    sleep_secs     = max(0.0, float(configs.get('duration', 0.0) or 0.0))
                     replacements   = configs.get('replacements', {})
 
                     if not _passes_filters(msg, disabled_types):
@@ -1144,7 +1144,8 @@ async def _run_job(job_id: str, user_id: int):
                                 await client.edit_message_text(to_chat, prog_id, get_prog_text(_fwd, "running"), parse_mode=ParseMode.HTML)
                         except Exception: pass
 
-                    await asyncio.sleep(sleep_secs)
+                    if sleep_secs > 0:
+                        await asyncio.sleep(sleep_secs)
 
                 # DM batch done — mark complete and fall through to live phase
                 await _update_job(job_id, batch_done=True, batch_cursor=batch_end,
@@ -1179,7 +1180,7 @@ async def _run_job(job_id: str, user_id: int):
                  remove_links   = 'links' in disabled_types
                  cap_tpl        = configs.get('caption')
                  forward_tag    = configs.get('forward_tag', False)
-                 sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                 sleep_secs     = max(0.0, float(configs.get('duration', 0.0) or 0.0))
 
                  replacements   = configs.get('replacements', {})
 
@@ -1298,7 +1299,7 @@ async def _run_job(job_id: str, user_id: int):
                  remove_links   = 'links' in disabled_types
                  cap_tpl        = configs.get('caption')
                  forward_tag    = configs.get('forward_tag', False)
-                 sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                 sleep_secs     = max(0.0, float(configs.get('duration', 0.0) or 0.0))
                  replacements   = configs.get('replacements', {})
 
                  if not _passes_filters(msg, disabled_types):
@@ -1379,7 +1380,8 @@ async def _run_job(job_id: str, user_id: int):
                              await client.edit_message_text(to_chat, prog_id, get_prog_text(_fwd, "running"), parse_mode=ParseMode.HTML)
                      except Exception: pass
 
-                 await asyncio.sleep(sleep_secs)
+                 if sleep_secs > 0:
+                     await asyncio.sleep(sleep_secs)
 
              batch_cursor = temp_cursor
              await _update_job(job_id, batch_cursor=batch_cursor, processed_ids=[])

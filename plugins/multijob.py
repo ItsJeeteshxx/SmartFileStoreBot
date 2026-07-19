@@ -541,7 +541,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
         remove_caption = filters_dict.get('rm_caption', False)
         cap_tpl        = configs.get('caption')
         forward_tag    = configs.get('forward_tag', False)
-        sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+        sleep_secs     = max(0.0, float(configs.get('duration', 0.0) or 0.0))
         replacements   = configs.get('replacements', {})
 
         #  Destination progress bar 
@@ -684,7 +684,8 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                         await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "running"), parse_mode=ParseMode.HTML)
                     except Exception: pass
 
-                await asyncio.sleep(sleep_secs)
+                if sleep_secs > 0:
+                    await asyncio.sleep(sleep_secs)
 
             await _mj_update(job_id, status="done", current_id=current, processed_ids=[])
             fj = await _mj_get(job_id)
@@ -768,7 +769,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 remove_caption = filters_dict.get('rm_caption', False)
                 cap_tpl        = configs.get('caption')
                 forward_tag    = configs.get('forward_tag', False)
-                sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                sleep_secs     = max(0.0, float(configs.get('duration', 0.0) or 0.0))
                 replacements   = configs.get('replacements', {})
 
             # Build batch
@@ -960,10 +961,23 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     else:
                         logger.warning(f"[MultiJob {job_id}] Skipped msg {msg.id} due to permanent error: {err}")
                 else:
-                    # Transient/general failure — raise exception to pause job at this message ID so it is NOT skipped!
-                    raise Exception(f"Forward failed for message ID {msg.id}: {err or 'Unknown error'}")
+                    # Check if the error is connection/network transient.
+                    # If so, raise an exception to trigger client healing / auto-resume.
+                    # Otherwise, it is a message-specific error (like download/upload/expired media),
+                    # so we log a warning, advance the cursor, and continue.
+                    err_upper = str(err).upper()
+                    _CONN_TRANSIENT = (
+                        "CONNECTION", "TIMEOUT", "SOCKET", "RESET", "DISCONNECT", "NOT CONNECTED", "FLOOD",
+                        "BROKEN PIPE", "ERRNO 32", "READ", "PING", "NOT BEEN STARTED", "DISCONNECTED"
+                    )
+                    if any(kw in err_upper for kw in _CONN_TRANSIENT):
+                        raise Exception(f"Transient connection error for msg {msg.id}: {err}")
+                    else:
+                        logger.warning(f"[MultiJob {job_id}] Skipping msg {msg.id} due to copy error: {err}")
+                        await mark_msg_processed(msg.id)
 
-                await asyncio.sleep(sleep_secs)
+                if sleep_secs > 0:
+                    await asyncio.sleep(sleep_secs)
 
             # Advance cursor — guard against valid being empty after topic-filter
             if valid:
