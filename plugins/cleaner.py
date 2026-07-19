@@ -71,38 +71,28 @@ def _apply_watermark(cover_path: str, wm_pos: str) -> bool:
         cov_w, cov_h = cov_img.size
         wm_w, wm_h = wm_img.size
 
-        # 3. Scale the watermark according to position preference
+        # 3. Scale the watermark to full width of the cover image for ALL positions
+        # This stretches the black background bar to fully touch the left/right boundaries.
         try:
             resample_filter = Image.Resampling.LANCZOS
         except AttributeError:
             resample_filter = Image.ANTIALIAS
 
-        if wm_pos == "full_width":
-            new_w = cov_w
-            new_h = int(wm_h * (new_w / wm_w))
-            wm_img = wm_img.resize((new_w, new_h), resample_filter)
-        else:
-            max_w = int(cov_w * 0.85)
-            if wm_w > max_w or wm_h > int(cov_h * 0.85):
-                ratio = min(max_w / wm_w, (cov_h * 0.85) / wm_h)
-                new_w = int(wm_w * ratio)
-                new_h = int(wm_h * ratio)
-                wm_img = wm_img.resize((new_w, new_h), resample_filter)
+        new_w = cov_w
+        new_h = int(wm_h * (new_w / wm_w))
+        wm_img = wm_img.resize((new_w, new_h), resample_filter)
 
         wm_w, wm_h = wm_img.size
 
-        # 4. Calculate position coordinates
+        # 4. Calculate position coordinates (x is always 0 to span full width)
+        x = 0
         if wm_pos == "centre":
-            x = (cov_w - wm_w) // 2
             y = (cov_h - wm_h) // 2
         elif wm_pos == "upper":
-            x = (cov_w - wm_w) // 2
             y = int(cov_h * 0.08)
         elif wm_pos == "lower":
-            x = (cov_w - wm_w) // 2
             y = cov_h - wm_h - int(cov_h * 0.08)
         elif wm_pos == "full_width":
-            x = 0
             y = cov_h - wm_h
         else:
             return False
