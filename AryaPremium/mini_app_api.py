@@ -2387,29 +2387,33 @@ async def create_payu_order(payload: dict):
     }
     await arya_db.db.orders.insert_one(order_doc)
     
+    params_dict = {
+        "key": merchant_key,
+        "txnid": txnid,
+        "amount": amount_str,
+        "productinfo": productinfo,
+        "firstname": firstname,
+        "email": email,
+        "phone": phone,
+        "surl": callback_url,
+        "furl": callback_url,
+        "hash": payu_hash,
+        "udf1": udf1,
+        "udf2": udf2,
+        "udf3": udf3,
+        "udf4": udf4,
+        "udf5": udf5,
+    }
+
     return {
         "success": True,
+        "action": action_url,
         "action_url": action_url,
         "order_id": txnid,
         "amount": total,
         "is_sandbox": is_sandbox,
-        "params": {
-            "key": merchant_key,
-            "txnid": txnid,
-            "amount": amount_str,
-            "productinfo": productinfo,
-            "firstname": firstname,
-            "email": email,
-            "phone": phone,
-            "surl": callback_url,
-            "furl": callback_url,
-            "hash": payu_hash,
-            "udf1": udf1,
-            "udf2": udf2,
-            "udf3": udf3,
-            "udf4": udf4,
-            "udf5": udf5,
-        }
+        "params": params_dict,
+        "payu_params": params_dict,
     }
 
 
