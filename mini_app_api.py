@@ -600,6 +600,7 @@ def _format_story(s: dict) -> dict | None:
         "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "is_must_have":  bool(s.get("is_must_have", False)),
+        "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
         "created_at":    s.get("created_at").isoformat() if isinstance(s.get("created_at"), datetime) else str(s.get("created_at") or ""),
     }
