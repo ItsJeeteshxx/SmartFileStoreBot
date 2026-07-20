@@ -2283,6 +2283,320 @@ async def paytm_callback(request: Request):
 
 
 
+# ===== PayU Payment Gateway: Create Order =====
+@api_router.post("/create-payu-order")
+async def create_payu_order(payload: dict):
+    """Create PayU order and generate transaction hash for frontend checkout."""
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    username   = payload.get("username", "") or ""
+    first_name = payload.get("first_name", "") or ""
+    promo_code = payload.get("promo_code", "")
+
+    if not story_ids:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+        
+    arya_db = app.state.db
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    payu_status = cfg.get("payu_status", "hidden")
+    if payu_status == "hidden":
+        raise HTTPException(status_code=400, detail="PayU payments are currently disabled.")
+    elif payu_status == "disabled":
+        raise HTTPException(status_code=400, detail="PayU payments are currently disabled by the admin.")
+        
+    merchant_key  = cfg.get("payu_merchant_key", "").strip()
+    merchant_salt = cfg.get("payu_merchant_salt", "").strip()
+    if not merchant_key or not merchant_salt:
+        raise HTTPException(status_code=400, detail="PayU credentials (key/salt) are not configured.")
+
+    from bson.objectid import ObjectId
+    valid_stories = []
+    story_names = []
+    for sid in story_ids:
+        try:
+            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(status_code=400, detail="No valid stories found in cart")
+
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal, tg_id)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
+                
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    total = max(0.0, subtotal - discount + platform_fee)
+    
+    import uuid
+    import hashlib
+    txnid = f"PAYU_{uuid.uuid4().hex[:12].upper()}"
+    payu_env = cfg.get("payu_env", "sandbox").strip().lower()
+    is_sandbox = (payu_env in ("sandbox", "staging", "test") or merchant_key.lower().startswith("test") or "sandbox" in merchant_key.lower())
+    
+    action_url = "https://test.payu.in/_payment" if is_sandbox else "https://secure.payu.in/_payment"
+    callback_url = cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback").strip()
+    
+    firstname = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
+    email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
+    phone = payload.get("phone", "").strip() or "9999999999"
+    productinfo = f"{len(valid_stories)} Audiobook Stories"
+    amount_str = f"{total:.2f}"
+    
+    udf1 = str(tg_id)
+    udf2 = pcode_clean if pcode_clean else ""
+    udf3 = ""
+    udf4 = ""
+    udf5 = ""
+
+    # PayU Hash Sequence: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT
+    hash_sequence = f"{merchant_key}|{txnid}|{amount_str}|{productinfo}|{firstname}|{email}|{udf1}|{udf2}|{udf3}|{udf4}|{udf5}||||||{merchant_salt}"
+    payu_hash = hashlib.sha512(hash_sequence.encode('utf-8')).hexdigest().lower()
+    
+    # Save pending order document
+    order_doc = {
+        "order_id": txnid,
+        "user_id": str(tg_id),
+        "story_ids": [ObjectId(sid) for sid in story_ids],
+        "story_names": story_names,
+        "total": total,
+        "source": "payu",
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "payment_id": None,
+        "promo_code": pcode_clean if pcode_clean else None,
+    }
+    await arya_db.db.orders.insert_one(order_doc)
+    
+    return {
+        "success": True,
+        "action_url": action_url,
+        "order_id": txnid,
+        "amount": total,
+        "is_sandbox": is_sandbox,
+        "params": {
+            "key": merchant_key,
+            "txnid": txnid,
+            "amount": amount_str,
+            "productinfo": productinfo,
+            "firstname": firstname,
+            "email": email,
+            "phone": phone,
+            "surl": callback_url,
+            "furl": callback_url,
+            "hash": payu_hash,
+            "udf1": udf1,
+            "udf2": udf2,
+            "udf3": udf3,
+            "udf4": udf4,
+            "udf5": udf5,
+        }
+    }
+
+
+# ===== PayU Payment Gateway: Callback Webhook =====
+@api_router.post("/payu-callback")
+async def payu_callback(request: Request):
+    """Callback redirect/webhook from PayU after successful or failed payment transaction."""
+    try:
+        form_data = await request.form()
+        form_dict = {k: str(v) for k, v in form_data.items()}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid form data")
+        
+    logger.info(f"PayU callback payload: {form_dict}")
+    
+    txnid = form_dict.get("txnid")
+    status_val = form_dict.get("status", "")
+    received_hash = form_dict.get("hash", "")
+    mihpayid = form_dict.get("mihpayid") or form_dict.get("payuMoneyId") or txnid
+    
+    if not txnid or not received_hash:
+        return Response(content="<h3>Invalid PayU callback parameters</h3>", media_type="text/html")
+        
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"order_id": txnid})
+    if not order:
+        return Response(content="<h3>Order not found</h3>", media_type="text/html")
+        
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    merchant_key = cfg.get("payu_merchant_key", "").strip()
+    merchant_salt = cfg.get("payu_merchant_salt", "").strip()
+    payu_env = cfg.get("payu_env", "sandbox").strip().lower()
+    is_sandbox = (payu_env in ("sandbox", "staging", "test") or merchant_key.lower().startswith("test") or "sandbox" in merchant_key.lower())
+
+    # PayU Reverse Hash Verification Formula:
+    # If additionalCharges: additionalCharges|SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
+    # Else: SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
+    additional_charges = form_dict.get("additionalCharges", "")
+    key_val = form_dict.get("key", merchant_key)
+    amount_val = form_dict.get("amount", "")
+    productinfo = form_dict.get("productinfo", "")
+    firstname = form_dict.get("firstname", "")
+    email = form_dict.get("email", "")
+    udf1 = form_dict.get("udf1", "")
+    udf2 = form_dict.get("udf2", "")
+    udf3 = form_dict.get("udf3", "")
+    udf4 = form_dict.get("udf4", "")
+    udf5 = form_dict.get("udf5", "")
+
+    if additional_charges:
+        ret_hash_seq = f"{additional_charges}|{merchant_salt}|{status_val}||||||{udf5}|{udf4}|{udf3}|{udf2}|{udf1}|{email}|{firstname}|{productinfo}|{amount_val}|{txnid}|{key_val}"
+    else:
+        ret_hash_seq = f"{merchant_salt}|{status_val}||||||{udf5}|{udf4}|{udf3}|{udf2}|{udf1}|{email}|{firstname}|{productinfo}|{amount_val}|{txnid}|{key_val}"
+
+    import hashlib
+    calculated_hash = hashlib.sha512(ret_hash_seq.encode('utf-8')).hexdigest().lower()
+    hash_matched = (calculated_hash == received_hash.lower())
+
+    if not hash_matched and not is_sandbox:
+        logger.warning(f"PayU reverse hash verification failed for order {txnid}")
+        return Response(content="<h3>Hash Verification Failed</h3>", media_type="text/html")
+
+    status_success = (status_val.lower() in ("success", "paid"))
+
+    if status_success:
+        if order.get("status") != "paid":
+            await arya_db.db.orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {
+                    "status": "paid",
+                    "payment_id": mihpayid,
+                    "paid_at": datetime.now(timezone.utc),
+                }}
+            )
+            
+            user_id = order.get("user_id")
+            story_ids = order.get("story_ids", [])
+            if user_id:
+                for sid in story_ids:
+                    try:
+                        await arya_db.add_purchase(user_id, sid)
+                    except Exception as e:
+                        logger.error(f"add_purchase error for {sid}: {e}")
+                        
+            updated_order = {**order, "status": "paid", "payment_id": mihpayid}
+            asyncio.create_task(trigger_payment_log_from_order(updated_order))
+            asyncio.create_task(record_purchased_stories(updated_order))
+            
+            async def _send_payu_success_dm():
+                try:
+                    bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
+                    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+                    if not bot_token or not user_id:
+                        return
+                    story_names = order.get("story_names", [])
+                    story_list = "\n".join([f"  • {n}" for n in story_names]) if story_names else "  • Your purchased stories"
+                    success_text = (
+                        f"✅ <b>Payment Successful (PayU)!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Your PayU payment of ₹{order.get('total', 0)} was successful and stories are now unlocked! 🎉\n\n"
+                        f"<b>Unlocked Stories:</b>\n{story_list}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📚 Open <b>Arya Premium</b> to listen to them now!"
+                    )
+                    keyboard = {"inline_keyboard": [[{
+                        "text": "📚 Open Arya Premium",
+                        "url": f"https://t.me/{bot_username}/app"
+                    }]]}
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        await client.post(
+                            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                            json={"chat_id": int(user_id), "text": success_text, "parse_mode": "HTML",
+                                  "reply_markup": keyboard, "disable_web_page_preview": True}
+                        )
+                except Exception as _e:
+                    logger.warning(f"PayU DM send failed: {_e}")
+                    
+            asyncio.create_task(_send_payu_success_dm())
+            
+        success_html = """
+        <html>
+          <head>
+            <title>Payment Successful</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script src="https://telegram.org/js/telegram-web-app.js"></script>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #111; color: #fff; text-align: center; padding: 40px 20px; }
+              .card { background-color: #222; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); max-width: 400px; margin: 0 auto; border: 1px solid #333; }
+              .checkmark { font-size: 60px; color: #4ade80; margin-bottom: 20px; }
+              h2 { margin: 0 0 10px 0; font-size: 22px; }
+              p { color: #aaa; font-size: 14px; line-height: 1.5; margin: 0 0 24px 0; }
+              .btn { background-color: #2563eb; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; width: 100%; box-sizing: border-box; }
+            </style>
+            <script>
+              window.onload = function() {
+                const tg = window.Telegram?.WebApp;
+                if (tg) {
+                  tg.expand();
+                  setTimeout(() => { tg.close(); }, 3000);
+                }
+              }
+              function closeWindow() {
+                const tg = window.Telegram?.WebApp;
+                if (tg) { tg.close(); } else { window.close(); }
+              }
+            </script>
+          </head>
+          <body>
+            <div class="card">
+              <div class="checkmark">✓</div>
+              <h2>Payment Successful!</h2>
+              <p>Your payment via PayU has been confirmed.<br>Your premium stories are now unlocked. You can return to the bot now.</p>
+              <button class="btn" onclick="closeWindow()">Return to Bot</button>
+            </div>
+          </body>
+        </html>
+        """
+        return Response(content=success_html, media_type="text/html")
+    else:
+        fail_html = """
+        <html>
+          <head>
+            <title>Payment Failed</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script src="https://telegram.org/js/telegram-web-app.js"></script>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #111; color: #fff; text-align: center; padding: 40px 20px; }
+              .card { background-color: #222; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); max-width: 400px; margin: 0 auto; border: 1px solid #333; }
+              .crossmark { font-size: 60px; color: #ef4444; margin-bottom: 20px; }
+              h2 { margin: 0 0 10px 0; font-size: 22px; }
+              p { color: #aaa; font-size: 14px; line-height: 1.5; margin: 0 0 24px 0; }
+              .btn { background-color: #ef4444; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; width: 100%; box-sizing: border-box; }
+            </style>
+            <script>
+              function closeWindow() {
+                const tg = window.Telegram?.WebApp;
+                if (tg) { tg.close(); } else { window.close(); }
+              }
+            </script>
+          </head>
+          <body>
+            <div class="card">
+              <div class="crossmark">✗</div>
+              <h2>Payment Failed / Pending</h2>
+              <p>PayU transaction was not completed or failed.<br>If money was debited, contact support for manual unlocking.</p>
+              <button class="btn" onclick="closeWindow()">Close</button>
+            </div>
+          </body>
+        </html>
+        """
+        return Response(content=fail_html, media_type="text/html")
+
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /support
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6076,6 +6390,11 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "paytm_website": cfg.get("paytm_website", "DEFAULT"),
                 "paytm_callback_url": cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback"),
                 "paytm_env": cfg.get("paytm_env", "staging"),
+                "payu_status": cfg.get("payu_status", "hidden"),
+                "payu_merchant_key": cfg.get("payu_merchant_key", ""),
+                "payu_merchant_salt": cfg.get("payu_merchant_salt", ""),
+                "payu_callback_url": cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback"),
+                "payu_env": cfg.get("payu_env", "sandbox"),
                 "is_owner": is_owner_flag,
             }
         }
@@ -6130,6 +6449,16 @@ async def update_admin_settings(payload: dict):
             update_fields["paytm_callback_url"] = str(payload["paytm_callback_url"]).strip()
         if "paytm_env" in payload:
             update_fields["paytm_env"] = str(payload["paytm_env"]).strip()
+        if "payu_status" in payload:
+            update_fields["payu_status"] = str(payload["payu_status"]).strip()
+        if "payu_merchant_key" in payload:
+            update_fields["payu_merchant_key"] = str(payload["payu_merchant_key"]).strip()
+        if "payu_merchant_salt" in payload:
+            update_fields["payu_merchant_salt"] = str(payload["payu_merchant_salt"]).strip()
+        if "payu_callback_url" in payload:
+            update_fields["payu_callback_url"] = str(payload["payu_callback_url"]).strip()
+        if "payu_env" in payload:
+            update_fields["payu_env"] = str(payload["payu_env"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -6374,6 +6703,8 @@ async def get_public_settings():
             "promo_codes": promo_codes_list,
             "paytm_status": cfg.get("paytm_status", "hidden"),
             "paytm_mid": cfg.get("paytm_mid", ""),
+            "payu_status": cfg.get("payu_status", "hidden"),
+            "payu_merchant_key": cfg.get("payu_merchant_key", ""),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -6388,6 +6719,8 @@ async def get_public_settings():
             "promo_codes": [],
             "paytm_status": "hidden",
             "paytm_mid": "",
+            "payu_status": "hidden",
+            "payu_merchant_key": "",
         }
 
 
