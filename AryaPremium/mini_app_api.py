@@ -6415,6 +6415,20 @@ async def get_admin_settings(request: Request, telegram_id: str):
             "data": {
                 "mini_app_enabled": cfg.get("mini_app_enabled", True),
                 "tnc_enabled": cfg.get("tnc_enabled", True),
+                "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
+                "razorpay_disabled": cfg.get("razorpay_disabled", False),
+                "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
+                "upi_id": cfg.get("upi_id", ""),
+                "upi_payee_name": cfg.get("upi_payee_name", ""),
+                "upi_id_2": cfg.get("upi_id_2", ""),
+                "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
+                "upi_id_3": cfg.get("upi_id_3", ""),
+                "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
+                "upi_id_4": cfg.get("upi_id_4", ""),
+                "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
+                "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
+                "gmail_user": cfg.get("gmail_user", ""),
+                "gmail_app_password": cfg.get("gmail_app_password", ""),
                 "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
                 "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
                 "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
@@ -6460,6 +6474,34 @@ async def update_admin_settings(payload: dict):
             update_fields["mini_app_enabled"] = bool(payload["mini_app_enabled"])
         if "tnc_enabled" in payload:
             update_fields["tnc_enabled"] = bool(payload["tnc_enabled"])
+        if "mint_theme_enabled" in payload:
+            update_fields["mint_theme_enabled"] = bool(payload["mint_theme_enabled"])
+        if "razorpay_disabled" in payload:
+            update_fields["razorpay_disabled"] = bool(payload["razorpay_disabled"])
+        if "upi_manual_enabled" in payload:
+            update_fields["upi_manual_enabled"] = bool(payload["upi_manual_enabled"])
+        if "upi_id" in payload:
+            update_fields["upi_id"] = str(payload["upi_id"]).strip()
+        if "upi_payee_name" in payload:
+            update_fields["upi_payee_name"] = str(payload["upi_payee_name"]).strip()
+        if "upi_id_2" in payload:
+            update_fields["upi_id_2"] = str(payload["upi_id_2"]).strip()
+        if "upi_payee_name_2" in payload:
+            update_fields["upi_payee_name_2"] = str(payload["upi_payee_name_2"]).strip()
+        if "upi_id_3" in payload:
+            update_fields["upi_id_3"] = str(payload["upi_id_3"]).strip()
+        if "upi_payee_name_3" in payload:
+            update_fields["upi_payee_name_3"] = str(payload["upi_payee_name_3"]).strip()
+        if "upi_id_4" in payload:
+            update_fields["upi_id_4"] = str(payload["upi_id_4"]).strip()
+        if "upi_payee_name_4" in payload:
+            update_fields["upi_payee_name_4"] = str(payload["upi_payee_name_4"]).strip()
+        if "gmail_verification_enabled" in payload:
+            update_fields["gmail_verification_enabled"] = bool(payload["gmail_verification_enabled"])
+        if "gmail_user" in payload:
+            update_fields["gmail_user"] = str(payload["gmail_user"]).strip()
+        if "gmail_app_password" in payload:
+            update_fields["gmail_app_password"] = str(payload["gmail_app_password"]).strip()
         if "razorpay_fee_percent" in payload:
             update_fields["razorpay_fee_percent"] = float(payload["razorpay_fee_percent"])
         if "razorpay_fee_enabled" in payload:
@@ -6737,6 +6779,17 @@ async def get_public_settings():
             "success": True,
             "mini_app_enabled": cfg.get("mini_app_enabled", True),
             "tnc_enabled": cfg.get("tnc_enabled", True),
+            "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
+            "razorpay_disabled": cfg.get("razorpay_disabled", False),
+            "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
+            "upi_id": cfg.get("upi_id", ""),
+            "upi_payee_name": cfg.get("upi_payee_name", ""),
+            "upi_id_2": cfg.get("upi_id_2", ""),
+            "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
+            "upi_id_3": cfg.get("upi_id_3", ""),
+            "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
+            "upi_id_4": cfg.get("upi_id_4", ""),
+            "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
             "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
             "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
             "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
@@ -6753,6 +6806,9 @@ async def get_public_settings():
             "success": True,
             "mini_app_enabled": True,
             "tnc_enabled": True,
+            "mint_theme_enabled": False,
+            "razorpay_disabled": False,
+            "upi_manual_enabled": True,
             "razorpay_fee_percent": 2.36,
             "razorpay_fee_enabled": True,
             "platform_fee_amount": 5.0,
