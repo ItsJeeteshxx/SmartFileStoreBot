@@ -94,9 +94,9 @@ async def start_premium_live_monitor(bot: Client):
     while True:
         try:
             from database import db
-            # 1. Fetch all ongoing stories
+            # 1. Fetch all ongoing stories (exclude Completed, Unfinished, and Stucked)
             query = {
-                "status": {"$ne": "Completed"},
+                "status": {"$nin": ["Completed", "Unfinished", "Stucked"]},
                 "is_completed": {"$ne": True},
                 "source": {"$exists": True, "$ne": None}
             }

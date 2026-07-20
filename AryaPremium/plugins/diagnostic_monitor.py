@@ -27,7 +27,7 @@ async def run_diagnostic():
     print(f"Bot authenticated successfully as: @{me.username}")
     
     query = {
-        "status": {"$ne": "Completed"},
+        "status": {"$nin": ["Completed", "Unfinished", "Stucked"]},
         "is_completed": {"$ne": True},
         "source": {"$exists": True, "$ne": None}
     }
