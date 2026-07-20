@@ -2281,12 +2281,9 @@ async def paytm_callback(request: Request):
         """
         return Response(content=fail_html, media_type="text/html")
 
-
-
 # ===== PayU Payment Gateway: Create Order =====
 @api_router.post("/create-payu-order")
 async def create_payu_order(payload: dict):
-    """Create PayU order and generate transaction hash for frontend checkout."""
     story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
@@ -2307,8 +2304,19 @@ async def create_payu_order(payload: dict):
         
     merchant_key  = cfg.get("payu_merchant_key", "").strip()
     merchant_salt = cfg.get("payu_merchant_salt", "").strip()
-    if not merchant_key or not merchant_salt:
-        raise HTTPException(status_code=400, detail="PayU credentials (key/salt) are not configured.")
+    payu_env      = cfg.get("payu_env", "sandbox").strip().lower()
+    
+    is_sandbox = (payu_env in ("sandbox", "staging", "test") or merchant_key.lower().startswith("test") or "sandbox" in merchant_key.lower())
+    
+    # Fallback to official PayU sandbox test credentials if in sandbox mode & credentials empty
+    if is_sandbox:
+        if not merchant_key:
+            merchant_key = "JPBCkj"
+        if not merchant_salt:
+            merchant_salt = "4R38IvW2"
+    else:
+        if not merchant_key or not merchant_salt:
+            raise HTTPException(status_code=400, detail="PayU live credentials (Merchant Key & Merchant Salt) are not configured in Admin Panel.")
 
     from bson.objectid import ObjectId
     valid_stories = []
@@ -2343,8 +2351,6 @@ async def create_payu_order(payload: dict):
     import uuid
     import hashlib
     txnid = f"PAYU_{uuid.uuid4().hex[:12].upper()}"
-    payu_env = cfg.get("payu_env", "sandbox").strip().lower()
-    is_sandbox = (payu_env in ("sandbox", "staging", "test") or merchant_key.lower().startswith("test") or "sandbox" in merchant_key.lower())
     
     action_url = "https://test.payu.in/_payment" if is_sandbox else "https://secure.payu.in/_payment"
     callback_url = cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback").strip()
@@ -2361,7 +2367,8 @@ async def create_payu_order(payload: dict):
     udf4 = ""
     udf5 = ""
 
-    # PayU Hash Sequence: key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT
+    # PayU Standard Hash Sequence:
+    # sha512(key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT)
     hash_sequence = f"{merchant_key}|{txnid}|{amount_str}|{productinfo}|{firstname}|{email}|{udf1}|{udf2}|{udf3}|{udf4}|{udf5}||||||{merchant_salt}"
     payu_hash = hashlib.sha512(hash_sequence.encode('utf-8')).hexdigest().lower()
     
@@ -2406,25 +2413,18 @@ async def create_payu_order(payload: dict):
     }
 
 
-# ===== PayU Payment Gateway: Callback Webhook =====
-@api_router.post("/payu-callback")
-async def payu_callback(request: Request):
-    """Callback redirect/webhook from PayU after successful or failed payment transaction."""
-    try:
-        form_data = await request.form()
-        form_dict = {k: str(v) for k, v in form_data.items()}
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid form data")
-        
-    logger.info(f"PayU callback payload: {form_dict}")
+# ===== PayU Payment Gateway: Callback Helper & Handlers =====
+async def handle_payu_callback_data(form_dict: dict, request: Request):
+    """Core logic to verify PayU callback payload and unlock purchased stories."""
+    logger.info(f"PayU callback payload received: {form_dict}")
     
     txnid = form_dict.get("txnid")
-    status_val = form_dict.get("status", "")
-    received_hash = form_dict.get("hash", "")
+    status_val = form_dict.get("status", "").strip()
+    received_hash = form_dict.get("hash", "").strip()
     mihpayid = form_dict.get("mihpayid") or form_dict.get("payuMoneyId") or txnid
     
-    if not txnid or not received_hash:
-        return Response(content="<h3>Invalid PayU callback parameters</h3>", media_type="text/html")
+    if not txnid:
+        return Response(content="<h3>Invalid PayU callback parameters (Missing txnid)</h3>", media_type="text/html")
         
     arya_db = app.state.db
     order = await arya_db.db.orders.find_one({"order_id": txnid})
@@ -2437,12 +2437,16 @@ async def payu_callback(request: Request):
     payu_env = cfg.get("payu_env", "sandbox").strip().lower()
     is_sandbox = (payu_env in ("sandbox", "staging", "test") or merchant_key.lower().startswith("test") or "sandbox" in merchant_key.lower())
 
-    # PayU Reverse Hash Verification Formula:
-    # If additionalCharges: additionalCharges|SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
-    # Else: SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
+    if is_sandbox:
+        if not merchant_key: merchant_key = "JPBCkj"
+        if not merchant_salt: merchant_salt = "4R38IvW2"
+
+    # 1. Reverse SHA-512 Hash Verification
+    # Additional charges format: additionalCharges|SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
+    # Standard format: SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
     additional_charges = form_dict.get("additionalCharges", "")
     key_val = form_dict.get("key", merchant_key)
-    amount_val = form_dict.get("amount", "")
+    amount_val = form_dict.get("amount", f"{order.get('total', 0):.2f}")
     productinfo = form_dict.get("productinfo", "")
     firstname = form_dict.get("firstname", "")
     email = form_dict.get("email", "")
@@ -2459,15 +2463,38 @@ async def payu_callback(request: Request):
 
     import hashlib
     calculated_hash = hashlib.sha512(ret_hash_seq.encode('utf-8')).hexdigest().lower()
-    hash_matched = (calculated_hash == received_hash.lower())
+    hash_matched = (received_hash and calculated_hash == received_hash.lower())
 
-    if not hash_matched and not is_sandbox:
-        logger.warning(f"PayU reverse hash verification failed for order {txnid}")
-        return Response(content="<h3>Hash Verification Failed</h3>", media_type="text/html")
+    # 2. Direct Server-to-Server Verification (PayU Web Service Postservice API)
+    status_verified_by_payu_api = False
+    try:
+        query_url = "https://test.payu.in/merchant/postservice?form=2" if is_sandbox else "https://info.payu.in/merchant/postservice?form=2"
+        # Verify Payment Hash: sha512(key|command|var1|SALT)
+        verify_hash_seq = f"{merchant_key}|verify_payment|{txnid}|{merchant_salt}"
+        verify_hash = hashlib.sha512(verify_hash_seq.encode('utf-8')).hexdigest().lower()
+        
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(query_url, data={
+                "key": merchant_key,
+                "command": "verify_payment",
+                "var1": txnid,
+                "hash": verify_hash
+            })
+            res_json = r.json()
+            logger.info(f"PayU verify_payment S2S response for {txnid}: {res_json}")
+            txn_details = res_json.get("transaction_details", {}).get(txnid, {})
+            if txn_details.get("status", "").lower() in ("success", "paid"):
+                status_verified_by_payu_api = True
+    except Exception as ve:
+        logger.warning(f"PayU S2S status query exception for {txnid}: {ve}")
 
     status_success = (status_val.lower() in ("success", "paid"))
+    
+    # Final approval condition:
+    # Either Server-to-Server verified OR (Reverse Hash matched AND Status is Success) OR Sandbox bypass
+    is_valid_transaction = status_verified_by_payu_api or (hash_matched and status_success) or (is_sandbox and status_success)
 
-    if status_success:
+    if is_valid_transaction:
         if order.get("status") != "paid":
             await arya_db.db.orders.update_one(
                 {"_id": order["_id"]},
@@ -2595,8 +2622,22 @@ async def payu_callback(request: Request):
         """
         return Response(content=fail_html, media_type="text/html")
 
+@api_router.post("/payu-callback")
+async def payu_callback_post(request: Request):
+    """Handle PayU Form POST callback."""
+    try:
+        form_data = await request.form()
+        form_dict = {k: str(v) for k, v in form_data.items()}
+    except Exception:
+        form_dict = {}
+    return await handle_payu_callback_data(form_dict, request)
 
-
+@api_router.get("/payu-callback")
+async def payu_callback_get(request: Request):
+    """Handle PayU GET redirect callback."""
+    form_dict = {k: str(v) for k, v in request.query_params.items()}
+    return await handle_payu_callback_data(form_dict, request)
+    return await handle_payu_callback_data(form_dict, request)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /support
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
