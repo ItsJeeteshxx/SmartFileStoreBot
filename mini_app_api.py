@@ -569,11 +569,18 @@ def _format_story(s: dict) -> dict | None:
         banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
 
     raw_status = str(s.get("status") or "").strip()
-    if raw_status not in ("Ongoing", "Completed", "Unfinished", "Stucked"):
-        is_comp = bool(s.get("is_completed") or s.get("completed") or raw_status.lower() == "completed")
-        status_val = "Completed" if is_comp else "Ongoing"
+    status_lower = raw_status.lower()
+    if status_lower == "completed":
+        status_val = "Completed"
+    elif status_lower == "ongoing":
+        status_val = "Ongoing"
+    elif status_lower == "unfinished":
+        status_val = "Unfinished"
+    elif status_lower in ("stucked", "stuck"):
+        status_val = "Stucked"
     else:
-        status_val = raw_status
+        is_comp = bool(s.get("is_completed") or s.get("completed"))
+        status_val = "Completed" if is_comp else "Ongoing"
 
     return {
         "id":           story_id,
