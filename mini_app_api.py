@@ -1291,8 +1291,76 @@ import hmac
 import hashlib
 
 def _make_order_id(tg_id: str) -> str:
+    """Legacy fallback order ID generator (kept for safety on old code paths)."""
     import uuid
     return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
+
+async def _make_arya_order_id(
+    db_instance,
+    tg_id: str,
+    story_ids: list = None,
+    source: str = "miniapp"
+) -> str:
+    """
+    Generate a new structured Arya Order ID.
+    Format: {PREFIX}-{TG_ID}-{DDMM}-{STORY_NUM}{ORDER_NUM}
+    Prefix: AM = Mini App, AB = Bot (Telegram Bot)
+    Example: AM-1071421266-2107-55130
+    
+    - Story number = position of first story in the global story list (sorted by _id desc)
+    - Order number = auto-incremented global counter from DB (always unique)
+    """
+    try:
+        from datetime import datetime as _dt
+        
+        # 1. Determine prefix based on source
+        src_lower = str(source or "miniapp").lower()
+        prefix = "AB" if "bot" in src_lower else "AM"
+        
+        # 2. Date & Month in DDMM format
+        now = _dt.now()
+        date_str = now.strftime("%d%m")
+        
+        # 3. Get global order number (auto-increment counter in DB)
+        counter_doc = await db_instance.db.order_counters.find_one_and_update(
+            {"_key": "global_order_counter"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=True  # returns the updated document
+        )
+        order_num = counter_doc.get("seq", 1) if counter_doc else 1
+        
+        # 4. Get story serial number (position in global story list sorted by _id desc)
+        story_num = 0
+        if story_ids and len(story_ids) > 0:
+            try:
+                from bson.objectid import ObjectId as _OID
+                first_sid = story_ids[0]
+                # Get ALL story IDs sorted by _id descending (newest = #1)
+                all_ids = await db_instance.db.premium_stories.distinct("_id")
+                all_ids_sorted = sorted(all_ids, reverse=True)
+                try:
+                    target_oid = _OID(first_sid)
+                    if target_oid in all_ids_sorted:
+                        story_num = all_ids_sorted.index(target_oid) + 1
+                except Exception:
+                    pass
+            except Exception:
+                story_num = 0
+        
+        # 5. Build the order ID
+        tg_id_str = str(tg_id)
+        if story_num > 0:
+            return f"{prefix}-{tg_id_str}-{date_str}-{story_num}{order_num}"
+        else:
+            # Fallback if story number can't be determined
+            return f"{prefix}-{tg_id_str}-{date_str}-{order_num}"
+            
+    except Exception as e:
+        logger.warning(f"[OrderID] Failed to generate structured order ID: {e}. Falling back to legacy.")
+        import uuid
+        return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
+
 
 # â”€â”€ Razorpay: Create Order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.post("/create-order")
@@ -1352,7 +1420,7 @@ async def create_razorpay_order(payload: dict):
         raise HTTPException(400, "Invalid total amount (must be greater than 0)")
         
     total_paise = int(total_price * 100)
-    receipt     = _make_order_id(tg_id)
+    receipt     = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
 
     import httpx
     import base64
@@ -1459,7 +1527,7 @@ async def verify_payment(payload: dict):
         razorpay_fee = round((chargeable_amount * rzp_rate) / 100.0, 2)
         
     total = max(0.0, subtotal - discount + platform_fee + razorpay_fee)
-    oid     = _make_order_id(str(tg_id))
+    oid     = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
 
     tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
 
@@ -1554,7 +1622,7 @@ async def razorpay_callback(
                 pass
 
     total = sum(float(s.get("price", 0) or 0) for s in valid_stories)
-    oid = _make_order_id(str(tg_id)) if tg_id else razorpay_order_id
+    oid = (await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")) if tg_id else razorpay_order_id
     tg_id_int = int(tg_id) if str(tg_id).isdigit() else 0
 
     # Store order
@@ -1995,7 +2063,7 @@ async def verify_upi_utr(payload: dict):
     # duplicate. This keeps a single, traceable record per payment attempt.
     oid = payload.get("order_id")
     if not oid:
-        oid = _make_order_id(str(telegram_id))
+        oid = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source="miniapp")
     tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
 
     # Generate deterministic invoice number using order ID hash
@@ -2361,7 +2429,7 @@ async def create_oxapay_order(payload: dict):
     total_inr = max(0.0, total_inr - discount)
     # OxaPay expects USD. Minimum $0.50.
     total_usd = max(0.5, round(total_inr / 85.0, 2))
-    oid = _make_order_id(str(tg_id))
+    oid = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
 
     # Call OxaPay API
     oxapay_result = None
@@ -7218,8 +7286,9 @@ async def manual_purchase(data: ManualPurchase):
             )
             
         # Insert Order with explicit source
+        manual_oid = await _make_arya_order_id(arya_db, str(target_uid), [story_id_str], source=source_label)
         order_doc = {
-            "order_id": f"MANUAL_{target_uid}_{int(datetime.now().timestamp())}",
+            "order_id": manual_oid,
             "user_id": target_uid,
             "username": data.username,
             "first_name": data.first_name,

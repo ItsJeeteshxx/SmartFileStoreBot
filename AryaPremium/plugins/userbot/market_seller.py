@@ -44,6 +44,53 @@ from utils import native_ask, _deliver_purchased_story, to_smallcap
 
 from plugins.userbot.razorpay_helpers import _create_rzp_link, _check_rzp_status
 
+async def _make_arya_bot_order_id(user_id, story_id_str: str = None) -> str:
+    """
+    Generate a new structured Arya Order ID for the Telegram Bot.
+    Format: AB-{TG_ID}-{DDMM}-{STORY_NUM}{ORDER_NUM}
+    Prefix: AB = Telegram Bot
+    Example: AB-1071421266-2107-55130
+    
+    - Story number = position of story in global story list (sorted by _id desc)
+    - Order number = auto-incremented global counter from DB (always unique)
+    """
+    from datetime import datetime as _dt
+    try:
+        date_str = _dt.now().strftime("%d%m")
+        
+        # Get global order number (auto-increment counter in DB)
+        counter_doc = await db.db.order_counters.find_one_and_update(
+            {"_key": "global_order_counter"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=True
+        )
+        order_num = counter_doc.get("seq", 1) if counter_doc else 1
+        
+        # Get story serial number (position in global story list sorted newest first = #1)
+        story_num = 0
+        if story_id_str:
+            try:
+                from bson.objectid import ObjectId as _OID
+                all_ids = await db.db.premium_stories.distinct("_id")
+                all_ids_sorted = sorted(all_ids, reverse=True)
+                target_oid = _OID(str(story_id_str))
+                if target_oid in all_ids_sorted:
+                    story_num = all_ids_sorted.index(target_oid) + 1
+            except Exception:
+                story_num = 0
+        
+        uid_str = str(user_id)
+        if story_num > 0:
+            return f"AB-{uid_str}-{date_str}-{story_num}{order_num}"
+        else:
+            return f"AB-{uid_str}-{date_str}-{order_num}"
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[BotOrderID] Error: {e}")
+        import random, string as _s
+        return f"OD-{user_id}-" + ''.join(random.choices(_s.ascii_uppercase + _s.digits, k=6))
+
+
 from plugins.userbot.easebuzz_helpers import _create_easebuzz_link, _check_easebuzz_status
 
 from plugins.userbot.premium_emoji import react_bg, REACTIONS_WELCOME, REACTIONS_SUCCESS, REACTIONS_GENERAL
@@ -3849,7 +3896,7 @@ async def _process_text(client, message):
                 logger.info("[UTR] DB: premium_checkout updated to approved.")
 
                 import random, string as _string
-                order_id = "OD-" + str(user_id) + "-" + ''.join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
+                order_id = await _make_arya_bot_order_id(user_id, str(pending_s_id_utr))
                 await db.db.premium_purchases.insert_one({
                     "user_id": user_id, "story_id": ObjectId(pending_s_id_utr),
                     "bot_id": client.me.id, "purchased_at": _dt.utcnow(),
@@ -7517,7 +7564,7 @@ async def _process_callback(client, query):
             )
 
             import random, string as _string
-            order_id = f"OD-{user_id}-{''.join(random.choices(_string.ascii_uppercase + _string.digits, k=6))}"
+            order_id = await _make_arya_bot_order_id(user_id, str(s_id))
 
             await db.db.premium_purchases.insert_one({
                 "user_id": user_id,
@@ -7647,7 +7694,7 @@ async def _process_callback(client, query):
             
             if not await db.has_purchase(user_id, str(s_id)):
                 import random, string
-                order_id = f"OD-{user_id}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+                order_id = await _make_arya_bot_order_id(user_id, str(s_id))
                 
                 await db.db.premium_purchases.insert_one({
                     "user_id": user_id,
@@ -7777,7 +7824,7 @@ async def _process_callback(client, query):
 
                 import random, string
 
-                order_id = f"OD-{user_id}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+                order_id = await _make_arya_bot_order_id(user_id, str(s_id))
 
                 
 
