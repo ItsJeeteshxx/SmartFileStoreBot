@@ -336,4 +336,15 @@ async def main():
     await bot.stop()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+        except (KeyboardInterrupt, SystemExit):
+            logging.info("Bot stopped manually by user.")
+            break
+        except Exception as e:
+            logging.critical(f"Bot crashed with exception: {e}. Restarting in 5 seconds...", exc_info=True)
+            try:
+                time.sleep(5)
+            except KeyboardInterrupt:
+                break
