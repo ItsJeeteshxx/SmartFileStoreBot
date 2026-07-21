@@ -1246,13 +1246,14 @@ async def _make_arya_order_id(
     Format: {PREFIX}-{TG_ID}-{DDMM}-{STORY_NUM}{ORDER_NUM}
     Prefix: AM = Mini App, AB = Bot (Telegram Bot)
     Example: AM-1071421266-2107-55130
-    
-    - Story number = position of first story in the global story list (sorted by _id desc)
-    - Order number = auto-incremented global counter from DB (always unique)
+
+    - Story number = serial position of story (oldest added = #1, sorted _id asc)
+    - Order number = globally unique auto-incremented counter via ReturnDocument.AFTER
     """
     try:
         from datetime import datetime as _dt
-        
+        from pymongo import ReturnDocument
+
         # 1. Determine prefix based on source
         src_lower = str(source or "miniapp").lower()
         prefix = "AB" if "bot" in src_lower else "AM"
@@ -1261,16 +1262,16 @@ async def _make_arya_order_id(
         now = _dt.now()
         date_str = now.strftime("%d%m")
         
-        # 3. Get global order number (auto-increment counter in DB)
+        # 3. ATOMIC global counter — ReturnDocument.AFTER returns post-increment value (always unique)
         counter_doc = await db_instance.db.order_counters.find_one_and_update(
             {"_key": "global_order_counter"},
             {"$inc": {"seq": 1}},
             upsert=True,
-            return_document=True  # returns the updated document
+            return_document=ReturnDocument.AFTER
         )
         order_num = counter_doc.get("seq", 1) if counter_doc else 1
-        
-        # 4. Get story serial number (position in global story list sorted by _id desc)
+
+        # 4. Story serial number (oldest story = #1, sorted by _id ascending)
         story_num = 0
         if story_ids and len(story_ids) > 0:
             try:
@@ -1278,7 +1279,7 @@ async def _make_arya_order_id(
                 first_sid = story_ids[0]
                 # Get ALL story IDs sorted by _id descending (newest = #1)
                 all_ids = await db_instance.db.premium_stories.distinct("_id")
-                all_ids_sorted = sorted(all_ids, reverse=True)
+                all_ids_sorted = sorted(all_ids)  # ascending: oldest = #1
                 try:
                     target_oid = _OID(first_sid)
                     if target_oid in all_ids_sorted:

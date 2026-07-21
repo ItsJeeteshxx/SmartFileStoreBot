@@ -1306,39 +1306,39 @@ async def _make_arya_order_id(
     Format: {PREFIX}-{TG_ID}-{DDMM}-{STORY_NUM}{ORDER_NUM}
     Prefix: AM = Mini App, AB = Bot (Telegram Bot)
     Example: AM-1071421266-2107-55130
-    
-    - Story number = position of first story in the global story list (sorted by _id desc)
-    - Order number = auto-incremented global counter from DB (always unique)
+
+    - Story number = serial position of story (oldest added = story #1, sorted _id asc)
+    - Order number = globally unique auto-incremented counter via ReturnDocument.AFTER
     """
     try:
         from datetime import datetime as _dt
-        
+        from pymongo import ReturnDocument
+
         # 1. Determine prefix based on source
         src_lower = str(source or "miniapp").lower()
         prefix = "AB" if "bot" in src_lower else "AM"
-        
+
         # 2. Date & Month in DDMM format
         now = _dt.now()
         date_str = now.strftime("%d%m")
-        
-        # 3. Get global order number (auto-increment counter in DB)
+
+        # 3. ATOMIC global counter — ReturnDocument.AFTER returns post-increment value (always unique)
         counter_doc = await db_instance.db.order_counters.find_one_and_update(
             {"_key": "global_order_counter"},
             {"$inc": {"seq": 1}},
             upsert=True,
-            return_document=True  # returns the updated document
+            return_document=ReturnDocument.AFTER
         )
         order_num = counter_doc.get("seq", 1) if counter_doc else 1
-        
-        # 4. Get story serial number (position in global story list sorted by _id desc)
+
+        # 4. Story serial number (oldest story = #1, sorted by _id ascending)
         story_num = 0
         if story_ids and len(story_ids) > 0:
             try:
                 from bson.objectid import ObjectId as _OID
                 first_sid = story_ids[0]
-                # Get ALL story IDs sorted by _id descending (newest = #1)
                 all_ids = await db_instance.db.premium_stories.distinct("_id")
-                all_ids_sorted = sorted(all_ids, reverse=True)
+                all_ids_sorted = sorted(all_ids)  # ascending: oldest = #1
                 try:
                     target_oid = _OID(first_sid)
                     if target_oid in all_ids_sorted:
@@ -1347,15 +1347,14 @@ async def _make_arya_order_id(
                     pass
             except Exception:
                 story_num = 0
-        
-        # 5. Build the order ID
+
+        # 5. Build the final order ID
         tg_id_str = str(tg_id)
         if story_num > 0:
             return f"{prefix}-{tg_id_str}-{date_str}-{story_num}{order_num}"
         else:
-            # Fallback if story number can't be determined
             return f"{prefix}-{tg_id_str}-{date_str}-{order_num}"
-            
+
     except Exception as e:
         logger.warning(f"[OrderID] Failed to generate structured order ID: {e}. Falling back to legacy.")
         import uuid
@@ -2114,6 +2113,34 @@ async def verify_upi_utr(payload: dict):
 
 
 # ==========================================
+# Generate Order ID endpoint (server-side)
+# ==========================================
+
+@api_router.post("/generate-order-id")
+async def generate_order_id_endpoint(payload: dict):
+    """
+    Returns a fresh, unique, properly formatted Arya order ID.
+    Frontend should call this BEFORE showing the UPI QR page,
+    then pass the returned order_id to create-pending-order and verify-upi-utr.
+    This ensures ALL payment attempts (paid, failed, pending) get a traceable new-format ID.
+    """
+    telegram_id = payload.get("telegram_id")
+    story_ids   = payload.get("story_ids", [])
+    source      = str(payload.get("source", "miniapp")).lower()
+
+    if not telegram_id:
+        raise HTTPException(400, "telegram_id required")
+
+    arya_db = getattr(app.state, "db", None)
+    if not arya_db:
+        raise HTTPException(500, "DB not available")
+
+    order_id = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source=source)
+    logger.info(f"[OrderID] Generated: {order_id} for user {telegram_id}")
+    return {"success": True, "order_id": order_id}
+
+
+# ==========================================
 # Create Pending UPI Order (QR Page Mount)
 # ==========================================
 
@@ -2121,25 +2148,24 @@ async def verify_upi_utr(payload: dict):
 async def create_pending_order(payload: dict):
     """
     Called the instant the QR payment screen is shown to the user — BEFORE they pay.
-    Creates a status=\"pending\" order record so every payment attempt is traceable
+    Creates a status="pending" order record so every payment attempt is traceable
     by order_id, even if the user pays to the wrong UPI ID or UTR verification fails.
 
-    Idempotent: if the order_id already exists in the DB the endpoint returns success
-    without creating a duplicate.
+    - If no order_id is provided OR it's in old legacy OD_ format, a new one is auto-generated.
+    - Idempotent: if order_id already exists in DB, returns the existing record's order_id.
     """
     telegram_id   = payload.get("telegram_id")
     story_ids     = payload.get("story_ids", [])
     order_id      = str(payload.get("order_id", "")).strip()
     amount        = float(payload.get("amount", 0) or 0)
-    upi_id_shown  = str(payload.get("upi_id_shown", "")).strip()  # exact UPI ID displayed
+    upi_id_shown  = str(payload.get("upi_id_shown", "")).strip()
     promo_code    = str(payload.get("promo_code", "")).strip().upper()
     username      = str(payload.get("username", "")).strip()
     first_name    = str(payload.get("first_name", "")).strip()
     last_name     = str(payload.get("last_name", "")).strip()
 
-    # Soft validation — never block the user flow, just log and return ok
-    if not telegram_id or not order_id:
-        logger.warning("create_pending_order: missing telegram_id or order_id — skipping")
+    if not telegram_id:
+        logger.warning("create_pending_order: missing telegram_id — skipping")
         return {"success": True, "message": "skipped"}
 
     db = getattr(app.state, "db", None)
@@ -2148,11 +2174,17 @@ async def create_pending_order(payload: dict):
         return {"success": True, "message": "db_unavailable"}
 
     try:
+        # If no order_id or it's in old OD_ legacy format, generate a new structured one server-side
+        is_legacy = not order_id or order_id.startswith("OD_") or order_id.startswith("OD-")
+        if is_legacy:
+            order_id = await _make_arya_order_id(db, str(telegram_id), story_ids, source="miniapp")
+            logger.info(f"create_pending_order: generated new order_id={order_id} for user {telegram_id}")
+
         # Idempotency: don't create duplicate if order_id already recorded
         existing = await db.db.orders.find_one({"order_id": order_id})
         if existing:
-            logger.info(f"create_pending_order: order {order_id} already exists (status={existing.get('status')}) — skipping")
-            return {"success": True, "message": "already_exists"}
+            logger.info(f"create_pending_order: order {order_id} already exists (status={existing.get('status')}) — returning")
+            return {"success": True, "message": "already_exists", "order_id": order_id}
 
         tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
 
@@ -2180,17 +2212,16 @@ async def create_pending_order(payload: dict):
             "promo_code":     promo_code if promo_code else None,
             "status":         "pending",
             "source":         "upi_manual_miniapp",
-            "upi_id_shown":   upi_id_shown,   # audit trail — exact UPI ID user saw
+            "upi_id_shown":   upi_id_shown,
             "created_at":     datetime.now(timezone.utc),
         }
         await db.db.orders.insert_one(pending_doc)
-        logger.info(f"create_pending_order: created pending order {order_id} for user {telegram_id} (upi_id_shown={upi_id_shown})")
+        logger.info(f"create_pending_order: created pending order {order_id} for user {telegram_id}")
         return {"success": True, "message": "pending_order_created", "order_id": order_id}
 
     except Exception as e:
-        # Never raise — this is a best-effort tracking call
         logger.error(f"create_pending_order error: {e}", exc_info=True)
-        return {"success": True, "message": "error_ignored"}
+        return {"success": True, "message": "error_ignored", "order_id": order_id}
 
 
 @api_router.post("/send-receipt-telegram")

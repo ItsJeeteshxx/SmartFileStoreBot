@@ -50,36 +50,37 @@ async def _make_arya_bot_order_id(user_id, story_id_str: str = None) -> str:
     Format: AB-{TG_ID}-{DDMM}-{STORY_NUM}{ORDER_NUM}
     Prefix: AB = Telegram Bot
     Example: AB-1071421266-2107-55130
-    
-    - Story number = position of story in global story list (sorted by _id desc)
-    - Order number = auto-incremented global counter from DB (always unique)
+
+    - Story number = serial position of story (oldest added = #1, sorted _id asc)
+    - Order number = globally unique auto-incremented counter via ReturnDocument.AFTER
     """
     from datetime import datetime as _dt
+    from pymongo import ReturnDocument
     try:
         date_str = _dt.now().strftime("%d%m")
-        
-        # Get global order number (auto-increment counter in DB)
+
+        # ATOMIC global counter — ReturnDocument.AFTER returns post-increment value (always unique)
         counter_doc = await db.db.order_counters.find_one_and_update(
             {"_key": "global_order_counter"},
             {"$inc": {"seq": 1}},
             upsert=True,
-            return_document=True
+            return_document=ReturnDocument.AFTER
         )
         order_num = counter_doc.get("seq", 1) if counter_doc else 1
-        
-        # Get story serial number (position in global story list sorted newest first = #1)
+
+        # Story serial number (oldest story = #1, sorted by _id ascending)
         story_num = 0
         if story_id_str:
             try:
                 from bson.objectid import ObjectId as _OID
                 all_ids = await db.db.premium_stories.distinct("_id")
-                all_ids_sorted = sorted(all_ids, reverse=True)
+                all_ids_sorted = sorted(all_ids)  # ascending: oldest = #1
                 target_oid = _OID(str(story_id_str))
                 if target_oid in all_ids_sorted:
                     story_num = all_ids_sorted.index(target_oid) + 1
             except Exception:
                 story_num = 0
-        
+
         uid_str = str(user_id)
         if story_num > 0:
             return f"AB-{uid_str}-{date_str}-{story_num}{order_num}"
