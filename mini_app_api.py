@@ -324,6 +324,32 @@ async def lifespan(app: FastAPI):
                 asyncio.create_task(root_db.auto_unblock_paid_users())
             except Exception as unblock_err:
                 logger.warning(f"Failed to launch auto_unblock_paid_users: {unblock_err}")
+
+            # ── Initialize global order counter from existing order count ──────────
+            # Ensures new order IDs continue from where existing orders left off
+            # (e.g. if 700 orders exist, next order number = 701+)
+            try:
+                from pymongo import ReturnDocument
+                total_orders = await arya_db.db.orders.count_documents({})
+                total_purchases = await arya_db.db.premium_purchases.count_documents({})
+                total_count = max(total_orders, total_purchases)
+                if total_count > 0:
+                    # Set counter to at least total_count if it's lower
+                    existing_counter = await arya_db.db.order_counters.find_one({"_key": "global_order_counter"})
+                    current_seq = existing_counter.get("seq", 0) if existing_counter else 0
+                    if current_seq < total_count:
+                        await arya_db.db.order_counters.update_one(
+                            {"_key": "global_order_counter"},
+                            {"$set": {"seq": total_count}},
+                            upsert=True
+                        )
+                        logger.info(f"[OrderCounter] Initialized counter to {total_count} (was {current_seq}, total orders: {total_count})")
+                    else:
+                        logger.info(f"[OrderCounter] Counter already at {current_seq}, no update needed")
+                else:
+                    logger.info("[OrderCounter] No existing orders found, counter starts at 1")
+            except Exception as counter_err:
+                logger.warning(f"Failed to initialize order counter: {counter_err}")
         except Exception as idx_err:
             logger.warning(f"Failed to create indexes: {idx_err}")
             
@@ -1184,7 +1210,7 @@ async def create_payment_link(payload: dict):
     if total_price <= 0:
         raise HTTPException(status_code=400, detail="Invalid price")
 
-    order_id = f"OD_{uuid.uuid4().hex[:8].upper()}"
+    order_id = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source="miniapp")
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     
     try:
@@ -2060,9 +2086,18 @@ async def verify_upi_utr(payload: dict):
     # If a pending order was already created when the QR page opened (via
     # /create-pending-order), we UPDATE that record instead of inserting a
     # duplicate. This keeps a single, traceable record per payment attempt.
-    oid = payload.get("order_id")
-    if not oid:
-        oid = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source="miniapp")
+    oid = str(payload.get("order_id") or "").strip()
+    _invalid_ids = {"upi-manual", "upi_manual", "", "undefined", "null"}
+    _is_invalid_oid = (
+        not oid
+        or oid.lower() in _invalid_ids
+        or oid.startswith("OD_")
+        or oid.startswith("OD-")
+    )
+    if _is_invalid_oid:
+        # Generate a fresh unique structured order ID
+        oid = await _make_arya_order_id(db, str(telegram_id), story_ids, source="miniapp")
+        logger.info(f"[UPI-Verify] Generated new order_id={oid} (rejected invalid: '{payload.get('order_id')}')")
     tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
 
     # Generate deterministic invoice number using order ID hash
@@ -2174,8 +2209,14 @@ async def create_pending_order(payload: dict):
         return {"success": True, "message": "db_unavailable"}
 
     try:
-        # If no order_id or it's in old OD_ legacy format, generate a new structured one server-side
-        is_legacy = not order_id or order_id.startswith("OD_") or order_id.startswith("OD-")
+        # If no order_id, it's a legacy OD_ format, or invalid — generate a new structured one
+        _invalid_pending = {"upi-manual", "upi_manual", "", "undefined", "null"}
+        is_legacy = (
+            not order_id
+            or order_id.lower() in _invalid_pending
+            or order_id.startswith("OD_")
+            or order_id.startswith("OD-")
+        )
         if is_legacy:
             order_id = await _make_arya_order_id(db, str(telegram_id), story_ids, source="miniapp")
             logger.info(f"create_pending_order: generated new order_id={order_id} for user {telegram_id}")
@@ -2754,7 +2795,7 @@ async def create_paytm_order(payload: dict):
     
     import uuid
     import json
-    orderId = f"PAYTM_{uuid.uuid4().hex[:12].upper()}"
+    orderId = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
     paytm_env = cfg.get("paytm_env", "staging").strip().lower()
     is_sandbox = (paytm_env == "staging" or mid.startswith("TEST_") or "sandbox" in mid.lower())
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
@@ -3111,7 +3152,7 @@ async def create_payu_order(payload: dict):
     
     import uuid
     import hashlib
-    txnid = f"PAYU_{uuid.uuid4().hex[:12].upper()}"
+    txnid = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
     
     action_url = "https://test.payu.in/_payment" if is_sandbox else "https://secure.payu.in/_payment"
     callback_url = cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback").strip()

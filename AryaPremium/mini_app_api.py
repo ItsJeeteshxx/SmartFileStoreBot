@@ -1125,7 +1125,7 @@ async def create_payment_link(payload: dict):
     if total_price <= 0:
         raise HTTPException(status_code=400, detail="Invalid price")
 
-    order_id = f"OD_{uuid.uuid4().hex[:8].upper()}"
+    order_id = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source="miniapp")
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     
     try:
