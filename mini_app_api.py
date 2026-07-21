@@ -56,6 +56,10 @@ _TOKEN_CACHE = {
 }
 _TOKEN_CACHE_TTL = 300  # 5 minutes
 
+_admin_stats_cache = None
+_admin_stats_cache_time = 0.0
+ADMIN_STATS_CACHE_TTL = 30  # 30 seconds cache TTL
+
 async def get_all_valid_bot_tokens(db) -> list:
     global _TOKEN_CACHE
     now = time.time()
