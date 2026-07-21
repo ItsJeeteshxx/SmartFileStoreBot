@@ -5129,6 +5129,103 @@ async def delete_admin_series(series_id: str, telegram_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ── Admin UTR Management Endpoints ──────────────────────────────────────────
+class AddUtrPayload(BaseModel):
+    telegram_id: str
+    utrs: List[str]
+    note: Optional[str] = ""
+
+@api_router.get("/admin/utrs")
+async def get_admin_utrs(telegram_id: str, search: Optional[str] = None):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        query = {}
+        if search and search.strip():
+            search_str = search.strip()
+            query["$or"] = [
+                {"utr": {"$regex": search_str, "$options": "i"}},
+                {"note": {"$regex": search_str, "$options": "i"}},
+                {"user_id": {"$regex": search_str, "$options": "i"}}
+            ]
+            
+        cursor = arya_db.db.verified_utrs.find(query).sort([("verified_at", -1), ("added_at", -1)]).limit(500)
+        utrs_list = []
+        async for doc in cursor:
+            doc["id"] = str(doc.get("_id", ""))
+            doc["_id"] = str(doc.get("_id", ""))
+            v_at = doc.get("verified_at") or doc.get("added_at") or doc.get("created_at")
+            doc["formatted_date"] = v_at.isoformat() if isinstance(v_at, datetime) else str(v_at or "")
+            utrs_list.append(doc)
+            
+        total_count = await arya_db.db.verified_utrs.count_documents({})
+        return {"success": True, "data": utrs_list, "total": total_count}
+    except Exception as e:
+        logger.error(f"Error fetching admin UTRs: {e}")
+        return {"success": False, "data": [], "total": 0}
+
+@api_router.post("/admin/utrs/add")
+async def add_admin_utrs(payload: AddUtrPayload):
+    try:
+        if not is_admin(str(payload.telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        added_count = 0
+        already_existing = 0
+        added_list = []
+        
+        for raw_utr in payload.utrs:
+            utr_clean = "".join(c for c in str(raw_utr) if c.isdigit())
+            if not utr_clean or len(utr_clean) < 8:
+                continue
+                
+            existing = await arya_db.db.verified_utrs.find_one({"utr": utr_clean})
+            if existing:
+                already_existing += 1
+                continue
+                
+            doc = {
+                "utr": utr_clean,
+                "source": "manual_admin",
+                "added_by": str(payload.telegram_id),
+                "note": payload.note or "Manually registered by admin",
+                "verified_at": datetime.now(timezone.utc),
+                "added_at": datetime.now(timezone.utc)
+            }
+            await arya_db.db.verified_utrs.insert_one(doc)
+            added_count += 1
+            added_list.append(utr_clean)
+            
+        return {
+            "success": True, 
+            "added_count": added_count, 
+            "already_existing_count": already_existing,
+            "message": f"Successfully registered {added_count} UTR(s). ({already_existing} were already in database)."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/admin/utrs/{utr_val}")
+async def delete_admin_utr(utr_val: str, telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+        
+        res = await arya_db.db.verified_utrs.delete_one({"utr": utr_val})
+        if res.deleted_count == 0 and len(utr_val) == 24:
+            try:
+                await arya_db.db.verified_utrs.delete_one({"_id": ObjectId(utr_val)})
+            except:
+                pass
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.post("/admin/ban")
 async def admin_ban_user(payload: dict):
     telegram_id = payload.get("telegram_id")
