@@ -137,6 +137,152 @@ class PremiumDatabase:
     async def add_purchase(self, user_id: int, story_id: str):
         await self.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": story_id}}, upsert=True)
 
+    async def is_paid_user(self, user_id) -> bool:
+        """Check if user is a paid user (has at least 1 purchased story or completed order)."""
+        if not user_id:
+            return False
+        try:
+            uid_int = int(user_id) if str(user_id).isdigit() else user_id
+            uid_str = str(user_id)
+            u_filter = [uid_int, uid_str]
+            
+            user = await self.users.find_one({
+                "$or": [{"id": {"$in": u_filter}}, {"_id": {"$in": u_filter}}],
+                "purchases.0": {"$exists": True}
+            })
+            if user and user.get("purchases"):
+                return True
+
+            order = await self.db.orders.find_one({
+                "user_id": {"$in": u_filter},
+                "status": {"$in": ["paid", "delivered", "completed", "success"]}
+            })
+            if order:
+                return True
+
+            purchase = await self.purchases.find_one({
+                "user_id": {"$in": u_filter}
+            })
+            if purchase:
+                return True
+
+            checkout = await self.db.premium_checkout.find_one({
+                "user_id": {"$in": u_filter},
+                "status": "approved"
+            })
+            if checkout:
+                return True
+
+            return False
+        except Exception:
+            return False
+
+    async def auto_unblock_paid_users(self):
+        """
+        Scans all paid users across orders, premium_purchases, premium_checkout, and users.
+        If any paid user was auto-banned / auto-blocked (in premium_bans or users.ban_status),
+        it automatically lifts the ban, clears ban_status, and removes their IP, device_id, etc.
+        """
+        try:
+            logger.info("⚡ Running Auto-Unblock System for Paid Users...")
+            paid_uids = set()
+            
+            async for doc in self.users.find({"purchases.0": {"$exists": True}}, {"id": 1}):
+                uid = doc.get("id")
+                if uid is not None:
+                    paid_uids.add(str(uid))
+                    try: paid_uids.add(int(uid))
+                    except: pass
+                    
+            async for doc in self.db.orders.find({"status": {"$in": ["paid", "delivered", "completed", "success"]}}, {"user_id": 1}):
+                uid = doc.get("user_id")
+                if uid is not None:
+                    paid_uids.add(str(uid))
+                    try: paid_uids.add(int(uid))
+                    except: pass
+
+            async for doc in self.purchases.find({}, {"user_id": 1}):
+                uid = doc.get("user_id")
+                if uid is not None:
+                    paid_uids.add(str(uid))
+                    try: paid_uids.add(int(uid))
+                    except: pass
+
+            async for doc in self.db.premium_checkout.find({"status": "approved"}, {"user_id": 1}):
+                uid = doc.get("user_id")
+                if uid is not None:
+                    paid_uids.add(str(uid))
+                    try: paid_uids.add(int(uid))
+                    except: pass
+
+            if not paid_uids:
+                return
+
+            paid_uids_list = list(paid_uids)
+
+            bans_cursor = self.db.premium_bans.find({"_id": {"$in": paid_uids_list}})
+            unbanned_count = 0
+            async for ban in bans_cursor:
+                ban_id = ban.get("_id")
+                reason = str(ban.get("reason", "")).lower()
+                is_manual = reason in ["banned by administrator", "admin ban"]
+                if not is_manual or "auto-ban" in reason or "alt of" in reason or "strike" in reason or "rapid" in reason or "evasion" in reason:
+                    await self.db.premium_bans.delete_one({"_id": ban_id})
+                    unbanned_count += 1
+                    logger.info(f"✅ Auto-Unbanned Paid User {ban_id} from premium_bans")
+
+            await self.users.update_many(
+                {"id": {"$in": paid_uids_list}, "$or": [{"ban_status.ban_reason": {"$regex": "auto-ban|alt of|strike|rapid|evasion", "$options": "i"}}, {"ban_status.is_banned": True}]},
+                {"$set": {
+                    "ban_status.is_banned": False,
+                    "ban_status.ban_reason": "",
+                    "banned": False
+                }}
+            )
+
+            paid_ips = set()
+            paid_devices = set()
+            
+            async for a_doc in self.db.mini_app_analytics.find({"user_id": {"$in": paid_uids_list}}, {"ip": 1, "data.device_id": 1, "data.fp": 1}):
+                ip = a_doc.get("ip")
+                if ip and ip not in ["", "127.0.0.1", "::1", "unknown"]:
+                    paid_ips.add(ip)
+                data_obj = a_doc.get("data") or {}
+                d_id = data_obj.get("device_id") or data_obj.get("fp")
+                if d_id:
+                    paid_devices.add(d_id)
+
+            async for u in self.users.find({"id": {"$in": paid_uids_list}}):
+                for ip in u.get("ips", []):
+                    if ip: paid_ips.add(ip)
+                if u.get("last_ip"): paid_ips.add(u.get("last_ip"))
+                for dev in u.get("device_ids", []):
+                    if dev: paid_devices.add(dev)
+                if u.get("device_id"): paid_devices.add(u.get("device_id"))
+
+            if paid_ips or paid_devices:
+                conds = []
+                if paid_ips: conds.append({"ips": {"$in": list(paid_ips)}})
+                if paid_devices: conds.append({"device_ids": {"$in": list(paid_devices)}})
+                if conds:
+                    all_bans = self.db.premium_bans.find({"$or": conds})
+                    async for b_doc in all_bans:
+                        c_ips = [i for i in b_doc.get("ips", []) if i not in paid_ips]
+                        c_devs = [d for d in b_doc.get("device_ids", []) if d not in paid_devices]
+                        r = str(b_doc.get("reason", "")).lower()
+                        is_auto = "auto-ban" in r or "alt of" in r or "strike" in r or "rapid" in r
+                        if is_auto and (not c_ips or not c_devs or b_doc.get("_id") in paid_uids):
+                            await self.db.premium_bans.delete_one({"_id": b_doc["_id"]})
+                        else:
+                            await self.db.premium_bans.update_one(
+                                {"_id": b_doc["_id"]},
+                                {"$set": {"ips": c_ips, "device_ids": c_devs}}
+                            )
+
+            logger.info(f"✅ Auto-Unblock completed. Cleaned {unbanned_count} paid user ban records.")
+        except Exception as e:
+            logger.error(f"Failed to auto_unblock_paid_users: {e}")
+
     async def get_subscribed_users(self):
         """Returns list of all users who have explicitly opted in (alerts_subscribed=True).
         Users with missing key or False are excluded — subscriptions are OFF by default."""

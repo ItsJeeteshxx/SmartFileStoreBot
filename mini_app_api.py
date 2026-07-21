@@ -311,9 +311,15 @@ async def lifespan(app: FastAPI):
                                 {"_id": ban["_id"]},
                                 {"$set": {"ips": clean_ips}}
                             )
-                            logger.info(f"✅ Startup Cleaned: Removed universal IPs {universal_ips} from banned user {ban['_id']}")
             except Exception as clean_err:
                 logger.warning(f"Failed to clean startup universal IPs: {clean_err}")
+                
+            # Automatically run auto-unblock system for all paid users on startup
+            try:
+                from database import db as root_db
+                asyncio.create_task(root_db.auto_unblock_paid_users())
+            except Exception as unblock_err:
+                logger.warning(f"Failed to launch auto_unblock_paid_users: {unblock_err}")
         except Exception as idx_err:
             logger.warning(f"Failed to create indexes: {idx_err}")
             
@@ -4172,11 +4178,318 @@ async def get_my_purchases(telegram_id: str):
 # GET /admin/stats
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # --- ADMIN STATS CACHE ---
-import time
-_admin_stats_cache = None
-_admin_stats_cache_time = 0.0
-ADMIN_STATS_CACHE_TTL = 60.0  # 1 minute cache (reduced for fresher data)
-# -------------------------
+async def fetch_processed_buyers_data(arya_db):
+    """
+    Unified calculation engine for buyers, orders, revenue, and story rankings.
+    Guarantees 100% data consistency across Dashboard, Buyers Tab, and Story Ranking.
+    Filters out wiped users and removed story access.
+    """
+    existing_users = await arya_db.db.users.find({}).to_list(length=200000)
+    existing_user_ids = set()
+    user_purchases_map = {}  # uid_str -> set of story_id_strs
+    user_doc_map = {}        # uid_str -> user_doc
+    
+    for u in existing_users:
+        uid = u.get("id")
+        if uid is None: continue
+        uid_str = str(uid)
+        existing_user_ids.add(uid_str)
+        if uid_str.isdigit():
+            existing_user_ids.add(str(int(uid_str)))
+            
+        purchases_list = [str(s) for s in u.get("purchases", []) if s]
+        user_purchases_map[uid_str] = set(purchases_list)
+        user_doc_map[uid_str] = u
+
+    stories = await arya_db.db.premium_stories.find({}).to_list(length=10000)
+    story_cache_by_id = {}
+    story_cache_by_oid = {}
+    for s in stories:
+        sid_str = str(s.get("story_id", ""))
+        soid_str = str(s.get("_id", ""))
+        price = float(s.get("discounted_price") or s.get("price") or 99.0)
+        s["_clean_price"] = price
+        if sid_str: story_cache_by_id[sid_str] = s
+        if soid_str: story_cache_by_oid[soid_str] = s
+
+    orders = await arya_db.db.orders.find({}).sort("created_at", -1).to_list(length=200000)
+    checkouts = await arya_db.db.premium_checkout.find({}).sort("created_at", -1).to_list(length=200000)
+    purchases = await arya_db.db.premium_purchases.find({}).sort("purchased_at", -1).to_list(length=200000)
+
+    buyers_map = {}
+    added_paid_stories = {} # uid_str -> set of story_id_strs
+
+    def get_or_create_buyer(uid_str, fallback_doc=None, fallback_source="miniapp"):
+        if uid_str not in buyers_map:
+            u_doc = user_doc_map.get(uid_str) or fallback_doc or {}
+            _fn = (u_doc.get("first_name") or (fallback_doc.get("first_name") if fallback_doc else "") or "").strip()
+            _ln = (u_doc.get("last_name") or "").strip()
+            _full = " ".join(filter(None, [_fn, _ln])) or u_doc.get("username", (fallback_doc.get("username") if fallback_doc else "") or "") or f"User {uid_str}"
+            _uname = u_doc.get("username", (fallback_doc.get("username") if fallback_doc else "Unknown"))
+            _photo = u_doc.get("photo_url", "")
+            j_date = u_doc.get("joined_date") or u_doc.get("joined_at") or u_doc.get("created_at") or datetime.now(timezone.utc)
+            j_str = j_date.isoformat() if isinstance(j_date, datetime) else str(j_date)
+            
+            try: uid_val = int(uid_str)
+            except: uid_val = uid_str
+
+            buyers_map[uid_str] = {
+                "order_id": f"uid_{uid_str}",
+                "user_id": uid_val,
+                "username": _uname,
+                "first_name": _full,
+                "photo_url": _photo,
+                "payments": [],
+                "total_amt": 0.0,
+                "source": fallback_source,
+                "joined_at": j_str,
+                "date": j_str
+            }
+        return buyers_map[uid_str]
+
+    # Process A: premium_purchases
+    for p in purchases:
+        uid = p.get("user_id")
+        if uid is None: continue
+        uid_str = str(uid)
+        
+        if uid_str not in existing_user_ids:
+            continue
+            
+        story_id = p.get("story_id")
+        story_id_str = str(story_id) if story_id else ""
+        if not story_id_str: continue
+
+        user_active_stories = user_purchases_map.get(uid_str, set())
+        if user_active_stories and story_id_str not in user_active_stories:
+            matched_sid = None
+            for active_sid in user_active_stories:
+                st = story_cache_by_oid.get(active_sid) or story_cache_by_id.get(active_sid)
+                if st and (str(st.get("_id")) == story_id_str or str(st.get("story_id")) == story_id_str or active_sid == story_id_str):
+                    matched_sid = active_sid
+                    break
+            if not matched_sid:
+                continue
+
+        if uid_str not in added_paid_stories:
+            added_paid_stories[uid_str] = set()
+        added_paid_stories[uid_str].add(story_id_str)
+
+        story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
+        sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
+        
+        amt = p.get("amount", 0)
+        try: amt = float(amt)
+        except: amt = 0
+        
+        if amt <= 0:
+            amt = story["_clean_price"] if story else 99.0
+
+        date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
+        date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+
+        is_bot = "bot" in str(p.get("source", "")).lower() or bool(p.get("bot_id"))
+        source_label = "bot" if is_bot else "miniapp"
+
+        b = get_or_create_buyer(uid_str, fallback_source=source_label)
+        if b["source"] != source_label:
+            b["source"] = "both"
+
+        b["payments"].append({
+            "order_id": p.get("order_id") or f"purchase_{p.get('_id')}",
+            "story_id": story_id_str,
+            "story_name": sname,
+            "amount": amt,
+            "method": str(p.get("source", "UPI")).upper(),
+            "status": "paid",
+            "date": date_str,
+            "source": source_label
+        })
+
+    # Process B: orders
+    for doc in orders:
+        uid = doc.get("user_id")
+        if uid is None: continue
+        uid_str = str(uid)
+        
+        if uid_str not in existing_user_ids:
+            continue
+
+        status_raw = doc.get("status", "unknown").lower()
+        story_ids = [str(s) for s in doc.get("story_ids", []) if s]
+        if not story_ids and doc.get("story_id"):
+            story_ids = [str(doc.get("story_id"))]
+
+        source_raw = doc.get("source", "miniapp")
+        is_bot = "bot" in str(source_raw).lower()
+        source_label = "bot" if is_bot else "miniapp"
+
+        amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
+        try: amt = float(amt)
+        except: amt = 0
+
+        if status_raw in ["paid", "delivered"]:
+            user_active_stories = user_purchases_map.get(uid_str, set())
+            valid_sids = []
+            for sid_s in story_ids:
+                if user_active_stories and sid_s not in user_active_stories:
+                    for active_sid in user_active_stories:
+                        st = story_cache_by_oid.get(active_sid) or story_cache_by_id.get(active_sid)
+                        if st and (str(st.get("_id")) == sid_s or str(st.get("story_id")) == sid_s or active_sid == sid_s):
+                            valid_sids.append(sid_s)
+                            break
+                else:
+                    valid_sids.append(sid_s)
+            if not valid_sids:
+                continue
+            story_ids = valid_sids
+
+            if uid_str in added_paid_stories and any(sid in added_paid_stories[uid_str] for sid in story_ids):
+                b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
+                for p in b["payments"]:
+                    if p["story_id"] in story_ids and p["amount"] == 0 and amt > 0:
+                        p["amount"] = amt
+                continue
+
+        story_names = []
+        for sid in story_ids:
+            story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+            if story: story_names.append(story.get("story_name_en", sid))
+            else: story_names.append(sid)
+
+        if amt <= 0 and story_ids:
+            st = story_cache_by_oid.get(story_ids[0]) or story_cache_by_id.get(story_ids[0])
+            amt = st["_clean_price"] if st else 99.0
+
+        date_val = doc.get("created_at") or datetime.now(timezone.utc)
+        date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+
+        b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
+        if b["source"] != source_label:
+            b["source"] = "both"
+
+        method_str = str(doc.get("method", "RAZORPAY" if "razor" in str(doc.get("source","")).lower() else "UPI")).upper()
+
+        b["payments"].append({
+            "order_id": doc.get("order_id") or f"order_{doc.get('_id')}",
+            "story_id": story_ids[0] if story_ids else "",
+            "story_name": ", ".join(story_names) if story_names else "Store Order",
+            "amount": amt,
+            "method": method_str,
+            "status": status_raw,
+            "date": date_str,
+            "source": source_label
+        })
+
+    # Process C: premium_checkout
+    for c in checkouts:
+        uid = c.get("user_id")
+        if uid is None: continue
+        uid_str = str(uid)
+        
+        if uid_str not in existing_user_ids:
+            continue
+
+        status_raw = c.get("status", "unknown")
+        status_label = {
+            "approved": "paid",
+            "waiting_screenshot": "pending",
+            "rejected": "rejected",
+            "pending_gateway": "processing",
+        }.get(status_raw, status_raw.lower())
+
+        story_id = c.get("story_id")
+        story_id_str = str(story_id) if story_id else ""
+
+        if status_label == "paid":
+            user_active_stories = user_purchases_map.get(uid_str, set())
+            if user_active_stories and story_id_str not in user_active_stories:
+                continue
+            if uid_str in added_paid_stories and story_id_str in added_paid_stories[uid_str]:
+                continue
+
+        story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
+        sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
+
+        amt = c.get("amount", 0)
+        try: amt = float(amt)
+        except: amt = 0
+
+        if amt <= 0 and story:
+            amt = story["_clean_price"]
+
+        date_val = c.get("created_at") or datetime.now(timezone.utc)
+        date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+
+        b = get_or_create_buyer(uid_str, fallback_doc=c, fallback_source="bot")
+        if b["source"] != "bot":
+            b["source"] = "both"
+
+        b["payments"].append({
+            "order_id": f"checkout_{c.get('_id')}",
+            "story_id": story_id_str,
+            "story_name": sname,
+            "amount": amt,
+            "method": str(c.get("method", "UPI")).upper(),
+            "status": status_label,
+            "date": date_str,
+            "source": "bot"
+        })
+
+    buyers_list = []
+    total_rev = 0.0
+    bot_rev = 0.0
+    miniapp_rev = 0.0
+    total_paid_orders_count = 0
+    paid_user_ids = set()
+
+    for uid_str, data in buyers_map.items():
+        payments = data["payments"]
+        if not payments: continue
+
+        paid_payments = [p for p in payments if p["status"] in ["paid", "approved", "delivered", "completed", "success"]]
+        pending_payments = [p for p in payments if p["status"] in ["pending", "processing", "waiting_screenshot"]]
+
+        if paid_payments:
+            user_status = "paid"
+            user_amount = sum(p["amount"] for p in paid_payments)
+            paid_user_ids.add(uid_str)
+            total_paid_orders_count += len(paid_payments)
+            for p in paid_payments:
+                total_rev += p["amount"]
+                if p["source"] == "bot": bot_rev += p["amount"]
+                else: miniapp_rev += p["amount"]
+        elif pending_payments:
+            user_status = pending_payments[0]["status"]
+            user_amount = sum(p["amount"] for p in pending_payments)
+        else:
+            user_status = payments[0]["status"]
+            user_amount = sum(p["amount"] for p in payments)
+
+        buyers_list.append({
+            "order_id": data["order_id"],
+            "user_id": data["user_id"],
+            "username": data["username"],
+            "first_name": data["first_name"],
+            "photo_url": data["photo_url"],
+            "amount": user_amount,
+            "status": user_status,
+            "source": data["source"],
+            "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
+            "date": data["date"],
+            "joined_at": data.get("joined_at")
+        })
+
+    buyers_list.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
+
+    return {
+        "buyers": buyers_list,
+        "total_buyers_count": len(paid_user_ids),
+        "total_orders_count": total_paid_orders_count,
+        "total_revenue": total_rev,
+        "miniapp_revenue": miniapp_rev,
+        "bot_revenue": bot_rev
+    }
 
 @api_router.get("/admin/stats")
 async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
@@ -4197,11 +4510,11 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
             }
             
         arya_db = app.state.db
+        computed = await fetch_processed_buyers_data(arya_db)
         
-        # Bot Users (users who have interacted with the Telegram bot)
+        # Bot Users
         bot_users_count = await arya_db.db.users.count_documents({})
         
-        # Count unique Mini App users (visitors) from analytics
         from arya_enterprise_analytics import visitor_id_expression
         bot_filter = {
             "data.client_user_agent": {
@@ -4224,27 +4537,9 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         miniapp_users_count = miniapp_users_res[0]["c"] if miniapp_users_res else 0
         total_users_count = bot_users_count + miniapp_users_count
         
-        # Total Stories
         total_stories = await arya_db.db.premium_stories.count_documents({})
         
-        # Mini App Revenue (orders with status=paid)
-        miniapp_rev_pipeline = [
-            {"$match": {"status": "paid"}},
-            {"$group": {"_id": None, "total": {"$sum": {"$cond": [{"$gt": ["$total_amount", 0]}, "$total_amount", {"$ifNull": ["$total", 0]}]}}}}
-        ]
-        miniapp_rev_res = await arya_db.db.orders.aggregate(miniapp_rev_pipeline).to_list(length=1)
-        miniapp_revenue = miniapp_rev_res[0]["total"] if miniapp_rev_res else 0
-        
-        # Bot Revenue (from premium_checkout with status=approved)
-        bot_rev_pipeline = [
-            {"$match": {"status": "approved"}},
-            {"$group": {"_id": None, "total": {"$sum": {"$toDouble": {"$ifNull": ["$amount", 0]}}}}}
-        ]
-        bot_rev_res = await arya_db.db.premium_checkout.aggregate(bot_rev_pipeline).to_list(length=1)
-        bot_revenue = bot_rev_res[0]["total"] if bot_rev_res else 0
-        total_revenue = (miniapp_revenue or 0) + (bot_revenue or 0)
-        
-        # Recent Feedbacks
+        # Feedbacks
         feedbacks = []
         fb_cursor = arya_db.db.premium_feedback.find({}).sort("created_at", -1).limit(10)
         async for doc in fb_cursor:
@@ -4280,44 +4575,33 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
             
-        bot_ord_cursor = arya_db.db.premium_checkout.find({}).sort("created_at", -1).limit(10)
-        async for doc in bot_ord_cursor:
-            user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
-            if not user_doc: continue
-            _fn2 = (user_doc.get("first_name") or "").strip()
-            _ln2 = (user_doc.get("last_name") or "").strip()
-            _full2 = " ".join(filter(None, [_fn2, _ln2])) or user_doc.get("username", "") or "User"
-            username = user_doc.get("username", "")
-            
-            story_doc = await arya_db.db.premium_stories.find_one({"_id": doc.get("story_id")}) if doc.get("story_id") else None
-            story_name = story_doc.get("story_name_en", "Story") if story_doc else "Story"
-
-            orders.append({
-                "order_id": f"bot_{doc.get('_id', '')}",
-                "amount": doc.get("amount", 0),
-                "status": doc.get("status", "unknown"),
-                "user_id": doc.get("user_id", ""),
-                "first_name": _full2,
-                "username": username,
-                "story_names": [story_name],
-                "source": "bot",
-                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
-            })
-            
-        # Sort and take top 10
         orders = sorted(orders, key=lambda x: x["created_at"], reverse=True)[:10]
 
-        # Total Orders = only successfully paid/completed orders (not failed/pending)
-        # Mini App orders use status="paid", Bot checkouts use status="approved"
-        paid_miniapp_orders = await arya_db.db.orders.count_documents({"status": "paid"})
-        approved_bot_orders = await arya_db.db.premium_checkout.count_documents({"status": "approved"})
-        total_orders_count = paid_miniapp_orders + approved_bot_orders
+        result_data = {
+            "total_users": total_users_count,
+            "bot_users": bot_users_count,
+            "miniapp_users": miniapp_users_count,
+            "page_views": page_views_count,
+            "total_stories": total_stories,
+            "total_orders": computed["total_orders_count"],
+            "total_buyers": computed["total_buyers_count"],
+            "total_revenue": computed["total_revenue"],
+            "miniapp_revenue": computed["miniapp_revenue"],
+            "bot_revenue": computed["bot_revenue"],
+            "feedbacks": feedbacks,
+            "orders": orders
+        }
         
-        # Total Buyers = unique users who have minimum 1 successfully paid/approved order
-        buyer_uids_from_checkout = await arya_db.db.premium_checkout.distinct("user_id", {"status": "approved"})
-        buyer_uids_from_orders = await arya_db.db.orders.distinct("user_id", {"status": "paid"})
-        buyer_uids_from_purchases = await arya_db.db.premium_purchases.distinct("user_id")
-        total_buyers_count = len(set(str(u) for u in buyer_uids_from_checkout + buyer_uids_from_orders + buyer_uids_from_purchases if u is not None))
+        _admin_stats_cache = result_data
+        _admin_stats_cache_time = now
+        
+        return {
+            "success": True,
+            "data": result_data
+        }
+    except Exception as e:
+        logger.error(f"Error fetching admin stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
             
         result_data = {
             "total_users": total_users_count,
@@ -6278,9 +6562,9 @@ async def delete_admin_banner(telegram_id: str, banner_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # BUYERS MANAGEMENT
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # PREMIUM UNIFIED BAN MANAGEMENT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6524,401 +6808,19 @@ async def admin_unban_user(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 @api_router.get("/admin/buyers")
 async def get_admin_buyers(telegram_id: str):
-    from AryaPremium.config import Config
+    """Fetches all buyers and detailed user purchase logs for the admin dashboard."""
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
-            raise HTTPException(status_code=403, detail="Not authorized")
+            raise HTTPException(status_code=403, detail="Not authorized as Admin")
+            
         arya_db = app.state.db
-        
-        # Auto-expire pending/processing checkouts and orders (run in background to avoid blocking buyers list fetch)
-        from datetime import timedelta
-        expiry_24h = datetime.now(timezone.utc) - timedelta(hours=24)
-        expiry_7m = datetime.now(timezone.utc) - timedelta(minutes=7)
-        
-        async def run_cleanup():
-            try:
-                # 1. Clear checkouts/orders in pending/processing/waiting states older than 24 hours
-                await arya_db.db.premium_checkout.update_many(
-                    {
-                        "status": {"$in": ["pending_gateway", "pending", "waiting_screenshot", "processing"]},
-                        "created_at": {"$lt": expiry_24h}
-                    },
-                    {"$set": {"status": "failed"}}
-                )
-                await arya_db.db.orders.update_many(
-                    {
-                        "status": {"$in": ["pending", "processing"]},
-                        "created_at": {"$lt": expiry_24h}
-                    },
-                    {"$set": {"status": "failed"}}
-                )
-                
-                # 2. Clear fast-expiry checkouts/orders older than 7 minutes
-                await arya_db.db.premium_checkout.update_many(
-                    {
-                        "status": {"$in": ["pending_gateway", "pending"]},
-                        "created_at": {"$lt": expiry_7m}
-                    },
-                    {"$set": {"status": "failed"}}
-                )
-                await arya_db.db.orders.update_many(
-                    {
-                        "status": "pending",
-                        "created_at": {"$lt": expiry_7m}
-                    },
-                    {"$set": {"status": "failed"}}
-                )
-            except Exception as e:
-                logger.error(f"Failed to auto-expire checkouts in background: {e}")
-                
-        asyncio.create_task(run_cleanup())
-
-        # Fetch all recent checkouts (Bot), orders (MiniApp), and purchases (DB) and merge by User
-        buyers_map = {}
-        
-        # Pre-fetch all premium stories once to prevent N+1 query loops
-        stories_list = await arya_db.db.premium_stories.find({}, {"story_id": 1, "story_name_en": 1}).to_list(length=10000)
-        story_cache_by_id = {}
-        story_cache_by_oid = {}
-        for s in stories_list:
-            sid = s.get("story_id")
-            if sid:
-                story_cache_by_id[str(sid)] = s
-            oid = s.get("_id")
-            if oid:
-                story_cache_by_oid[str(oid)] = s
-        
-        # 1. Identify active user IDs from recent checkouts, orders, and premium purchases
-        recent_checkouts = await arya_db.db.premium_checkout.find({}, {"user_id": 1}).sort("_id", -1).limit(20000).to_list(length=20000)
-        recent_orders = await arya_db.db.orders.find({}, {"user_id": 1}).sort("_id", -1).limit(20000).to_list(length=20000)
-        recent_purchases = await arya_db.db.premium_purchases.find({}, {"user_id": 1}).sort("_id", -1).limit(20000).to_list(length=20000)
-        
-        uids = []
-        for c in recent_checkouts:
-            uid = c.get("user_id")
-            if uid is not None:
-                uids.append(uid)
-        for o in recent_orders:
-            uid = o.get("user_id")
-            if uid is not None:
-                uids.append(uid)
-        for p in recent_purchases:
-            uid = p.get("user_id")
-            if uid is not None:
-                uids.append(uid)
-                
-        uids_clean = []
-        for uid in uids:
-            uids_clean.append(uid)
-            try:
-                uids_clean.append(int(uid))
-            except:
-                pass
-            try:
-                uids_clean.append(str(uid))
-            except:
-                pass
-        uids_clean = list(set(uids_clean))
-        
-        # 2. Fetch ALL checkouts, orders, and purchases for these specific active users
-        checkouts = await arya_db.db.premium_checkout.find({"user_id": {"$in": uids_clean}}).to_list(length=100000)
-        orders = await arya_db.db.orders.find({"user_id": {"$in": uids_clean}}).to_list(length=100000)
-        purchases = await arya_db.db.premium_purchases.find({"user_id": {"$in": uids_clean}}).to_list(length=100000)
-        
-        user_docs_list = await arya_db.db.users.find({"id": {"$in": uids_clean}}).to_list(length=20000)
-        
-        user_cache = {}
-        for u in user_docs_list:
-            u_id = u.get("id")
-            if u_id is not None:
-                user_cache[u_id] = u
-                user_cache[str(u_id)] = u
-                try:
-                    user_cache[int(u_id)] = u
-                except:
-                    pass
-
-        added_paid_stories = {} # user_id -> set of paid story ID strings
-
-        # A. Populate from premium_purchases (verified paid access)
-        for p in purchases:
-            uid = p.get("user_id")
-            if not uid: continue
-            try: uid = int(uid)
-            except: pass
-            
-            story_id = p.get("story_id")
-            story_id_str = str(story_id) if story_id else ""
-            if not story_id_str: continue
-            
-            if uid not in added_paid_stories:
-                added_paid_stories[uid] = set()
-            added_paid_stories[uid].add(story_id_str)
-            
-            story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
-            sname = story.get("story_name_en", story_id_str) if story else "Unknown Story"
-            
-            amt = p.get("amount", 0)
-            try: amt = float(amt)
-            except: amt = 0
-            
-            date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
-            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
-            
-            is_bot = "bot" in str(p.get("source", "")).lower() or bool(p.get("bot_id")) or p.get("source") in ["upi", "manual"]
-            source_label = "bot" if is_bot else "miniapp"
-            
-            if uid not in buyers_map:
-                u = user_cache.get(uid)
-                if u:
-                    _ufn = (u.get("first_name") or "").strip()
-                    _uln = (u.get("last_name") or "").strip()
-                    _ufull = " ".join(filter(None, [_ufn, _uln])) or u.get("username", "") or "User"
-                    _uname = u.get("username", "Unknown")
-                    _photo = u.get("photo_url", "")
-                else:
-                    _uname = "Unknown"
-                    _ufull = f"User {uid}"
-                    _photo = ""
-                
-                joined_val = None
-                if u:
-                    joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
-                if not joined_val:
-                    joined_val = date_val
-                joined_str = joined_val.isoformat() if isinstance(joined_val, datetime) else str(joined_val)
-                
-                buyers_map[uid] = {
-                    "user_id": uid,
-                    "username": _uname,
-                    "first_name": _ufull,
-                    "photo_url": _photo,
-                    "payments": [],
-                    "total_amt": 0,
-                    "date": date_str,
-                    "source": source_label,
-                    "joined_at": joined_str
-                }
-            else:
-                if buyers_map[uid]["source"] != source_label:
-                    buyers_map[uid]["source"] = "both"
-                    
-            buyers_map[uid]["total_amt"] += amt
-            buyers_map[uid]["payments"].append({
-                "order_id": p.get("order_id") or f"purchase_{p.get('_id')}",
-                "story_id": story_id_str,
-                "story_name": sname,
-                "amount": amt,
-                "method": str(p.get("source", "UPI")).upper(),
-                "status": "paid",
-                "date": date_str,
-                "source": source_label
-            })
-
-        # B. Populate from premium_checkout (only non-paid or unique checkouts)
-        for c in checkouts:
-            uid = c.get("user_id")
-            if not uid: continue
-            try: uid = int(uid)
-            except: pass
-            
-            story_id = c.get("story_id")
-            story_id_str = str(story_id) if story_id else ""
-            
-            # Map checkout status
-            status_raw = c.get("status", "unknown")
-            status_label = {
-                "approved": "paid",
-                "waiting_screenshot": "pending",
-                "rejected": "rejected",
-                "pending_gateway": "processing",
-            }.get(status_raw, status_raw.lower())
-            
-            # De-duplicate: skip approved/paid checkouts if already added from premium_purchases
-            if status_label == "paid" and uid in added_paid_stories and story_id_str in added_paid_stories[uid]:
-                continue
-                
-            story = None
-            if story_id_str:
-                story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
-            sname = story.get("story_name_en", story_id_str) if story else "Unknown Story"
-            
-            amt = c.get("amount", 0)
-            try: amt = float(amt)
-            except: amt = 0
-            
-            date_val = c.get("created_at") or datetime.now(timezone.utc)
-            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
-            
-            if uid not in buyers_map:
-                u = user_cache.get(uid)
-                if u:
-                    _ufn = (u.get("first_name") or "").strip()
-                    _uln = (u.get("last_name") or "").strip()
-                    _ufull = " ".join(filter(None, [_ufn, _uln])) or u.get("username", "") or "User"
-                    _uname = u.get("username", "Unknown")
-                    _photo = u.get("photo_url", "")
-                else:
-                    _uname = c.get("username") or "Unknown"
-                    _ufull = _uname if _uname != "Unknown" else f"User {uid}"
-                    _photo = ""
-                
-                joined_val = None
-                if u:
-                    joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
-                if not joined_val:
-                    joined_val = date_val
-                joined_str = joined_val.isoformat() if isinstance(joined_val, datetime) else str(joined_val)
-                
-                buyers_map[uid] = {
-                    "user_id": uid,
-                    "username": _uname,
-                    "first_name": _ufull,
-                    "photo_url": _photo,
-                    "payments": [],
-                    "total_amt": 0,
-                    "date": date_str,
-                    "source": "bot",
-                    "joined_at": joined_str
-                }
-            else:
-                if buyers_map[uid]["source"] != "bot":
-                    buyers_map[uid]["source"] = "both"
-            
-            buyers_map[uid]["total_amt"] += amt
-            buyers_map[uid]["payments"].append({
-                "order_id": f"checkout_{c.get('_id')}",
-                "story_id": story_id_str,
-                "story_name": sname,
-                "amount": amt,
-                "method": c.get("method", "unknown").upper(),
-                "status": status_label,
-                "date": date_str,
-                "source": "bot"
-            })
-
-        # C. Populate from orders (mini app orders)
-        for doc in orders:
-            uid = doc.get("user_id")
-            if not uid: continue
-            try: uid = int(uid)
-            except: pass
-            
-            story_ids = doc.get("story_ids", [])
-            if not story_ids and doc.get("story_id"):
-                story_ids = [doc.get("story_id")]
-                
-            # De-duplicate: skip paid orders if all their stories are already added as paid stories
-            status_raw = doc.get("status", "unknown").lower()
-            if status_raw in ["paid", "delivered"] and uid in added_paid_stories:
-                if all(str(sid) in added_paid_stories[uid] for sid in story_ids):
-                    continue
-            
-            source_raw = doc.get("source", "miniapp")
-            is_bot = "bot" in str(source_raw).lower()
-            source_label = "bot" if is_bot else "miniapp"
-            
-            story_names = []
-            for sid in story_ids:
-                sid_str = str(sid)
-                story = story_cache_by_oid.get(sid_str) or story_cache_by_id.get(sid_str)
-                if story:
-                    story_names.append(story.get("story_name_en", sid_str))
-                else:
-                    story_names.append(sid_str)
-            
-            date_val = doc.get("created_at") or datetime.now(timezone.utc)
-            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
-            
-            amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
-            try: amt = float(amt)
-            except: amt = 0
-            
-            if uid not in buyers_map:
-                u = user_cache.get(uid)
-                if u:
-                    _ofn = (u.get("first_name") or doc.get("first_name") or "").strip()
-                    _oln = (u.get("last_name") or "").strip()
-                    _ofull = " ".join(filter(None, [_ofn, _oln])) or u.get("username", doc.get("username", "")) or "User"
-                    _uname = u.get("username", doc.get("username", "Unknown"))
-                    _photo = u.get("photo_url", "")
-                else:
-                    _uname = doc.get("username") or "Unknown"
-                    _ofull = _uname if _uname != "Unknown" else f"User {uid}"
-                    _photo = ""
-                
-                joined_val = None
-                if u:
-                    joined_val = u.get("joined_date") or u.get("joined_at") or u.get("created_at")
-                if not joined_val:
-                    joined_val = date_val
-                joined_str = joined_val.isoformat() if isinstance(joined_val, datetime) else str(joined_val)
-                
-                buyers_map[uid] = {
-                    "user_id": uid,
-                    "username": _uname,
-                    "first_name": _ofull,
-                    "photo_url": _photo,
-                    "payments": [],
-                    "total_amt": 0,
-                    "date": date_str,
-                    "source": source_label,
-                    "joined_at": joined_str
-                }
-            else:
-                if buyers_map[uid]["source"] != source_label:
-                    buyers_map[uid]["source"] = "both"
-            
-            buyers_map[uid]["total_amt"] += amt
-            buyers_map[uid]["payments"].append({
-                "order_id": doc.get("order_id") or f"order_{doc.get('_id')}",
-                "story_id": str(story_ids[0]) if story_ids else "",
-                "story_name": ", ".join(story_names) if story_names else "App Purchase",
-                "amount": amt,
-                "method": "RAZORPAY" if "razor" in str(doc.get("method", "")).lower() else str(doc.get("method", "UPI")).upper(),
-                "status": status_raw,
-                "date": date_str,
-                "source": source_label
-            })
-
-        buyers = []
-        for uid, data in buyers_map.items():
-            payments = data["payments"]
-            # Determine user status
-            has_paid = any(p["status"] in ["paid", "delivered"] for p in payments)
-            has_pending_or_processing = any(p["status"] in ["pending", "processing"] for p in payments)
-            
-            if has_paid:
-                user_status = "paid"
-                # Only count paid/delivered orders amount for paid users
-                user_amount = sum(p["amount"] for p in payments if p["status"] in ["paid", "delivered"])
-            elif has_pending_or_processing:
-                first_pending_or_proc = next((p for p in payments if p["status"] in ["pending", "processing"]), None)
-                user_status = first_pending_or_proc["status"] if first_pending_or_proc else "pending"
-                # Sum pending/processing payments
-                user_amount = sum(p["amount"] for p in payments if p["status"] in ["pending", "processing"])
-            else:
-                user_status = payments[0]["status"] if payments else "failed"
-                user_amount = sum(p["amount"] for p in payments)
-                
-            buyers.append({
-                "order_id": f"uid_{uid}",
-                "user_id": uid,
-                "username": data["username"],
-                "first_name": data["first_name"],
-                "photo_url": data["photo_url"],
-                "amount": user_amount,
-                "status": user_status,
-                "source": data["source"],
-                "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
-                "date": data["date"],
-                "joined_at": data.get("joined_at")
-            })
-            
-        buyers.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
-            
+        computed = await fetch_processed_buyers_data(arya_db)
+        buyers = computed["buyers"]
         return {"success": True, "data": buyers, "total": len(buyers)}
+    except Exception as e:
+        logger.error(f"Error fetching buyers: {e}")
+        return {"success": False, "data": []}
     except Exception as e:
         logger.error(f"Error fetching buyers: {e}")
         return {"success": False, "data": []}
@@ -7085,17 +6987,18 @@ async def admin_order_lookup(order_id: str, telegram_id: str = ""):
 
 class ManualPurchase(BaseModel):
     telegram_id: str
-    user_id: int
+    user_id: Union[int, str]
     first_name: str
     username: str
     story_id: str
     amount: float
+    source: Optional[str] = "miniapp"
 
 @api_router.post("/admin/manual-purchase")
 async def manual_purchase(data: ManualPurchase):
     from AryaPremium.config import Config
     try:
-        user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
+        user_id_int = int(data.telegram_id) if str(data.telegram_id).isdigit() else data.telegram_id
         if not is_admin(str(data.telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
@@ -7112,12 +7015,20 @@ async def manual_purchase(data: ManualPurchase):
             raise HTTPException(404, "Story not found")
             
         story_id_str = str(story["_id"])
+        target_uid = int(data.user_id) if str(data.user_id).isdigit() else data.user_id
+        target_uid_int = int(target_uid) if str(target_uid).isdigit() else 0
+        uid_filter = [target_uid, str(target_uid)]
+        if target_uid_int:
+            uid_filter.append(target_uid_int)
+
+        source_raw = str(data.source or "miniapp").lower()
+        source_label = "bot" if "bot" in source_raw else "miniapp"
         
         # Upsert user
-        user = await arya_db.db.users.find_one({"id": data.user_id})
+        user = await arya_db.db.users.find_one({"id": {"$in": uid_filter}})
         if not user:
             await arya_db.db.users.insert_one({
-                "id": data.user_id,
+                "id": target_uid,
                 "first_name": data.first_name,
                 "username": data.username,
                 "purchases": [story_id_str],
@@ -7125,30 +7036,52 @@ async def manual_purchase(data: ManualPurchase):
             })
         else:
             await arya_db.db.users.update_one(
-                {"id": data.user_id},
+                {"id": {"$in": uid_filter}},
                 {"$addToSet": {"purchases": story_id_str}}
             )
             
-        # Insert Order
+        # Insert Order with explicit source
         order_doc = {
-            "order_id": f"MANUAL_{data.user_id}_{int(datetime.now().timestamp())}",
-            "user_id": data.user_id,
+            "order_id": f"MANUAL_{target_uid}_{int(datetime.now().timestamp())}",
+            "user_id": target_uid,
             "username": data.username,
             "first_name": data.first_name,
             "story_ids": [story_id_str],
-            "story_names": [story.get("story_name_en", "")],
+            "story_names": [story.get("story_name_en", story.get("title", story_id_str))],
             "total": data.amount,
             "status": "paid",
-            "source": "manual_admin",
+            "source": source_label,
             "created_at": datetime.now(timezone.utc)
         }
         await arya_db.db.orders.insert_one(order_doc)
+
+        # Upsert into premium_purchases and purchases so all endpoints see it instantly
+        purchase_record = {
+            "user_id": target_uid,
+            "story_id": story_id_str,
+            "title": story.get("story_name_en", story.get("title", "")),
+            "source": source_label,
+            "paid_at": datetime.now(timezone.utc).isoformat()
+        }
+        await arya_db.db.premium_purchases.update_one(
+            {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
+            {"$set": purchase_record},
+            upsert=True
+        )
+        await arya_db.db.purchases.update_one(
+            {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
+            {"$set": purchase_record},
+            upsert=True
+        )
         
         # Log and audit records
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
         asyncio.create_task(record_purchased_stories(order_doc))
         
-        return {"success": True}
+        global _stories_cache
+        _stories_cache = None
+
+        return {"success": True, "source": source_label}
     except Exception as e:
         logger.error(f"Manual purchase error: {e}")
         raise HTTPException(500, detail=str(e))
@@ -7157,28 +7090,37 @@ async def manual_purchase(data: ManualPurchase):
 async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
     from AryaPremium.config import Config
     try:
-        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         action = payload.get("action")
         target_uid = int(user_id) if user_id.isdigit() else user_id
+        target_uid_int = int(target_uid) if str(target_uid).isdigit() else 0
+        uid_filter = [target_uid, str(target_uid)]
+        if target_uid_int:
+            uid_filter.append(target_uid_int)
+
         arya_db = app.state.db
         
         if action == "wipe":
-            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
-            await arya_db.db.users.delete_one({"id": target_uid})
-            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
-            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
-            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
+            await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.support_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.story_requests.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.user_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.premium_feedback.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.premium_requests.delete_many({"telegram_id": {"$in": uid_filter}})
             return {"success": True, "message": "User data wiped completely."}
             
         elif action == "ban":
-            target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
-            await arya_db.db.users.delete_one({"id": target_uid})
-            await arya_db.db.orders.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
-            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
-            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": [target_uid, str(target_uid), target_uid_int]}})
+            await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.users.update_one(
                 {"id": target_uid},
                 {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App"}},
@@ -7190,32 +7132,43 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             story_id_str = payload.get("story_id")
             if not story_id_str:
                 raise HTTPException(status_code=400, detail="Missing story_id")
+
+            if story_id_str == "all":
+                await arya_db.db.users.update_one(
+                    {"id": {"$in": uid_filter}},
+                    {"$set": {"purchases": []}}
+                )
+                await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+                await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
+                await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+                return {"success": True, "message": "All story access removed from user."}
             
             # 1. Pull the story_id from users collection purchases
             await arya_db.db.users.update_one(
-                {"id": target_uid},
+                {"id": {"$in": uid_filter}},
                 {"$pull": {"purchases": story_id_str}}
             )
             
-            # 2. Delete the record from premium_purchases (support both ObjectId and string representations)
+            # 2. Delete the record from premium_purchases & purchases
             from bson.objectid import ObjectId
+            story_id_filter = [story_id_str]
             try:
-                target_uid_int = int(target_uid) if isinstance(target_uid, (int, str)) and str(target_uid).isdigit() else 0
-                story_id_filter = [story_id_str]
-                try:
-                    story_id_filter.append(ObjectId(story_id_str))
-                except Exception:
-                    pass
-                await arya_db.db.premium_purchases.delete_many({
-                    "user_id": {"$in": [target_uid, str(target_uid), target_uid_int]},
-                    "story_id": {"$in": story_id_filter}
-                })
-            except Exception as ex:
-                logger.error(f"Error deleting premium_purchases: {ex}")
+                story_id_filter.append(ObjectId(story_id_str))
+            except Exception:
+                pass
+
+            await arya_db.db.premium_purchases.delete_many({
+                "user_id": {"$in": uid_filter},
+                "story_id": {"$in": story_id_filter}
+            })
+            await arya_db.db.purchases.delete_many({
+                "user_id": {"$in": uid_filter},
+                "story_id": {"$in": story_id_filter}
+            })
                 
             # 3. Pull/modify in orders collection to decrement trending/popular count
             async for order in arya_db.db.orders.find({
-                "user_id": {"$in": [target_uid, str(target_uid)]},
+                "user_id": {"$in": uid_filter},
                 "status": {"$in": ["paid", "delivered"]},
                 "story_ids": story_id_str
             }):
@@ -7231,7 +7184,6 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                         {"$set": {"story_ids": new_story_ids}}
                     )
                     
-            # 4. Invalidate global stories cache so trending/popular counts update immediately
             global _stories_cache
             _stories_cache = None
             
@@ -7241,6 +7193,21 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
     except Exception as e:
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/admin/requests/{request_id}")
+async def delete_admin_request(request_id: str, telegram_id: str = ""):
+    if not is_admin(str(telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    try:
+        req_oid = ObjectId(request_id)
+        await arya_db.db.premium_requests.delete_one({"_id": req_oid})
+        await arya_db.db.premium_feedback.delete_one({"_id": req_oid})
+    except Exception:
+        await arya_db.db.premium_requests.delete_one({"id": request_id})
+        await arya_db.db.premium_feedback.delete_one({"id": request_id})
+    return {"success": True, "message": "Story request deleted successfully"}
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -9669,10 +9636,30 @@ async def ban_guard_middleware(request: Request, call_next):
             # We strictly DO NOT block or auto-ban innocent users based solely on IP addresses
             # because mobile carrier networks use shared/dynamic CGNAT IPs.
             is_blocked = False
-            # Paying users are immune to device-based auto-bans and can only be blocked if manually banned by admin.
+            # Paying users are immune to device-based auto-bans and auto-unblocked if auto-banned!
             if is_paid_user:
                 if banned_by_tg:
-                    is_blocked = True
+                    tg_reason = str(banned_by_tg.get("reason", "")).lower()
+                    if "auto-ban" in tg_reason or "alt of" in tg_reason or "strike" in tg_reason or "rapid" in tg_reason or "evasion" in tg_reason or banned_by_tg.get("status") == "flagged":
+                        # Auto-unban paid user on the fly!
+                        await db.db.premium_bans.delete_one({"_id": tg_id})
+                        await db.db.users.update_one({"id": tg_id}, {"$set": {"ban_status": {"is_banned": False, "ban_reason": ""}, "banned": False}})
+                        is_blocked = False
+                        banned_by_tg = None
+                    else:
+                        is_blocked = True
+                else:
+                    is_blocked = False
+                
+                # Also clean paid user's device/IP from banned_by_device / banned_by_ip records if present
+                if banned_by_device:
+                    try:
+                        await db.db.premium_bans.update_one({"_id": banned_by_device["_id"]}, {"$pull": {"device_ids": device_id}})
+                    except: pass
+                if banned_by_ip and ip and not _is_universal_ip(ip):
+                    try:
+                        await db.db.premium_bans.update_one({"_id": banned_by_ip["_id"]}, {"$pull": {"ips": ip}})
+                    except: pass
             else:
                 if banned_by_tg:
                     is_blocked = True
@@ -9715,7 +9702,7 @@ async def ban_guard_middleware(request: Request, call_next):
                     
                 # Rule B: New/unbanned Telegram ID on blocked Device (Alt account)
                 # Note: We do NOT auto-ban on blocked IP alone, only on blocked Device.
-                elif banned_by_device and tg_id and not banned_by_tg:
+                elif banned_by_device and tg_id and not banned_by_tg and not is_paid_user:
                     reason = f"Auto-ban: Alternative account detected on blocked Device"
                     user_name = f"Alt of User {banned_by_device['_id']}"
                         

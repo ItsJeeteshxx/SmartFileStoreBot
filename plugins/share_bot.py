@@ -80,8 +80,8 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
     if not abuse_cfg.get('enabled', True):
         return False   # Anti-Abuse is OFF — allow all requests without any check
 
-    # Owners / co-owners / whitelisted users are always exempt
-    if await _is_any_owner(user_id) or await db.is_whitelisted(user_id):
+    # Owners / co-owners / whitelisted users / Paid Users (with >= 1 purchased story) are always exempt
+    if await _is_any_owner(user_id) or await db.is_whitelisted(user_id) or await db.is_paid_user(user_id):
         return False
 
     # DB-stored values take priority; fall back to Config env vars
