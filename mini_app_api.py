@@ -6566,6 +6566,53 @@ async def delete_admin_banner(telegram_id: str, banner_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ── Admin Series endpoints ──────────────────────────────────────────────────
+@api_router.get("/admin/series")
+async def get_admin_series(telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        cursor = arya_db.db.premium_series.find({})
+        series = []
+        async for doc in cursor:
+            doc["id"] = str(doc.get("_id", ""))
+            doc["_id"] = str(doc.get("_id", ""))
+            series.append(doc)
+        return {"success": True, "data": series}
+    except Exception as e:
+        logger.error(f"Error fetching admin series: {e}")
+        return {"success": True, "data": []}
+
+@api_router.post("/admin/series")
+async def save_admin_series(data: dict = Body(...)):
+    try:
+        tg_id = str(data.get("telegram_id", ""))
+        if not is_admin(tg_id):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        s_id = data.get("series_id") or data.get("id")
+        if not s_id:
+            import uuid
+            s_id = f"series_{uuid.uuid4().hex[:8]}"
+            data["series_id"] = s_id
+        data.pop("_id", None)
+        await arya_db.db.premium_series.update_one({"series_id": s_id}, {"$set": data}, upsert=True)
+        return {"success": True, "series_id": s_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/admin/series/{series_id}")
+async def delete_admin_series(series_id: str, telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        await arya_db.db.premium_series.delete_one({"series_id": series_id})
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BUYERS MANAGEMENT
 # ─────────────────────────────────────────────────────────────────────────────
