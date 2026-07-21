@@ -7313,6 +7313,7 @@ class ManualPurchase(BaseModel):
 
 @api_router.post("/admin/manual-purchase")
 async def manual_purchase(data: ManualPurchase):
+    global _stories_cache
     from AryaPremium.config import Config
     try:
         user_id_int = int(data.telegram_id) if str(data.telegram_id).isdigit() else data.telegram_id
@@ -7371,7 +7372,6 @@ async def manual_purchase(data: ManualPurchase):
                 {"$set": purchase_record},
                 upsert=True
             )
-            global _stories_cache
             _stories_cache = None
             return {"success": True, "source": source_label, "note": "already_exists"}
 
@@ -7430,7 +7430,6 @@ async def manual_purchase(data: ManualPurchase):
         # Skip record_purchased_stories — the upserts above already cover premium_purchases
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
         
-        global _stories_cache
         _stories_cache = None
 
         return {"success": True, "source": source_label}
