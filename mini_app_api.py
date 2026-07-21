@@ -4182,13 +4182,31 @@ async def get_my_purchases(telegram_id: str):
 # GET /admin/stats
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # --- ADMIN STATS CACHE ---
+_processed_buyers_cache = None
+_processed_buyers_cache_time = 0.0
+PROCESSED_BUYERS_CACHE_TTL = 45.0  # Cache for 45 seconds
+
+def invalidate_buyers_cache():
+    global _processed_buyers_cache_time
+    _processed_buyers_cache_time = 0.0
+
 async def fetch_processed_buyers_data(arya_db):
     """
     Unified calculation engine for buyers, orders, revenue, and story rankings.
     Guarantees 100% data consistency across Dashboard, Buyers Tab, and Story Ranking.
     Filters out wiped users and removed story access.
     """
-    existing_users = await arya_db.db.users.find({}).to_list(length=200000)
+    global _processed_buyers_cache, _processed_buyers_cache_time
+    now = time.time()
+    if _processed_buyers_cache is not None and (now - _processed_buyers_cache_time < PROCESSED_BUYERS_CACHE_TTL):
+        return _processed_buyers_cache
+
+    # Projections for ultra-fast query execution
+    user_projection = {
+        "id": 1, "purchases": 1, "first_name": 1, "last_name": 1, 
+        "username": 1, "photo_url": 1, "joined_date": 1, "joined_at": 1, "created_at": 1
+    }
+    existing_users = await arya_db.db.users.find({}, user_projection).to_list(length=200000)
     existing_user_ids = set()
     user_purchases_map = {}  # uid_str -> set of story_id_strs
     user_doc_map = {}        # uid_str -> user_doc
@@ -4208,17 +4226,33 @@ async def fetch_processed_buyers_data(arya_db):
     stories = await arya_db.db.premium_stories.find({}).to_list(length=10000)
     story_cache_by_id = {}
     story_cache_by_oid = {}
+    sid_to_canonical = {}
+
     for s in stories:
         sid_str = str(s.get("story_id", ""))
         soid_str = str(s.get("_id", ""))
         price = float(s.get("discounted_price") or s.get("price") or 99.0)
         s["_clean_price"] = price
-        if sid_str: story_cache_by_id[sid_str] = s
-        if soid_str: story_cache_by_oid[soid_str] = s
+        canon = sid_str or soid_str
+        if sid_str:
+            story_cache_by_id[sid_str] = s
+            sid_to_canonical[sid_str] = canon
+        if soid_str:
+            story_cache_by_oid[soid_str] = s
+            sid_to_canonical[soid_str] = canon
 
-    orders = await arya_db.db.orders.find({}).sort("created_at", -1).to_list(length=200000)
-    checkouts = await arya_db.db.premium_checkout.find({}).sort("created_at", -1).to_list(length=200000)
-    purchases = await arya_db.db.premium_purchases.find({}).sort("purchased_at", -1).to_list(length=200000)
+    # Pre-build user canonical purchases map for O(1) set lookup
+    user_purchases_canonical_map = {}
+    for uid_str, p_set in user_purchases_map.items():
+        c_set = set()
+        for p_id in p_set:
+            c_set.add(sid_to_canonical.get(p_id, p_id))
+            c_set.add(p_id)
+        user_purchases_canonical_map[uid_str] = c_set
+
+    orders = await arya_db.db.orders.find({}).sort("created_at", -1).to_list(length=100000)
+    checkouts = await arya_db.db.premium_checkout.find({}).sort("created_at", -1).to_list(length=100000)
+    purchases = await arya_db.db.premium_purchases.find({}).sort("purchased_at", -1).to_list(length=100000)
 
     buyers_map = {}
     added_paid_stories = {} # uid_str -> set of story_id_strs
@@ -4264,20 +4298,15 @@ async def fetch_processed_buyers_data(arya_db):
         story_id_str = str(story_id) if story_id else ""
         if not story_id_str: continue
 
-        user_active_stories = user_purchases_map.get(uid_str, set())
-        if user_active_stories and story_id_str not in user_active_stories:
-            matched_sid = None
-            for active_sid in user_active_stories:
-                st = story_cache_by_oid.get(active_sid) or story_cache_by_id.get(active_sid)
-                if st and (str(st.get("_id")) == story_id_str or str(st.get("story_id")) == story_id_str or active_sid == story_id_str):
-                    matched_sid = active_sid
-                    break
-            if not matched_sid:
-                continue
+        user_active = user_purchases_canonical_map.get(uid_str, set())
+        story_canon = sid_to_canonical.get(story_id_str, story_id_str)
+        if user_active and story_id_str not in user_active and story_canon not in user_active:
+            continue
 
         if uid_str not in added_paid_stories:
             added_paid_stories[uid_str] = set()
         added_paid_stories[uid_str].add(story_id_str)
+        added_paid_stories[uid_str].add(story_canon)
 
         story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
         sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
@@ -4333,16 +4362,11 @@ async def fetch_processed_buyers_data(arya_db):
         except: amt = 0
 
         if status_raw in ["paid", "delivered"]:
-            user_active_stories = user_purchases_map.get(uid_str, set())
+            user_active = user_purchases_canonical_map.get(uid_str, set())
             valid_sids = []
             for sid_s in story_ids:
-                if user_active_stories and sid_s not in user_active_stories:
-                    for active_sid in user_active_stories:
-                        st = story_cache_by_oid.get(active_sid) or story_cache_by_id.get(active_sid)
-                        if st and (str(st.get("_id")) == sid_s or str(st.get("story_id")) == sid_s or active_sid == sid_s):
-                            valid_sids.append(sid_s)
-                            break
-                else:
+                s_canon = sid_to_canonical.get(sid_s, sid_s)
+                if not user_active or sid_s in user_active or s_canon in user_active:
                     valid_sids.append(sid_s)
             if not valid_sids:
                 continue
@@ -4404,12 +4428,13 @@ async def fetch_processed_buyers_data(arya_db):
 
         story_id = c.get("story_id")
         story_id_str = str(story_id) if story_id else ""
+        story_canon = sid_to_canonical.get(story_id_str, story_id_str)
 
         if status_label == "paid":
-            user_active_stories = user_purchases_map.get(uid_str, set())
-            if user_active_stories and story_id_str not in user_active_stories:
+            user_active = user_purchases_canonical_map.get(uid_str, set())
+            if user_active and story_id_str not in user_active and story_canon not in user_active:
                 continue
-            if uid_str in added_paid_stories and story_id_str in added_paid_stories[uid_str]:
+            if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
                 continue
 
         story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
@@ -4486,7 +4511,7 @@ async def fetch_processed_buyers_data(arya_db):
 
     buyers_list.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
 
-    return {
+    res = {
         "buyers": buyers_list,
         "total_buyers_count": len(paid_user_ids),
         "total_orders_count": total_paid_orders_count,
@@ -4494,6 +4519,10 @@ async def fetch_processed_buyers_data(arya_db):
         "miniapp_revenue": miniapp_rev,
         "bot_revenue": bot_rev
     }
+
+    _processed_buyers_cache = res
+    _processed_buyers_cache_time = now
+    return res
 
 @api_router.get("/admin/stats")
 async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
