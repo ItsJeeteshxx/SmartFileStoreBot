@@ -7341,6 +7341,40 @@ async def manual_purchase(data: ManualPurchase):
         source_raw = str(data.source or "miniapp").lower()
         source_label = "bot" if "bot" in source_raw else "miniapp"
         
+        # ── DUPLICATE CHECK: If user already has a paid/approved order for this story, skip creating another ──
+        existing_order = await arya_db.db.orders.find_one({
+            "user_id": {"$in": uid_filter},
+            "story_ids": story_id_str,
+            "status": {"$in": ["paid", "approved", "completed", "delivered"]}
+        })
+        if existing_order:
+            logger.info(f"Manual purchase: order already exists for user {target_uid}, story {story_id_str} — skipping duplicate order creation")
+            # Still ensure user record is up-to-date
+            await arya_db.db.users.update_one(
+                {"id": {"$in": uid_filter}},
+                {"$addToSet": {"purchases": story_id_str}},
+            )
+            purchase_record = {
+                "user_id": target_uid,
+                "story_id": story_id_str,
+                "title": story.get("story_name_en", story.get("title", "")),
+                "source": source_label,
+                "paid_at": datetime.now(timezone.utc).isoformat()
+            }
+            await arya_db.db.premium_purchases.update_one(
+                {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
+                {"$set": purchase_record},
+                upsert=True
+            )
+            await arya_db.db.purchases.update_one(
+                {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
+                {"$set": purchase_record},
+                upsert=True
+            )
+            global _stories_cache
+            _stories_cache = None
+            return {"success": True, "source": source_label, "note": "already_exists"}
+
         # Upsert user
         user = await arya_db.db.users.find_one({"id": {"$in": uid_filter}})
         if not user:
@@ -7392,9 +7426,9 @@ async def manual_purchase(data: ManualPurchase):
             upsert=True
         )
         
-        # Log and audit records
+        # Log payment to channel (de-duplicated internally by trigger_payment_log_from_order)
+        # Skip record_purchased_stories — the upserts above already cover premium_purchases
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
-        asyncio.create_task(record_purchased_stories(order_doc))
         
         global _stories_cache
         _stories_cache = None
