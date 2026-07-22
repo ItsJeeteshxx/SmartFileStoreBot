@@ -28,6 +28,7 @@ _inject_env(os.path.join(_PARENT_DIR, ".env"))
 _inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 import uuid
+from purchase_dm_helper import send_purchase_success_dm
 import httpx
 try:
     import paytmchecksum
@@ -1583,6 +1584,7 @@ async def verify_payment(payload: dict):
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
     return {"success": True, "message": "Payment verified successfully"}
 
@@ -1673,6 +1675,7 @@ async def razorpay_callback(
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
@@ -2143,6 +2146,7 @@ async def verify_upi_utr(payload: dict):
     # 8. Trigger Logs
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(send_purchase_success_dm(db, telegram_id, order_doc=order_doc, payment_method="UPI (UTR)", verified_by="Auto Verified By System"))
 
     return {"success": True, "message": "UPI payment verified successfully!", "order_id": oid, "invoice_number": invoice_number, "payer_name": payer_name}
 
@@ -2399,6 +2403,7 @@ async def razorpay_webhook(request: Request):
             updated_order = {**order, "status": "paid", "amount_paid": amount_paid, "source": "razorpay_link_webhook"}
             asyncio.create_task(trigger_payment_log_from_order(updated_order))
             asyncio.create_task(record_purchased_stories(updated_order))
+            asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=updated_order, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
             logger.info(f"Webhook: Payment Link {payment_link_id} paid — granted {len(story_ids)} stories to user {tg_id}")
 
@@ -2434,6 +2439,7 @@ async def razorpay_webhook(request: Request):
                 updated_order = {**order, "status": "paid", "razorpay_payment_id": rzp_payment_id, "source": "razorpay_sdk_webhook"}
                 asyncio.create_task(trigger_payment_log_from_order(updated_order))
                 asyncio.create_task(record_purchased_stories(updated_order))
+                asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=updated_order, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
                 logger.info(f"Webhook: payment.captured {rzp_payment_id} — granted {len(story_ids)} stories to user {tg_id}")
 
@@ -2696,41 +2702,9 @@ async def oxapay_webhook(request: Request):
     updated_order = {**order, "status": "paid", "payment_id": data.get("txID", ""), "paid_currency": data.get("payCurrency", "")}
     asyncio.create_task(trigger_payment_log_from_order(updated_order))
     asyncio.create_task(record_purchased_stories(updated_order))
+    asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Crypto (Oxapay)", verified_by="Auto Verified By System"))
 
     logger.info(f"OxaPay ✅ unlocked {len(story_ids)} stories for user={user_id} trackId={track_id}")
-
-    # === Send Success Notification to user ===
-    async def _send_oxapay_success_dm():
-        try:
-            bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
-            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
-            if not bot_token or not user_id:
-                return
-            story_names = order.get("story_names", [])
-            story_list = "\n".join([f"  • {n}" for n in story_names]) if story_names else "  • Your purchased stories"
-            success_text = (
-                f"✅ <b>Payment Successful!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Your crypto payment has been confirmed and stories are now unlocked! 🎉\n\n"
-                f"<b>Unlocked Stories:</b>\n{story_list}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📚 Open <b>Arya Premium</b> to listen to them now!"
-            )
-            keyboard = {"inline_keyboard": [[{
-                "text": "📚 Open Arya Premium",
-                "url": f"https://t.me/{bot_username}/app"
-            }]]}
-            import aiohttp as _aiohttp
-            async with _aiohttp.ClientSession() as _sess:
-                await _sess.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    json={"chat_id": int(user_id), "text": success_text, "parse_mode": "HTML",
-                          "reply_markup": keyboard, "disable_web_page_preview": True},
-                    timeout=5
-                )
-        except Exception as _e:
-            logger.warning(f"OxaPay success DM failed: {_e}")
-    asyncio.create_task(_send_oxapay_success_dm())
 
     return {"success": True, "message": "Payment verified and processed"}
 
@@ -3992,23 +3966,15 @@ async def resolve_order_review(payload: dict):
         asyncio.create_task(trigger_payment_log_from_order(updated_order))
         asyncio.create_task(record_purchased_stories(updated_order))
         
-        # Send confirmation message to user via Telegram Bot (optional)
-        try:
-            from AryaPremium.config import Config
-            import aiohttp
-            token = Config.MGMT_BOT_TOKEN
-            if token and user_id:
-                async with aiohttp.ClientSession() as session:
-                    confirm_txt = (
-                        f"✅ <b>Order Approved!</b>\n"
-                        f"Your payment proof for order <code>{order_id}</code> has been verified and approved.\n"
-                        f"You can now access your stories from the Library!"
-                    )
-                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                        "chat_id": user_id, "text": confirm_txt, "parse_mode": "HTML"
-                    }, timeout=3)
-        except Exception:
-            pass
+        # Send confirmation message to user via Telegram Bot
+        asyncio.create_task(send_purchase_success_dm(
+            arya_db,
+            user_id,
+            order_doc=updated_order,
+            payment_method=order.get("source", "UPI (UTR)"),
+            verified_by="Access Granted By Team",
+            is_admin_manual=True
+        ))
             
     else:
         # Reject review

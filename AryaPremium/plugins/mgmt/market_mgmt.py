@@ -1626,6 +1626,21 @@ async def market_callback(client, query):
                     except Exception:
                         pass
                     asyncio.create_task(dispatch_delivery_choice(u_cli, checkout['user_id'], st))
+                
+                try:
+                    from purchase_dm_helper import send_purchase_success_dm
+                    asyncio.create_task(send_purchase_success_dm(
+                        db=db,
+                        user_id=checkout['user_id'],
+                        story_ids=[str(checkout['story_id'])],
+                        order_id=order_id,
+                        amount=amount_int,
+                        payment_method="UPI (UTR)",
+                        verified_by="Access Granted By Team",
+                        is_admin_manual=True
+                    ))
+                except Exception as _dm_err:
+                    logger.warning(f"Failed to send purchase DM on manual approval: {_dm_err}")
 
         elif cmd.startswith("pnd_rej_"):
             p_id = cmd.split("_")[2]
@@ -2847,6 +2862,20 @@ async def _approve_payment_flow(client, user_id, p_id):
             "amount": real_amt,
             "order_id": order_id
         })
+        try:
+            from purchase_dm_helper import send_purchase_success_dm
+            asyncio.create_task(send_purchase_success_dm(
+                db=db,
+                user_id=checkout['user_id'],
+                story_ids=[str(checkout.get('story_id'))] if checkout.get('story_id') else [],
+                order_id=order_id,
+                amount=real_amt,
+                payment_method=checkout.get("method", "UPI (UTR)"),
+                verified_by="Access Granted By Team",
+                is_admin_manual=True
+            ))
+        except Exception as _dm_err:
+            logger.warning(f"Failed to send purchase DM on manual UTR approval: {_dm_err}")
 
         # Log payment
         from utils import log_payment, log_arya_event
