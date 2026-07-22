@@ -85,13 +85,17 @@ async def send_announcement(bot: Client, pending_info: dict):
     try:
         from database import db
         from pyrogram.enums import ParseMode
-        story_id = str(pending_info.get("story_id", ""))
-        if story_id:
+        story_id_raw = str(pending_info.get("story_id", ""))
+        if story_id_raw:
+            from bson.objectid import ObjectId
+            match_list = [story_id_raw]
+            if story_id_raw.isdigit():
+                match_list.append(int(story_id_raw))
+            if ObjectId.is_valid(story_id_raw):
+                match_list.append(ObjectId(story_id_raw))
+
             purchased_query = {
-                "$or": [
-                    {"purchases": story_id},
-                    {"purchases": int(story_id) if story_id.isdigit() else story_id}
-                ]
+                "purchases": {"$in": match_list}
             }
             users_list = await db.db.users.find(purchased_query).to_list(length=None)
             prem_users_list = await db.db.premium_users.find(purchased_query).to_list(length=None)
