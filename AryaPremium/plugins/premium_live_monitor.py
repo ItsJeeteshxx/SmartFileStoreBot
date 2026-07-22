@@ -81,6 +81,54 @@ async def send_announcement(bot: Client, pending_info: dict):
     except Exception as e:
         logger.error(f"[Premium Monitor] Failed to send announcement to {channel_id}: {e}")
 
+    # ── Dispatch Bot DM notifications to users who purchased this ongoing story ──
+    try:
+        from database import db
+        from pyrogram.enums import ParseMode
+        story_id = str(pending_info.get("story_id", ""))
+        if story_id:
+            purchased_query = {
+                "$or": [
+                    {"purchases": story_id},
+                    {"purchases": int(story_id) if story_id.isdigit() else story_id}
+                ]
+            }
+            users_list = await db.db.users.find(purchased_query).to_list(length=None)
+            prem_users_list = await db.db.premium_users.find(purchased_query).to_list(length=None)
+            
+            buyer_map = {}
+            for u in (users_list + prem_users_list):
+                uid = u.get("id") or u.get("telegram_id")
+                if uid:
+                    buyer_map[int(uid)] = u
+            
+            for uid, buyer in buyer_map.items():
+                if buyer.get("ongoing_updates_enabled", True) is False:
+                    continue
+
+                user_name = buyer.get("first_name") or buyer.get("name") or buyer.get("username") or "Listener"
+                user_name_escaped = html.escape(str(user_name))
+                
+                dm_text = f"""<blockquote>प्रिय मित्र {user_name_escaped} , {story_name} में एपिसोड {ep_num} अपडेट कर दिए गए हैं। अब इस कहानी में कुल {total_eps} एपिसोड उपलब्ध हैं।
+नए एपिसोड सुनने के लिए आर्या प्रीमियम बोट या मिनी ऐप में जाएँ। वहाँ "मेरी स्टोरीज" अथवा ऐप की लाइब्रेरी में "खरीदी गई" सेक्शन खोलकर नए एपिसोड प्राप्त करें और उनका आनंद लें।
+धन्यवाद।</blockquote>
+
+<blockquote>Dear Listener {user_name_escaped} , Episodes {ep_num} have been added to {story_name}. The story now has a total of {total_eps} episodes available.
+To listen to the latest episodes, open the Arya Premium Bot or Mini App. Go to "My Stories" or the "Purchased" section in the app library to access and enjoy the newly updated episodes.
+Thank you.</blockquote>"""
+
+                try:
+                    await bot.send_message(
+                        chat_id=uid,
+                        text=dm_text,
+                        parse_mode=ParseMode.HTML
+                    )
+                    await asyncio.sleep(0.05)
+                except Exception as dm_err:
+                    logger.warning(f"[Premium Monitor] Could not send ongoing update DM to user {uid}: {dm_err}")
+    except Exception as e:
+        logger.error(f"[Premium Monitor] Error dispatching ongoing update DMs: {e}")
+
 async def start_premium_live_monitor(bot: Client):
     """
     Background job that runs every 5 minutes to poll source channels 

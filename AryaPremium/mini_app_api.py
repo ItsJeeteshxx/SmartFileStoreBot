@@ -2991,9 +2991,45 @@ async def submit_support(
         raise HTTPException(status_code=500, detail="Failed to submit support request")
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
+# POST /user/preferences
+# ─────────────────────────────────────────────────────────────────
+@api_router.post("/user/preferences")
+async def update_user_preferences(request: Request):
+    """Updates user preference toggles (e.g. ongoing_updates_enabled)."""
+    arya_db = app.state.db
+    try:
+        data = await request.json()
+        telegram_id = data.get("telegram_id")
+        if not telegram_id:
+            return {"success": False, "message": "Missing telegram_id"}
+            
+        user_id_int = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
+        user_id_str = str(user_id_int)
+        
+        updates = {}
+        if "ongoingUpdatesEnabled" in data:
+            updates["ongoing_updates_enabled"] = bool(data["ongoingUpdatesEnabled"])
+            
+        if updates:
+            await arya_db.db.users.update_many(
+                {"id": {"$in": [user_id_int, user_id_str]}},
+                {"$set": updates}
+            )
+            await arya_db.db.premium_users.update_many(
+                {"id": {"$in": [user_id_int, user_id_str]}},
+                {"$set": updates}
+            )
+            
+        return {"success": True, "data": updates}
+    except Exception as e:
+        logger.error(f"Failed to update user preferences: {e}")
+        return {"success": False, "message": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────
 # GET /my-requests
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
 @api_router.get("/my-requests")
 async def get_my_requests(telegram_id: str):
     """Fetches user's story requests — reads from premium_requests (unified) + legacy feedback."""
