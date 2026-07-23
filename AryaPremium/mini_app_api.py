@@ -3376,8 +3376,16 @@ async def fetch_processed_buyers_data(arya_db):
     checkouts = await arya_db.db.premium_checkout.find({}).sort("created_at", -1).to_list(length=100000)
     purchases = await arya_db.db.premium_purchases.find({}).sort("purchased_at", -1).to_list(length=100000)
 
-    buyers_map = {}
-    added_paid_stories = {} # uid_str -> set of story_id_strs
+    def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
+        raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
+        if raw_oid:
+            oid_str = str(raw_oid).strip()
+            if oid_str and not any(oid_str.startswith(p) for p in ("checkout_", "purchase_", "order_", "uid_", "OD_", "OD-")):
+                return oid_str
+        from datetime import datetime as _dt
+        import random
+        pfx = "AB" if "bot" in str(source).lower() else "AM"
+        return f"{pfx}-{uid_str}-{_dt.now().strftime('%d%m')}-{random.randint(10000, 99999)}"
 
     def get_or_create_buyer(uid_str, fallback_doc=None, fallback_source="miniapp"):
         if uid_str not in buyers_map:
@@ -3451,7 +3459,7 @@ async def fetch_processed_buyers_data(arya_db):
             b["source"] = "both"
 
         b["payments"].append({
-            "order_id": p.get("order_id") or f"purchase_{p.get('_id')}",
+            "order_id": _clean_order_id_value(p, uid_str, [story_id_str], source=source_label),
             "story_id": story_id_str,
             "story_name": sname,
             "amount": amt,
@@ -3521,7 +3529,7 @@ async def fetch_processed_buyers_data(arya_db):
         method_str = str(doc.get("method", "RAZORPAY" if "razor" in str(doc.get("source","")).lower() else "UPI")).upper()
 
         b["payments"].append({
-            "order_id": doc.get("order_id") or f"order_{doc.get('_id')}",
+            "order_id": _clean_order_id_value(doc, uid_str, story_ids, source=source_label),
             "story_id": story_ids[0] if story_ids else "",
             "story_name": ", ".join(story_names) if story_names else "Store Order",
             "amount": amt,
@@ -3577,7 +3585,7 @@ async def fetch_processed_buyers_data(arya_db):
             b["source"] = "both"
 
         b["payments"].append({
-            "order_id": f"checkout_{c.get('_id')}",
+            "order_id": _clean_order_id_value(c, uid_str, [story_id_str], source="bot"),
             "story_id": story_id_str,
             "story_name": sname,
             "amount": amt,
