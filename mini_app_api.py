@@ -7263,6 +7263,8 @@ class ManualPurchase(BaseModel):
     story_id: str
     amount: float
     source: Optional[str] = "miniapp"
+    method: Optional[str] = "UPI (QR)"
+    utr_number: Optional[str] = None
 
 @api_router.post("/admin/manual-purchase")
 async def manual_purchase(data: ManualPurchase):
@@ -7294,6 +7296,8 @@ async def manual_purchase(data: ManualPurchase):
 
         source_raw = str(data.source or "miniapp").lower()
         source_label = "bot" if "bot" in source_raw else "miniapp"
+        method_label = data.method or "UPI (QR)"
+        utr_clean = str(data.utr_number or "").strip() if data.utr_number else None
         
         # ── DUPLICATE CHECK: If user already has a paid/approved order for this story, skip creating another ──
         existing_order = await arya_db.db.orders.find_one({
@@ -7325,6 +7329,17 @@ async def manual_purchase(data: ManualPurchase):
                 {"$set": purchase_record},
                 upsert=True
             )
+
+            # Send Bot DM Purchase Success Message to user
+            asyncio.create_task(send_purchase_success_dm(
+                arya_db,
+                target_uid,
+                order_doc=existing_order,
+                payment_method=method_label,
+                verified_by="Access Granted By Team",
+                is_admin_manual=True
+            ))
+
             _stories_cache = None
             return {"success": True, "source": source_label, "note": "already_exists"}
 
@@ -7344,7 +7359,7 @@ async def manual_purchase(data: ManualPurchase):
                 {"$addToSet": {"purchases": story_id_str}}
             )
             
-        # Insert Order with explicit source
+        # Insert Order with explicit source and method
         manual_oid = await _make_arya_order_id(arya_db, str(target_uid), [story_id_str], source=source_label)
         order_doc = {
             "order_id": manual_oid,
@@ -7354,11 +7369,36 @@ async def manual_purchase(data: ManualPurchase):
             "story_ids": [story_id_str],
             "story_names": [story.get("story_name_en", story.get("title", story_id_str))],
             "total": data.amount,
+            "method": method_label,
             "status": "paid",
             "source": source_label,
             "created_at": datetime.now(timezone.utc)
         }
+        if utr_clean:
+            order_doc["utr"] = utr_clean
+            order_doc["utr_number"] = utr_clean
+
         await arya_db.db.orders.insert_one(order_doc)
+
+        # Record 12-digit UTR in used_utrs collection if provided
+        if utr_clean and len(utr_clean) == 12 and utr_clean.isdigit():
+            try:
+                await arya_db.db.used_utrs.update_one(
+                    {"utr": utr_clean},
+                    {"$set": {
+                        "utr": utr_clean,
+                        "user_id": target_uid,
+                        "order_id": manual_oid,
+                        "story_id": story_id_str,
+                        "amount": data.amount,
+                        "method": method_label,
+                        "added_by": "admin",
+                        "used_at": datetime.now(timezone.utc)
+                    }},
+                    upsert=True
+                )
+            except Exception as utr_err:
+                logger.warning(f"Failed to save UTR to used_utrs: {utr_err}")
 
         # Upsert into premium_purchases and purchases so all endpoints see it instantly
         purchase_record = {
@@ -7379,9 +7419,18 @@ async def manual_purchase(data: ManualPurchase):
             upsert=True
         )
         
-        # Log payment to channel (de-duplicated internally by trigger_payment_log_from_order)
-        # Skip record_purchased_stories — the upserts above already cover premium_purchases
+        # Log payment to channel
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
+
+        # Send Bot DM Purchase Success Message to user!
+        asyncio.create_task(send_purchase_success_dm(
+            arya_db,
+            target_uid,
+            order_doc=order_doc,
+            payment_method=method_label,
+            verified_by="Access Granted By Team",
+            is_admin_manual=True
+        ))
         
         _stories_cache = None
 

@@ -5546,6 +5546,8 @@ class ManualPurchase(BaseModel):
     story_id: str
     amount: float
     source: Optional[str] = "miniapp"
+    method: Optional[str] = "UPI (QR)"
+    utr_number: Optional[str] = None
 
 @api_router.post("/admin/manual-purchase")
 async def manual_purchase(data: ManualPurchase):
@@ -5576,6 +5578,8 @@ async def manual_purchase(data: ManualPurchase):
 
         source_raw = str(data.source or "miniapp").lower()
         source_label = "bot" if "bot" in source_raw else "miniapp"
+        method_label = data.method or "UPI (QR)"
+        utr_clean = str(data.utr_number or "").strip() if data.utr_number else None
         
         # Upsert user
         user = await arya_db.db.users.find_one({"id": {"$in": uid_filter}})
@@ -5593,20 +5597,46 @@ async def manual_purchase(data: ManualPurchase):
                 {"$addToSet": {"purchases": story_id_str}}
             )
             
-        # Insert Order with explicit source
+        # Insert Order with explicit source and method
+        manual_oid = f"MANUAL_{target_uid}_{int(datetime.now().timestamp())}"
         order_doc = {
-            "order_id": f"MANUAL_{target_uid}_{int(datetime.now().timestamp())}",
+            "order_id": manual_oid,
             "user_id": target_uid,
             "username": data.username,
             "first_name": data.first_name,
             "story_ids": [story_id_str],
             "story_names": [story.get("story_name_en", story.get("title", story_id_str))],
             "total": data.amount,
+            "method": method_label,
             "status": "paid",
             "source": source_label,
             "created_at": datetime.now(timezone.utc)
         }
+        if utr_clean:
+            order_doc["utr"] = utr_clean
+            order_doc["utr_number"] = utr_clean
+
         await arya_db.db.orders.insert_one(order_doc)
+
+        # Record 12-digit UTR in used_utrs collection if provided
+        if utr_clean and len(utr_clean) == 12 and utr_clean.isdigit():
+            try:
+                await arya_db.db.used_utrs.update_one(
+                    {"utr": utr_clean},
+                    {"$set": {
+                        "utr": utr_clean,
+                        "user_id": target_uid,
+                        "order_id": manual_oid,
+                        "story_id": story_id_str,
+                        "amount": data.amount,
+                        "method": method_label,
+                        "added_by": "admin",
+                        "used_at": datetime.now(timezone.utc)
+                    }},
+                    upsert=True
+                )
+            except Exception as utr_err:
+                logger.warning(f"Failed to save UTR to used_utrs: {utr_err}")
 
         # Upsert into premium_purchases and purchases so all endpoints see it instantly
         purchase_record = {
@@ -5630,6 +5660,16 @@ async def manual_purchase(data: ManualPurchase):
         # Log and audit records
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
         asyncio.create_task(record_purchased_stories(order_doc))
+
+        # Send Bot DM Purchase Success Message to user!
+        asyncio.create_task(send_purchase_success_dm(
+            arya_db,
+            target_uid,
+            order_doc=order_doc,
+            payment_method=method_label,
+            verified_by="Access Granted By Team",
+            is_admin_manual=True
+        ))
         
         global _stories_cache
         _stories_cache = None

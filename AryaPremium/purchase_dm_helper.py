@@ -16,18 +16,18 @@ GREETING_TEMPLATES = [
 
 def format_payment_method_display(method_raw: Optional[str]) -> str:
     if not method_raw:
-        return "UPI (UTR)"
+        return "UPI (QR)"
     m = str(method_raw).strip().lower()
-    if "utr" in m or "upi" in m:
-        return "UPI (UTR)"
-    elif "oxapay" in m or "crypto" in m:
-        return "Crypto (Oxapay)"
+    if "qr" in m or "utr" in m or m == "upi" or "upi (qr)" in m or "manual_upi" in m:
+        return "UPI (QR)"
     elif "payu" in m:
-        return "PayU"
-    elif "paytm" in m or "pg" in m:
-        return "PG (Paytm Payment Gateway)"
+        return "PayU PG"
+    elif "paytm" in m:
+        return "Paytm PG"
     elif "razorpay" in m or "rzp" in m:
-        return "Razorpay"
+        return "Razorpay PG"
+    elif "oxapay" in m or "crypto" in m:
+        return "Crypto"
     else:
         return str(method_raw).strip()
 
@@ -108,10 +108,13 @@ def build_purchase_complete_message(
     )
 
     # 6. Bottom 3 Quoteblocks (NO 1-line gap between them)
+    channel_link = "https://t.me/AryaPremiumTG"
     bottom_quotes = (
         "<blockquote>Need it again later ? Just request delivery from there.</blockquote>\n"
         '<blockquote>The guide below will answer almost everything before you ask. <a href="https://t.me/StoriesLinkopningguide"><b>Guide</b></a></blockquote>\n'
-        "<blockquote>Thank you for supporting Arya Premium. Every purchase helps us bring you more stories.</blockquote>"
+        '<blockquote>Thank you for supporting Arya Premium. Every purchase helps us bring you more stories.\n\n'
+        f'📢 <b>If you want to receive new updates related to Arya Premium in the future:</b>\n'
+        f'👉 <b><a href="{channel_link}">Join Arya Premium Channel (@AryaPremiumTG)</a></b></blockquote>'
     )
 
     return f"{quote_header}\n\n{greeting_text}\n\n{details_block}{ongoing_block}\n\n{access_header_quote}\n{access_items}\n\n{bottom_quotes}"
