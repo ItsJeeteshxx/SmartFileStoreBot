@@ -99,7 +99,7 @@ def build_purchase_complete_message(
 
     # Below it, NOT in quote block, with direct links for Purchased and My Stories
     clean_bot = bot_username.replace("@", "") if bot_username else "UseAryaBot"
-    purchased_link = f"https://t.me/{clean_bot}/app?startapp=library"
+    purchased_link = f"https://t.me/{clean_bot}/apminibyarya?startapp=purchased"
     mystories_link = f"https://t.me/{clean_bot}?start=mystories"
 
     access_items = (
