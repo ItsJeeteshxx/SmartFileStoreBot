@@ -4285,9 +4285,9 @@ async def get_my_purchases(telegram_id: str):
         logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
 # GET /admin/stats
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
 _buyers_data_lock = asyncio.Lock()
 _processed_buyers_cache = None
 _processed_buyers_cache_time = 0.0
@@ -4371,283 +4371,286 @@ async def fetch_processed_buyers_data(arya_db):
         checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
         purchases = await arya_db.db.premium_purchases.find({}, pur_proj).sort("purchased_at", -1).to_list(length=50000)
 
-    def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
-        raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
-        if raw_oid:
-            oid_str = str(raw_oid).strip()
-            if oid_str and not any(oid_str.startswith(p) for p in ("checkout_", "purchase_", "order_", "uid_", "OD_", "OD-")):
-                return oid_str
-        from datetime import datetime as _dt
-        import random
-        pfx = "AB" if "bot" in str(source).lower() else "AM"
-        return f"{pfx}-{uid_str}-{_dt.now().strftime('%d%m')}-{random.randint(10000, 99999)}"
+        buyers_map = {}
+        added_paid_stories = {}  # uid_str -> set of story_id_strs
 
-    def get_or_create_buyer(uid_str, fallback_doc=None, fallback_source="miniapp"):
-        if uid_str not in buyers_map:
-            u_doc = user_doc_map.get(uid_str) or fallback_doc or {}
-            _fn = (u_doc.get("first_name") or (fallback_doc.get("first_name") if fallback_doc else "") or "").strip()
-            _ln = (u_doc.get("last_name") or "").strip()
-            _full = " ".join(filter(None, [_fn, _ln])) or u_doc.get("username", (fallback_doc.get("username") if fallback_doc else "") or "") or f"User {uid_str}"
-            _uname = u_doc.get("username", (fallback_doc.get("username") if fallback_doc else "Unknown"))
-            _photo = u_doc.get("photo_url", "")
-            j_date = u_doc.get("joined_date") or u_doc.get("joined_at") or u_doc.get("created_at") or datetime.now(timezone.utc)
-            j_str = j_date.isoformat() if isinstance(j_date, datetime) else str(j_date)
+        def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
+            raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
+            if raw_oid:
+                oid_str = str(raw_oid).strip()
+                if oid_str and not any(oid_str.startswith(p) for p in ("checkout_", "purchase_", "order_", "uid_", "OD_", "OD-")):
+                    return oid_str
+            from datetime import datetime as _dt
+            import random
+            pfx = "AB" if "bot" in str(source).lower() else "AM"
+            return f"{pfx}-{uid_str}-{_dt.now().strftime('%d%m')}-{random.randint(10000, 99999)}"
+
+        def get_or_create_buyer(uid_str, fallback_doc=None, fallback_source="miniapp"):
+            if uid_str not in buyers_map:
+                u_doc = user_doc_map.get(uid_str) or fallback_doc or {}
+                _fn = (u_doc.get("first_name") or (fallback_doc.get("first_name") if fallback_doc else "") or "").strip()
+                _ln = (u_doc.get("last_name") or "").strip()
+                _full = " ".join(filter(None, [_fn, _ln])) or u_doc.get("username", (fallback_doc.get("username") if fallback_doc else "") or "") or f"User {uid_str}"
+                _uname = u_doc.get("username", (fallback_doc.get("username") if fallback_doc else "Unknown"))
+                _photo = u_doc.get("photo_url", "")
+                j_date = u_doc.get("joined_date") or u_doc.get("joined_at") or u_doc.get("created_at") or datetime.now(timezone.utc)
+                j_str = j_date.isoformat() if isinstance(j_date, datetime) else str(j_date)
+                
+                try: uid_val = int(uid_str)
+                except: uid_val = uid_str
+
+                buyers_map[uid_str] = {
+                    "order_id": f"uid_{uid_str}",
+                    "user_id": uid_val,
+                    "username": _uname,
+                    "first_name": _full,
+                    "photo_url": _photo,
+                    "payments": [],
+                    "total_amt": 0.0,
+                    "source": fallback_source,
+                    "joined_at": j_str,
+                    "date": j_str
+                }
+            return buyers_map[uid_str]
+
+        # Process A: premium_purchases
+        for p in purchases:
+            uid = p.get("user_id")
+            if uid is None: continue
+            uid_str = str(uid)
             
-            try: uid_val = int(uid_str)
-            except: uid_val = uid_str
-
-            buyers_map[uid_str] = {
-                "order_id": f"uid_{uid_str}",
-                "user_id": uid_val,
-                "username": _uname,
-                "first_name": _full,
-                "photo_url": _photo,
-                "payments": [],
-                "total_amt": 0.0,
-                "source": fallback_source,
-                "joined_at": j_str,
-                "date": j_str
-            }
-        return buyers_map[uid_str]
-
-    # Process A: premium_purchases
-    for p in purchases:
-        uid = p.get("user_id")
-        if uid is None: continue
-        uid_str = str(uid)
-        
-        if uid_str not in existing_user_ids:
-            continue
-            
-        story_id = p.get("story_id")
-        story_id_str = str(story_id) if story_id else ""
-        if not story_id_str: continue
-
-        user_active = user_purchases_canonical_map.get(uid_str, set())
-        story_canon = sid_to_canonical.get(story_id_str, story_id_str)
-        if user_active and story_id_str not in user_active and story_canon not in user_active:
-            continue
-
-        if uid_str not in added_paid_stories:
-            added_paid_stories[uid_str] = set()
-        added_paid_stories[uid_str].add(story_id_str)
-        added_paid_stories[uid_str].add(story_canon)
-
-        story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
-        sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
-        
-        amt = p.get("amount", 0)
-        try: amt = float(amt)
-        except: amt = 0
-        
-        if amt <= 0:
-            amt = story["_clean_price"] if story else 99.0
-
-        date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
-        date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
-
-        is_bot = "bot" in str(p.get("source", "")).lower() or bool(p.get("bot_id"))
-        source_label = "bot" if is_bot else "miniapp"
-
-        b = get_or_create_buyer(uid_str, fallback_source=source_label)
-        if b["source"] != source_label:
-            b["source"] = "both"
-
-        b["payments"].append({
-            "order_id": _clean_order_id_value(p, uid_str, [story_id_str], source=source_label),
-            "story_id": story_id_str,
-            "story_name": sname,
-            "amount": amt,
-            "method": str(p.get("source", "UPI")).upper(),
-            "status": "paid",
-            "date": date_str,
-            "source": source_label
-        })
-
-    # Process B: orders
-    for doc in orders:
-        uid = doc.get("user_id")
-        if uid is None: continue
-        uid_str = str(uid)
-        
-        if uid_str not in existing_user_ids:
-            continue
-
-        status_raw = doc.get("status", "unknown").lower()
-        story_ids = [str(s) for s in doc.get("story_ids", []) if s]
-        if not story_ids and doc.get("story_id"):
-            story_ids = [str(doc.get("story_id"))]
-
-        source_raw = doc.get("source", "miniapp")
-        is_bot = "bot" in str(source_raw).lower()
-        source_label = "bot" if is_bot else "miniapp"
-
-        amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
-        try: amt = float(amt)
-        except: amt = 0
-
-        if status_raw in ["paid", "delivered"]:
-            user_active = user_purchases_canonical_map.get(uid_str, set())
-            valid_sids = []
-            for sid_s in story_ids:
-                s_canon = sid_to_canonical.get(sid_s, sid_s)
-                if not user_active or sid_s in user_active or s_canon in user_active:
-                    valid_sids.append(sid_s)
-            if not valid_sids:
+            if uid_str not in existing_user_ids:
                 continue
-            story_ids = valid_sids
+                
+            story_id = p.get("story_id")
+            story_id_str = str(story_id) if story_id else ""
+            if not story_id_str: continue
 
-            if uid_str in added_paid_stories and any(sid in added_paid_stories[uid_str] for sid in story_ids):
-                b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
-                for p in b["payments"]:
-                    if p["story_id"] in story_ids and p["amount"] == 0 and amt > 0:
-                        p["amount"] = amt
-                continue
-
-        story_names = []
-        for sid in story_ids:
-            story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
-            if story: story_names.append(story.get("story_name_en", sid))
-            else: story_names.append(sid)
-
-        if amt <= 0 and story_ids:
-            st = story_cache_by_oid.get(story_ids[0]) or story_cache_by_id.get(story_ids[0])
-            amt = st["_clean_price"] if st else 99.0
-
-        date_val = doc.get("created_at") or datetime.now(timezone.utc)
-        date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
-
-        b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
-        if b["source"] != source_label:
-            b["source"] = "both"
-
-        method_str = str(doc.get("method", "RAZORPAY" if "razor" in str(doc.get("source","")).lower() else "UPI")).upper()
-
-        b["payments"].append({
-            "order_id": _clean_order_id_value(doc, uid_str, story_ids, source=source_label),
-            "story_id": story_ids[0] if story_ids else "",
-            "story_name": ", ".join(story_names) if story_names else "Store Order",
-            "amount": amt,
-            "method": method_str,
-            "status": status_raw,
-            "date": date_str,
-            "source": source_label
-        })
-
-    # Process C: premium_checkout
-    for c in checkouts:
-        uid = c.get("user_id")
-        if uid is None: continue
-        uid_str = str(uid)
-        
-        if uid_str not in existing_user_ids:
-            continue
-
-        status_raw = c.get("status", "unknown")
-        status_label = {
-            "approved": "paid",
-            "waiting_screenshot": "pending",
-            "rejected": "rejected",
-            "pending_gateway": "processing",
-        }.get(status_raw, status_raw.lower())
-
-        story_id = c.get("story_id")
-        story_id_str = str(story_id) if story_id else ""
-        story_canon = sid_to_canonical.get(story_id_str, story_id_str)
-
-        if status_label == "paid":
             user_active = user_purchases_canonical_map.get(uid_str, set())
+            story_canon = sid_to_canonical.get(story_id_str, story_id_str)
             if user_active and story_id_str not in user_active and story_canon not in user_active:
                 continue
-            if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
+
+            if uid_str not in added_paid_stories:
+                added_paid_stories[uid_str] = set()
+            added_paid_stories[uid_str].add(story_id_str)
+            added_paid_stories[uid_str].add(story_canon)
+
+            story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
+            sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
+            
+            amt = p.get("amount", 0)
+            try: amt = float(amt)
+            except: amt = 0
+            
+            if amt <= 0:
+                amt = story["_clean_price"] if story else 99.0
+
+            date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
+            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+
+            is_bot = "bot" in str(p.get("source", "")).lower() or bool(p.get("bot_id"))
+            source_label = "bot" if is_bot else "miniapp"
+
+            b = get_or_create_buyer(uid_str, fallback_doc=p, fallback_source=source_label)
+            if b["source"] != source_label:
+                b["source"] = "both"
+
+            b["payments"].append({
+                "order_id": _clean_order_id_value(p, uid_str, [story_id_str], source=source_label),
+                "story_id": story_id_str,
+                "story_name": sname,
+                "amount": amt,
+                "method": str(p.get("source", "UPI")).upper(),
+                "status": "paid",
+                "date": date_str,
+                "source": source_label
+            })
+
+        # Process B: orders
+        for doc in orders:
+            uid = doc.get("user_id")
+            if uid is None: continue
+            uid_str = str(uid)
+            
+            if uid_str not in existing_user_ids:
                 continue
 
-        story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
-        sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
+            status_raw = doc.get("status", "unknown").lower()
+            story_ids = [str(s) for s in doc.get("story_ids", []) if s]
+            if not story_ids and doc.get("story_id"):
+                story_ids = [str(doc.get("story_id"))]
 
-        amt = c.get("amount", 0)
-        try: amt = float(amt)
-        except: amt = 0
+            source_raw = doc.get("source", "miniapp")
+            is_bot = "bot" in str(source_raw).lower()
+            source_label = "bot" if is_bot else "miniapp"
 
-        if amt <= 0 and story:
-            amt = story["_clean_price"]
+            amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
+            try: amt = float(amt)
+            except: amt = 0
 
-        date_val = c.get("created_at") or datetime.now(timezone.utc)
-        date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+            if status_raw in ["paid", "delivered"]:
+                user_active = user_purchases_canonical_map.get(uid_str, set())
+                valid_sids = []
+                for sid_s in story_ids:
+                    s_canon = sid_to_canonical.get(sid_s, sid_s)
+                    if not user_active or sid_s in user_active or s_canon in user_active:
+                        valid_sids.append(sid_s)
+                if not valid_sids:
+                    continue
+                story_ids = valid_sids
 
-        b = get_or_create_buyer(uid_str, fallback_doc=c, fallback_source="bot")
-        if b["source"] != "bot":
-            b["source"] = "both"
+                if uid_str in added_paid_stories and any(sid in added_paid_stories[uid_str] for sid in story_ids):
+                    b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
+                    for p in b["payments"]:
+                        if p["story_id"] in story_ids and p["amount"] == 0 and amt > 0:
+                            p["amount"] = amt
+                    continue
 
-        b["payments"].append({
-            "order_id": _clean_order_id_value(c, uid_str, [story_id_str], source="bot"),
-            "story_id": story_id_str,
-            "story_name": sname,
-            "amount": amt,
-            "method": str(c.get("method", "UPI")).upper(),
-            "status": status_label,
-            "date": date_str,
-            "source": "bot"
-        })
+            story_names = []
+            for sid in story_ids:
+                story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+                if story: story_names.append(story.get("story_name_en", sid))
+                else: story_names.append(sid)
 
-    buyers_list = []
-    total_rev = 0.0
-    bot_rev = 0.0
-    miniapp_rev = 0.0
-    total_paid_orders_count = 0
-    paid_user_ids = set()
+            if amt <= 0 and story_ids:
+                st = story_cache_by_oid.get(story_ids[0]) or story_cache_by_id.get(story_ids[0])
+                amt = st["_clean_price"] if st else 99.0
 
-    for uid_str, data in buyers_map.items():
-        payments = data["payments"]
-        if not payments: continue
+            date_val = doc.get("created_at") or datetime.now(timezone.utc)
+            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
-        paid_payments = [p for p in payments if p["status"] in ["paid", "approved", "delivered", "completed", "success"]]
-        pending_payments = [p for p in payments if p["status"] in ["pending", "processing", "waiting_screenshot"]]
+            b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
+            if b["source"] != source_label:
+                b["source"] = "both"
 
-        if paid_payments:
-            user_status = "paid"
-            user_amount = sum(p["amount"] for p in paid_payments)
-            paid_user_ids.add(uid_str)
-            total_paid_orders_count += len(paid_payments)
-            for p in paid_payments:
-                total_rev += p["amount"]
-                if p["source"] == "bot": bot_rev += p["amount"]
-                else: miniapp_rev += p["amount"]
-        elif pending_payments:
-            user_status = pending_payments[0]["status"]
-            user_amount = sum(p["amount"] for p in pending_payments)
-        else:
-            user_status = payments[0]["status"]
-            user_amount = sum(p["amount"] for p in payments)
+            method_str = str(doc.get("method", "RAZORPAY" if "razor" in str(doc.get("source","")).lower() else "UPI")).upper()
 
-        buyers_list.append({
-            "order_id": data["order_id"],
-            "user_id": data["user_id"],
-            "username": data["username"],
-            "first_name": data["first_name"],
-            "photo_url": data["photo_url"],
-            "amount": user_amount,
-            "status": user_status,
-            "source": data["source"],
-            "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
-            "date": data["date"],
-            "joined_at": data.get("joined_at")
-        })
+            b["payments"].append({
+                "order_id": _clean_order_id_value(doc, uid_str, story_ids, source=source_label),
+                "story_id": story_ids[0] if story_ids else "",
+                "story_name": ", ".join(story_names) if story_names else "Store Order",
+                "amount": amt,
+                "method": method_str,
+                "status": status_raw,
+                "date": date_str,
+                "source": source_label
+            })
 
-    buyers_list.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
+        # Process C: premium_checkout
+        for c in checkouts:
+            uid = c.get("user_id")
+            if uid is None: continue
+            uid_str = str(uid)
+            
+            if uid_str not in existing_user_ids:
+                continue
 
-    res = {
-        "buyers": buyers_list,
-        "total_buyers_count": len(paid_user_ids),
-        "total_orders_count": total_paid_orders_count,
-        "total_revenue": total_rev,
-        "miniapp_revenue": miniapp_rev,
-        "bot_revenue": bot_rev
-    }
+            status_raw = c.get("status", "unknown")
+            status_label = {
+                "approved": "paid",
+                "waiting_screenshot": "pending",
+                "rejected": "rejected",
+                "pending_gateway": "processing",
+            }.get(status_raw, status_raw.lower())
 
-    _processed_buyers_cache = res
-    _processed_buyers_cache_time = now
-    return res
+            story_id = c.get("story_id")
+            story_id_str = str(story_id) if story_id else ""
+            story_canon = sid_to_canonical.get(story_id_str, story_id_str)
+
+            if status_label == "paid":
+                user_active = user_purchases_canonical_map.get(uid_str, set())
+                if user_active and story_id_str not in user_active and story_canon not in user_active:
+                    continue
+                if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
+                    continue
+
+            story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
+            sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
+
+            amt = c.get("amount", 0)
+            try: amt = float(amt)
+            except: amt = 0
+
+            if amt <= 0 and story:
+                amt = story["_clean_price"]
+
+            date_val = c.get("created_at") or datetime.now(timezone.utc)
+            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+
+            b = get_or_create_buyer(uid_str, fallback_doc=c, fallback_source="bot")
+            if b["source"] != "bot":
+                b["source"] = "both"
+
+            b["payments"].append({
+                "order_id": _clean_order_id_value(c, uid_str, [story_id_str], source="bot"),
+                "story_id": story_id_str,
+                "story_name": sname,
+                "amount": amt,
+                "method": str(c.get("method", "UPI")).upper(),
+                "status": status_label,
+                "date": date_str,
+                "source": "bot"
+            })
+
+        buyers_list = []
+        total_rev = 0.0
+        bot_rev = 0.0
+        miniapp_rev = 0.0
+        total_paid_orders_count = 0
+        paid_user_ids = set()
+
+        for uid_str, data in buyers_map.items():
+            payments = data["payments"]
+            if not payments: continue
+
+            paid_payments = [p for p in payments if p["status"] in ["paid", "approved", "delivered", "completed", "success"]]
+            pending_payments = [p for p in payments if p["status"] in ["pending", "processing", "waiting_screenshot"]]
+
+            if paid_payments:
+                user_status = "paid"
+                user_amount = sum(p["amount"] for p in paid_payments)
+                paid_user_ids.add(uid_str)
+                total_paid_orders_count += len(paid_payments)
+                for p in paid_payments:
+                    total_rev += p["amount"]
+                    if p["source"] == "bot": bot_rev += p["amount"]
+                    else: miniapp_rev += p["amount"]
+            elif pending_payments:
+                user_status = pending_payments[0]["status"]
+                user_amount = sum(p["amount"] for p in pending_payments)
+            else:
+                user_status = payments[0]["status"]
+                user_amount = sum(p["amount"] for p in payments)
+
+            buyers_list.append({
+                "order_id": data["order_id"],
+                "user_id": data["user_id"],
+                "username": data["username"],
+                "first_name": data["first_name"],
+                "photo_url": data["photo_url"],
+                "amount": user_amount,
+                "status": user_status,
+                "source": data["source"],
+                "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
+                "date": data["date"],
+                "joined_at": data.get("joined_at")
+            })
+
+        buyers_list.sort(key=lambda x: max([p["date"] for p in x["payments"]] if x["payments"] else [x["date"]]), reverse=True)
+
+        res = {
+            "buyers": buyers_list,
+            "total_buyers_count": len(paid_user_ids),
+            "total_orders_count": total_paid_orders_count,
+            "total_revenue": total_rev,
+            "miniapp_revenue": miniapp_rev,
+            "bot_revenue": bot_rev
+        }
+
+        _processed_buyers_cache = res
+        _processed_buyers_cache_time = now
+        return res
 
 @api_router.get("/admin/stats")
 async def get_admin_stats(telegram_id: str, force: bool = Query(False)):

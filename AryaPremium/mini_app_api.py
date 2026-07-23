@@ -3387,6 +3387,9 @@ async def fetch_processed_buyers_data(arya_db):
         checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
         purchases = await arya_db.db.premium_purchases.find({}, pur_proj).sort("purchased_at", -1).to_list(length=50000)
 
+        buyers_map = {}
+        added_paid_stories = {}  # uid_str -> set of story_id_strs
+
     def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
         raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
         if raw_oid:
