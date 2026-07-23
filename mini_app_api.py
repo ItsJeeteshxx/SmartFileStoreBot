@@ -4288,10 +4288,10 @@ async def get_my_purchases(telegram_id: str):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /admin/stats
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# --- ADMIN STATS CACHE ---
+_buyers_data_lock = asyncio.Lock()
 _processed_buyers_cache = None
 _processed_buyers_cache_time = 0.0
-PROCESSED_BUYERS_CACHE_TTL = 45.0  # Cache for 45 seconds
+PROCESSED_BUYERS_CACHE_TTL = 60.0  # Cache for 60 seconds
 
 def invalidate_buyers_cache():
     global _processed_buyers_cache_time
@@ -4308,58 +4308,68 @@ async def fetch_processed_buyers_data(arya_db):
     if _processed_buyers_cache is not None and (now - _processed_buyers_cache_time < PROCESSED_BUYERS_CACHE_TTL):
         return _processed_buyers_cache
 
-    # Projections for ultra-fast query execution
-    user_projection = {
-        "id": 1, "purchases": 1, "first_name": 1, "last_name": 1, 
-        "username": 1, "photo_url": 1, "joined_date": 1, "joined_at": 1, "created_at": 1
-    }
-    existing_users = await arya_db.db.users.find({}, user_projection).to_list(length=200000)
-    existing_user_ids = set()
-    user_purchases_map = {}  # uid_str -> set of story_id_strs
-    user_doc_map = {}        # uid_str -> user_doc
-    
-    for u in existing_users:
-        uid = u.get("id")
-        if uid is None: continue
-        uid_str = str(uid)
-        existing_user_ids.add(uid_str)
-        if uid_str.isdigit():
-            existing_user_ids.add(str(int(uid_str)))
-            
-        purchases_list = [str(s) for s in u.get("purchases", []) if s]
-        user_purchases_map[uid_str] = set(purchases_list)
-        user_doc_map[uid_str] = u
+    async with _buyers_data_lock:
+        now = time.time()
+        if _processed_buyers_cache is not None and (now - _processed_buyers_cache_time < PROCESSED_BUYERS_CACHE_TTL):
+            return _processed_buyers_cache
 
-    stories = await arya_db.db.premium_stories.find({}).to_list(length=10000)
-    story_cache_by_id = {}
-    story_cache_by_oid = {}
-    sid_to_canonical = {}
+        # Projections for ultra-fast query execution
+        user_projection = {
+            "id": 1, "purchases": 1, "first_name": 1, "last_name": 1, 
+            "username": 1, "photo_url": 1, "joined_date": 1, "joined_at": 1, "created_at": 1
+        }
+        existing_users = await arya_db.db.users.find({}, user_projection).to_list(length=200000)
+        existing_user_ids = set()
+        user_purchases_map = {}  # uid_str -> set of story_id_strs
+        user_doc_map = {}        # uid_str -> user_doc
+        
+        for u in existing_users:
+            uid = u.get("id")
+            if uid is None: continue
+            uid_str = str(uid)
+            existing_user_ids.add(uid_str)
+            if uid_str.isdigit():
+                existing_user_ids.add(str(int(uid_str)))
+                
+            purchases_list = [str(s) for s in u.get("purchases", []) if s]
+            user_purchases_map[uid_str] = set(purchases_list)
+            user_doc_map[uid_str] = u
 
-    for s in stories:
-        sid_str = str(s.get("story_id", ""))
-        soid_str = str(s.get("_id", ""))
-        price = float(s.get("discounted_price") or s.get("price") or 99.0)
-        s["_clean_price"] = price
-        canon = sid_str or soid_str
-        if sid_str:
-            story_cache_by_id[sid_str] = s
-            sid_to_canonical[sid_str] = canon
-        if soid_str:
-            story_cache_by_oid[soid_str] = s
-            sid_to_canonical[soid_str] = canon
+        story_proj = {"_id": 1, "story_id": 1, "story_name_en": 1, "title": 1, "price": 1, "discounted_price": 1}
+        stories = await arya_db.db.premium_stories.find({}, story_proj).to_list(length=10000)
+        story_cache_by_id = {}
+        story_cache_by_oid = {}
+        sid_to_canonical = {}
 
-    # Pre-build user canonical purchases map for O(1) set lookup
-    user_purchases_canonical_map = {}
-    for uid_str, p_set in user_purchases_map.items():
-        c_set = set()
-        for p_id in p_set:
-            c_set.add(sid_to_canonical.get(p_id, p_id))
-            c_set.add(p_id)
-        user_purchases_canonical_map[uid_str] = c_set
+        for s in stories:
+            sid_str = str(s.get("story_id", ""))
+            soid_str = str(s.get("_id", ""))
+            price = float(s.get("discounted_price") or s.get("price") or 99.0)
+            s["_clean_price"] = price
+            canon = sid_str or soid_str
+            if sid_str:
+                story_cache_by_id[sid_str] = s
+                sid_to_canonical[sid_str] = canon
+            if soid_str:
+                story_cache_by_oid[soid_str] = s
+                sid_to_canonical[soid_str] = canon
 
-    orders = await arya_db.db.orders.find({}).sort("created_at", -1).to_list(length=100000)
-    checkouts = await arya_db.db.premium_checkout.find({}).sort("created_at", -1).to_list(length=100000)
-    purchases = await arya_db.db.premium_purchases.find({}).sort("purchased_at", -1).to_list(length=100000)
+        # Pre-build user canonical purchases map for O(1) set lookup
+        user_purchases_canonical_map = {}
+        for uid_str, p_set in user_purchases_map.items():
+            c_set = set()
+            for p_id in p_set:
+                c_set.add(sid_to_canonical.get(p_id, p_id))
+                c_set.add(p_id)
+            user_purchases_canonical_map[uid_str] = c_set
+
+        ord_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "created_at": 1}
+        chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1}
+        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "amount": 1, "source": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1}
+
+        orders = await arya_db.db.orders.find({}, ord_proj).sort("created_at", -1).to_list(length=50000)
+        checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
+        purchases = await arya_db.db.premium_purchases.find({}, pur_proj).sort("purchased_at", -1).to_list(length=50000)
 
     def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
         raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
@@ -4663,28 +4673,20 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         # Bot Users
         bot_users_count = await arya_db.db.users.count_documents({})
         
-        from arya_enterprise_analytics import visitor_id_expression
-        bot_filter = {
-            "data.client_user_agent": {
-                "$not": {
-                    "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
-                    "$options": "i"
-                }
-            }
-        }
-        
-        page_views_count = await arya_db.db.mini_app_analytics.count_documents({"type": "page_view", **bot_filter})
-        
-        miniapp_users_pipeline = [
-            {"$match": {"type": "page_view", **bot_filter}},
-            {"$project": {"visitor_id": visitor_id_expression()}},
-            {"$group": {"_id": "$visitor_id"}},
-            {"$count": "c"}
-        ]
-        miniapp_users_res = await arya_db.db.mini_app_analytics.aggregate(miniapp_users_pipeline).to_list(length=1)
-        miniapp_users_count = miniapp_users_res[0]["c"] if miniapp_users_res else 0
+        page_views_count = 0
+        miniapp_users_count = 0
+        try:
+            page_views_count = await arya_db.db.mini_app_analytics.count_documents({"type": "page_view"})
+            miniapp_users_res = await arya_db.db.mini_app_analytics.aggregate([
+                {"$match": {"type": "page_view"}},
+                {"$group": {"_id": "$user_id"}},
+                {"$count": "c"}
+            ]).to_list(length=1)
+            miniapp_users_count = miniapp_users_res[0]["c"] if miniapp_users_res else 0
+        except Exception as analytics_err:
+            logger.warning(f"Error fetching analytics count in stats: {analytics_err}")
+
         total_users_count = bot_users_count + miniapp_users_count
-        
         total_stories = await arya_db.db.premium_stories.count_documents({})
         
         # Feedbacks
@@ -4699,7 +4701,7 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
                 "type": doc.get("type"),
                 "text": doc.get("text"),
                 "status": doc.get("status"),
-                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
             
         # Recent Orders
@@ -4707,17 +4709,16 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         ord_cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(10)
         async for doc in ord_cursor:
             user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
-            if not user_doc: continue
-            _fn = (user_doc.get("first_name") or "").strip()
-            _ln = (user_doc.get("last_name") or "").strip()
-            _full = " ".join(filter(None, [_fn, _ln])) or user_doc.get("username", "") or "User"
+            _fn = ((user_doc.get("first_name") if user_doc else "") or "").strip()
+            _ln = ((user_doc.get("last_name") if user_doc else "") or "").strip()
+            _full = " ".join(filter(None, [_fn, _ln])) or (user_doc.get("username") if user_doc else "") or "User"
             orders.append({
                 "order_id": str(doc.get("order_id", doc.get("_id", ""))),
                 "amount": doc.get("total_amount") or doc.get("total") or doc.get("amount", 0),
                 "status": doc.get("status", "unknown"),
                 "user_id": doc.get("user_id", ""),
                 "first_name": _full,
-                "username": user_doc.get("username", ""),
+                "username": user_doc.get("username", "") if user_doc else "",
                 "story_names": doc.get("story_names", []),
                 "source": doc.get("source", "miniapp"),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
@@ -4747,37 +4748,10 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
             "success": True,
             "data": result_data
         }
-    except Exception as e:
-        logger.error(f"Error fetching admin stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-            
-        result_data = {
-            "total_users": total_users_count,
-            "bot_users": bot_users_count,
-            "miniapp_users": miniapp_users_count,
-            "total_stories": total_stories,
-            "total_orders": total_orders_count,
-            "total_buyers": total_buyers_count,
-            "total_revenue": total_revenue,
-            "miniapp_revenue": miniapp_revenue,
-            "bot_revenue": bot_revenue,
-            "recent_feedback": feedbacks,
-            "recent_orders": orders,
-            "page_views": page_views_count
-        }
-        
-        # Save cache
-        _admin_stats_cache = result_data
-        _admin_stats_cache_time = now
-        
-        return {
-            "success": True,
-            "data": result_data
-        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to fetch admin stats: {e}")
+        logger.error(f"Error fetching admin stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -5856,25 +5830,26 @@ async def get_admin_support(request: Request, telegram_id: str):
                 logger.warning(f"Error batch fetching orders: {e}")
                 return []
 
-        async def fetch_analytics_for_user(uid):
-            uid_variants = [uid]
-            if str(uid).isdigit():
-                uid_variants.append(int(uid))
-                uid_variants.append(str(uid))
+        async def fetch_analytics():
             try:
-                latest_event = await arya_db.db.mini_app_analytics.find_one(
-                    {"user_id": {"$in": uid_variants}},
-                    sort=[("_id", -1)]
-                )
-                return uid, latest_event
-            except Exception:
-                return uid, None
+                events = await arya_db.db.mini_app_analytics.find(
+                    {"user_id": {"$in": unique_user_ids}}
+                ).sort("_id", -1).limit(300).to_list(length=300)
+                res_map = {}
+                for ev in events:
+                    uid = ev.get("user_id")
+                    if uid is not None and uid not in res_map:
+                        res_map[uid] = ev
+                return [(uid, res_map.get(uid)) for uid in unique_user_ids]
+            except Exception as e:
+                logger.warning(f"Error batch fetching analytics: {e}")
+                return []
 
         if unique_user_ids:
-            user_docs, orders_docs, *analytics_results = await asyncio.gather(
+            user_docs, orders_docs, analytics_results = await asyncio.gather(
                 fetch_users(),
                 fetch_orders(),
-                *(fetch_analytics_for_user(uid) for uid in unique_user_ids)
+                fetch_analytics()
             )
         else:
             user_docs, orders_docs, analytics_results = [], [], []

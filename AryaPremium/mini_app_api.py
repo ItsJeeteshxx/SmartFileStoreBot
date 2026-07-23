@@ -3304,9 +3304,10 @@ async def get_my_purchases(telegram_id: str):
 # GET /admin/stats
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # --- ADMIN STATS CACHE ---
+_buyers_data_lock = asyncio.Lock()
 _processed_buyers_cache = None
 _processed_buyers_cache_time = 0.0
-PROCESSED_BUYERS_CACHE_TTL = 45.0  # Cache for 45 seconds
+PROCESSED_BUYERS_CACHE_TTL = 60.0  # Cache for 60 seconds
 
 def invalidate_buyers_cache():
     global _processed_buyers_cache_time
@@ -3323,58 +3324,68 @@ async def fetch_processed_buyers_data(arya_db):
     if _processed_buyers_cache is not None and (now - _processed_buyers_cache_time < PROCESSED_BUYERS_CACHE_TTL):
         return _processed_buyers_cache
 
-    # Projections for ultra-fast query execution
-    user_projection = {
-        "id": 1, "purchases": 1, "first_name": 1, "last_name": 1, 
-        "username": 1, "photo_url": 1, "joined_date": 1, "joined_at": 1, "created_at": 1
-    }
-    existing_users = await arya_db.db.users.find({}, user_projection).to_list(length=200000)
-    existing_user_ids = set()
-    user_purchases_map = {}  # uid_str -> set of story_id_strs
-    user_doc_map = {}        # uid_str -> user_doc
-    
-    for u in existing_users:
-        uid = u.get("id")
-        if uid is None: continue
-        uid_str = str(uid)
-        existing_user_ids.add(uid_str)
-        if uid_str.isdigit():
-            existing_user_ids.add(str(int(uid_str)))
-            
-        purchases_list = [str(s) for s in u.get("purchases", []) if s]
-        user_purchases_map[uid_str] = set(purchases_list)
-        user_doc_map[uid_str] = u
+    async with _buyers_data_lock:
+        now = time.time()
+        if _processed_buyers_cache is not None and (now - _processed_buyers_cache_time < PROCESSED_BUYERS_CACHE_TTL):
+            return _processed_buyers_cache
 
-    stories = await arya_db.db.premium_stories.find({}).to_list(length=10000)
-    story_cache_by_id = {}
-    story_cache_by_oid = {}
-    sid_to_canonical = {}
+        # Projections for ultra-fast query execution
+        user_projection = {
+            "id": 1, "purchases": 1, "first_name": 1, "last_name": 1, 
+            "username": 1, "photo_url": 1, "joined_date": 1, "joined_at": 1, "created_at": 1
+        }
+        existing_users = await arya_db.db.users.find({}, user_projection).to_list(length=200000)
+        existing_user_ids = set()
+        user_purchases_map = {}  # uid_str -> set of story_id_strs
+        user_doc_map = {}        # uid_str -> user_doc
+        
+        for u in existing_users:
+            uid = u.get("id")
+            if uid is None: continue
+            uid_str = str(uid)
+            existing_user_ids.add(uid_str)
+            if uid_str.isdigit():
+                existing_user_ids.add(str(int(uid_str)))
+                
+            purchases_list = [str(s) for s in u.get("purchases", []) if s]
+            user_purchases_map[uid_str] = set(purchases_list)
+            user_doc_map[uid_str] = u
 
-    for s in stories:
-        sid_str = str(s.get("story_id", ""))
-        soid_str = str(s.get("_id", ""))
-        price = float(s.get("discounted_price") or s.get("price") or 99.0)
-        s["_clean_price"] = price
-        canon = sid_str or soid_str
-        if sid_str:
-            story_cache_by_id[sid_str] = s
-            sid_to_canonical[sid_str] = canon
-        if soid_str:
-            story_cache_by_oid[soid_str] = s
-            sid_to_canonical[soid_str] = canon
+        story_proj = {"_id": 1, "story_id": 1, "story_name_en": 1, "title": 1, "price": 1, "discounted_price": 1}
+        stories = await arya_db.db.premium_stories.find({}, story_proj).to_list(length=10000)
+        story_cache_by_id = {}
+        story_cache_by_oid = {}
+        sid_to_canonical = {}
 
-    # Pre-build user canonical purchases map for O(1) set lookup
-    user_purchases_canonical_map = {}
-    for uid_str, p_set in user_purchases_map.items():
-        c_set = set()
-        for p_id in p_set:
-            c_set.add(sid_to_canonical.get(p_id, p_id))
-            c_set.add(p_id)
-        user_purchases_canonical_map[uid_str] = c_set
+        for s in stories:
+            sid_str = str(s.get("story_id", ""))
+            soid_str = str(s.get("_id", ""))
+            price = float(s.get("discounted_price") or s.get("price") or 99.0)
+            s["_clean_price"] = price
+            canon = sid_str or soid_str
+            if sid_str:
+                story_cache_by_id[sid_str] = s
+                sid_to_canonical[sid_str] = canon
+            if soid_str:
+                story_cache_by_oid[soid_str] = s
+                sid_to_canonical[soid_str] = canon
 
-    orders = await arya_db.db.orders.find({}).sort("created_at", -1).to_list(length=100000)
-    checkouts = await arya_db.db.premium_checkout.find({}).sort("created_at", -1).to_list(length=100000)
-    purchases = await arya_db.db.premium_purchases.find({}).sort("purchased_at", -1).to_list(length=100000)
+        # Pre-build user canonical purchases map for O(1) set lookup
+        user_purchases_canonical_map = {}
+        for uid_str, p_set in user_purchases_map.items():
+            c_set = set()
+            for p_id in p_set:
+                c_set.add(sid_to_canonical.get(p_id, p_id))
+                c_set.add(p_id)
+            user_purchases_canonical_map[uid_str] = c_set
+
+        ord_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "created_at": 1}
+        chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1}
+        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "amount": 1, "source": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1}
+
+        orders = await arya_db.db.orders.find({}, ord_proj).sort("created_at", -1).to_list(length=50000)
+        checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
+        purchases = await arya_db.db.premium_purchases.find({}, pur_proj).sort("purchased_at", -1).to_list(length=50000)
 
     def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
         raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
