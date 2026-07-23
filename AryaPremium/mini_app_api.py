@@ -257,6 +257,73 @@ if _arya_path not in sys.path:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Lifespan: connect/disconnect
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
+# 24-Hour Stale Orders Auto-Cleanup Worker
+# ─────────────────────────────────────────────────────────────────
+STALE_ORDER_HOURS = 24
+CLEANUP_INTERVAL_SECS = 3600  # Check every 1 hour
+
+async def _stale_orders_cleanup_worker(arya_db):
+    """
+    Background worker: archives pending/failed orders older than 24h.
+    NEVER touches paid / approved / delivered orders.
+    Invalidates buyers cache after each cleanup run.
+    """
+    STALE_STATUSES = ["pending", "failed", "rejected", "pending_gateway",
+                      "waiting_screenshot", "expired", "unknown"]
+
+    while True:
+        try:
+            await asyncio.sleep(CLEANUP_INTERVAL_SECS)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=STALE_ORDER_HOURS)
+            archived_count = 0
+
+            # Archive stale docs from orders collection
+            async for doc in arya_db.db.orders.find(
+                {"status": {"$in": STALE_STATUSES}, "created_at": {"$lt": cutoff}}
+            ):
+                try:
+                    doc["original_collection"] = "orders"
+                    doc["archived_at"] = datetime.now(timezone.utc)
+                    doc["archive_reason"] = f"auto_cleanup_{STALE_ORDER_HOURS}h"
+                    await arya_db.db.archived_orders.update_one(
+                        {"_id": doc["_id"]}, {"$set": doc}, upsert=True
+                    )
+                    await arya_db.db.orders.delete_one({"_id": doc["_id"]})
+                    archived_count += 1
+                except Exception:
+                    pass
+
+            # Archive stale docs from premium_checkout collection
+            CHECKOUT_STALE = ["rejected", "pending_gateway", "waiting_screenshot", "expired", "unknown"]
+            async for doc in arya_db.db.premium_checkout.find(
+                {"status": {"$in": CHECKOUT_STALE}, "created_at": {"$lt": cutoff}}
+            ):
+                try:
+                    doc["original_collection"] = "premium_checkout"
+                    doc["archived_at"] = datetime.now(timezone.utc)
+                    doc["archive_reason"] = f"auto_cleanup_{STALE_ORDER_HOURS}h"
+                    await arya_db.db.archived_orders.update_one(
+                        {"_id": doc["_id"]}, {"$set": doc}, upsert=True
+                    )
+                    await arya_db.db.premium_checkout.delete_one({"_id": doc["_id"]})
+                    archived_count += 1
+                except Exception:
+                    pass
+
+            if archived_count > 0:
+                invalidate_buyers_cache()
+                logger.info(f"[AutoCleanup] Archived {archived_count} stale orders (>{STALE_ORDER_HOURS}h)")
+            else:
+                logger.debug("[AutoCleanup] No stale orders found")
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[AutoCleanup] Worker error: {e}")
+            await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -324,8 +391,23 @@ async def lifespan(app: FastAPI):
                 asyncio.create_task(root_db.auto_unblock_paid_users())
             except Exception as unblock_err:
                 logger.warning(f"Failed to launch auto_unblock_paid_users: {unblock_err}")
+
+            # Create index on archived_orders for efficient queries
+            try:
+                await arya_db.db.archived_orders.create_index([("archived_at", -1)], background=True)
+                await arya_db.db.archived_orders.create_index("user_id", background=True)
+            except Exception:
+                pass
+
         except Exception as idx_err:
             logger.warning(f"Failed to create indexes: {idx_err}")
+
+        # Launch 24-hour auto-cleanup background worker for pending/failed orders
+        try:
+            asyncio.create_task(_stale_orders_cleanup_worker(arya_db))
+            logger.info("✅ Stale orders auto-cleanup worker started")
+        except Exception as worker_err:
+            logger.warning(f"Failed to launch stale orders cleanup worker: {worker_err}")
             
     except Exception as e:
         logger.error(f"DB connect failed: {e}")
