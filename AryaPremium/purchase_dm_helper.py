@@ -49,16 +49,18 @@ def build_purchase_complete_message(
     payment_method: str,
     verified_by: str = "Auto Verified By System",
     is_ongoing: bool = False,
-    is_admin_manual: bool = False
+    is_admin_manual: bool = False,
+    bot_username: str = "UseAryaBot"
 ) -> str:
-    # 1. Random Greeting Quoteblock
-    greeting_tmpl = random.choice(GREETING_TEMPLATES)
-    clean_user_name = (user_name or "Friend").strip()
-    greeting_text = greeting_tmpl.format(user_name=clean_user_name)
-    
-    quote_header = f"<blockquote><b>𝗣𝘂𝗿𝗰𝗵𝗮𝘀𝗲 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲 🧾</b>\n\n{greeting_text}</blockquote>"
+    # 1. Header Quoteblock (ONLY Purchase Complete header)
+    quote_header = "<blockquote><b>𝗣𝘂𝗿𝗰𝗵𝗮𝘀𝗲 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲 🧾</b></blockquote>"
 
-    # 2. Details Block (Normal text, bold labels, copyable order ID in mono <code>)
+    # 2. Random Greeting (Normal text, NOT in quote block)
+    greeting_tmpl = random.choice(GREETING_TEMPLATES)
+    clean_user_name = (user_name or "User").strip()
+    greeting_text = greeting_tmpl.format(user_name=clean_user_name)
+
+    # 3. Details Block (Wrapped inside 1 entire Quoteblock)
     clean_story_name = str(story_name).strip() if story_name else "Story"
     
     try:
@@ -73,15 +75,17 @@ def build_purchase_complete_message(
     clean_vb = format_verified_by_display(verified_by_raw=verified_by, is_admin_manual=is_admin_manual)
 
     details_block = (
+        "<blockquote>"
         f"<b>𝗦𝘁𝗼𝗿𝘆:</b> {clean_story_name}\n"
         f"<b>𝗔𝗺𝗼𝘂𝗻𝘁:</b> ₹{clean_amount}\n"
         f"<b>𝗢𝗿𝗱𝗲𝗿 𝗜𝗗:</b> <code>{clean_order_id}</code>\n"
         f"<b>𝗦𝘁𝗮𝘁𝘂𝘀:</b> {clean_status}\n"
         f"<b>𝗣𝗮𝘆𝗺𝗲𝗻𝘁 𝗠𝗲𝘁𝗵𝗼𝗱:</b> {clean_pm}\n"
         f"<b>𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱 𝗕𝘆:</b> {clean_vb}"
+        "</blockquote>"
     )
 
-    # 3. Ongoing note if status is Ongoing
+    # 4. Ongoing note if status is Ongoing (Quoteblock)
     ongoing_block = ""
     if is_ongoing or clean_status.lower() == "ongoing":
         ongoing_block = (
@@ -89,17 +93,28 @@ def build_purchase_complete_message(
             "Every future episode will be added to your library automatically as soon as it's released.</blockquote>"
         )
 
-    # 4. Instructions & Guide Quoteblocks
-    instructions_block = (
-        "<blockquote>Your purchased story is available anytime:\n"
-        "• <b>Mini App</b> → <b>Library</b> → <b>Purchased</b>\n"
-        "• <b>Bot</b> → <b>My Stories</b></blockquote>\n\n"
-        "<blockquote>Need it again later ? Just request delivery from there.</blockquote>\n\n"
-        '<blockquote>The guide below will answer almost everything before you ask. <a href="https://t.me/StoriesLinkopningguide"><b>Guide</b></a></blockquote>\n\n'
+    # 5. Access Instructions:
+    # "Your purchased story is available anytime:" in a Quote Block
+    access_header_quote = "<blockquote>Your purchased story is available anytime:</blockquote>"
+
+    # Below it, NOT in quote block, with direct links for Purchased and My Stories
+    clean_bot = bot_username.replace("@", "") if bot_username else "UseAryaBot"
+    purchased_link = f"https://t.me/{clean_bot}/app?startapp=library"
+    mystories_link = f"https://t.me/{clean_bot}?start=mystories"
+
+    access_items = (
+        f"• <b>Mini App</b> → <b>Library</b> → <b><a href=\"{purchased_link}\">Purchased</a></b>\n"
+        f"• <b>Bot</b> → <b><a href=\"{mystories_link}\">My Stories</a></b>"
+    )
+
+    # 6. Bottom 3 Quoteblocks (NO 1-line gap between them)
+    bottom_quotes = (
+        "<blockquote>Need it again later ? Just request delivery from there.</blockquote>\n"
+        '<blockquote>The guide below will answer almost everything before you ask. <a href="https://t.me/StoriesLinkopningguide"><b>Guide</b></a></blockquote>\n'
         "<blockquote>Thank you for supporting Arya Premium. Every purchase helps us bring you more stories.</blockquote>"
     )
 
-    return f"{quote_header}\n\n{details_block}{ongoing_block}\n\n{instructions_block}"
+    return f"{quote_header}\n\n{greeting_text}\n\n{details_block}{ongoing_block}\n\n{access_header_quote}\n{access_items}\n\n{bottom_quotes}"
 
 async def send_purchase_success_dm(
     db,
@@ -125,18 +140,55 @@ async def send_purchase_success_dm(
         if not tg_id_int:
             return
 
-        # Fetch user info if user_name is not provided
-        if not user_name:
-            user_name = "Friend"
+        # Resolve Bot Token first so we can fetch live Telegram user chat info if needed
+        bot_token = ""
+        try:
+            from mini_app_api import get_customer_bot_token
+            bot_token = await get_customer_bot_token(tg_id_int)
+        except Exception:
+            pass
+
+        if not bot_token:
             try:
-                if db and hasattr(db, "db"):
-                    u_doc = await db.db.users.find_one({"telegram_id": tg_id_int})
-                    if not u_doc:
-                        u_doc = await db.db.users.find_one({"_id": tg_id_int})
+                from AryaPremium.config import Config
+                bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
+            except Exception:
+                bot_token = os.environ.get("BOT_TOKEN", "")
+
+        if not bot_token:
+            logger.warning(f"send_purchase_success_dm: No bot token found for user {tg_id_int}")
+            return
+
+        bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+
+        # ── Fetch User Real Name (Order doc -> DB -> Live Telegram getChat API) ──
+        resolved_name = user_name
+        if not resolved_name or str(resolved_name).strip().lower() in ("friend", "user", ""):
+            if order_doc:
+                resolved_name = order_doc.get("first_name") or order_doc.get("payer_name") or order_doc.get("username")
+            
+            if (not resolved_name or str(resolved_name).strip().lower() in ("friend", "user", "")) and db and hasattr(db, "db"):
+                try:
+                    u_doc = await db.db.users.find_one({"telegram_id": tg_id_int}) or await db.db.users.find_one({"_id": tg_id_int})
                     if u_doc:
-                        user_name = u_doc.get("first_name") or u_doc.get("display_name") or u_doc.get("username") or "Friend"
-            except Exception as u_err:
-                logger.debug(f"Could not fetch user_name for DM: {u_err}")
+                        resolved_name = u_doc.get("first_name") or u_doc.get("display_name") or u_doc.get("username")
+                except Exception as u_err:
+                    logger.debug(f"Could not fetch DB user_name: {u_err}")
+
+            # Live Telegram API getChat fallback to guarantee real Telegram name
+            if (not resolved_name or str(resolved_name).strip().lower() in ("friend", "user", "")) and bot_token:
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f"https://api.telegram.org/bot{bot_token}/getChat?chat_id={tg_id_int}", timeout=3) as gc_resp:
+                            gc_data = await gc_resp.json()
+                            if gc_data.get("ok"):
+                                chat_res = gc_data.get("result", {})
+                                resolved_name = chat_res.get("first_name") or chat_res.get("username")
+                except Exception as gc_err:
+                    logger.debug(f"getChat name fetch error: {gc_err}")
+
+        final_user_name = resolved_name if resolved_name and str(resolved_name).strip() else "User"
 
         # Extract order fields if order_doc is provided
         if order_doc:
@@ -186,7 +238,7 @@ async def send_purchase_success_dm(
             primary_status = "Completed"
 
         full_message = build_purchase_complete_message(
-            user_name=user_name,
+            user_name=final_user_name,
             story_name=story_name_str,
             amount=amount or 0,
             order_id=order_id or "OD-COMPLETED",
@@ -194,33 +246,9 @@ async def send_purchase_success_dm(
             payment_method=payment_method or "UPI (UTR)",
             verified_by=verified_by or "Auto Verified By System",
             is_ongoing=is_ongoing,
-            is_admin_manual=is_admin_manual
+            is_admin_manual=is_admin_manual,
+            bot_username=bot_username
         )
-
-        # Resolve Bot Token
-        bot_token = ""
-        try:
-            from mini_app_api import get_customer_bot_token
-            bot_token = await get_customer_bot_token(tg_id_int)
-        except Exception:
-            pass
-
-        if not bot_token:
-            try:
-                from AryaPremium.config import Config
-                bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
-            except Exception:
-                bot_token = os.environ.get("BOT_TOKEN", "")
-
-        if not bot_token:
-            logger.warning(f"send_purchase_success_dm: No bot token found for user {tg_id_int}")
-            return
-
-        bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
-        keyboard = {"inline_keyboard": [[{
-            "text": "📚 Open Arya Premium",
-            "url": f"https://t.me/{bot_username}/app"
-        }]]}
 
         import aiohttp
         async with aiohttp.ClientSession() as session:
@@ -230,7 +258,6 @@ async def send_purchase_success_dm(
                     "chat_id": tg_id_int,
                     "text": full_message,
                     "parse_mode": "HTML",
-                    "reply_markup": keyboard,
                     "disable_web_page_preview": True
                 },
                 timeout=10
