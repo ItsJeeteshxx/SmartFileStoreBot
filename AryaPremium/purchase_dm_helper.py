@@ -199,6 +199,19 @@ async def send_purchase_success_dm(
             story_ids = story_ids or order_doc.get("story_ids", [])
             verified_by = verified_by or order_doc.get("verified_by")
 
+        # Ensure order_id is never raw checkout_ or legacy OD_ or blank
+        raw_oid = str(order_id or "").strip()
+        if not raw_oid or raw_oid.startswith("checkout_") or raw_oid.startswith("OD-") or raw_oid.startswith("OD_"):
+            try:
+                from plugins.userbot.market_seller import _make_arya_bot_order_id
+                first_sid = story_ids[0] if (story_ids and len(story_ids) > 0) else None
+                order_id = await _make_arya_bot_order_id(tg_id_int, str(first_sid) if first_sid else None)
+            except Exception:
+                from datetime import datetime as _dt
+                import random
+                prefix = "AB" if is_admin_manual else "AM"
+                order_id = f"{prefix}-{tg_id_int}-{_dt.now().strftime('%d%m')}-{random.randint(10000, 99999)}"
+
         # Fetch story details to get names and status
         story_names = []
         is_ongoing = False

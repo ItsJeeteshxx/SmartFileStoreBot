@@ -1531,6 +1531,17 @@ async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
 
 
 
+async def _clear_utr_state(user_id: int):
+    """Clear UTR input waiting state for user when they navigate away from UPI payment page."""
+    try:
+        await db.db.users.update_one(
+            {"id": int(user_id)},
+            {"$unset": {"pending_utr_story_id": 1, "last_utr_entered": 1, "state": 1}}
+        )
+    except Exception:
+        pass
+
+
 async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, page: int = 0, reply_to_message=None, edit_query=None):
     raw_purchases = user.get('purchases', []) if isinstance(user, dict) else []
     from bson.objectid import ObjectId
@@ -2762,9 +2773,8 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
 
 
 async def _process_start(client, message):
-
     user_id = message.from_user.id
-
+    asyncio.create_task(_clear_utr_state(user_id))
     from pyrogram import enums
 
     # React to the /start command — fire-and-forget
@@ -3747,6 +3757,10 @@ async def _process_text(client, message):
     pending_s_id_utr = user.get("pending_utr_story_id")
     if pending_s_id_utr:
         raw_input = txt.strip()
+
+        if raw_input.startswith("/") or raw_input.lower() in ("cancel", "back", "menu", "exit", "stop"):
+            await _clear_utr_state(user_id)
+            return
 
         # Extract ONLY ASCII digits — handles copy-paste with \xa0, thin-spaces, etc.
         utr_candidate = ''.join(c for c in raw_input if c in '0123456789')
@@ -7101,10 +7115,12 @@ async def _process_callback(client, query):
 
             try:
                 logger.info("[PAY2] Updating checkout in DB...")
+                order_id = await _make_arya_bot_order_id(user_id, str(s_id))
                 await db.db.premium_checkout.update_one(
                     {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
                     {"$set": {
                         "status": "pending_gateway",
+                        "order_id": order_id,
                         "bot_username": client.me.username,
                         "username": query.from_user.username or "",
                         "first_name": query.from_user.first_name or "",
@@ -7227,10 +7243,12 @@ async def _process_callback(client, query):
                 )
 
             # Record checkout in DB
+            order_id = await _make_arya_bot_order_id(user_id, str(s_id))
             await db.db.premium_checkout.update_one(
                 {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
                 {"$set": {
                     "status": "pending_gateway",
+                    "order_id": order_id,
                     "bot_username": client.me.username,
                     "username": query.from_user.username or "",
                     "first_name": query.from_user.first_name or "",
