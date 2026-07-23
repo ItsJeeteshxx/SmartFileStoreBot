@@ -1231,9 +1231,10 @@ import hmac
 import hashlib
 
 def _make_order_id(tg_id: str) -> str:
-    """Legacy fallback order ID generator (kept for safety on old code paths)."""
-    import uuid
-    return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
+    """Fallback structured order ID generator."""
+    from datetime import datetime as _dt
+    import random
+    return f"AM-{tg_id}-{_dt.now().strftime('%d%m')}-{random.randint(10000, 99999)}"
 
 async def _make_arya_order_id(
     db_instance,

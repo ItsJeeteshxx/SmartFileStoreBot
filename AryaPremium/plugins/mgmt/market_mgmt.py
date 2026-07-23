@@ -1604,10 +1604,14 @@ async def market_callback(client, query):
                     photo_path=checkout.get("proof_path")
                 ))
 
-                import random, string
                 order_id = checkout.get("order_id")
-                if not order_id:
-                    order_id = f"OD-{checkout['user_id']}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+                if not order_id or str(order_id).startswith("OD-") or str(order_id).startswith("OD_"):
+                    try:
+                        from plugins.userbot.market_seller import _make_arya_bot_order_id
+                        order_id = await _make_arya_bot_order_id(checkout['user_id'], str(checkout.get('story_id')))
+                    except Exception:
+                        from mini_app_api import _make_arya_order_id
+                        order_id = await _make_arya_order_id(db, str(checkout['user_id']), [str(checkout.get('story_id'))], source="bot")
 
                 # Payment Receipt sending is DISABLED (user request)
                 # from utils_invoice import send_invoice_to_user
@@ -2846,8 +2850,14 @@ async def _approve_payment_flow(client, user_id, p_id):
             {"$set": {"status": "approved", "updated_at": datetime.utcnow(), "reviewed_by": user_id}}
         )
 
-        import random, string
-        order_id = f"OD-{checkout['user_id']}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+        order_id = checkout.get("order_id")
+        if not order_id or str(order_id).startswith("OD-") or str(order_id).startswith("OD_"):
+            try:
+                from plugins.userbot.market_seller import _make_arya_bot_order_id
+                order_id = await _make_arya_bot_order_id(checkout['user_id'], str(checkout.get('story_id')))
+            except Exception:
+                from mini_app_api import _make_arya_order_id
+                order_id = await _make_arya_order_id(db, str(checkout['user_id']), [str(checkout.get('story_id'))], source="bot")
 
         story = await db.db.premium_stories.find_one({"_id": checkout.get("story_id")})
         real_amt = checkout.get("amount") or (int(story.get("price", 0)) if story else 0)
