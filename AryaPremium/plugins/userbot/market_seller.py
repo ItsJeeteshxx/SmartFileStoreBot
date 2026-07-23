@@ -2813,42 +2813,8 @@ async def _process_start(client, message):
 
     # ── Deep Link Handler: /start mystories or /start purchased ──
     if len(args) > 1 and args[1].lower() in ("mystories", "my_stories", "purchased", "library"):
-        try:
-            bot_username = getattr(client.me, "username", "UseAryaBot") or "UseAryaBot"
-            app_url = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
-            
-            purchases = await db.db.premium_purchases.find({"user_id": user_id}).to_list(length=None)
-            purchased_sids = [p.get("story_id") for p in purchases if p.get("story_id")]
-            
-            if not purchased_sids:
-                u_doc = await db.db.users.find_one({"id": int(user_id)}) or await db.db.users.find_one({"telegram_id": int(user_id)})
-                if u_doc and u_doc.get("purchased_stories"):
-                    purchased_sids = u_doc.get("purchased_stories")
-            
-            story_lines = []
-            if purchased_sids:
-                from bson.objectid import ObjectId
-                for sid in purchased_sids:
-                    try:
-                        s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
-                        st_doc = await db.db.premium_stories.find_one({"_id": s_obj_id})
-                        if st_doc:
-                            st_name = st_doc.get("story_name_en") or st_doc.get("title") or "Story"
-                            story_lines.append(f"• <b>{st_name}</b>")
-                    except Exception:
-                        pass
-            
-            s_list_str = "\n".join(story_lines) if story_lines else "• Your unlocked stories"
-            
-            txt = (
-                "📚 <b>Your Purchased Stories Collection</b>\n\n"
-                f"{s_list_str}\n\n"
-                f"📱 <b><a href='{app_url}'>Open Library in Mini App</a></b>\n"
-                "<i>Select any story above in the Mini App to start listening or request file delivery anytime!</i>"
-            )
-            return await message.reply_text(txt, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
-        except Exception as _ms_err:
-            logger.warning(f"Error handling mystories start command: {_ms_err}")
+        from plugins.userbot.market_seller import _send_main_menu
+        return await _send_main_menu(client, user_id, message.from_user, lang, reply_to_message_id=message.id)
 
 
 
