@@ -1536,7 +1536,7 @@ async def _clear_utr_state(user_id: int):
     try:
         await db.db.users.update_one(
             {"id": int(user_id)},
-            {"$unset": {"pending_utr_story_id": 1, "last_utr_entered": 1, "state": 1}}
+            {"$unset": {"pending_utr_story_id": 1, "pending_utr_opened_at": 1, "last_utr_entered": 1, "state": 1}}
         )
     except Exception:
         pass
@@ -3756,6 +3756,21 @@ async def _process_text(client, message):
 
     pending_s_id_utr = user.get("pending_utr_story_id")
     if pending_s_id_utr:
+        # 5-minute timeout check (auto-expire UTR state if > 300 seconds)
+        opened_at = user.get("pending_utr_opened_at")
+        if opened_at:
+            try:
+                from datetime import datetime as _dt
+                if isinstance(opened_at, _dt):
+                    elapsed_sec = (_dt.utcnow() - opened_at).total_seconds()
+                else:
+                    elapsed_sec = 9999
+                if elapsed_sec > 300:
+                    await _clear_utr_state(user_id)
+                    return
+            except Exception:
+                pass
+
         raw_input = txt.strip()
 
         if raw_input.startswith("/") or raw_input.lower() in ("cancel", "back", "menu", "exit", "stop"):
@@ -3765,8 +3780,15 @@ async def _process_text(client, message):
         # Extract ONLY ASCII digits — handles copy-paste with \xa0, thin-spaces, etc.
         utr_candidate = ''.join(c for c in raw_input if c in '0123456789')
 
-        # Accept exactly 12 digits (standard UPI UTR/Reference Number)
-        if len(utr_candidate) == 12:
+        # Strictly require AT LEAST 12 digits — ignore short numbers or non-numeric text completely!
+        if len(utr_candidate) < 12:
+            # Silent return — do NOT throw any "Invalid UTR" error!
+            return
+
+        # Take 12 digits candidate
+        utr_candidate = utr_candidate[:12]
+
+        if True:
             logger.info(f"[UTR] User {user_id} sent UTR: {utr_candidate} for story {pending_s_id_utr}")
 
             # Clear state immediately to prevent double-processing
@@ -4041,28 +4063,8 @@ async def _process_text(client, message):
                         f"विवरण: <code>{success_err}</code>\n\n"
                         "<i>कृपया UTR के साथ सहायता (Support) से संपर्क करें।</i>"
                     )
-                await message.reply_text(err_msg, parse_mode=enums.ParseMode.HTML)
                 return
-
-        elif len(utr_candidate) > 0 and len(utr_candidate) != 12:
-            # Wrong digit count — friendly error
-            if lang == 'hi':
-                _inv_msg = (
-                    f"❌ <b>गलत UTR!</b>\n"
-                    f"आपके नंबर में <code>{len(utr_candidate)}</code> digits हैं। "
-                    f"UTR exactly 12 digits का होना चाहिए।\n"
-                    f"<i>Payment app का Transaction ID दोबारा check करें।</i>"
-                )
-            else:
-                _inv_msg = (
-                    f"❌ <b>Invalid UTR!</b>\n"
-                    f"Your input has <code>{len(utr_candidate)}</code> digits. "
-                    f"A UTR must be exactly 12 digits.\n"
-                    f"<i>Please check the Transaction ID in your payment app.</i>"
-                )
-            await message.reply_text(_inv_msg, parse_mode=enums.ParseMode.HTML)
-            return  # Stay in pending state
-        # No digits or non-UTR message → let normal text handling continue
+        return
 
 
     pending_s_id = user.get("dm_story_id_pending")
@@ -7144,7 +7146,7 @@ async def _process_callback(client, query):
                 logger.info("[PAY2] Setting pending_utr_story_id in user doc...")
                 await db.db.users.update_one(
                     {"id": user_id},
-                    {"$set": {"pending_utr_story_id": s_id}},
+                    {"$set": {"pending_utr_story_id": s_id, "pending_utr_opened_at": datetime.utcnow()}},
                     upsert=True
                 )
                 logger.info("[PAY2] User doc updated.")
