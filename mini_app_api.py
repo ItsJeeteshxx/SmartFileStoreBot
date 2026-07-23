@@ -7253,12 +7253,37 @@ async def admin_order_lookup(order_id: str, telegram_id: str = ""):
     if admin_ids and telegram_id and str(telegram_id) not in admin_ids:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # 1. Find order by order_id
+    # 1. Find order — search across ALL relevant collections
+    order = None
+    order_collection_name = "orders"
+
+    # Search in orders collection first (exact match)
     order = await db.db.orders.find_one({"order_id": order_id})
 
-    # 2. Fallback: search by partial match (last 8 chars of order_id)
+    # Fallback: partial match in orders (last 8 chars)
     if not order and len(order_id) >= 6:
-        order = await db.db.orders.find_one({"order_id": {"$regex": order_id[-8:], "$options": "i"}})
+        order = await db.db.orders.find_one({"order_id": {"$regex": re.escape(order_id[-8:]), "$options": "i"}})
+
+    # Fallback: search in premium_checkout (new orders often land here first)
+    if not order:
+        order_collection_name = "premium_checkout"
+        order = await db.db.premium_checkout.find_one({"order_id": order_id})
+        if not order:
+            order = await db.db.premium_checkout.find_one({"track_id": order_id})
+        if not order and len(order_id) >= 6:
+            order = await db.db.premium_checkout.find_one({"order_id": {"$regex": re.escape(order_id[-8:]), "$options": "i"}})
+
+    # Fallback: search in premium_purchases (paid/completed records)
+    if not order:
+        order_collection_name = "premium_purchases"
+        order = await db.db.premium_purchases.find_one({"order_id": order_id})
+        if not order and len(order_id) >= 6:
+            order = await db.db.premium_purchases.find_one({"order_id": {"$regex": re.escape(order_id[-8:]), "$options": "i"}})
+
+    # Fallback: search in purchases collection (older records)
+    if not order:
+        order_collection_name = "purchases"
+        order = await db.db.purchases.find_one({"order_id": order_id})
 
     if not order:
         return {"success": False, "found": False, "message": f"No order found with ID: {order_id}"}
@@ -7632,6 +7657,58 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
         raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
         logger.error(f"Buyer action error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/buyers/bulk-action")
+async def admin_bulk_buyer_action(telegram_id: str, payload: dict):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        action = payload.get("action")
+        user_ids = payload.get("user_ids", [])
+        story_id = payload.get("story_id", "all")
+        if not user_ids:
+            raise HTTPException(status_code=400, detail="No user_ids provided")
+
+        uid_filter = []
+        for uid in user_ids:
+            target_uid = int(uid) if str(uid).isdigit() else uid
+            uid_filter.extend([target_uid, str(target_uid)])
+            if isinstance(target_uid, int):
+                uid_filter.append(target_uid)
+
+        arya_db = app.state.db
+
+        if action in ("wipe", "delete_orders"):
+            await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.support_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.story_requests.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.user_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.premium_feedback.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.premium_requests.delete_many({"telegram_id": {"$in": uid_filter}})
+            invalidate_buyers_cache()
+            return {"success": True, "message": f"Bulk action '{action}' completed for {len(user_ids)} users."}
+
+        elif action == "remove_story" and story_id == "all":
+            await arya_db.db.users.update_many(
+                {"id": {"$in": uid_filter}},
+                {"$set": {"purchases": []}}
+            )
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+            invalidate_buyers_cache()
+            return {"success": True, "message": f"Story access removed for {len(user_ids)} users."}
+
+        raise HTTPException(status_code=400, detail="Invalid bulk action")
+    except Exception as e:
+        logger.error(f"Bulk buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.delete("/admin/requests/{request_id}")
