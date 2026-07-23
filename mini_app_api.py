@@ -4294,8 +4294,11 @@ _processed_buyers_cache_time = 0.0
 PROCESSED_BUYERS_CACHE_TTL = 60.0  # Cache for 60 seconds
 
 def invalidate_buyers_cache():
-    global _processed_buyers_cache_time
+    global _processed_buyers_cache, _processed_buyers_cache_time, _admin_stats_cache, _admin_stats_cache_time
+    _processed_buyers_cache = None
     _processed_buyers_cache_time = 0.0
+    _admin_stats_cache = None
+    _admin_stats_cache_time = 0.0
 
 async def fetch_processed_buyers_data(arya_db):
     """
@@ -4353,15 +4356,6 @@ async def fetch_processed_buyers_data(arya_db):
             if soid_str:
                 story_cache_by_oid[soid_str] = s
                 sid_to_canonical[soid_str] = canon
-
-        # Pre-build user canonical purchases map for O(1) set lookup
-        user_purchases_canonical_map = {}
-        for uid_str, p_set in user_purchases_map.items():
-            c_set = set()
-            for p_id in p_set:
-                c_set.add(sid_to_canonical.get(p_id, p_id))
-                c_set.add(p_id)
-            user_purchases_canonical_map[uid_str] = c_set
 
         ord_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "created_at": 1}
         chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1}
@@ -4426,11 +4420,7 @@ async def fetch_processed_buyers_data(arya_db):
             story_id_str = str(story_id) if story_id else ""
             if not story_id_str: continue
 
-            user_active = user_purchases_canonical_map.get(uid_str, set())
             story_canon = sid_to_canonical.get(story_id_str, story_id_str)
-            if user_active and story_id_str not in user_active and story_canon not in user_active:
-                continue
-
             if uid_str not in added_paid_stories:
                 added_paid_stories[uid_str] = set()
             added_paid_stories[uid_str].add(story_id_str)
@@ -4449,12 +4439,14 @@ async def fetch_processed_buyers_data(arya_db):
             date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
             date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
-            is_bot = "bot" in str(p.get("source", "")).lower() or bool(p.get("bot_id"))
-            source_label = "bot" if is_bot else "miniapp"
+            src_val = str(p.get("source", "")).lower()
+            oid_val = str(p.get("order_id", "")).upper()
+            if "bot" in src_val or oid_val.startswith("AB-") or oid_val.startswith("MANUAL_") or bool(p.get("bot_id")):
+                source_label = "bot"
+            else:
+                source_label = "miniapp"
 
             b = get_or_create_buyer(uid_str, fallback_doc=p, fallback_source=source_label)
-            if b["source"] != source_label:
-                b["source"] = "both"
 
             b["payments"].append({
                 "order_id": _clean_order_id_value(p, uid_str, [story_id_str], source=source_label),
@@ -4481,30 +4473,24 @@ async def fetch_processed_buyers_data(arya_db):
             if not story_ids and doc.get("story_id"):
                 story_ids = [str(doc.get("story_id"))]
 
-            source_raw = doc.get("source", "miniapp")
-            is_bot = "bot" in str(source_raw).lower()
-            source_label = "bot" if is_bot else "miniapp"
+            src_val = str(doc.get("source", "")).lower()
+            oid_val = str(doc.get("order_id", "") or doc.get("_id", "")).upper()
+            if "bot" in src_val or oid_val.startswith("AB-") or oid_val.startswith("MANUAL_"):
+                source_label = "bot"
+            else:
+                source_label = "miniapp"
 
             amt = doc.get("total_amount", doc.get("total", doc.get("amount", 0)))
             try: amt = float(amt)
             except: amt = 0
 
-            if status_raw in ["paid", "delivered"]:
-                user_active = user_purchases_canonical_map.get(uid_str, set())
-                valid_sids = []
-                for sid_s in story_ids:
-                    s_canon = sid_to_canonical.get(sid_s, sid_s)
-                    if not user_active or sid_s in user_active or s_canon in user_active:
-                        valid_sids.append(sid_s)
-                if not valid_sids:
-                    continue
-                story_ids = valid_sids
-
+            if status_raw in ["paid", "delivered", "approved", "completed", "success"]:
                 if uid_str in added_paid_stories and any(sid in added_paid_stories[uid_str] for sid in story_ids):
                     b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
-                    for p in b["payments"]:
-                        if p["story_id"] in story_ids and p["amount"] == 0 and amt > 0:
-                            p["amount"] = amt
+                    for p_item in b["payments"]:
+                        if p_item["story_id"] in story_ids:
+                            if amt > 0: p_item["amount"] = amt
+                            p_item["source"] = source_label
                     continue
 
             story_names = []
@@ -4521,10 +4507,8 @@ async def fetch_processed_buyers_data(arya_db):
             date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
             b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
-            if b["source"] != source_label:
-                b["source"] = "both"
 
-            method_str = str(doc.get("method", "RAZORPAY" if "razor" in str(doc.get("source","")).lower() else "UPI")).upper()
+            method_str = str(doc.get("method", doc.get("payment_method", "UPI"))).upper()
 
             b["payments"].append({
                 "order_id": _clean_order_id_value(doc, uid_str, story_ids, source=source_label),
@@ -4559,9 +4543,6 @@ async def fetch_processed_buyers_data(arya_db):
             story_canon = sid_to_canonical.get(story_id_str, story_id_str)
 
             if status_label == "paid":
-                user_active = user_purchases_canonical_map.get(uid_str, set())
-                if user_active and story_id_str not in user_active and story_canon not in user_active:
-                    continue
                 if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
                     continue
 
@@ -4579,8 +4560,6 @@ async def fetch_processed_buyers_data(arya_db):
             date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
             b = get_or_create_buyer(uid_str, fallback_doc=c, fallback_source="bot")
-            if b["source"] != "bot":
-                b["source"] = "both"
 
             b["payments"].append({
                 "order_id": _clean_order_id_value(c, uid_str, [story_id_str], source="bot"),
@@ -4606,6 +4585,15 @@ async def fetch_processed_buyers_data(arya_db):
 
             paid_payments = [p for p in payments if p["status"] in ["paid", "approved", "delivered", "completed", "success"]]
             pending_payments = [p for p in payments if p["status"] in ["pending", "processing", "waiting_screenshot"]]
+
+            # Determine buyer overall source accurately based on their actual payments
+            sources_present = set(p.get("source", "miniapp") for p in payments)
+            if "miniapp" in sources_present and "bot" in sources_present:
+                data["source"] = "both"
+            elif "bot" in sources_present:
+                data["source"] = "bot"
+            else:
+                data["source"] = "miniapp"
 
             if paid_payments:
                 user_status = "paid"
@@ -7466,20 +7454,37 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             await arya_db.db.user_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
             await arya_db.db.premium_feedback.delete_many({"telegram_id": {"$in": uid_filter}})
             await arya_db.db.premium_requests.delete_many({"telegram_id": {"$in": uid_filter}})
+            invalidate_buyers_cache()
             return {"success": True, "message": "User data wiped completely."}
             
         elif action == "ban":
-            await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
             await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.users.update_one(
-                {"id": target_uid},
-                {"$set": {"id": target_uid, "banned": True, "ban_reason": "Admin ban via Web App"}},
+                {"id": {"$in": uid_filter}},
+                {"$set": {"banned": True, "purchases": [], "ban_reason": "Admin ban via Web App"}},
                 upsert=True
             )
+            invalidate_buyers_cache()
             return {"success": True, "message": "User wiped and banned."}
+
+        elif action == "delete_order":
+            order_id_str = payload.get("order_id") or payload.get("story_id")
+            if order_id_str:
+                from bson.objectid import ObjectId
+                id_filter = [order_id_str]
+                try: id_filter.append(ObjectId(order_id_str))
+                except Exception: pass
+
+                await arya_db.db.orders.delete_many({"order_id": {"$in": id_filter}})
+                await arya_db.db.orders.delete_many({"_id": {"$in": id_filter}})
+                await arya_db.db.premium_checkout.delete_many({"order_id": {"$in": id_filter}})
+                await arya_db.db.premium_checkout.delete_many({"_id": {"$in": id_filter}})
+                await arya_db.db.premium_checkout.delete_many({"track_id": {"$in": id_filter}})
+            invalidate_buyers_cache()
+            return {"success": True, "message": "Order deleted successfully."}
             
         elif action == "remove_story":
             story_id_str = payload.get("story_id")
@@ -7494,6 +7499,8 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                 await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
                 await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
                 await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+                await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+                invalidate_buyers_cache()
                 return {"success": True, "message": "All story access removed from user."}
             
             # 1. Pull the story_id from users collection purchases
@@ -7502,7 +7509,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                 {"$pull": {"purchases": story_id_str}}
             )
             
-            # 2. Delete the record from premium_purchases & purchases
+            # 2. Delete the record from premium_purchases, purchases, premium_checkout & orders
             from bson.objectid import ObjectId
             story_id_filter = [story_id_str]
             try:
@@ -7518,25 +7525,21 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                 "user_id": {"$in": uid_filter},
                 "story_id": {"$in": story_id_filter}
             })
-                
-            # 3. Pull/modify in orders collection to decrement trending/popular count
-            async for order in arya_db.db.orders.find({
+            await arya_db.db.premium_checkout.delete_many({
                 "user_id": {"$in": uid_filter},
-                "status": {"$in": ["paid", "delivered"]},
-                "story_ids": story_id_str
-            }):
-                new_story_ids = [sid for sid in order.get("story_ids", []) if sid != story_id_str]
-                if not new_story_ids:
-                    await arya_db.db.orders.update_one(
-                        {"_id": order["_id"]},
-                        {"$set": {"story_ids": [], "status": "failed"}}
-                    )
-                else:
-                    await arya_db.db.orders.update_one(
-                        {"_id": order["_id"]},
-                        {"$set": {"story_ids": new_story_ids}}
-                    )
+                "story_id": {"$in": story_id_filter}
+            })
+            await arya_db.db.orders.delete_many({
+                "user_id": {"$in": uid_filter},
+                "story_ids": {"$in": story_id_filter}
+            })
+            await arya_db.db.orders.delete_many({
+                "user_id": {"$in": uid_filter},
+                "story_id": {"$in": story_id_filter}
+            })
                     
+            invalidate_buyers_cache()
+            
             global _stories_cache
             _stories_cache = None
             
