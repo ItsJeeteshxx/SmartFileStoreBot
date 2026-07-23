@@ -1531,6 +1531,73 @@ async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
 
 
 
+async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, page: int = 0, reply_to_message=None, edit_query=None):
+    raw_purchases = user.get('purchases', []) if isinstance(user, dict) else []
+    from bson.objectid import ObjectId
+    p_oids = []
+    for p in raw_purchases:
+        try: p_oids.append(ObjectId(p))
+        except: pass
+    
+    valid_stories_cursor = db.db.premium_stories.find({"_id": {"$in": p_oids}})
+    valid_stories = await valid_stories_cursor.to_list(length=1000)
+    valid_ids_set = {str(s['_id']) for s in valid_stories}
+    
+    purchases = []
+    seen = set()
+    for p in raw_purchases:
+        pid_str = str(p)
+        if pid_str in valid_ids_set and pid_str not in seen:
+            purchases.append(p)
+            seen.add(pid_str)
+    purchases.reverse()
+
+    PAGE_SIZE = 5
+    total = len(purchases)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    page_purchases = purchases[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+
+    kb = []
+    for pid in page_purchases:
+        try:
+            st = next((s for s in valid_stories if str(s['_id']) == str(pid)), None)
+            if st:
+                name_en = st.get('story_name_en', 'Story')
+                name_hi = st.get('story_name_hi', name_en)
+                s_name = f"📖 {name_hi if lang == 'hi' else name_en}"
+                kb.append([InlineKeyboardButton(s_name, callback_data=f"mb#purchased_view_{pid}")])
+        except Exception: pass
+
+    if lang == 'hi':
+        title, total_txt, desc = "⟦ मेरी स्टोरीज ⟧", "कुल स्टोरी ⟶", "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं।"
+        next_btn, prev_btn, back_btn = "आगे ❭", "❬ पीछे", "« वापस मेनू"
+        empty_txt, market_btn_l = "कोई खरीद नहीं मिली।", "स्टोर खोलें"
+    else:
+        title, total_txt, desc = "⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧", "ᴛᴏᴛᴀʟ ⟶", "𝖠𝗅𝗅 𝗌𝗍𝗈𝗋𝗂𝖾𝗌 𝗅𝗂𝗌𝗍𝖾𝖽 𝖻𝖾𝗅𝗈𝗐 𝖺𝗋𝖾 𝖺𝗅𝗋𝖾𝖺𝖽𝗒 𝗈𝗇 𝗒𝗈𝗎𝗋 𝖺𝖼𝖼𝗈𝗎𝗇ᴛ."
+        next_btn, prev_btn, back_btn = "𝗡𝗲𝘅𝘁 ❭", "❬ 𝗣𝗿𝗲𝘃", _sc("BACK")
+        empty_txt, market_btn_l = "ɴᴏ ᴘᴜʀᴄʜᴀꜱᴇꜱ ꜰᴏᴜɴᴅ.", _sc("OPEN MARKETPLACE")
+
+    if total_pages > 1:
+        nav = []
+        if page > 0: nav.append(InlineKeyboardButton(prev_btn, callback_data=f"mb#my_buys_page_{page - 1}"))
+        nav.append(InlineKeyboardButton(f"ᴘᴀɢᴇ {page + 1}/{total_pages}", callback_data="mb#noop"))
+        if page < total_pages - 1: nav.append(InlineKeyboardButton(next_btn, callback_data=f"mb#my_buys_page_{page + 1}"))
+        kb.append(nav)
+
+    kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
+
+    txt_b = f"<b>{title}</b>\n\n<b>{total_txt}</b> {total}\n\n{desc}" if total > 0 else f"<b>{title}</b>\n\n<b>{total_txt}</b> 0\n\n{empty_txt}"
+    if total == 0: kb.insert(0, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
+
+    if edit_query:
+        await edit_query.message.edit_text(txt_b, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+    elif reply_to_message:
+        await reply_to_message.reply_text(txt_b, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+    else:
+        await client.send_message(user_id, txt_b, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+
+
 async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_message_id: int = None):
 
     bt = await db.db.premium_bots.find_one({"id": client.me.id})
@@ -2813,8 +2880,7 @@ async def _process_start(client, message):
 
     # ── Deep Link Handler: /start mystories or /start purchased ──
     if len(args) > 1 and args[1].lower() in ("mystories", "my_stories", "purchased", "library"):
-        from plugins.userbot.market_seller import _send_main_menu
-        return await _send_main_menu(client, user_id, message.from_user, lang, reply_to_message_id=message.id)
+        return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
 
 
 
@@ -5649,136 +5715,12 @@ async def _process_callback(client, query):
     # -- My Buys (My Stories) --
 
     elif cmd == "my_buys" or cmd.startswith("my_buys_page_"):
-
         await query.answer()
-
-        raw_purchases = user.get('purchases', [])
-
-        from bson.objectid import ObjectId
-
-        p_oids = []
-
-        for p in raw_purchases:
-
-            try: p_oids.append(ObjectId(p))
-
-            except: pass
-
-        
-
-        valid_stories_cursor = db.db.premium_stories.find({"_id": {"$in": p_oids}})
-
-        valid_stories = await valid_stories_cursor.to_list(length=1000)
-
-        valid_ids_set = {str(s['_id']) for s in valid_stories}
-
-        
-
-        # DEDUPLICATION: Ensure one entry per unique story ID
-
-        purchases = []
-
-        seen = set()
-
-        for p in raw_purchases:
-
-            pid_str = str(p)
-
-            if pid_str in valid_ids_set and pid_str not in seen:
-
-                purchases.append(p)
-
-                seen.add(pid_str)
-
-        purchases.reverse()
-
-
-
-        PAGE_SIZE = 5
-
         page = 0
-
         if cmd.startswith("my_buys_page_"):
-
             try: page = int(cmd.replace("my_buys_page_", ""))
-
             except: page = 0
-
-
-
-        total = len(purchases)
-
-        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-
-        page = max(0, min(page, total_pages - 1))
-
-        page_purchases = purchases[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
-
-
-
-        kb = []
-
-        for pid in page_purchases:
-
-            try:
-
-                st = next((s for s in valid_stories if str(s['_id']) == str(pid)), None)
-
-                if st:
-
-                    name_en = st.get('story_name_en', 'Story')
-
-                    name_hi = st.get('story_name_hi', name_en)
-
-                    # CLEAN DISPLAY: Only show the selected language version
-
-                    s_name = f"📖 {name_hi if lang == 'hi' else name_en}"
-
-                    kb.append([InlineKeyboardButton(s_name, callback_data=f"mb#purchased_view_{pid}")])
-
-            except Exception: pass
-
-
-
-        if lang == 'hi':
-
-            title, total_txt, desc = "⟦ मेरी स्टोरीज ⟧", "कुल स्टोरी ⟶", "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं।"
-
-            next_btn, prev_btn, back_btn = "आगे ❭", "❬ पीछे", "« वापस मेनू"
-
-            empty_txt, market_btn_l = "कोई खरीद नहीं मिली।", "स्टोर खोलें"
-
-        else:
-
-            title, total_txt, desc = "⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧", "ᴛᴏᴛᴀʟ ⟶", "𝖠𝗅𝗅 𝗌𝗍𝗈𝗋𝗂𝖾𝗌 𝗅𝗂𝗌𝗍𝖾𝖽 𝖻𝖾𝗅𝗈𝗐 𝖺𝗋𝖾 𝖺𝗅𝗋𝖾𝖺𝖽𝗒 𝗈𝗇 𝗒𝗈𝗎𝗋 𝖺𝖼𝖼𝗈𝗎𝗇ᴛ."
-
-            next_btn, prev_btn, back_btn = "𝗡𝗲𝘅𝘁 ❭", "❬ 𝗣𝗿𝗲𝘃", _sc("BACK")
-
-            empty_txt, market_btn_l = "ɴᴏ ᴘᴜʀᴄʜᴀꜱᴇꜱ ꜰᴏᴜɴᴅ.", _sc("OPEN MARKETPLACE")
-
-
-
-        if total_pages > 1:
-
-            nav = []
-
-            if page > 0: nav.append(InlineKeyboardButton(prev_btn, callback_data=f"mb#my_buys_page_{page - 1}"))
-
-            nav.append(InlineKeyboardButton(f"ᴘᴀɢᴇ {page + 1}/{total_pages}", callback_data="mb#noop"))
-
-            if page < total_pages - 1: nav.append(InlineKeyboardButton(next_btn, callback_data=f"mb#my_buys_page_{page + 1}"))
-
-            kb.append(nav)
-
-        kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
-
-
-
-        txt_b = f"<b>{title}</b>\n\n<b>{total_txt}</b> {total}\n\n{desc}" if total > 0 else f"<b>{title}</b>\n\n<b>{total_txt}</b> 0\n\n{empty_txt}"
-
-        if total == 0: kb.insert(0, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
-
-        await _safe_edit(query.message, text=txt_b, markup=InlineKeyboardMarkup(kb))
+        return await _send_my_stories_menu(client, user_id, user, lang, page=page, edit_query=query)
 
 
 
