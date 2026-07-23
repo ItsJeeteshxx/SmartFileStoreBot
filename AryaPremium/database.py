@@ -90,7 +90,19 @@ class PremiumDatabase:
         else:
             await self.stories.insert_one(data)
     async def delete_story(self, story_id: str):
-        await self.stories.delete_one({"story_id": story_id})
+        from bson.objectid import ObjectId
+        sid_str = str(story_id).strip()
+        filters = [{"story_id": sid_str}, {"id": sid_str}, {"_id": sid_str}]
+        try:
+            if ObjectId.is_valid(sid_str):
+                filters.append({"_id": ObjectId(sid_str)})
+        except Exception:
+            pass
+
+        for flt in filters:
+            await self.stories.delete_many(flt)
+            await self.db.stories.delete_many(flt)
+            await self.db.episodes.delete_many(flt)
 
     # ─────────────────────────────────────────────────────────────────
     # Users, State & Access Management

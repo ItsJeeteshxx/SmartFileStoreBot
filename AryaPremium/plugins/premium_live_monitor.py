@@ -85,28 +85,62 @@ async def send_announcement(bot: Client, pending_info: dict):
     try:
         from database import db
         from pyrogram.enums import ParseMode
+        from bson.objectid import ObjectId
+
         story_id_raw = str(pending_info.get("story_id", ""))
+        
+        match_list = []
         if story_id_raw:
-            from bson.objectid import ObjectId
-            match_list = [story_id_raw]
+            match_list.append(story_id_raw)
             if story_id_raw.isdigit():
                 match_list.append(int(story_id_raw))
             if ObjectId.is_valid(story_id_raw):
                 match_list.append(ObjectId(story_id_raw))
+        if story_name:
+            match_list.append(story_name)
 
-            purchased_query = {
-                "purchases": {"$in": match_list}
-            }
+        if match_list:
+            user_ids_to_notify = set()
+
+            # 1. Search users & premium_users collections (purchases array)
+            purchased_query = {"purchases": {"$in": match_list}}
             users_list = await db.db.users.find(purchased_query).to_list(length=None)
             prem_users_list = await db.db.premium_users.find(purchased_query).to_list(length=None)
-            
-            buyer_map = {}
+
             for u in (users_list + prem_users_list):
                 uid = u.get("id") or u.get("telegram_id")
-                if uid:
-                    buyer_map[int(uid)] = u
-            
-            for uid, buyer in buyer_map.items():
+                if uid and str(uid).isdigit():
+                    user_ids_to_notify.add(int(uid))
+
+            # 2. Search premium_purchases & purchases collections (story_id field)
+            pur_query = {"story_id": {"$in": match_list}}
+            prem_pur_list = await db.db.premium_purchases.find(pur_query).to_list(length=None)
+            legacy_pur_list = await db.db.purchases.find(pur_query).to_list(length=None)
+
+            for p in (prem_pur_list + legacy_pur_list):
+                uid = p.get("user_id") or p.get("telegram_id")
+                if uid and str(uid).isdigit():
+                    user_ids_to_notify.add(int(uid))
+
+            # 3. Search orders collection (paid / approved orders)
+            ord_query = {
+                "status": {"$in": ["paid", "approved", "completed", "success", "Paid", "Approved"]},
+                "$or": [
+                    {"story_ids": {"$in": match_list}},
+                    {"story_id": {"$in": match_list}},
+                    {"story_names": {"$in": match_list}}
+                ]
+            }
+            orders_list = await db.db.orders.find(ord_query).to_list(length=None)
+            for o in orders_list:
+                uid = o.get("user_id") or o.get("telegram_id")
+                if uid and str(uid).isdigit():
+                    user_ids_to_notify.add(int(uid))
+
+            logger.info(f"[Premium Monitor] Found {len(user_ids_to_notify)} buyers to notify for ongoing story update '{story_name}'")
+
+            for uid in user_ids_to_notify:
+                buyer = await db.db.users.find_one({"id": uid}) or await db.db.purchases.find_one({"user_id": uid}) or {}
                 if buyer.get("ongoing_updates_enabled", True) is False:
                     continue
 

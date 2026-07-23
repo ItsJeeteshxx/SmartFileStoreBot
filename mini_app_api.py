@@ -5257,20 +5257,38 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.delete("/admin/story/{story_id}")
 async def delete_admin_story(story_id: str, telegram_id: str):
-    """Deletes a story."""
-    from AryaPremium.config import Config
+    """Deletes a story permanently from database and clears all caches."""
     try:
-        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        await arya_db.delete_story(story_id)
-        # Clear /stories cache
-        global _stories_cache
+        sid_str = str(story_id).strip()
+        from bson.objectid import ObjectId
+
+        filters = [{"story_id": sid_str}, {"id": sid_str}, {"_id": sid_str}]
+        try:
+            if ObjectId.is_valid(sid_str):
+                filters.append({"_id": ObjectId(sid_str)})
+        except Exception:
+            pass
+
+        # 1. Permanently delete from database collections
+        for flt in filters:
+            await arya_db.db.premium_stories.delete_many(flt)
+            await arya_db.db.stories.delete_many(flt)
+            await arya_db.db.episodes.delete_many(flt)
+
+        # 2. Invalidate all in-memory caches
+        global _stories_cache, _stories_cache_time
         _stories_cache = None
-        return {"success": True, "message": "Story deleted successfully"}
+        _stories_cache_time = 0.0
+        invalidate_buyers_cache()
+
+        logger.info(f"✅ Permanently deleted story '{story_id}' from database")
+        return {"success": True, "message": "Story deleted permanently from database"}
     except Exception as e:
+        logger.error(f"Failed to delete story {story_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SUPPORT MANAGEMENT
