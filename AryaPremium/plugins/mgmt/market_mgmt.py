@@ -3638,68 +3638,121 @@ async def _msg_single_buyer_flow(client, admin_id: int, target_uid: int):
 
 
 # ── Message All Buyers Flow ───────────────────────────────────────────────────
+# ── Message All Buyers Flow ───────────────────────────────────────────────────
 async def _msg_all_buyers_flow(client, admin_id: int):
-    """Admin composes a broadcast message to all buyers (bot + mini app)."""
+    """Admin composes a broadcast message with Audience selection to all buyers (bot + mini app)."""
     from utils import native_ask
+    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from pyrogram.errors import UserIsBlocked, FloodWait, PeerIdInvalid, InputUserDeactivated
+
     try:
+        # Step 1: Audience selection
+        aud_msg = await client.send_message(
+            admin_id,
+            "<b>📢 BROADCAST SYSTEM — Select Audience</b>\n\n"
+            "Choose who should receive this broadcast:\n"
+            "1. <b>🟢 Paid Buyers Only</b> (Users with completed purchases)\n"
+            "2. <b>🟠 Pending / Failed Buyers</b> (Users with pending checkouts)\n"
+            "3. <b>🌐 All Users</b> (Entire bot & app database)\n\n"
+            "<i>Reply with 1, 2, or 3 (or send /cancel to abort):</i>",
+            parse_mode=enums.ParseMode.HTML
+        )
+        aud_resp = await native_ask(client, admin_id, "Enter 1, 2, or 3:", timeout=60)
+        if not aud_resp or (aud_resp.text or "").strip().lower() == "/cancel":
+            await client.send_message(admin_id, "<i>❌ Broadcast Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
+            return
+
+        choice = (aud_resp.text or "").strip()
+        if choice == "1":
+            aud_mode = "paid"
+            aud_label = "Paid Buyers Only"
+        elif choice == "2":
+            aud_mode = "pending"
+            aud_label = "Pending/Failed Buyers"
+        else:
+            aud_mode = "all"
+            aud_label = "All Users"
+
+        # Step 2: Ask for Broadcast Message
         resp = await native_ask(
             client, admin_id, 
-            "<b>📢 Broadcast to ALL Buyers</b>\n\n"
-            "Send the message to broadcast (text or photo with caption).\n"
+            f"<b>📢 Broadcast Target: {aud_label}</b>\n\n"
+            "Send the message to broadcast.\n"
+            "It can be <b>Text (with HTML/quotes), Photo, Video, Document, or a Forwarded Post</b>.\n\n"
             "<i>Send /cancel to abort.</i>", 
             timeout=120,
             parse_mode=enums.ParseMode.HTML
         )
         if not resp or (resp.text or "").strip().lower() == "/cancel":
-            await client.send_message(admin_id, "<i>❌ Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
+            await client.send_message(admin_id, "<i>❌ Broadcast Cancelled.</i>", parse_mode=enums.ParseMode.HTML)
             return
 
-        # Confirm
-        preview = (resp.text or resp.caption or "[media]")[:100]
-        confirm_msg = await client.send_message(
-            admin_id,
-            f"<b>⚠️ Confirm Broadcast</b>\n\n"
-            f"<blockquote>{preview}</blockquote>\n\n"
-            f"Send to <b>all buyers</b>?\n"
-            f"<i>Type 'yes' to confirm, or /cancel to abort.</i>",
-            parse_mode=enums.ParseMode.HTML
-        )
-        try:
-            confirm_r = await native_ask(client, admin_id, "Type 'yes' to send:", timeout=30)
-            if not confirm_r or (confirm_r.text or "").strip().lower() != "yes":
-                await client.send_message(admin_id, "<i>❌ Broadcast cancelled. Send 'yes' to confirm.</i>", parse_mode=enums.ParseMode.HTML)
-                return
-        except asyncio.TimeoutError:
-            await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
+        # Step 3: Resolve Audience IDs
+        target_ids = set()
+        if aud_mode == "paid":
+            async for u in db.db.users.find({"purchases.0": {"$exists": True}}, {"id": 1}):
+                if u.get("id"): target_ids.add(u.get("id"))
+            async for o in db.db.orders.find({"status": {"$in": ["paid", "approved", "completed", "delivered"]}}, {"user_id": 1}):
+                if o.get("user_id"): target_ids.add(o.get("user_id"))
+        elif aud_mode == "pending":
+            paid_set = set()
+            async for u in db.db.users.find({"purchases.0": {"$exists": True}}, {"id": 1}):
+                if u.get("id"): paid_set.add(u.get("id"))
+            async for o in db.db.orders.find({"status": {"$in": ["paid", "approved", "completed", "delivered"]}}, {"user_id": 1}):
+                if o.get("user_id"): paid_set.add(o.get("user_id"))
+
+            async for o in db.db.orders.find({"status": {"$in": ["pending", "created", "processing", "waiting_screenshot", "failed"]}}, {"user_id": 1}):
+                uid = o.get("user_id")
+                if uid and uid not in paid_set: target_ids.add(uid)
+            async for c in db.db.premium_checkout.find({"status": {"$in": ["pending", "created", "processing", "waiting_screenshot", "failed"]}}, {"user_id": 1}):
+                uid = c.get("user_id")
+                if uid and uid not in paid_set: target_ids.add(uid)
+        else:
+            async for u in db.db.users.find({}, {"id": 1}):
+                if u.get("id"): target_ids.add(u.get("id"))
+
+        if not target_ids:
+            await client.send_message(admin_id, f"❌ No users found for audience filter <b>{aud_label}</b>.", parse_mode=enums.ParseMode.HTML)
             return
 
-        # Collect all buyer IDs
-        buyer_ids = set()
-        async for u in db.db.users.find({"purchases.0": {"$exists": True}}, {"id": 1}):
-            buyer_ids.add(u.get("id"))
-        async for order in db.db.orders.find({"status": "paid"}, {"user_id": 1}):
-            oid = order.get("user_id")
-            if oid:
-                buyer_ids.add(oid)
-
-        # Get store bot
+        # Get delivery client
         from plugins.userbot.market_seller import market_clients
         seller_cli = next(iter(market_clients.values()), None) if market_clients else None
         send_client = seller_cli or client
 
-        sent = failed = 0
-        status_msg = await client.send_message(admin_id, f"<i>⏳ Sending to {len(buyer_ids)} buyers...</i>", parse_mode=enums.ParseMode.HTML)
+        sent = failed = blocked = 0
+        total_targets = len(target_ids)
+        status_msg = await client.send_message(admin_id, f"<i>⏳ Broadcasting to {total_targets} users ({aud_label})...</i>", parse_mode=enums.ParseMode.HTML)
 
-        for uid in buyer_ids:
+        for idx, uid in enumerate(target_ids):
             try:
-                if resp.photo:
-                    await send_client.send_photo(uid, resp.photo.file_id, caption=resp.caption or "")
-                elif resp.text:
-                    await send_client.send_message(uid, resp.text, parse_mode=enums.ParseMode.HTML)
+                await send_client.copy_message(chat_id=uid, from_chat_id=admin_id, message_id=resp.id)
                 sent += 1
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+                try:
+                    await send_client.copy_message(chat_id=uid, from_chat_id=admin_id, message_id=resp.id)
+                    sent += 1
+                except Exception:
+                    failed += 1
+            except (UserIsBlocked, PeerIdInvalid, InputUserDeactivated):
+                blocked += 1
             except Exception:
                 failed += 1
-            await asyncio.sleep(0.3)  # rate limit
+
+            if (idx + 1) % 15 == 0 or (idx + 1) == total_targets:
+                try:
+                    pct = round(((idx + 1) / total_targets) * 100, 1)
+                    await status_msg.edit_text(
+                        f"<b>📢 BROADCASTING ({aud_label})</b>\n\n"
+                        f"📊 Progress: <b>{pct}%</b> ({idx + 1}/{total_targets})\n"
+                        f"✅ Sent: <b>{sent}</b> | ❌ Failed: <b>{failed}</b> | 🚫 Blocked: <b>{blocked}</b>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.05)
 
         try:
             await status_msg.delete()
@@ -3708,14 +3761,17 @@ async def _msg_all_buyers_flow(client, admin_id: int):
 
         await client.send_message(
             admin_id,
-            f"<b>📢 Broadcast Complete</b>\n\n"
+            f"<b>📢 Broadcast Complete ({aud_label})</b>\n\n"
             f"✅ Delivered: <b>{sent}</b>\n"
+            f"🚫 Blocked: <b>{blocked}</b>\n"
             f"❌ Failed: <b>{failed}</b>\n"
-            f"📊 Total: <b>{sent + failed}</b>",
+            f"📊 Total Target: <b>{total_targets}</b>",
             parse_mode=enums.ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Buyers", callback_data="mk#users")]])
         )
 
     except asyncio.TimeoutError:
         await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
+    except Exception as e:
+        await client.send_message(admin_id, f"❌ Error during broadcast: {e}", parse_mode=enums.ParseMode.HTML)
 
