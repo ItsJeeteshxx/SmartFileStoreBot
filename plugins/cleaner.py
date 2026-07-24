@@ -937,10 +937,36 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
             # Wait for previous upload to finish (Strict Ordering) before handling skipped files
             if _upload_task:
-                up_ok, up_err, up_mid = await _upload_task
+                try:
+                    up_ok, up_err, up_mid = await _upload_task
+                except asyncio.CancelledError:
+                    _upload_task = None
+                    break
+                except Exception as _up_fatal:
+                    up_ok, up_err, up_mid = False, str(_up_fatal), msg_id
                 _upload_task = None
                 if not up_ok:
-                    raise Exception(f"Upload task failed (mid={up_mid}): {up_err}")
+                    err_msg = up_err[:200]
+                    # Broken pipe / connection error → save exact position and pause cleanly
+                    _save_mid = up_mid if up_mid else msg_id
+                    await _cl_update_job(job_id, {"status": "paused", "error": err_msg, "current_msg_id": _save_mid})
+                    if _bot:
+                        try:
+                            fail_kb = InlineKeyboardMarkup([[
+                                InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#resume#{job_id}"),
+                                InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
+                            ]])
+                            await _bot.send_message(uid,
+                                f"<b>⏸ Cleaner Job Paused!</b>\n\n"
+                                f"<i>Upload failed — connection dropped mid-transfer. Job paused at last safe position. Resume to continue.</i>\n\n"
+                                f"<b>🧹 Name:</b> {base_name}\n"
+                                f"<b>📁 Done:</b> {done} files\n"
+                                f"<b>❌ Error:</b> <code>{err_msg}</code>",
+                                reply_markup=fail_kb)
+                        except: pass
+                    if _next_task: _next_task.cancel()
+                    job_failed = True
+                    break
 
             # Handled skipped files in Ad Inject Only mode
             if not dl_path:
@@ -1336,10 +1362,14 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 # ── TRUE PARALLEL UPLOAD PIPELINE ──
                 # 1. Wait for PREVIOUS file to finish uploading (Strict Ordering)
-                # Wait is now handled before skipped file checks at the top of the loop
-                # This just ensures we don't start a new upload before old one finishes
                 if _upload_task:
-                    up_ok, up_err, up_mid = await _upload_task
+                    try:
+                        up_ok, up_err, up_mid = await _upload_task
+                    except asyncio.CancelledError:
+                        _upload_task = None
+                        raise
+                    except Exception as _up_fatal:
+                        up_ok, up_err, up_mid = False, str(_up_fatal), msg_id
                     _upload_task = None
                     if not up_ok:
                         raise Exception(f"Upload task failed (mid={up_mid}): {up_err}")
@@ -1422,6 +1452,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                         else:
                                             await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                     break
+                            except asyncio.CancelledError:
+                                raise  # let task cancellation propagate cleanly (pause/stop)
                             except FloodWait as fw:
                                 logger.warning(f"[Cleaner bg-up {job_id}] FloodWait {fw.value}s during upload (att={att})")
                                 if fw.value >= 60:
@@ -1434,6 +1466,13 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     except: pass
                                 await asyncio.sleep(fw.value + 2)
                             except Exception as ue:
+                                ue_str = str(ue)
+                                # Detect broken pipe / connection reset — reconnect before retry
+                                _is_conn_err = any(x in ue_str.lower() for x in (
+                                    "broken pipe", "errno 32", "connection reset", "connectionreset",
+                                    "connection refused", "not connected", "disconnected",
+                                    "network", "timeout", "timed out", "eof", "transport"
+                                ))
                                 if att >= 3:
                                     try:
                                         import plugins.arya_logger as arya_log
@@ -1442,10 +1481,18 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                             f"Job {job_id}\nError: {repr(ue)}"
                                         ))
                                     except: pass
-                                    return False, str(ue), c_mid
-                                logger.warning(f"[Cleaner bg-up {job_id}] retry {att}: {repr(ue)}")
-                                u_cli = client
-                                await asyncio.sleep(3 * (att + 1))
+                                    return False, ue_str, c_mid
+                                logger.warning(f"[Cleaner bg-up {job_id}] retry {att+1}/4 ({'conn-err, reconnecting' if _is_conn_err else 'api-err'}): {repr(ue)}")
+                                if _is_conn_err:
+                                    # Reconnect the client before retrying
+                                    try:
+                                        u_cli = await _ensure_alive(u_cli)
+                                        await asyncio.sleep(5 * (att + 1))  # longer wait for conn errors
+                                    except Exception as _re:
+                                        logger.warning(f"[Cleaner bg-up {job_id}] reconnect failed: {_re}")
+                                        await asyncio.sleep(10)
+                                else:
+                                    await asyncio.sleep(3 * (att + 1))
 
                         # Track upload in global stats (shown in /status)
                         try:
