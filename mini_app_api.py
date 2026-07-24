@@ -1268,6 +1268,8 @@ async def create_payment_link(payload: dict):
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    if cfg.get("razorpay_disabled") or cfg.get("razorpay_status") in ["disabled", "hidden"]:
+        raise HTTPException(status_code=400, detail="Razorpay payment gateway is currently disabled by Admin")
     
     subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
@@ -9134,6 +9136,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "fal_api_key": cfg.get("fal_api_key", ""),
                 "stability_api_key": cfg.get("stability_api_key", ""),
                 "razorpay_disabled": cfg.get("razorpay_disabled", False),
+                "razorpay_status": cfg.get("razorpay_status", "disabled" if cfg.get("razorpay_disabled", False) else "active"),
                 "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
                 "upi_id": cfg.get("upi_id", ""),
                 "upi_payee_name": cfg.get("upi_payee_name", "Arya Premium"),
@@ -9202,6 +9205,13 @@ async def update_admin_settings(payload: dict):
             update_fields["stability_api_key"] = str(payload["stability_api_key"]).strip()
         if "razorpay_disabled" in payload:
             update_fields["razorpay_disabled"] = bool(payload["razorpay_disabled"])
+        if "razorpay_status" in payload:
+            rzp_st = str(payload["razorpay_status"]).strip().lower()
+            update_fields["razorpay_status"] = rzp_st
+            if rzp_st in ["disabled", "hidden"]:
+                update_fields["razorpay_disabled"] = True
+            else:
+                update_fields["razorpay_disabled"] = False
         if "upi_manual_enabled" in payload:
             update_fields["upi_manual_enabled"] = bool(payload["upi_manual_enabled"])
         if "upi_id" in payload:
@@ -9494,6 +9504,7 @@ async def get_public_settings():
             "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
             "promo_codes": promo_codes_list,
             "razorpay_disabled": cfg.get("razorpay_disabled", False),
+            "razorpay_status": cfg.get("razorpay_status", "disabled" if cfg.get("razorpay_disabled", False) else "active"),
             "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
             "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
             "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
