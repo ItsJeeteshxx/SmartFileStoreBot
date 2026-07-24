@@ -3,6 +3,7 @@ import random
 import string
 import logging
 import base64
+from typing import Dict, List, Optional, Union, Any, Tuple
 
 # ── CRITICAL: Load .env into os.environ BEFORE importing Config ───
 # This must use __file__ (absolute script path), NOT the current working dir.
@@ -9137,7 +9138,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "stability_api_key": cfg.get("stability_api_key", ""),
                 "razorpay_disabled": cfg.get("razorpay_disabled", False),
                 "razorpay_status": cfg.get("razorpay_status", "disabled" if cfg.get("razorpay_disabled", False) else "active"),
-                "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
+                "upi_manual_enabled": cfg.get("upi_manual_enabled", True),
                 "upi_id": cfg.get("upi_id", ""),
                 "upi_payee_name": cfg.get("upi_payee_name", "Arya Premium"),
                 "upi_id_2": cfg.get("upi_id_2", ""),
@@ -9505,7 +9506,7 @@ async def get_public_settings():
             "promo_codes": promo_codes_list,
             "razorpay_disabled": cfg.get("razorpay_disabled", False),
             "razorpay_status": cfg.get("razorpay_status", "disabled" if cfg.get("razorpay_disabled", False) else "active"),
-            "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
+            "upi_manual_enabled": cfg.get("upi_manual_enabled", True),
             "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
             "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
             "upi_id_2": cfg.get("upi_id_2", ""),
@@ -9535,7 +9536,7 @@ async def get_public_settings():
             "platform_fee_enabled": True,
             "promo_codes": [],
             "razorpay_disabled": False,
-            "upi_manual_enabled": False,
+            "upi_manual_enabled": True,
             "upi_id": os.environ.get("UPI_ID", ""),
             "upi_payee_name": os.environ.get("UPI_PAYEE_NAME", "Arya Premium"),
             "upi_id_2": "",
