@@ -47,7 +47,8 @@ _cl_ul_sem = asyncio.Semaphore(2)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
-_FFMPEG_POOL = cf.ThreadPoolExecutor(max_workers=MAX_CONCURRENT + 2, thread_name_prefix="cl_ff")
+# Use a small bounded pool (4 threads) — FFmpeg is CPU-bound so more threads = OOM
+_FFMPEG_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="cl_ff")
 
 def _apply_watermark(cover_path: str, wm_pos: str) -> bool:
     try:
@@ -117,14 +118,14 @@ async def _remove_file_async(path: str):
     if not path:
         return
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, os.remove, path)
     except Exception:
         pass
 
 
 async def _move_file_async(src: str, dst: str):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, shutil.move, src, dst)
 
 
@@ -176,7 +177,7 @@ async def _cl_input_router(bot, message):
     raise ContinuePropagation
 
 async def _cl_ask(bot, user_id, text, reply_markup=None, timeout=300):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     fut = loop.create_future()
     old = _cl_waiter.pop(user_id, None)
     if old and not old.done(): old.cancel()
@@ -512,7 +513,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             try:
                 wm_pos = job.get("watermark_pos", "off")
                 if wm_pos != "off":
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(None, _apply_watermark, local_cover, wm_pos)
             except Exception as wme:
                 logger.error(f"[Cleaner {job_id}] Watermark error: {wme}", exc_info=True)
@@ -1113,7 +1114,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 if inject_ads and _ad_local and out_path and os.path.exists(out_path):
                   try:
                     import random as _rnd_inj, math as _rnd_math, re as _re_inj
-                    _inj_loop = asyncio.get_event_loop()
+                    _inj_loop = asyncio.get_running_loop()
 
                     async def _probe_dur_async(_ppath):
                         try:
@@ -1474,7 +1475,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         try:
                             _dir_to_clean = os.path.dirname(p_out)
                             if os.path.basename(_dir_to_clean).startswith("ul_") and os.path.exists(_dir_to_clean):
-                                loop = asyncio.get_event_loop()
+                                loop = asyncio.get_running_loop()
                                 await loop.run_in_executor(None, shutil.rmtree, _dir_to_clean, True)
                         except: pass
 
@@ -1520,9 +1521,9 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 job_failed = True
                 break
 
-            # Safety net: ensure next task is running
+            # Safety net: ensure next task is running (MUST pass curr_num as exp_curr)
             if _next_task is None and msg_id <= eid:
-                _next_task = asyncio.create_task(_next_media(msg_id))
+                _next_task = asyncio.create_task(_next_media(msg_id, curr_num))
 
         # ── Cleanup ───────────────────────────────────────────────────────
         # Ensure final pending upload is strictly finished before we complete the job
@@ -1542,8 +1543,14 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         for _ap in _ad_local.values():
             await _remove_file_async(_ap)
 
+        # Explicitly clear the message cache to release Telegram Message objects
+        _msg_cache.clear()
+
         # FIX #2: Pop bot_ref AFTER we've saved it to _bot (local var)
         _cl_bot_ref.pop(job_id, None)
+        # Cleanup task + paused event to prevent memory leaks over long sessions
+        _cl_tasks.pop(job_id, None)
+        _cl_paused.pop(job_id, None)
 
         if client and client is not _bot:
             try:
@@ -1619,9 +1626,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         try:
             await _cl_update_job(job_id, {"status": "paused", "error": f"Crash: {str(e)[:150]}"})
         except: pass
+        # Save bot ref BEFORE popping it (order matters — pop first = None notify)
+        _notify_bot = bot or _cl_bot_ref.get(job_id)
         _cl_bot_ref.pop(job_id, None)
+        _cl_tasks.pop(job_id, None)
+        _cl_paused.pop(job_id, None)
         try:
-            _notify_bot = bot or _cl_bot_ref.get(job_id)
             if not _notify_bot:
                 _notify_bot = _CLIENT.bot()
             if _notify_bot:

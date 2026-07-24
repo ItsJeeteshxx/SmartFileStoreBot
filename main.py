@@ -142,16 +142,29 @@ async def web_server():
     logging.info(f"Web server started on port {port}")
 
 async def ping_server():
-    while True:
-        await asyncio.sleep(300) # Ping every 5 minutes
-        try:
-            port = int(os.environ.get('PORT', 8080))
-            url = f'http://127.0.0.1:{port}'
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
+    """Self-ping to keep Render.com service alive. Reuses a single session to avoid connection pool exhaustion."""
+    # Wait for web server to start
+    await asyncio.sleep(30)
+    connector = aiohttp.TCPConnector(limit=2, ttl_dns_cache=300)
+    session = aiohttp.ClientSession(connector=connector)
+    try:
+        while True:
+            await asyncio.sleep(270)  # Ping every 4.5 minutes
+            try:
+                port = int(os.environ.get('PORT', 8080))
+                url = f'http://127.0.0.1:{port}'
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     logging.info(f"Self-ping to {url}: Status {resp.status}")
-        except Exception as e:
-            logging.error(f"Self-ping failed: {e}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logging.error(f"Self-ping failed: {e}")
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await session.close()
+        await connector.close()
+
 def _ensure_ffmpeg_installed():
     import shutil
     import os
@@ -336,15 +349,30 @@ async def main():
     await bot.stop()
 
 if __name__ == "__main__":
+    def _handle_asyncio_exception(loop, context):
+        """Global handler for unhandled asyncio task exceptions.
+        Prevents bare 'Task exception was never retrieved' from crashing the process."""
+        msg = context.get("exception", context["message"])
+        task = context.get("task")
+        task_name = getattr(task, "get_name", lambda: "unknown")() if task else "unknown"
+        logging.error(f"[AsyncIO] Unhandled task exception in '{task_name}': {msg}", exc_info=context.get("exception"))
+
+    restart_delay = 5
     while True:
         try:
-            asyncio.run(main())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.set_exception_handler(_handle_asyncio_exception)
+            loop.run_until_complete(main())
         except (KeyboardInterrupt, SystemExit):
             logging.info("Bot stopped manually by user.")
             break
         except Exception as e:
-            logging.critical(f"Bot crashed with exception: {e}. Restarting in 5 seconds...", exc_info=True)
+            logging.critical(f"Bot crashed with exception: {e}. Restarting in {restart_delay}s...", exc_info=True)
             try:
-                time.sleep(5)
+                time.sleep(restart_delay)
+                restart_delay = min(restart_delay * 2, 60)  # exponential backoff, max 60s
             except KeyboardInterrupt:
                 break
+        else:
+            restart_delay = 5  # reset on clean exit
