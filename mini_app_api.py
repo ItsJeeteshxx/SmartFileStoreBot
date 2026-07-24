@@ -4626,9 +4626,9 @@ async def fetch_processed_buyers_data(arya_db):
             story_id_str = str(story_id) if story_id else ""
             story_canon = sid_to_canonical.get(story_id_str, story_id_str)
 
-            if status_label == "paid":
-                if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
-                    continue
+            # If user already owns/paid for this story, skip ALL checkout records for this story
+            if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
+                continue
 
             story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
             sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
@@ -7494,6 +7494,19 @@ async def manual_purchase(data: ManualPurchase):
             order_doc["utr_number"] = utr_clean
 
         await arya_db.db.orders.insert_one(order_doc)
+
+        # Delete any pending/obsolete checkouts or pending orders for this user & story so no duplicate Razorpay/pending orders remain
+        st_ids_to_clean = list(filter(None, [story_id_str, str(story.get("story_id", "")), str(story.get("_id", ""))]))
+        await arya_db.db.premium_checkout.delete_many({
+            "user_id": {"$in": uid_filter},
+            "story_id": {"$in": st_ids_to_clean}
+        })
+        await arya_db.db.orders.delete_many({
+            "user_id": {"$in": uid_filter},
+            "story_ids": {"$in": st_ids_to_clean},
+            "status": {"$in": ["pending", "created", "processing", "waiting_screenshot", "pending_gateway"]}
+        })
+        invalidate_buyers_cache()
 
         # Record 12-digit UTR in used_utrs collection if provided
         if utr_clean and len(utr_clean) == 12 and utr_clean.isdigit():
