@@ -465,7 +465,19 @@ from PIL import Image
 
 # In-memory LRU cache for image bytes (simple dict to prevent memory leaks if it gets too large)
 IMAGE_CACHE = {}
-MAX_CACHE_ITEMS = 500
+@api_router.post("/track")
+async def track_client_telemetry(request: Request):
+    """Logs frontend events, errors, and deep-link lifecycle metrics to backend logs."""
+    try:
+        data = await request.json()
+        event_type = data.get("event_type", "unknown")
+        event_data = data.get("event_data", {})
+        telegram_id = data.get("telegram_id", "0")
+        logger.info(f"📱 [MINIAPP LOG] tg={telegram_id} event={event_type} payload={event_data}")
+        return {"status": "ok"}
+    except Exception as e:
+        logger.warning(f"Error in /track endpoint: {e}")
+        return {"status": "error", "message": str(e)}
 
 @api_router.get("/image")
 async def optimize_image(url: str, w: int = 400, h: int = 400):
