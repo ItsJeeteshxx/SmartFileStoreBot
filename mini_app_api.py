@@ -465,6 +465,7 @@ from PIL import Image
 
 # In-memory LRU cache for image bytes (simple dict to prevent memory leaks if it gets too large)
 IMAGE_CACHE = {}
+MAX_CACHE_ITEMS = 500
 @api_router.post("/track")
 async def track_client_telemetry(request: Request):
     """Logs frontend events, errors, and deep-link lifecycle metrics to backend logs."""
@@ -753,6 +754,22 @@ def _format_story(s: dict) -> dict | None:
 _stories_cache = None
 _stories_cache_time = 0
 _stories_cache_ttl = 30  # 30 seconds
+
+@api_router.get("/series")
+async def get_series():
+    """Fetch all active series"""
+    try:
+        arya_db = app.state.db
+        series_cursor = arya_db.db.series.find({"is_active": {"$ne": False}})
+        series_list = []
+        async for doc in series_cursor:
+            doc["id"] = str(doc.get("_id", ""))
+            doc.pop("_id", None)
+            series_list.append(doc)
+        return series_list
+    except Exception as e:
+        logger.error(f"Error fetching series: {e}")
+        return []
 
 @api_router.get("/stories")
 async def get_stories():
