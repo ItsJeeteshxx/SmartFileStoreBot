@@ -199,12 +199,15 @@ class PremiumDatabase:
             logger.info("⚡ Running Auto-Unblock System for Paid Users...")
             paid_uids = set()
             
-            async for doc in self.users.find({"purchases.0": {"$exists": True}}, {"id": 1}):
-                uid = doc.get("id")
-                if uid is not None:
-                    paid_uids.add(str(uid))
-                    try: paid_uids.add(int(uid))
-                    except: pass
+            users_col = getattr(self, 'users', None) or getattr(self, 'col', None) or (self.db.users if hasattr(self, 'db') and self.db is not None else None)
+
+            if users_col is not None:
+                async for doc in users_col.find({"purchases.0": {"$exists": True}}, {"id": 1}):
+                    uid = doc.get("id")
+                    if uid is not None:
+                        paid_uids.add(str(uid))
+                        try: paid_uids.add(int(uid))
+                        except: pass
                     
             async for doc in self.db.orders.find({"status": {"$in": ["paid", "delivered", "completed", "success"]}}, {"user_id": 1}):
                 uid = doc.get("user_id")
