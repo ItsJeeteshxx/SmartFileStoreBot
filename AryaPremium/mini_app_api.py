@@ -545,9 +545,10 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
     if not token:
         raise HTTPException(status_code=500, detail="No bot token available")
         
-    cache_key = f"{file_id}_{w}_{h}"
-    if cache_key in IMAGE_CACHE:
-        return Response(content=IMAGE_CACHE[cache_key], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    cache_key = hashlib.md5(f"tg_{file_id}_{w}_{h}".encode()).hexdigest()
+    cached_bytes = get_cached_image(cache_key)
+    if cached_bytes:
+        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
         
     try:
         async with aiohttp.ClientSession() as session:
@@ -578,16 +579,12 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
             return output.getvalue()
             
         optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
-        
-        if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
-            IMAGE_CACHE.clear()
-            
-        IMAGE_CACHE[cache_key] = optimized_bytes
+        save_cached_image(cache_key, optimized_bytes)
         
         return Response(
             content=optimized_bytes, 
             media_type="image/webp",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"}
+            headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
         )
     except HTTPException:
         raise

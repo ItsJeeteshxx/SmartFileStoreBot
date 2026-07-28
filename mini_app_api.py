@@ -510,7 +510,7 @@ async def track_client_telemetry(request: Request):
 @api_router.get("/image")
 async def optimize_image(url: str, w: int = 400, h: int = 400):
     """
-    Acts as an Image Proxy: Fetches external image (like Catbox), converts to WebP,
+    Acts as an Image Proxy: Fetches external image (like Catbox / R2), converts to WebP,
     compresses to maintain visual quality without large file size, and caches it persistently.
     """
     if not url.startswith("http"):
@@ -529,39 +529,29 @@ async def optimize_image(url: str, w: int = 400, h: int = 400):
                     raise HTTPException(status_code=404, detail="Image not found")
                 img_bytes = await resp.read()
 
-        # Optimize using Pillow
-        img = Image.open(io.BytesIO(img_bytes))
-        
-        # Convert to RGB if needed (WebP supports RGBA, but we drop alpha for poster if we want, or keep it)
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGBA")
-            
-        # Resize to requested dimensions
-        max_size = (w, h)
-        img.thumbnail(max_size, Image.Resampling.LANCZOS)
-        
-        # Save as WebP
-        output = io.BytesIO()
-        # For larger images (like banners), use very high quality (98) to prevent blur
-        quality = 98 if w > 600 else 85
-        img.save(output, format="WEBP", quality=quality, method=4) # higher method for better compression vs quality
-        optimized_bytes = output.getvalue()
-        
-        # Manage cache size
-        if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
-            # simple clear, or we could pop random. In-memory is fast enough to just clear.
-            IMAGE_CACHE.clear()
-            
-        IMAGE_CACHE[url_hash] = optimized_bytes
-        
+        import asyncio
+        def process_image(img_data):
+            img = Image.open(io.BytesIO(img_data))
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            img.thumbnail((w, h), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            quality = 95 if w > 600 else 82
+            img.save(output, format="WEBP", quality=quality, method=3)
+            return output.getvalue()
+
+        optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
+        save_cached_image(cache_key, optimized_bytes)
+
         return Response(
             content=optimized_bytes, 
             media_type="image/webp",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"}
+            headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
         )
     except Exception as e:
         logger.error(f"Image proxy error for {url}: {e}")
-        # If optimization fails, we can redirect to the original URL
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=url)
 async def get_customer_bot_token(user_id: int) -> str:
     """Resolves the user-facing customer bot token for a user, falling back to the main BOT_TOKEN."""
     from AryaPremium.config import Config
@@ -627,9 +617,10 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
     if not token:
         raise HTTPException(status_code=500, detail="No bot token available")
         
-    cache_key = f"{file_id}_{w}_{h}"
-    if cache_key in IMAGE_CACHE:
-        return Response(content=IMAGE_CACHE[cache_key], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    cache_key = hashlib.md5(f"tg_{file_id}_{w}_{h}".encode()).hexdigest()
+    cached_bytes = get_cached_image(cache_key)
+    if cached_bytes:
+        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
         
     try:
         async with aiohttp.ClientSession() as session:
@@ -660,16 +651,12 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
             return output.getvalue()
             
         optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
-        
-        if len(IMAGE_CACHE) > MAX_CACHE_ITEMS:
-            IMAGE_CACHE.clear()
-            
-        IMAGE_CACHE[cache_key] = optimized_bytes
+        save_cached_image(cache_key, optimized_bytes)
         
         return Response(
             content=optimized_bytes, 
             media_type="image/webp",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"}
+            headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
         )
     except HTTPException:
         raise
