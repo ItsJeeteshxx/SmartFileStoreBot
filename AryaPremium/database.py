@@ -199,7 +199,12 @@ class PremiumDatabase:
             logger.info("⚡ Running Auto-Unblock System for Paid Users...")
             paid_uids = set()
             
-            users_col = getattr(self, 'users', None) or getattr(self, 'col', None) or (self.db.users if hasattr(self, 'db') and self.db is not None else None)
+            db_obj = getattr(self, 'db', None)
+            if db_obj is None:
+                logger.info("auto_unblock_paid_users: DB object not initialized yet, skipping.")
+                return
+
+            users_col = getattr(self, 'users', None) or getattr(self, 'col', None) or getattr(db_obj, 'users', None)
 
             if users_col is not None:
                 async for doc in users_col.find({"purchases.0": {"$exists": True}}, {"id": 1}):
@@ -209,41 +214,46 @@ class PremiumDatabase:
                         try: paid_uids.add(int(uid))
                         except: pass
                     
-            async for doc in self.db.orders.find({"status": {"$in": ["paid", "delivered", "completed", "success"]}}, {"user_id": 1}):
-                uid = doc.get("user_id")
-                if uid is not None:
-                    paid_uids.add(str(uid))
-                    try: paid_uids.add(int(uid))
-                    except: pass
+            if hasattr(db_obj, 'orders') and db_obj.orders is not None:
+                async for doc in db_obj.orders.find({"status": {"$in": ["paid", "delivered", "completed", "success"]}}, {"user_id": 1}):
+                    uid = doc.get("user_id")
+                    if uid is not None:
+                        paid_uids.add(str(uid))
+                        try: paid_uids.add(int(uid))
+                        except: pass
 
-            async for doc in self.purchases.find({}, {"user_id": 1}):
-                uid = doc.get("user_id")
-                if uid is not None:
-                    paid_uids.add(str(uid))
-                    try: paid_uids.add(int(uid))
-                    except: pass
+            purchases_col = getattr(self, 'purchases', None) or getattr(db_obj, 'premium_purchases', None)
+            if purchases_col is not None:
+                async for doc in purchases_col.find({}, {"user_id": 1}):
+                    uid = doc.get("user_id")
+                    if uid is not None:
+                        paid_uids.add(str(uid))
+                        try: paid_uids.add(int(uid))
+                        except: pass
 
-            async for doc in self.db.premium_checkout.find({"status": "approved"}, {"user_id": 1}):
-                uid = doc.get("user_id")
-                if uid is not None:
-                    paid_uids.add(str(uid))
-                    try: paid_uids.add(int(uid))
-                    except: pass
+            if hasattr(db_obj, 'premium_checkout') and db_obj.premium_checkout is not None:
+                async for doc in db_obj.premium_checkout.find({"status": "approved"}, {"user_id": 1}):
+                    uid = doc.get("user_id")
+                    if uid is not None:
+                        paid_uids.add(str(uid))
+                        try: paid_uids.add(int(uid))
+                        except: pass
 
             if not paid_uids:
                 return
 
             paid_uids_list = list(paid_uids)
 
-            bans_cursor = self.db.premium_bans.find({"_id": {"$in": paid_uids_list}})
-            unbanned_count = 0
-            async for ban in bans_cursor:
-                ban_id = ban.get("_id")
-                reason = str(ban.get("reason", "")).lower()
-                is_manual = reason in ["banned by administrator", "admin ban"]
-                if not is_manual or "auto-ban" in reason or "alt of" in reason or "strike" in reason or "rapid" in reason or "evasion" in reason:
-                    await self.db.premium_bans.delete_one({"_id": ban_id})
-                    unbanned_count += 1
+            if hasattr(db_obj, 'premium_bans') and db_obj.premium_bans is not None:
+                bans_cursor = db_obj.premium_bans.find({"_id": {"$in": paid_uids_list}})
+                unbanned_count = 0
+                async for ban in bans_cursor:
+                    ban_id = ban.get("_id")
+                    reason = str(ban.get("reason", "")).lower()
+                    is_manual = reason in ["banned by administrator", "admin ban"]
+                    if not is_manual or "auto-ban" in reason or "alt of" in reason or "strike" in reason or "rapid" in reason or "evasion" in reason:
+                        await db_obj.premium_bans.delete_one({"_id": ban_id})
+                        unbanned_count += 1
                     logger.info(f"✅ Auto-Unbanned Paid User {ban_id} from premium_bans")
 
             await self.users.update_many(
