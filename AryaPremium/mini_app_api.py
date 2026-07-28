@@ -2834,7 +2834,260 @@ async def payu_callback_get(request: Request):
     """Handle PayU GET redirect callback."""
     form_dict = {k: str(v) for k, v in request.query_params.items()}
     return await handle_payu_callback_data(form_dict, request)
-    return await handle_payu_callback_data(form_dict, request)
+
+
+# ===== Cashfree Payment Gateway Endpoints =====
+
+@api_router.post("/create-cashfree-order")
+async def create_cashfree_order(payload: dict):
+    """Create Cashfree PG order and generate payment session for frontend checkout."""
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    username   = payload.get("username", "") or ""
+    first_name = payload.get("first_name", "") or ""
+    promo_code = payload.get("promo_code", "")
+
+    if not story_ids:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+        
+    arya_db = app.state.db
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    cf_status = cfg.get("cashfree_status", "hidden")
+    if cf_status == "hidden":
+        raise HTTPException(status_code=400, detail="Cashfree payments are currently disabled.")
+    elif cf_status == "disabled":
+        raise HTTPException(status_code=400, detail="Cashfree payments are currently disabled by the admin.")
+        
+    app_id     = (cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")).strip()
+    secret_key = cfg.get("cashfree_secret_key", "").strip()
+    cf_env     = cfg.get("cashfree_env", "sandbox").strip().lower()
+    
+    if not app_id or not secret_key:
+        raise HTTPException(status_code=400, detail="Cashfree credentials (App ID & Secret Key) are not configured in Admin Panel.")
+
+    is_sandbox = (cf_env in ("sandbox", "staging", "test") or "TEST" in app_id.upper() or "SANDBOX" in app_id.upper())
+
+    from bson.objectid import ObjectId
+    valid_stories = []
+    story_names = []
+    for sid in story_ids:
+        try:
+            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(status_code=400, detail="No valid stories found in cart")
+
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        discount, err = await calculate_promo_discount(arya_db, pcode_clean, story_ids, subtotal, tg_id)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
+                
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    total = max(0.0, subtotal - discount + platform_fee)
+    
+    order_id = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
+    
+    base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
+    orders_url = f"{base_url}/orders"
+    
+    import uuid
+    customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
+    customer_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
+    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
+    customer_phone = payload.get("phone", "").strip() or "9999999999"
+    
+    callback_url = cfg.get("cashfree_callback_url", "https://aryapremium.store/api/cashfree-callback").strip()
+    return_url = f"https://aryapremium.store/app.html#/payment-processing?order_id={order_id}&cf_order_id={{order_id}}"
+    
+    cf_payload = {
+        "order_id": order_id,
+        "order_amount": round(total, 2),
+        "order_currency": "INR",
+        "customer_details": {
+            "customer_id": customer_id[:50],
+            "customer_name": customer_name[:50],
+            "customer_email": customer_email[:50],
+            "customer_phone": customer_phone[:15]
+        },
+        "order_meta": {
+            "return_url": return_url,
+            "notify_url": callback_url
+        },
+        "order_note": f"Arya Premium - {len(valid_stories)} Stories"
+    }
+
+    headers = {
+        "x-client-id": app_id,
+        "x-client-secret": secret_key,
+        "x-api-version": "2023-08-01",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(orders_url, json=cf_payload, headers=headers)
+            res_json = resp.json()
+            logger.info(f"Cashfree create order response: status={resp.status_code}, body={res_json}")
+            
+            if resp.status_code not in (200, 201):
+                err_msg = res_json.get("message") or res_json.get("detail") or f"Cashfree HTTP {resp.status_code}"
+                raise HTTPException(status_code=400, detail=f"Cashfree API Error: {err_msg}")
+                
+            payment_session_id = res_json.get("payment_session_id")
+            cf_order_id = res_json.get("cf_order_id") or res_json.get("order_id") or order_id
+            
+            payment_link = res_json.get("payment_link")
+            if not payment_link and payment_session_id:
+                if is_sandbox:
+                    payment_link = f"https://sandbox.cashfree.com/pg/orders/sessions/{payment_session_id}"
+                else:
+                    payment_link = f"https://payments.cashfree.com/orders/sessions/{payment_session_id}"
+
+            return {
+                "success": True,
+                "order_id": order_id,
+                "cf_order_id": cf_order_id,
+                "payment_session_id": payment_session_id,
+                "payment_link": payment_link,
+                "amount": total,
+                "is_sandbox": is_sandbox,
+                "app_id": app_id
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cashfree create order exception: {e}")
+        raise HTTPException(status_code=500, detail=f"Cashfree Exception: {str(e)}")
+
+
+@api_router.post("/verify-cashfree-payment")
+@api_router.get("/verify-cashfree-payment")
+async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
+    """Verify Cashfree payment status by querying Cashfree API server-to-server."""
+    if not payload and not order_id:
+        return {"success": False, "detail": "Missing order_id"}
+        
+    oid = order_id or (payload.get("order_id") if payload else None) or (payload.get("cf_order_id") if payload else None)
+    if not oid:
+        return {"success": False, "detail": "Missing order_id in request"}
+
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"order_id": oid})
+    if not order:
+        return {"success": False, "detail": "Order not found in database"}
+
+    if order.get("status") == "paid":
+        return {"success": True, "status": "paid", "order_id": oid, "payment_id": order.get("payment_id", "")}
+
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    app_id     = (cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")).strip()
+    secret_key = cfg.get("cashfree_secret_key", "").strip()
+    cf_env     = cfg.get("cashfree_env", "sandbox").strip().lower()
+    is_sandbox = (cf_env in ("sandbox", "staging", "test") or "TEST" in app_id.upper() or "SANDBOX" in app_id.upper())
+
+    if not app_id or not secret_key:
+        return {"success": False, "detail": "Cashfree credentials missing"}
+
+    base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
+    check_url = f"{base_url}/orders/{oid}"
+
+    headers = {
+        "x-client-id": app_id,
+        "x-client-secret": secret_key,
+        "x-api-version": "2023-08-01",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(check_url, headers=headers)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                cf_status = str(res_json.get("order_status", "")).upper()
+                logger.info(f"Cashfree status check for {oid}: status={cf_status}")
+                
+                if cf_status in ("PAID", "SUCCESS"):
+                    payment_id = res_json.get("cf_order_id") or oid
+                    await arya_db.db.orders.update_one(
+                        {"_id": order["_id"]},
+                        {"$set": {
+                            "status": "paid",
+                            "payment_id": str(payment_id),
+                            "paid_at": datetime.now(timezone.utc),
+                        }}
+                    )
+                    
+                    user_id = order.get("user_id")
+                    story_ids = order.get("story_ids", [])
+                    if user_id:
+                        for sid in story_ids:
+                            try:
+                                await arya_db.add_purchase(user_id, sid)
+                            except Exception as e:
+                                logger.error(f"add_purchase error for {sid}: {e}")
+                                
+                    updated_order = {**order, "status": "paid", "payment_id": str(payment_id)}
+                    asyncio.create_task(trigger_payment_log_from_order(updated_order))
+                    asyncio.create_task(record_purchased_stories(updated_order))
+                    
+                    return {"success": True, "status": "paid", "order_id": oid, "payment_id": str(payment_id)}
+                else:
+                    return {"success": False, "status": cf_status, "order_id": oid}
+            else:
+                return {"success": False, "detail": f"Cashfree API returned HTTP {resp.status_code}"}
+    except Exception as e:
+        logger.error(f"Cashfree verify payment exception for {oid}: {e}")
+        return {"success": False, "detail": str(e)}
+
+
+@api_router.post("/cashfree-webhook")
+@api_router.get("/cashfree-callback")
+@api_router.post("/cashfree-callback")
+async def cashfree_webhook(request: Request):
+    """Handle Cashfree webhook & callback notifications for order status updates."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {k: str(v) for k, v in request.query_params.items()}
+
+    logger.info(f"Cashfree callback/webhook data received: {data}")
+    
+    order_obj = data.get("data", {}).get("order", {}) or data.get("order", {}) if isinstance(data, dict) else {}
+    order_id = (
+        order_obj.get("order_id") or 
+        (data.get("data", {}).get("order_id") if isinstance(data, dict) else None) or
+        (data.get("order_id") if isinstance(data, dict) else None) or
+        (data.get("cf_order_id") if isinstance(data, dict) else None)
+    )
+    
+    if order_id:
+        res = await verify_cashfree_payment(order_id=order_id)
+        if request.method == "GET":
+            if res.get("success"):
+                return Response(
+                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>✅ Payment Successful!</h2><p>Your Cashfree payment was verified.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#10b981;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
+                    media_type="text/html"
+                )
+            else:
+                return Response(
+                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>⚠️ Payment Pending</h2><p>Payment verification in progress.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#6b7280;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
+                    media_type="text/html"
+                )
+                
+    return {"status": "OK"}
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /support
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -7055,6 +7308,12 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "payu_merchant_salt": cfg.get("payu_merchant_salt", ""),
                 "payu_callback_url": cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback"),
                 "payu_env": cfg.get("payu_env", "sandbox"),
+                "cashfree_status": cfg.get("cashfree_status", "hidden"),
+                "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
+                "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
+                "cashfree_secret_key": cfg.get("cashfree_secret_key", ""),
+                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://aryapremium.store/api/cashfree-callback"),
+                "cashfree_env": cfg.get("cashfree_env", "sandbox"),
                 "is_owner": is_owner_flag,
             }
         }
@@ -7147,6 +7406,21 @@ async def update_admin_settings(payload: dict):
             update_fields["payu_callback_url"] = str(payload["payu_callback_url"]).strip()
         if "payu_env" in payload:
             update_fields["payu_env"] = str(payload["payu_env"]).strip()
+
+        if "cashfree_status" in payload:
+            update_fields["cashfree_status"] = str(payload["cashfree_status"]).strip()
+        if "cashfree_app_id" in payload:
+            update_fields["cashfree_app_id"] = str(payload["cashfree_app_id"]).strip()
+            update_fields["cashfree_api_id"] = str(payload["cashfree_app_id"]).strip()
+        if "cashfree_api_id" in payload:
+            update_fields["cashfree_api_id"] = str(payload["cashfree_api_id"]).strip()
+            update_fields["cashfree_app_id"] = str(payload["cashfree_api_id"]).strip()
+        if "cashfree_secret_key" in payload:
+            update_fields["cashfree_secret_key"] = str(payload["cashfree_secret_key"]).strip()
+        if "cashfree_callback_url" in payload:
+            update_fields["cashfree_callback_url"] = str(payload["cashfree_callback_url"]).strip()
+        if "cashfree_env" in payload:
+            update_fields["cashfree_env"] = str(payload["cashfree_env"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -7404,6 +7678,10 @@ async def get_public_settings():
             "paytm_mid": cfg.get("paytm_mid", ""),
             "payu_status": cfg.get("payu_status", "hidden"),
             "payu_merchant_key": cfg.get("payu_merchant_key", ""),
+            "cashfree_status": cfg.get("cashfree_status", "hidden"),
+            "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
+            "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
+            "cashfree_env": cfg.get("cashfree_env", "sandbox"),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -7423,6 +7701,10 @@ async def get_public_settings():
             "paytm_mid": "",
             "payu_status": "hidden",
             "payu_merchant_key": "",
+            "cashfree_status": "hidden",
+            "cashfree_app_id": "",
+            "cashfree_api_id": "",
+            "cashfree_env": "sandbox",
         }
 
 
