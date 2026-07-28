@@ -463,9 +463,36 @@ import hashlib
 from fastapi.responses import Response
 from PIL import Image
 
-# In-memory LRU cache for image bytes (simple dict to prevent memory leaks if it gets too large)
 IMAGE_CACHE = {}
-MAX_CACHE_ITEMS = 500
+MAX_CACHE_ITEMS = 1000
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "data", "image_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def get_cached_image(cache_key: str) -> bytes | None:
+    if cache_key in IMAGE_CACHE:
+        return IMAGE_CACHE[cache_key]
+    filepath = os.path.join(CACHE_DIR, f"{cache_key}.webp")
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read()
+            if len(IMAGE_CACHE) < MAX_CACHE_ITEMS:
+                IMAGE_CACHE[cache_key] = data
+            return data
+        except Exception:
+            pass
+    return None
+
+def save_cached_image(cache_key: str, data: bytes):
+    if len(IMAGE_CACHE) < MAX_CACHE_ITEMS:
+        IMAGE_CACHE[cache_key] = data
+    try:
+        filepath = os.path.join(CACHE_DIR, f"{cache_key}.webp")
+        with open(filepath, "wb") as f:
+            f.write(data)
+    except Exception as e:
+        logger.warning(f"Failed to save image to disk cache: {e}")
+
 @api_router.post("/track")
 async def track_client_telemetry(request: Request):
     """Logs frontend events, errors, and deep-link lifecycle metrics to backend logs."""
@@ -484,16 +511,16 @@ async def track_client_telemetry(request: Request):
 async def optimize_image(url: str, w: int = 400, h: int = 400):
     """
     Acts as an Image Proxy: Fetches external image (like Catbox), converts to WebP,
-    compresses to maintain visual quality without large file size, and caches it.
+    compresses to maintain visual quality without large file size, and caches it persistently.
     """
     if not url.startswith("http"):
         raise HTTPException(status_code=400, detail="Invalid URL")
 
-    # Check cache
-    cache_key = f"{url}_{w}_{h}"
-    url_hash = hashlib.md5(cache_key.encode()).hexdigest()
-    if url_hash in IMAGE_CACHE:
-        return Response(content=IMAGE_CACHE[url_hash], media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    # Check cache (RAM -> Disk)
+    cache_key = hashlib.md5(f"{url}_{w}_{h}".encode()).hexdigest()
+    cached_bytes = get_cached_image(cache_key)
+    if cached_bytes:
+        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
 
     try:
         async with aiohttp.ClientSession() as session:
