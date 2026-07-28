@@ -3656,6 +3656,29 @@ async def create_cashfree_order(payload: dict):
                 else:
                     payment_link = f"https://payments.cashfree.com/orders/sessions/{payment_session_id}"
 
+            tg_id_int = int(tg_id) if str(tg_id).isdigit() else tg_id
+            order_doc = {
+                "order_id": order_id,
+                "cf_order_id": str(cf_order_id),
+                "payment_session_id": payment_session_id,
+                "user_id": tg_id_int,
+                "username": username or "Unknown",
+                "story_ids": story_ids,
+                "story_names": story_names,
+                "subtotal": subtotal,
+                "discount": discount,
+                "promo_code": pcode_clean if discount > 0 else None,
+                "platform_fee": platform_fee,
+                "total": total,
+                "gateway": "cashfree",
+                "status": "pending",
+                "created_at": datetime.now(timezone.utc)
+            }
+            try:
+                await arya_db.db.orders.insert_one(order_doc)
+            except Exception as _ex:
+                logger.warning(f"Failed to insert pending cashfree order: {_ex}")
+
             return {
                 "success": True,
                 "order_id": order_id,
@@ -3685,11 +3708,9 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
         return {"success": False, "detail": "Missing order_id in request"}
 
     arya_db = app.state.db
-    order = await arya_db.db.orders.find_one({"order_id": oid})
-    if not order:
-        return {"success": False, "detail": "Order not found in database"}
+    order = await arya_db.db.orders.find_one({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]})
 
-    if order.get("status") == "paid":
+    if order and order.get("status") == "paid":
         return {"success": True, "status": "paid", "order_id": oid, "payment_id": order.get("payment_id", "")}
 
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
@@ -3721,17 +3742,35 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                 
                 if cf_status in ("PAID", "SUCCESS"):
                     payment_id = res_json.get("cf_order_id") or oid
-                    await arya_db.db.orders.update_one(
-                        {"_id": order["_id"]},
-                        {"$set": {
+                    
+                    cust_details = res_json.get("customer_details", {})
+                    cust_id_str = str(cust_details.get("customer_id", ""))
+                    user_id = order.get("user_id") if order else (int(cust_id_str.replace("cust_", "")) if "cust_" in cust_id_str and cust_id_str.replace("cust_", "").isdigit() else None)
+                    story_ids = order.get("story_ids", []) if order else []
+
+                    if order:
+                        await arya_db.db.orders.update_one(
+                            {"_id": order["_id"]},
+                            {"$set": {
+                                "status": "paid",
+                                "payment_id": str(payment_id),
+                                "paid_at": datetime.now(timezone.utc),
+                            }}
+                        )
+                    else:
+                        order_doc = {
+                            "order_id": oid,
+                            "cf_order_id": str(payment_id),
+                            "user_id": user_id,
+                            "total": float(res_json.get("order_amount", 0.0)),
+                            "gateway": "cashfree",
                             "status": "paid",
                             "payment_id": str(payment_id),
                             "paid_at": datetime.now(timezone.utc),
-                        }}
-                    )
+                            "created_at": datetime.now(timezone.utc)
+                        }
+                        await arya_db.db.orders.insert_one(order_doc)
                     
-                    user_id = order.get("user_id")
-                    story_ids = order.get("story_ids", [])
                     if user_id:
                         for sid in story_ids:
                             try:
@@ -3739,7 +3778,14 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                             except Exception as e:
                                 logger.error(f"add_purchase error for {sid}: {e}")
                                 
-                    updated_order = {**order, "status": "paid", "payment_id": str(payment_id)}
+                    updated_order = {
+                        "order_id": oid,
+                        "user_id": user_id,
+                        "story_ids": story_ids,
+                        "total": float(res_json.get("order_amount", 0.0)),
+                        "status": "paid",
+                        "payment_id": str(payment_id)
+                    }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
                     
