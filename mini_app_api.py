@@ -3923,14 +3923,7 @@ async def create_dodopayments_order(payload: dict):
     # Return URL strictly using sliceurl.app as required by user
     return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
 
-    cust_email = f"{username.lower()}@telegram.org" if username else f"user_{tg_id}@telegram.org"
-    cust_name = first_name or f"Telegram User {tg_id}"
-
     dodo_payload = {
-        "customer": {
-            "email": cust_email,
-            "name": cust_name
-        },
         "billing": {
             "city": "Mumbai",
             "country": "IN",
@@ -3951,23 +3944,29 @@ async def create_dodopayments_order(payload: dict):
         "Content-Type": "application/json"
     }
 
-    # Smart product_id resolution: use admin settings, or auto-fetch existing product, or create dynamic product
+    # Smart product_id resolution: match target amount or create product for exact amount
+    target_paise = int(round(total_amount * 100))
     pid_to_use = product_id.strip() if product_id and product_id.strip() else ""
+
     if not pid_to_use:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 p_resp = await client.get(f"{base_url}/products", headers=headers)
                 if p_resp.status_code == 200:
                     items = p_resp.json().get("items", [])
-                    if items and isinstance(items, list) and len(items) > 0:
-                        pid_to_use = items[0].get("product_id", "")
+                    for item in items:
+                        p_detail = item.get("price_detail") or item.get("price") or {}
+                        if isinstance(p_detail, dict):
+                            if p_detail.get("price") == target_paise:
+                                pid_to_use = item.get("product_id", "")
+                                break
                 
                 if not pid_to_use:
                     create_prod_payload = {
-                        "name": "Arya Premium Access",
+                        "name": f"Arya Premium - INR {total_amount:.2f}",
                         "price": {
                             "type": "one_time_price",
-                            "price": int(total_amount * 100),
+                            "price": target_paise,
                             "currency": "INR",
                             "discount": 0,
                             "purchasing_power_parity": False,
