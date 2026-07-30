@@ -3856,6 +3856,271 @@ async def cashfree_webhook(request: Request):
     return {"status": "OK"}
 
 
+@api_router.post("/create-dodopayments-order")
+async def create_dodopayments_order(payload: dict):
+    """Create Dodo Payments checkout session for Arya Premium Mini App."""
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    username   = payload.get("username", "") or ""
+    first_name = payload.get("first_name", "") or ""
+    promo_code = payload.get("promo_code", "")
+
+    if not story_ids:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+        
+    arya_db = app.state.db
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    dodo_status = cfg.get("dodopayments_status", "hidden")
+    if dodo_status == "hidden":
+        raise HTTPException(status_code=400, detail="Dodo Payments is currently disabled.")
+    elif dodo_status == "disabled":
+        raise HTTPException(status_code=400, detail="Dodo Payments is currently disabled by admin.")
+        
+    api_key    = cfg.get("dodopayments_api_key", "").strip()
+    dodo_env   = cfg.get("dodopayments_environment", "test").strip().lower()
+    product_id = cfg.get("dodopayments_product_id", "").strip()
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Dodo Payments API Key is not configured in Admin Panel.")
+
+    is_sandbox = (dodo_env in ("test", "sandbox") or "test" in api_key.lower())
+    base_url = "https://test.dodopayments.com" if is_sandbox else "https://live.dodopayments.com"
+
+    from bson.objectid import ObjectId
+    valid_stories = []
+    story_names = []
+    for sid in story_ids:
+        try:
+            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(status_code=404, detail="Selected stories not found")
+
+    subtotal = sum(float(s.get("price", 0)) for s in valid_stories)
+    promo_discount = 0.0
+    if promo_code:
+        p_doc = await arya_db.db.premium_promo_codes.find_one({"code": promo_code.upper().strip(), "active": True})
+        if p_doc:
+            p_type = p_doc.get("type", "percentage")
+            p_val  = float(p_doc.get("value", 0))
+            if p_type == "percentage":
+                promo_discount = round((subtotal * p_val) / 100.0, 2)
+            else:
+                promo_discount = min(p_val, subtotal)
+
+    total_amount = max(1.0, round(subtotal - promo_discount, 2))
+
+    import random, time
+    order_seq = int(time.time() * 1000) % 100000
+    order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
+
+    # Return URL strictly using sliceurl.app as required by user
+    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
+
+    cust_email = f"{username.lower()}@telegram.org" if username else f"user_{tg_id}@telegram.org"
+    cust_name = first_name or f"Telegram User {tg_id}"
+
+    dodo_payload = {
+        "customer": {
+            "email": cust_email,
+            "name": cust_name
+        },
+        "billing": {
+            "city": "Mumbai",
+            "country": "IN",
+            "state": "MH",
+            "street": "1 Main St",
+            "zipcode": "400001"
+        },
+        "payment_link": True,
+        "return_url": return_url,
+        "metadata": {
+            "order_id": order_id,
+            "telegram_id": str(tg_id)
+        }
+    }
+
+    if product_id:
+        dodo_payload["product_cart"] = [
+            {"product_id": product_id, "quantity": 1}
+        ]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    checkout_url = ""
+    payment_session_id = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(f"{base_url}/checkouts", json=dodo_payload, headers=headers)
+            if resp.status_code not in (200, 201):
+                resp = await client.post(f"{base_url}/payments", json=dodo_payload, headers=headers)
+
+            if resp.status_code in (200, 201):
+                res_json = resp.json()
+                logger.info(f"Dodo Payments create response: status={resp.status_code}, body={res_json}")
+                checkout_url = res_json.get("checkout_url") or res_json.get("payment_link") or res_json.get("url") or ""
+                payment_session_id = str(res_json.get("checkout_id") or res_json.get("payment_id") or res_json.get("session_id") or order_id)
+            else:
+                logger.error(f"Dodo Payments create failed: HTTP {resp.status_code} -> {resp.text}")
+                raise HTTPException(status_code=400, detail=f"Dodo Payments API error ({resp.status_code}): {resp.text}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dodo Payments exception: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create Dodo Payments checkout: {e}")
+
+    order_doc = {
+        "order_id": order_id,
+        "dodo_payment_id": payment_session_id,
+        "payment_session_id": payment_session_id,
+        "user_id": int(tg_id) if str(tg_id).isdigit() else tg_id,
+        "username": username,
+        "first_name": first_name,
+        "story_ids": story_ids,
+        "story_names": story_names,
+        "subtotal": subtotal,
+        "promo_code": promo_code,
+        "promo_discount": promo_discount,
+        "total": total_amount,
+        "gateway": "dodopayments",
+        "provider": "dodopayments",
+        "payment_link": checkout_url,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "is_sandbox": is_sandbox
+    }
+    await arya_db.db.orders.insert_one(order_doc)
+
+    return {
+        "success": True,
+        "order_id": order_id,
+        "checkout_url": checkout_url,
+        "payment_link": checkout_url,
+        "payment_session_id": payment_session_id,
+        "total": total_amount,
+        "is_sandbox": is_sandbox
+    }
+
+
+@api_router.get("/verify-dodopayments-payment")
+@api_router.post("/verify-dodopayments-payment")
+async def verify_dodopayments_payment(payload: dict = None, order_id: str = None):
+    """Verify Dodo Payments order status."""
+    oid = order_id or (payload.get("order_id") if payload else None) or (payload.get("cf_order_id") if payload else None)
+    if not oid:
+        return {"success": False, "detail": "Missing order_id"}
+
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"$or": [{"order_id": oid}, {"dodo_payment_id": oid}, {"payment_session_id": oid}]})
+
+    if order and order.get("status") == "paid":
+        return {"success": True, "status": "paid", "order_id": oid}
+
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    api_key  = cfg.get("dodopayments_api_key", "").strip()
+    dodo_env = cfg.get("dodopayments_environment", "test").strip().lower()
+    is_sandbox = (dodo_env in ("test", "sandbox") or "test" in api_key.lower())
+    base_url = "https://test.dodopayments.com" if is_sandbox else "https://live.dodopayments.com"
+
+    if not api_key:
+        return {"success": False, "detail": "Dodo Payments API Key missing"}
+
+    dodo_pid = order.get("dodo_payment_id") if order else oid
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{base_url}/checkouts/{dodo_pid}", headers=headers)
+            if resp.status_code not in (200, 201):
+                resp = await client.get(f"{base_url}/payments/{dodo_pid}", headers=headers)
+
+            if resp.status_code in (200, 201):
+                res_json = resp.json()
+                p_status = str(res_json.get("status") or res_json.get("payment_status") or "").lower()
+                logger.info(f"Dodo Payments status check for {oid}: {p_status}")
+
+                if p_status in ("succeeded", "paid", "completed", "success"):
+                    user_id = order.get("user_id") if order else None
+                    story_ids = order.get("story_ids", []) if order else []
+
+                    if order:
+                        await arya_db.db.orders.update_one(
+                            {"_id": order["_id"]},
+                            {"$set": {
+                                "status": "paid",
+                                "paid_at": datetime.now(timezone.utc)
+                            }}
+                        )
+
+                    if user_id:
+                        for sid in story_ids:
+                            try:
+                                await arya_db.add_purchase(user_id, sid)
+                            except Exception as e:
+                                logger.error(f"add_purchase error for {sid}: {e}")
+
+                    updated_order = {
+                        "order_id": oid,
+                        "user_id": user_id,
+                        "story_ids": story_ids,
+                        "total": float(order.get("total", 0.0)) if order else 0.0,
+                        "status": "paid",
+                        "payment_id": str(dodo_pid)
+                    }
+                    asyncio.create_task(trigger_payment_log_from_order(updated_order))
+                    asyncio.create_task(record_purchased_stories(updated_order))
+
+                    return {"success": True, "status": "paid", "order_id": oid}
+                else:
+                    return {"success": False, "status": p_status, "order_id": oid}
+            else:
+                return {"success": False, "detail": f"Dodo API returned {resp.status_code}"}
+    except Exception as e:
+        logger.error(f"Dodo verify payment exception: {e}")
+        return {"success": False, "detail": str(e)}
+
+
+@api_router.post("/dodopayments-webhook")
+@api_router.get("/dodopayments-callback")
+@api_router.post("/dodopayments-callback")
+async def dodopayments_webhook(request: Request):
+    """Webhook callback for Dodo Payments events."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {k: str(v) for k, v in request.query_params.items()}
+
+    logger.info(f"Dodo Payments webhook/callback received: {data}")
+    order_id = data.get("metadata", {}).get("order_id") if isinstance(data, dict) else None
+    if not order_id and isinstance(data, dict):
+        order_id = data.get("order_id") or data.get("checkout_id") or data.get("payment_id") or data.get("cf_order_id")
+
+    if order_id:
+        res = await verify_dodopayments_payment(order_id=order_id)
+        if request.method == "GET":
+            if res.get("success"):
+                return Response(
+                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>✅ Payment Successful!</h2><p>Your Dodo Payment was verified.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#10b981;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
+                    media_type="text/html"
+                )
+            else:
+                return Response(
+                    content=f"""<html><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>Processing Payment...</h2><p>{res.get('detail', 'Verification pending')}</p></body></html>""",
+                    media_type="text/html"
+                )
+    return {"status": "ok"}
+
+
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -9515,8 +9780,13 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
                 "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
                 "cashfree_secret_key": cfg.get("cashfree_secret_key", ""),
-                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://aryapremium.store/api/cashfree-callback"),
+                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback"),
                 "cashfree_env": cfg.get("cashfree_env", "sandbox"),
+                "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
+                "dodopayments_api_key": cfg.get("dodopayments_api_key", ""),
+                "dodopayments_environment": cfg.get("dodopayments_environment", "test"),
+                "dodopayments_product_id": cfg.get("dodopayments_product_id", ""),
+                "dodopayments_webhook_secret": cfg.get("dodopayments_webhook_secret", ""),
                 "is_owner": is_owner_flag,
             }
         }
@@ -9632,6 +9902,17 @@ async def update_admin_settings(payload: dict):
             update_fields["cashfree_callback_url"] = str(payload["cashfree_callback_url"]).strip()
         if "cashfree_env" in payload:
             update_fields["cashfree_env"] = str(payload["cashfree_env"]).strip()
+
+        if "dodopayments_status" in payload:
+            update_fields["dodopayments_status"] = str(payload["dodopayments_status"]).strip()
+        if "dodopayments_api_key" in payload:
+            update_fields["dodopayments_api_key"] = str(payload["dodopayments_api_key"]).strip()
+        if "dodopayments_environment" in payload:
+            update_fields["dodopayments_environment"] = str(payload["dodopayments_environment"]).strip()
+        if "dodopayments_product_id" in payload:
+            update_fields["dodopayments_product_id"] = str(payload["dodopayments_product_id"]).strip()
+        if "dodopayments_webhook_secret" in payload:
+            update_fields["dodopayments_webhook_secret"] = str(payload["dodopayments_webhook_secret"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -9897,6 +10178,9 @@ async def get_public_settings():
             "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
             "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
             "cashfree_env": cfg.get("cashfree_env", "sandbox"),
+            "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
+            "dodopayments_environment": cfg.get("dodopayments_environment", "test"),
+            "dodopayments_product_id": cfg.get("dodopayments_product_id", ""),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")

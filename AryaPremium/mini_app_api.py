@@ -3,6 +3,7 @@ import random
 import string
 import logging
 import base64
+from typing import Dict, List, Optional, Union, Any, Tuple
 
 # ── CRITICAL: Load .env into os.environ BEFORE importing Config ───
 # This must use __file__ (absolute script path), NOT the current working dir.
@@ -28,6 +29,9 @@ _inject_env(os.path.join(_PARENT_DIR, ".env"))
 _inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 import uuid
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from purchase_dm_helper import send_purchase_success_dm
 import httpx
 try:
     import paytmchecksum
@@ -257,6 +261,7 @@ if _arya_path not in sys.path:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Lifespan: connect/disconnect
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 # ─────────────────────────────────────────────────────────────────
 # 24-Hour Stale Orders Auto-Cleanup Worker
 # ─────────────────────────────────────────────────────────────────
@@ -392,10 +397,37 @@ async def lifespan(app: FastAPI):
             except Exception as unblock_err:
                 logger.warning(f"Failed to launch auto_unblock_paid_users: {unblock_err}")
 
+            # ── Initialize global order counter from existing order count ──────────
+            # Ensures new order IDs continue from where existing orders left off
+            # (e.g. if 700 orders exist, next order number = 701+)
+            try:
+                from pymongo import ReturnDocument
+                total_orders = await arya_db.db.orders.count_documents({})
+                total_purchases = await arya_db.db.premium_purchases.count_documents({})
+                total_count = max(total_orders, total_purchases)
+                if total_count > 0:
+                    # Set counter to at least total_count if it's lower
+                    existing_counter = await arya_db.db.order_counters.find_one({"_key": "global_order_counter"})
+                    current_seq = existing_counter.get("seq", 0) if existing_counter else 0
+                    if current_seq < total_count:
+                        await arya_db.db.order_counters.update_one(
+                            {"_key": "global_order_counter"},
+                            {"$set": {"seq": total_count}},
+                            upsert=True
+                        )
+                        logger.info(f"[OrderCounter] Initialized counter to {total_count} (was {current_seq}, total orders: {total_count})")
+                    else:
+                        logger.info(f"[OrderCounter] Counter already at {current_seq}, no update needed")
+                else:
+                    logger.info("[OrderCounter] No existing orders found, counter starts at 1")
+            except Exception as counter_err:
+                logger.warning(f"Failed to initialize order counter: {counter_err}")
+
             # Create index on archived_orders for efficient queries
             try:
                 await arya_db.db.archived_orders.create_index([("archived_at", -1)], background=True)
                 await arya_db.db.archived_orders.create_index("user_id", background=True)
+                await arya_db.db.archived_orders.create_index("original_collection", background=True)
             except Exception:
                 pass
 
@@ -433,7 +465,6 @@ import hashlib
 from fastapi.responses import Response
 from PIL import Image
 
-# In-memory LRU cache for image bytes (simple dict to prevent memory leaks if it gets too large)
 IMAGE_CACHE = {}
 MAX_CACHE_ITEMS = 1000
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "data", "image_cache")
@@ -481,8 +512,8 @@ async def track_client_telemetry(request: Request):
 @api_router.get("/image")
 async def optimize_image(url: str, w: int = 400, h: int = 400):
     """
-    Acts as an Image Proxy: Fetches external image (like Catbox), converts to WebP,
-    compresses to maintain visual quality without large file size, and caches it.
+    Acts as an Image Proxy: Fetches external image (like Catbox / R2), converts to WebP,
+    compresses to maintain visual quality without large file size, and caches it persistently.
     """
     if not url.startswith("http"):
         raise HTTPException(status_code=400, detail="Invalid URL")
@@ -521,8 +552,51 @@ async def optimize_image(url: str, w: int = 400, h: int = 400):
         )
     except Exception as e:
         logger.error(f"Image proxy error for {url}: {e}")
-        # If optimization fails, we can redirect to the original URL
-        return Response(status_code=302, headers={"Location": url})
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=url)
+async def get_customer_bot_token(user_id: int) -> str:
+    """Resolves the user-facing customer bot token for a user, falling back to the main BOT_TOKEN."""
+    from AryaPremium.config import Config
+    
+    # Try importing from the main config first
+    main_bot_token = None
+    try:
+        from config import Config as MainConfig
+        main_bot_token = getattr(MainConfig, "BOT_TOKEN", None)
+    except Exception:
+        pass
+    
+    if not main_bot_token:
+        main_bot_token = getattr(Config, "BOT_TOKEN", None)
+
+    token = None
+    try:
+        arya_db = app.state.db
+        user_doc = await arya_db.db.users.find_one({"id": int(user_id)})
+        if user_doc and user_doc.get("bot_ids"):
+            for bid in user_doc["bot_ids"]:
+                bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                if bot_doc and bot_doc.get("token"):
+                    token = bot_doc["token"]
+                    break
+    except Exception as e:
+        logger.error(f"Failed to resolve seller bot token: {e}")
+        
+    if not token:
+        try:
+            # Fallback to the first available premium bot from the DB
+            arya_db = app.state.db
+            bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
+            if bot_doc:
+                token = bot_doc["token"]
+        except Exception:
+            pass
+
+    if not token:
+        token = main_bot_token or getattr(Config, "MGMT_BOT_TOKEN", None)
+        
+    return token
+
 
 @api_router.get("/tg-image")
 async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int = 400):
@@ -598,7 +672,9 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 def _format_story(s: dict) -> dict | None:
     # Filter out hidden stories in public endpoints
-    if s.get("status") == "hidden":
+    vis = str(s.get("visibility") or "").strip().lower()
+    stat = str(s.get("status") or "").strip().lower()
+    if vis == "hidden" or stat == "hidden":
         return None
 
     # ID — never null
@@ -643,6 +719,20 @@ def _format_story(s: dict) -> dict | None:
         bot_id = s.get("bot_id")
         banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
 
+    raw_status = str(s.get("status") or "").strip()
+    status_lower = raw_status.lower()
+    if status_lower == "completed":
+        status_val = "Completed"
+    elif status_lower == "ongoing":
+        status_val = "Ongoing"
+    elif status_lower == "unfinished":
+        status_val = "Unfinished"
+    elif status_lower in ("stucked", "stuck"):
+        status_val = "Stucked"
+    else:
+        is_comp = bool(s.get("is_completed") or s.get("completed"))
+        status_val = "Completed" if is_comp else "Ongoing"
+
     return {
         "id":           story_id,
         "title":        title,
@@ -659,15 +749,16 @@ def _format_story(s: dict) -> dict | None:
         "language":     s.get("language") or "Hindi",
         "platform":     s.get("platform") or "Pocket FM",
         "genre":        s.get("genre") or "Drama",
-        "status":       s.get("status") or "available",
+        "status":       status_val,
+        "visibility":   s.get("visibility") or "Available",
         "bot_username":  s.get("bot_username") or "UseAryaBot",
         "episodes":     s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes":s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":         s.get("total_size") or s.get("size") or None,
-        "isCompleted":  bool(s.get("is_completed") or s.get("completed") or
-                            (s.get("status", "") == "Completed")),
+        "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "is_must_have":  bool(s.get("is_must_have", False)),
+        "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
         "created_at":    s.get("created_at").isoformat() if isinstance(s.get("created_at"), datetime) else str(s.get("created_at") or ""),
     }
@@ -1223,6 +1314,8 @@ async def create_payment_link(payload: dict):
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    if cfg.get("razorpay_disabled") or cfg.get("razorpay_status") in ["disabled", "hidden"]:
+        raise HTTPException(status_code=400, detail="Razorpay payment gateway is currently disabled by Admin")
     
     subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
@@ -1342,6 +1435,7 @@ async def check_payment_link(id: str, payload: dict):
             return {
                 "success": True,
                 "status": "paid",
+                "order_id": order["order_id"] if order else "",
                 "checkout_url": f"https://t.me/{bot_username}?start=success_{order['order_id']}" if order else ""
             }
             
@@ -1373,7 +1467,7 @@ async def _make_arya_order_id(
     Prefix: AM = Mini App, AB = Bot (Telegram Bot)
     Example: AM-1071421266-2107-55130
 
-    - Story number = serial position of story (oldest added = #1, sorted _id asc)
+    - Story number = serial position of story (oldest added = story #1, sorted _id asc)
     - Order number = globally unique auto-incremented counter via ReturnDocument.AFTER
     """
     try:
@@ -1383,11 +1477,11 @@ async def _make_arya_order_id(
         # 1. Determine prefix based on source
         src_lower = str(source or "miniapp").lower()
         prefix = "AB" if "bot" in src_lower else "AM"
-        
+
         # 2. Date & Month in DDMM format
         now = _dt.now()
         date_str = now.strftime("%d%m")
-        
+
         # 3. ATOMIC global counter — ReturnDocument.AFTER returns post-increment value (always unique)
         counter_doc = await db_instance.db.order_counters.find_one_and_update(
             {"_key": "global_order_counter"},
@@ -1403,7 +1497,6 @@ async def _make_arya_order_id(
             try:
                 from bson.objectid import ObjectId as _OID
                 first_sid = story_ids[0]
-                # Get ALL story IDs sorted by _id descending (newest = #1)
                 all_ids = await db_instance.db.premium_stories.distinct("_id")
                 all_ids_sorted = sorted(all_ids)  # ascending: oldest = #1
                 try:
@@ -1414,18 +1507,16 @@ async def _make_arya_order_id(
                     pass
             except Exception:
                 story_num = 0
-        
-        # 5. Build the order ID
+
+        # 5. Build the final order ID
         tg_id_str = str(tg_id)
         if story_num > 0:
             return f"{prefix}-{tg_id_str}-{date_str}-{story_num}{order_num}"
         else:
-            # Fallback if story number can't be determined
             return f"{prefix}-{tg_id_str}-{date_str}-{order_num}"
-            
+
     except Exception as e:
-        import logging as _logging
-        _logging.getLogger(__name__).warning(f"[OrderID] Failed to generate structured order ID: {e}. Falling back to legacy.")
+        logger.warning(f"[OrderID] Failed to generate structured order ID: {e}. Falling back to legacy.")
         import uuid
         return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
 
@@ -1626,6 +1717,7 @@ async def verify_payment(payload: dict):
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
     return {"success": True, "message": "Payment verified successfully"}
 
@@ -1716,9 +1808,649 @@ async def razorpay_callback(
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
+
+
+# ==========================================
+# UPI Manual Verification via Gmail IMAP
+# ==========================================
+import imaplib
+import email
+from email.header import decode_header
+import re
+import hashlib
+
+def clean_extracted_name(name: str) -> str:
+    # Remove extra spaces
+    name = re.sub(r'\s+', ' ', name).strip()
+    
+    # Split into words and stop at any common non-name keywords
+    stop_words = {
+        "amount", "utr", "rrn", "txn", "txnid", "date", "ref", "rs", "inr", "upi", 
+        "payment", "status", "type", "received", "credited", "transferred", "has", 
+        "been", "via", "on", "in", "to", "your", "my", "account", "bank", "slice",
+        "customer", "user", "card", "rupees", "id", "no", "reference", "credited",
+        "debit", "credit", "wallet", "balance", "success", "failed", "pending"
+    }
+    
+    words = name.split()
+    valid_words = []
+    for w in words:
+        # Strip trailing punctuation from the word for checking
+        w_clean = re.sub(r'[^a-zA-Z]', '', w).lower()
+        if w_clean in stop_words:
+            break
+        valid_words.append(w)
+        
+    cleaned = " ".join(valid_words).strip()
+    # Clean any trailing punctuation or special chars from the name
+    cleaned = re.sub(r'[^a-zA-Z\s\.\-\&]', '', cleaned).strip()
+    # Strip any trailing punctuation like dots or dashes from the end of the cleaned name
+    cleaned = cleaned.rstrip('. - &').strip()
+    return cleaned
+
+def extract_payer_name_from_email(body: str) -> str:
+    """Helper to extract sender name from slice email notifications."""
+    if not body:
+        return ""
+    
+    # Normalize spaces and strip HTML tags if present
+    body_clean = re.sub(r'<[^>]+>', ' ', body)
+    body_clean = re.sub(r'\s+', ' ', body_clean).strip()
+    
+    # We will search with multiple regex patterns. We order them from most specific to general.
+    patterns = [
+        # Explicit fields in tables or lists (e.g. "Payer: John Doe" or "Payer Name: John Doe")
+        r'(?:payer|sender|remitter)(?:\s+name)?\s*[:\-]\s*([a-zA-Z\s\.\-\&]{3,40})',
+        
+        # Sentences like "received from John Doe via UPI" or "transferred by John Doe"
+        # We allow an optional colon after from/by as well
+        r'\b(?:from|by)\s*:?\s*([a-zA-Z\s\.\-\&]{3,40})'
+    ]
+    
+    words_to_skip = {
+        "your", "my", "slice", "account", "bank", "upi", "card", "rs", "rupees", "inr", 
+        "customer", "user", "payment", "has", "been", "credited", "received", "transferred", 
+        "by", "via", "on", "in", "to"
+    }
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_clean, re.IGNORECASE):
+            name = match.group(1).strip()
+            cleaned_name = clean_extracted_name(name)
+            
+            if len(cleaned_name) >= 3 and cleaned_name.lower() not in words_to_skip:
+                return cleaned_name.title()
+                
+    return ""
+
+def extract_amount_from_email(body: str) -> float | None:
+    # Normalize body: replace newlines/tabs with space
+    normalized = body.replace("\n", " ").replace("\r", " ")
+    body_lower = normalized.lower()
+    
+    # Let's search using the same patterns as verify_amount_in_email
+    patterns = [
+        r'(?:received|credited|deposit|transfer|payment|added)\s+(?:value\s+)?(?:of\s+)?(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)',
+        r'(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:received|credited|deposited|added|transfer)',
+        r'(?:received|credited|deposit)\s+(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                # Ignore values like 0 or very small or extremely large values that might be balances/dates
+                if 1.0 <= val <= 100000.0:
+                    return val
+            except ValueError:
+                continue
+                
+    # Fallback to general currency match
+    fallback_patterns = [
+        r'(?:rs\.?|₹|inr)\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    for pattern in fallback_patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if 1.0 <= val <= 100000.0:
+                    return val
+            except ValueError:
+                continue
+                
+    return None
+
+def verify_amount_in_email(body: str, expected_amount: float) -> bool:
+    # Normalize body: replace newlines/tabs with space
+    normalized = body.replace("\n", " ").replace("\r", " ")
+    
+    # Normalize regex formatting of expected amount (e.g. 149.00 or 149)
+    amt_str1 = f"{expected_amount:.2f}"
+    amt_str2 = f"{int(expected_amount)}" if expected_amount.is_integer() else f"{expected_amount:.1f}"
+    
+    body_lower = normalized.lower()
+    
+    # We want to match:
+    # - received/credited ... amount
+    # - amount ... received/credited
+    patterns = [
+        r'(?:received|credited|deposit|transfer|payment|added)\s+(?:value\s+)?(?:of\s+)?(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)',
+        r'(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:received|credited|deposited|added|transfer)',
+        r'(?:received|credited|deposit)\s+(?:rs\.?|₹|inr)?\s*([\d,]+(?:\.\d{1,2})?)'
+    ]
+    
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_lower):
+            val_str = match.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if abs(val - expected_amount) < 0.01:
+                    return True
+            except ValueError:
+                continue
+                
+    # Fallback checking
+    if any(x in body_lower for x in ["received", "credited", "deposit", "added"]):
+        for currency in ["₹", "rs", "inr"]:
+            if f"{currency}{amt_str1}" in body_lower or f"{currency} {amt_str1}" in body_lower:
+                return True
+            if f"{currency}{amt_str2}" in body_lower or f"{currency} {amt_str2}" in body_lower:
+                return True
+            if f"{currency}.{amt_str1}" in body_lower or f"{currency}. {amt_str1}" in body_lower:
+                return True
+            if f"{currency}.{amt_str2}" in body_lower or f"{currency}. {amt_str2}" in body_lower:
+                return True
+                
+    return False
+
+def get_email_body(msg) -> str:
+    """Helper to extract text body from email message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            cdisp = str(part.get("Content-Disposition"))
+            if ctype == "text/plain" and "attachment" not in cdisp:
+                try:
+                    return part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+            elif ctype == "text/html" and "attachment" not in cdisp:
+                try:
+                    html_content = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    # simple html to text stripping
+                    text_content = re.sub(r'<[^>]+>', ' ', html_content)
+                    text_content = re.sub(r'\s+', ' ', text_content)
+                    return text_content
+                except Exception:
+                    pass
+    else:
+        try:
+            return msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    return ""
+
+@api_router.post("/verify-upi-utr")
+async def verify_upi_utr(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    username = payload.get("username", "")
+    story_ids = payload.get("story_ids", [])
+    utr = str(payload.get("utr", "")).strip()
+    promo_code = payload.get("promo_code", "")
+    is_int = payload.get("is_international", False)
+
+    if not telegram_id or not story_ids or not utr:
+        raise HTTPException(status_code=400, detail="Missing required validation parameters.")
+
+    # 1. Validate UTR pattern (12 to 22 digits)
+    if not utr.isdigit() or not (12 <= len(utr) <= 22):
+        raise HTTPException(status_code=400, detail="Invalid UTR format. UTR must be between 12 and 22 digits.")
+
+    # Connect to DB
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database connection is currently unavailable.")
+
+    # 2. Check for UTR Replay attack (already claimed)
+    existing_utr = await db.db.verified_utrs.find_one({"utr": utr})
+    if existing_utr:
+        raise HTTPException(status_code=400, detail="This UTR/RRN has already been claimed for another purchase. Reuse is blocked.")
+
+    # 3. Calculate expected amount
+    from bson.objectid import ObjectId
+    valid_stories = []
+    for sid in story_ids:
+        try:
+            doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(status_code=400, detail="No valid stories in cart.")
+
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    # Verify UPI is enabled
+    if not cfg.get("upi_manual_enabled", False):
+         raise HTTPException(status_code=400, detail="Direct UPI payments are currently disabled by the admin.")
+
+    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+    
+    discount = 0.0
+    pcode_clean = str(promo_code).strip().upper()
+    if pcode_clean:
+        discount, err = await calculate_promo_discount(db, pcode_clean, story_ids, subtotal, telegram_id)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Promo Code Error: {err}")
+                
+    platform_fee = 0.0
+    if cfg.get("platform_fee_enabled", True):
+        platform_fee = float(cfg.get("platform_fee_amount", 5.0))
+        
+    expected_total = max(0.0, subtotal - discount + platform_fee)
+    if expected_total <= 0:
+        raise HTTPException(status_code=400, detail="Order total must be greater than zero.")
+
+    # 4. Search Gmail IMAP
+    gmail_enabled = cfg.get("gmail_verification_enabled", False)
+    
+    gmail_user = cfg.get("gmail_user", "").strip()
+    gmail_password = cfg.get("gmail_app_password", "").strip()
+
+    # If database settings are empty, look in env and configs (with dynamic reload)
+    if not gmail_user or not gmail_password:
+        try:
+            from dotenv import load_dotenv
+            import os
+            # Reload root .env and sub-app .env
+            load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+            load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "AryaPremium", ".env"), override=True)
+        except Exception as dotenv_err:
+            logger.warning(f"Dotenv dynamic reload warning: {dotenv_err}")
+
+        # Try env vars
+        if not gmail_user:
+            gmail_user = os.environ.get("GMAIL_USER", "").strip() or os.environ.get("gmail_user", "").strip()
+        if not gmail_password:
+            gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "").strip() or os.environ.get("gmail_app_password", "").strip()
+
+        # Try RootConfig reload
+        if not gmail_user or not gmail_password:
+            try:
+                import importlib
+                import config
+                importlib.reload(config)
+                if not gmail_user:
+                    gmail_user = getattr(config.Config, "GMAIL_USER", "").strip()
+                if not gmail_password:
+                    gmail_password = getattr(config.Config, "GMAIL_APP_PASSWORD", "").strip()
+            except Exception as e:
+                logger.warning(f"config reload warning: {e}")
+
+        # Try PremConfig reload
+        if not gmail_user or not gmail_password:
+            try:
+                import importlib
+                import AryaPremium.config
+                importlib.reload(AryaPremium.config)
+                if not gmail_user:
+                    gmail_user = getattr(AryaPremium.config.Config, "GMAIL_USER", "").strip()
+                if not gmail_password:
+                    gmail_password = getattr(AryaPremium.config.Config, "GMAIL_APP_PASSWORD", "").strip()
+            except Exception as e:
+                logger.warning(f"AryaPremium.config reload warning: {e}")
+
+    # Auto-enable if credentials are set but toggle is False
+    if not gmail_enabled and gmail_user and gmail_password:
+        gmail_enabled = True
+
+    gmail_user = gmail_user.replace("\xa0", "").replace(" ", "").strip()
+    gmail_password = gmail_password.replace("\xa0", "").replace(" ", "").strip()
+
+    payer_name = ""
+    if gmail_enabled:
+        if not gmail_user or not gmail_password:
+            logger.error("Gmail credentials are not configured in settings/env!")
+            raise HTTPException(
+                status_code=500,
+                detail="Automatic payment verification is temporarily unavailable. Please contact support."
+            )
+
+        verified = False
+        amount_mismatch = False
+        mismatched_amount = None
+        try:
+            # Login and search via IMAP
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+            mail.login(gmail_user, gmail_password)
+            mail.select("INBOX")
+
+            # Search inbox for the specific UTR text. Extremely fast query index search
+            status, messages = mail.search(None, 'TEXT', utr)
+            if status == "OK" and messages[0]:
+                mail_ids = messages[0].split()
+                # Iterate from most recent messages
+                for mail_id in reversed(mail_ids):
+                    res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
+                    if res_status != "OK":
+                        continue
+                    for response_part in msg_data:
+                        if isinstance(response_part, tuple):
+                            msg = email.message_from_bytes(response_part[1])
+                            from_header = msg.get("From", "")
+                            
+                            # Enforce sender check: only noreply@slice.bank.in is allowed
+                            if "noreply@slice.bank.in" not in from_header.lower():
+                                continue
+                                
+                            body = get_email_body(msg)
+                            
+                            # Verify UTR is present and amount matches
+                            if utr in body:
+                                if verify_amount_in_email(body, expected_total):
+                                    verified = True
+                                    payer_name = extract_payer_name_from_email(body)
+                                    break
+                                else:
+                                    amount_mismatch = True
+                                    parsed_amount = extract_amount_from_email(body)
+                                    if parsed_amount is not None:
+                                        mismatched_amount = parsed_amount
+                                    break  # Correct UTR found but wrong amount
+                    if verified or amount_mismatch:
+                        break
+            mail.close()
+            mail.logout()
+        except Exception as imap_err:
+            logger.error(f"Gmail IMAP error: {imap_err}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="An error occurred during payment verification. Please try again in a few moments."
+            )
+
+        if not verified:
+            if amount_mismatch:
+                if mismatched_amount is not None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Payment of ₹{mismatched_amount:.2f} received, but the expected amount is ₹{expected_total:.2f}. "
+                            "Please pay the exact amount. You cannot get access to stories with a lower payment amount.\n\n"
+                            f"भुगतान ₹{mismatched_amount:.2f} प्राप्त हुआ है, लेकिन अपेक्षित राशि ₹{expected_total:.2f} है। "
+                            "कृपया सटीक राशि का भुगतान करें। कम राशि का भुगतान करने पर आपको स्टोरी का एक्सेस नहीं मिल सकता है।"
+                        )
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Payment received, but the amount does not match the expected total of ₹{expected_total:.2f}. "
+                            "Please pay the exact amount. You cannot get access to stories with a lower payment amount.\n\n"
+                            f"भुगतान प्राप्त हुआ है, लेकिन राशि ₹{expected_total:.2f} की अपेक्षित राशि से मेल नहीं खाती। "
+                            "कृपया सटीक राशि का भुगतान करें। कम राशि का भुगतान करने पर आपको स्टोरी का एक्सेस नहीं मिल सकता है।"
+                        )
+                    )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Payment not detected. Please verify your UTR/RRN number and ensure you paid the exact amount. If you just paid, please wait 10-15 seconds and try again."
+                )
+    else:
+        # If auto-verification is disabled, manual UPI cannot be verified automatically on the client.
+        raise HTTPException(
+            status_code=400,
+            detail="Automatic payment verification is currently disabled. Please contact support."
+        )
+
+    # 5. Success! Mark UTR as claimed to prevent replay attacks
+    await db.db.verified_utrs.insert_one({
+        "utr": utr,
+        "amount": expected_total,
+        "user_id": telegram_id,
+        "verified_at": datetime.now(timezone.utc)
+    })
+
+    # 6. Create / upgrade order doc
+    # If a pending order was already created when the QR page opened (via
+    # /create-pending-order), we UPDATE that record instead of inserting a
+    # duplicate. This keeps a single, traceable record per payment attempt.
+    oid = str(payload.get("order_id") or "").strip()
+    _invalid_ids = {"upi-manual", "upi_manual", "", "undefined", "null"}
+    _is_invalid_oid = (
+        not oid
+        or oid.lower() in _invalid_ids
+        or oid.startswith("OD_")
+        or oid.startswith("OD-")
+    )
+    if _is_invalid_oid:
+        # Generate a fresh unique structured order ID
+        oid = await _make_arya_order_id(db, str(telegram_id), story_ids, source="miniapp")
+        logger.info(f"[UPI-Verify] Generated new order_id={oid} (rejected invalid: '{payload.get('order_id')}')")
+    tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
+
+    # Generate deterministic invoice number using order ID hash
+    inv_hash = int(hashlib.md5(str(oid).encode()).hexdigest(), 16) % 100000
+    invoice_number = f"INV/{datetime.now().year}/{inv_hash:05d}"
+
+    order_doc = {
+        "order_id":            oid,
+        "user_id":             tg_id_int if tg_id_int else telegram_id,
+        "username":            username,
+        "payer_name":          payer_name if payer_name else username,
+        "invoice_number":      invoice_number,
+        "story_ids":           story_ids,
+        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "subtotal":            subtotal,
+        "discount":            discount,
+        "promo_code":          pcode_clean if discount > 0 else None,
+        "platform_fee":        platform_fee,
+        "razorpay_fee":        0.0,
+        "total":               expected_total,
+        "status":              "paid",
+        "source":              "upi_manual_miniapp",
+        "utr":                 utr,
+        "paid_at":             datetime.now(timezone.utc),
+    }
+
+    # Upsert: update existing pending order (matched by order_id) or insert new
+    upsert_result = await db.db.orders.update_one(
+        {"order_id": oid, "status": "pending"},
+        {"$set": order_doc},
+    )
+    if upsert_result.matched_count == 0:
+        # No pending record found — insert fresh (covers cases where
+        # /create-pending-order was never called or order_id differed)
+        order_doc["created_at"] = datetime.now(timezone.utc)
+        await db.db.orders.insert_one(order_doc)
+
+    # 7. Grant story access
+    if telegram_id:
+        for sid in story_ids:
+            await db.add_purchase(tg_id_int if tg_id_int else telegram_id, sid)
+
+    # 8. Trigger Logs
+    asyncio.create_task(trigger_payment_log_from_order(order_doc))
+    asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(send_purchase_success_dm(db, telegram_id, order_doc=order_doc, payment_method="UPI (UTR)", verified_by="Auto Verified By System"))
+
+    return {"success": True, "message": "UPI payment verified successfully!", "order_id": oid, "invoice_number": invoice_number, "payer_name": payer_name}
+
+
+# ==========================================
+# Generate Order ID endpoint (server-side)
+# ==========================================
+
+@api_router.post("/generate-order-id")
+async def generate_order_id_endpoint(payload: dict):
+    """
+    Returns a fresh, unique, properly formatted Arya order ID.
+    Frontend should call this BEFORE showing the UPI QR page,
+    then pass the returned order_id to create-pending-order and verify-upi-utr.
+    This ensures ALL payment attempts (paid, failed, pending) get a traceable new-format ID.
+    """
+    telegram_id = payload.get("telegram_id")
+    story_ids   = payload.get("story_ids", [])
+    source      = str(payload.get("source", "miniapp")).lower()
+
+    if not telegram_id:
+        raise HTTPException(400, "telegram_id required")
+
+    arya_db = getattr(app.state, "db", None)
+    if not arya_db:
+        raise HTTPException(500, "DB not available")
+
+    order_id = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source=source)
+    logger.info(f"[OrderID] Generated: {order_id} for user {telegram_id}")
+    return {"success": True, "order_id": order_id}
+
+
+# ==========================================
+# Create Pending UPI Order (QR Page Mount)
+# ==========================================
+
+@api_router.post("/create-pending-order")
+async def create_pending_order(payload: dict):
+    """
+    Called the instant the QR payment screen is shown to the user — BEFORE they pay.
+    Creates a status="pending" order record so every payment attempt is traceable
+    by order_id, even if the user pays to the wrong UPI ID or UTR verification fails.
+
+    - If no order_id is provided OR it's in old legacy OD_ format, a new one is auto-generated.
+    - Idempotent: if order_id already exists in DB, returns the existing record's order_id.
+    """
+    telegram_id   = payload.get("telegram_id")
+    story_ids     = payload.get("story_ids", [])
+    order_id      = str(payload.get("order_id", "")).strip()
+    amount        = float(payload.get("amount", 0) or 0)
+    upi_id_shown  = str(payload.get("upi_id_shown", "")).strip()
+    promo_code    = str(payload.get("promo_code", "")).strip().upper()
+    username      = str(payload.get("username", "")).strip()
+    first_name    = str(payload.get("first_name", "")).strip()
+    last_name     = str(payload.get("last_name", "")).strip()
+
+    if not telegram_id:
+        logger.warning("create_pending_order: missing telegram_id — skipping")
+        return {"success": True, "message": "skipped"}
+
+    db = getattr(app.state, "db", None)
+    if not db:
+        logger.error("create_pending_order: DB not available")
+        return {"success": True, "message": "db_unavailable"}
+
+    try:
+        # If no order_id, it's a legacy OD_ format, or invalid — generate a new structured one
+        _invalid_pending = {"upi-manual", "upi_manual", "", "undefined", "null"}
+        is_legacy = (
+            not order_id
+            or order_id.lower() in _invalid_pending
+            or order_id.startswith("OD_")
+            or order_id.startswith("OD-")
+        )
+        if is_legacy:
+            order_id = await _make_arya_order_id(db, str(telegram_id), story_ids, source="miniapp")
+            logger.info(f"create_pending_order: generated new order_id={order_id} for user {telegram_id}")
+
+        # Idempotency: don't create duplicate if order_id already recorded
+        existing = await db.db.orders.find_one({"order_id": order_id})
+        if existing:
+            logger.info(f"create_pending_order: order {order_id} already exists (status={existing.get('status')}) — returning")
+            return {"success": True, "message": "already_exists", "order_id": order_id}
+
+        tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
+
+        # Resolve story names from DB for richer admin view
+        story_names = []
+        if story_ids:
+            from bson.objectid import ObjectId
+            for sid in story_ids:
+                try:
+                    doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                    if doc:
+                        story_names.append(doc.get("story_name_en", doc.get("title", sid)))
+                except Exception:
+                    story_names.append(sid)
+
+        pending_doc = {
+            "order_id":       order_id,
+            "user_id":        tg_id_int if tg_id_int else telegram_id,
+            "username":       username,
+            "first_name":     first_name,
+            "last_name":      last_name,
+            "story_ids":      story_ids,
+            "story_names":    story_names,
+            "total":          amount,
+            "promo_code":     promo_code if promo_code else None,
+            "status":         "pending",
+            "source":         "upi_manual_miniapp",
+            "upi_id_shown":   upi_id_shown,
+            "created_at":     datetime.now(timezone.utc),
+        }
+        await db.db.orders.insert_one(pending_doc)
+        logger.info(f"create_pending_order: created pending order {order_id} for user {telegram_id}")
+        return {"success": True, "message": "pending_order_created", "order_id": order_id}
+
+    except Exception as e:
+        logger.error(f"create_pending_order error: {e}", exc_info=True)
+        return {"success": True, "message": "error_ignored", "order_id": order_id}
+
+
+@api_router.post("/send-receipt-telegram")
+async def send_receipt_telegram(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    pdf_base64 = payload.get("pdf_base64")
+    order_id = payload.get("order_id", "Receipt")
+    
+    if not telegram_id or not pdf_base64:
+        raise HTTPException(status_code=400, detail="Missing telegram_id or pdf_base64")
+        
+    import base64
+    try:
+        pdf_bytes = base64.b64decode(pdf_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid PDF data")
+        
+    # Resolve correct bot token for the user
+    token = await get_customer_bot_token(int(telegram_id))
+    
+    if not token:
+        raise HTTPException(status_code=500, detail="Bot token is not configured on the server.")
+        
+    import httpx
+    # Prepare multipart/form-data for Telegram sendDocument API
+    files = {
+        "document": (f"Receipt-{order_id}.pdf", pdf_bytes, "application/pdf")
+    }
+    data = {
+        "chat_id": int(telegram_id),
+        "caption": f"📄 Here is your receipt for Order ID: <code>{order_id}</code>.\nThank you for choosing Arya Premium!",
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{token}/sendDocument",
+                data=data,
+                files=files
+            )
+            resp_data = resp.json()
+            if not resp_data.get("ok"):
+                error_desc = resp_data.get("description", "Unknown error")
+                logger.error(f"Telegram sendDocument failed: {error_desc}")
+                raise HTTPException(status_code=500, detail=f"Telegram API Error: {error_desc}")
+                
+        return {"success": True, "message": "Receipt sent to Telegram chat!"}
+    except Exception as e:
+        logger.error(f"Failed to send receipt via Telegram: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ===== Razorpay: Payment Link Webhook =====
@@ -1804,6 +2536,7 @@ async def razorpay_webhook(request: Request):
             updated_order = {**order, "status": "paid", "amount_paid": amount_paid, "source": "razorpay_link_webhook"}
             asyncio.create_task(trigger_payment_log_from_order(updated_order))
             asyncio.create_task(record_purchased_stories(updated_order))
+            asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=updated_order, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
             logger.info(f"Webhook: Payment Link {payment_link_id} paid — granted {len(story_ids)} stories to user {tg_id}")
 
@@ -1839,6 +2572,7 @@ async def razorpay_webhook(request: Request):
                 updated_order = {**order, "status": "paid", "razorpay_payment_id": rzp_payment_id, "source": "razorpay_sdk_webhook"}
                 asyncio.create_task(trigger_payment_log_from_order(updated_order))
                 asyncio.create_task(record_purchased_stories(updated_order))
+                asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=updated_order, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
                 logger.info(f"Webhook: payment.captured {rzp_payment_id} — granted {len(story_ids)} stories to user {tg_id}")
 
@@ -2101,41 +2835,9 @@ async def oxapay_webhook(request: Request):
     updated_order = {**order, "status": "paid", "payment_id": data.get("txID", ""), "paid_currency": data.get("payCurrency", "")}
     asyncio.create_task(trigger_payment_log_from_order(updated_order))
     asyncio.create_task(record_purchased_stories(updated_order))
+    asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Crypto (Oxapay)", verified_by="Auto Verified By System"))
 
     logger.info(f"OxaPay ✅ unlocked {len(story_ids)} stories for user={user_id} trackId={track_id}")
-
-    # === Send Success Notification to user ===
-    async def _send_oxapay_success_dm():
-        try:
-            bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
-            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
-            if not bot_token or not user_id:
-                return
-            story_names = order.get("story_names", [])
-            story_list = "\n".join([f"  • {n}" for n in story_names]) if story_names else "  • Your purchased stories"
-            success_text = (
-                f"✅ <b>Payment Successful!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Your crypto payment has been confirmed and stories are now unlocked! 🎉\n\n"
-                f"<b>Unlocked Stories:</b>\n{story_list}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📚 Open <b>Arya Premium</b> to listen to them now!"
-            )
-            keyboard = {"inline_keyboard": [[{
-                "text": "📚 Open Arya Premium",
-                "url": f"https://t.me/{bot_username}/app"
-            }]]}
-            import aiohttp as _aiohttp
-            async with _aiohttp.ClientSession() as _sess:
-                await _sess.post(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    json={"chat_id": int(user_id), "text": success_text, "parse_mode": "HTML",
-                          "reply_markup": keyboard, "disable_web_page_preview": True},
-                    timeout=5
-                )
-        except Exception as _e:
-            logger.warning(f"OxaPay success DM failed: {_e}")
-    asyncio.create_task(_send_oxapay_success_dm())
 
     return {"success": True, "message": "Payment verified and processed"}
 
@@ -2200,13 +2902,15 @@ async def create_paytm_order(payload: dict):
     
     import uuid
     import json
-    orderId = f"PAYTM_{uuid.uuid4().hex[:12].upper()}"
+    orderId = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
     paytm_env = cfg.get("paytm_env", "staging").strip().lower()
     is_sandbox = (paytm_env == "staging" or mid.startswith("TEST_") or "sandbox" in mid.lower())
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
     website = cfg.get("paytm_website", "WEBSTAGING" if is_sandbox else "DEFAULT").strip()
     
-    callback_url = cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback").strip()
+    callback_url = cfg.get("paytm_callback_url", "https://sliceurl.app/api/paytm-callback").strip()
+    if "aryapremium.store" in callback_url:
+        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
     
     body = {
         "requestType": "Payment",
@@ -2487,6 +3191,7 @@ async def paytm_callback(request: Request):
         """
         return Response(content=fail_html, media_type="text/html")
 
+
 # ===== PayU Payment Gateway: Create Order =====
 @api_router.post("/create-payu-order")
 async def create_payu_order(payload: dict):
@@ -2556,7 +3261,7 @@ async def create_payu_order(payload: dict):
     
     import uuid
     import hashlib
-    txnid = f"PAYU_{uuid.uuid4().hex[:12].upper()}"
+    txnid = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
     
     action_url = "https://test.payu.in/_payment" if is_sandbox else "https://secure.payu.in/_payment"
     callback_url = cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback").strip()
@@ -3112,8 +3817,6 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
     except Exception as e:
         logger.error(f"Cashfree verify payment exception for {oid}: {e}")
         return {"success": False, "detail": str(e)}
-        logger.error(f"Cashfree verify payment exception for {oid}: {e}")
-        return {"success": False, "detail": str(e)}
 
 
 @api_router.post("/cashfree-webhook")
@@ -3151,6 +3854,275 @@ async def cashfree_webhook(request: Request):
                 )
                 
     return {"status": "OK"}
+
+
+@api_router.post("/create-dodopayments-order")
+async def create_dodopayments_order(payload: dict):
+    """Create Dodo Payments checkout session for Arya Premium Mini App."""
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    username   = payload.get("username", "") or ""
+    first_name = payload.get("first_name", "") or ""
+    promo_code = payload.get("promo_code", "")
+
+    if not story_ids:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+        
+    arya_db = app.state.db
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    
+    dodo_status = cfg.get("dodopayments_status", "hidden")
+    if dodo_status == "hidden":
+        raise HTTPException(status_code=400, detail="Dodo Payments is currently disabled.")
+    elif dodo_status == "disabled":
+        raise HTTPException(status_code=400, detail="Dodo Payments is currently disabled by admin.")
+        
+    api_key    = cfg.get("dodopayments_api_key", "").strip()
+    dodo_env   = cfg.get("dodopayments_environment", "test").strip().lower()
+    product_id = cfg.get("dodopayments_product_id", "").strip()
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Dodo Payments API Key is not configured in Admin Panel.")
+
+    is_sandbox = (dodo_env in ("test", "sandbox") or "test" in api_key.lower())
+    base_url = "https://test.dodopayments.com" if is_sandbox else "https://live.dodopayments.com"
+
+    from bson.objectid import ObjectId
+    valid_stories = []
+    story_names = []
+    for sid in story_ids:
+        try:
+            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            if doc:
+                valid_stories.append(doc)
+                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
+        except Exception:
+            pass
+
+    if not valid_stories:
+        raise HTTPException(status_code=404, detail="Selected stories not found")
+
+    subtotal = sum(float(s.get("price", 0)) for s in valid_stories)
+    promo_discount = 0.0
+    if promo_code:
+        p_doc = await arya_db.db.premium_promo_codes.find_one({"code": promo_code.upper().strip(), "active": True})
+        if p_doc:
+            p_type = p_doc.get("type", "percentage")
+            p_val  = float(p_doc.get("value", 0))
+            if p_type == "percentage":
+                promo_discount = round((subtotal * p_val) / 100.0, 2)
+            else:
+                promo_discount = min(p_val, subtotal)
+
+    total_amount = max(1.0, round(subtotal - promo_discount, 2))
+
+    import random, time
+    order_seq = int(time.time() * 1000) % 100000
+    order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
+
+    # Return URL strictly using sliceurl.app as required by user
+    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
+
+    cust_email = f"{username.lower()}@telegram.org" if username else f"user_{tg_id}@telegram.org"
+    cust_name = first_name or f"Telegram User {tg_id}"
+
+    dodo_payload = {
+        "customer": {
+            "email": cust_email,
+            "name": cust_name
+        },
+        "billing": {
+            "city": "Mumbai",
+            "country": "IN",
+            "state": "MH",
+            "street": "1 Main St",
+            "zipcode": "400001"
+        },
+        "payment_link": True,
+        "return_url": return_url,
+        "metadata": {
+            "order_id": order_id,
+            "telegram_id": str(tg_id)
+        }
+    }
+
+    if product_id:
+        dodo_payload["product_cart"] = [
+            {"product_id": product_id, "quantity": 1}
+        ]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    checkout_url = ""
+    payment_session_id = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(f"{base_url}/checkouts", json=dodo_payload, headers=headers)
+            if resp.status_code not in (200, 201):
+                resp = await client.post(f"{base_url}/payments", json=dodo_payload, headers=headers)
+
+            if resp.status_code in (200, 201):
+                res_json = resp.json()
+                logger.info(f"Dodo Payments create response: status={resp.status_code}, body={res_json}")
+                checkout_url = res_json.get("checkout_url") or res_json.get("payment_link") or res_json.get("url") or ""
+                payment_session_id = str(res_json.get("checkout_id") or res_json.get("payment_id") or res_json.get("session_id") or order_id)
+            else:
+                logger.error(f"Dodo Payments create failed: HTTP {resp.status_code} -> {resp.text}")
+                raise HTTPException(status_code=400, detail=f"Dodo Payments API error ({resp.status_code}): {resp.text}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dodo Payments exception: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create Dodo Payments checkout: {e}")
+
+    order_doc = {
+        "order_id": order_id,
+        "dodo_payment_id": payment_session_id,
+        "payment_session_id": payment_session_id,
+        "user_id": int(tg_id) if str(tg_id).isdigit() else tg_id,
+        "username": username,
+        "first_name": first_name,
+        "story_ids": story_ids,
+        "story_names": story_names,
+        "subtotal": subtotal,
+        "promo_code": promo_code,
+        "promo_discount": promo_discount,
+        "total": total_amount,
+        "gateway": "dodopayments",
+        "provider": "dodopayments",
+        "payment_link": checkout_url,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "is_sandbox": is_sandbox
+    }
+    await arya_db.db.orders.insert_one(order_doc)
+
+    return {
+        "success": True,
+        "order_id": order_id,
+        "checkout_url": checkout_url,
+        "payment_link": checkout_url,
+        "payment_session_id": payment_session_id,
+        "total": total_amount,
+        "is_sandbox": is_sandbox
+    }
+
+
+@api_router.get("/verify-dodopayments-payment")
+@api_router.post("/verify-dodopayments-payment")
+async def verify_dodopayments_payment(payload: dict = None, order_id: str = None):
+    """Verify Dodo Payments order status."""
+    oid = order_id or (payload.get("order_id") if payload else None) or (payload.get("cf_order_id") if payload else None)
+    if not oid:
+        return {"success": False, "detail": "Missing order_id"}
+
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"$or": [{"order_id": oid}, {"dodo_payment_id": oid}, {"payment_session_id": oid}]})
+
+    if order and order.get("status") == "paid":
+        return {"success": True, "status": "paid", "order_id": oid}
+
+    cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    api_key  = cfg.get("dodopayments_api_key", "").strip()
+    dodo_env = cfg.get("dodopayments_environment", "test").strip().lower()
+    is_sandbox = (dodo_env in ("test", "sandbox") or "test" in api_key.lower())
+    base_url = "https://test.dodopayments.com" if is_sandbox else "https://live.dodopayments.com"
+
+    if not api_key:
+        return {"success": False, "detail": "Dodo Payments API Key missing"}
+
+    dodo_pid = order.get("dodo_payment_id") if order else oid
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{base_url}/checkouts/{dodo_pid}", headers=headers)
+            if resp.status_code not in (200, 201):
+                resp = await client.get(f"{base_url}/payments/{dodo_pid}", headers=headers)
+
+            if resp.status_code in (200, 201):
+                res_json = resp.json()
+                p_status = str(res_json.get("status") or res_json.get("payment_status") or "").lower()
+                logger.info(f"Dodo Payments status check for {oid}: {p_status}")
+
+                if p_status in ("succeeded", "paid", "completed", "success"):
+                    user_id = order.get("user_id") if order else None
+                    story_ids = order.get("story_ids", []) if order else []
+
+                    if order:
+                        await arya_db.db.orders.update_one(
+                            {"_id": order["_id"]},
+                            {"$set": {
+                                "status": "paid",
+                                "paid_at": datetime.now(timezone.utc)
+                            }}
+                        )
+
+                    if user_id:
+                        for sid in story_ids:
+                            try:
+                                await arya_db.add_purchase(user_id, sid)
+                            except Exception as e:
+                                logger.error(f"add_purchase error for {sid}: {e}")
+
+                    updated_order = {
+                        "order_id": oid,
+                        "user_id": user_id,
+                        "story_ids": story_ids,
+                        "total": float(order.get("total", 0.0)) if order else 0.0,
+                        "status": "paid",
+                        "payment_id": str(dodo_pid)
+                    }
+                    asyncio.create_task(trigger_payment_log_from_order(updated_order))
+                    asyncio.create_task(record_purchased_stories(updated_order))
+
+                    return {"success": True, "status": "paid", "order_id": oid}
+                else:
+                    return {"success": False, "status": p_status, "order_id": oid}
+            else:
+                return {"success": False, "detail": f"Dodo API returned {resp.status_code}"}
+    except Exception as e:
+        logger.error(f"Dodo verify payment exception: {e}")
+        return {"success": False, "detail": str(e)}
+
+
+@api_router.post("/dodopayments-webhook")
+@api_router.get("/dodopayments-callback")
+@api_router.post("/dodopayments-callback")
+async def dodopayments_webhook(request: Request):
+    """Webhook callback for Dodo Payments events."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {k: str(v) for k, v in request.query_params.items()}
+
+    logger.info(f"Dodo Payments webhook/callback received: {data}")
+    order_id = data.get("metadata", {}).get("order_id") if isinstance(data, dict) else None
+    if not order_id and isinstance(data, dict):
+        order_id = data.get("order_id") or data.get("checkout_id") or data.get("payment_id") or data.get("cf_order_id")
+
+    if order_id:
+        res = await verify_dodopayments_payment(order_id=order_id)
+        if request.method == "GET":
+            if res.get("success"):
+                return Response(
+                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>✅ Payment Successful!</h2><p>Your Dodo Payment was verified.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#10b981;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
+                    media_type="text/html"
+                )
+            else:
+                return Response(
+                    content=f"""<html><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>Processing Payment...</h2><p>{res.get('detail', 'Verification pending')}</p></body></html>""",
+                    media_type="text/html"
+                )
+    return {"status": "ok"}
+
+
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # POST /support
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3214,97 +4186,6 @@ async def upload_file_to_storage(file_bytes: bytes, filename: str, content_type:
 
     return url
 
-async def send_admin_support_notification_bg(
-    telegram_id: str,
-    type_str: str,
-    message: str,
-    first_name: str,
-    username: str,
-    file_bytes: Optional[bytes] = None,
-    file_name: Optional[str] = None,
-    file_content_type: Optional[str] = None
-):
-    """Asynchronously notifies owners/admins of new support submissions in the background."""
-    from AryaPremium.config import Config
-    import aiohttp
-    
-    try:
-        escaped_first_name = escape_html(first_name or "Mini App User")
-        escaped_username = f"@{escape_html(username)}" if username else "—"
-        escaped_message = escape_html(message)
-        
-        if type_str == "request":
-            # Extract structured fields from message text
-            import re as _re
-            lang_match = _re.search(r'Language:\s*([^\n]+)', message)
-            escaped_language = escape_html(lang_match.group(1).strip() if lang_match else "Not specified")
-            link_match = _re.search(r'Link:\s*([^\n]+)', message)
-            story_link = escape_html(link_match.group(1).strip() if link_match else "")
-            story_name_match = _re.search(r'Story Name:\s*([^\n]+)', message)
-            escaped_story_name = escape_html(story_name_match.group(1).strip() if story_name_match else message.split("\n")[0][:80])
-            platform_match = _re.search(r'Platform:\s*([^\n]+)', message)
-            escaped_platform = escape_html(platform_match.group(1).strip() if platform_match else "Not specified")
-            status_match = _re.search(r'Status:\s*([^\n]+)', message)
-            escaped_req_status = escape_html(status_match.group(1).strip() if status_match else "Unknown")
-            admin_txt = (
-                f"\U0001f6ce\ufe0f <b>New Story Request from Mini App</b>\n"
-                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-                f"<b>User:</b> {escaped_first_name}\n"
-                f"<b>Username:</b> {escaped_username}\n"
-                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-                f"<b>\U0001f4da Story Name:</b> {escaped_story_name}\n"
-                f"<b>\U0001f4f1 Platform:</b> {escaped_platform}\n"
-                f"<b>\U0001f310 Language:</b> {escaped_language}\n"
-                f"<b>\u2705 Status:</b> {escaped_req_status}\n"
-                + (f"<b>\U0001f517 Link:</b> {story_link}\n" if story_link else "")
-                + f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-                f"<b>Full Request:</b>\n"
-                f"<blockquote>{escaped_message[:500]}</blockquote>\n"
-                f"<i>Manage from Admin Panel \u2192 Requests tab or Bot \u2192 STORY REQUESTS</i>"
-            )
-        else:
-            admin_txt = (
-                f"💬 <b>New {type_str.title()} from Mini App</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>User:</b> {escaped_first_name}\n"
-                f"<b>Username:</b> {escaped_username}\n"
-                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>Message:</b>\n"
-                f"<blockquote>{escaped_message[:800]}</blockquote>"
-            )
-        
-        token = Config.MGMT_BOT_TOKEN
-        if token and Config.OWNER_IDS:
-            async with aiohttp.ClientSession() as session:
-                for oid in Config.OWNER_IDS:
-                    try:
-                        if file_bytes:
-                            form = aiohttp.FormData()
-                            form.add_field('chat_id', str(oid))
-                            form.add_field('caption', admin_txt)
-                            form.add_field('parse_mode', 'HTML')
-                            method = "sendDocument"
-                            field_name = "document"
-                            if file_content_type:
-                                if file_content_type.startswith("image/"):
-                                    method = "sendPhoto"; field_name = "photo"
-                                elif file_content_type.startswith("video/"):
-                                    method = "sendVideo"; field_name = "video"
-                                elif file_content_type.startswith("audio/"):
-                                    method = "sendAudio"; field_name = "audio"
-                            form.add_field(field_name, file_bytes, filename=file_name or "file")
-                            await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
-                        else:
-                            await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
-                            }, timeout=10)
-                    except Exception as e:
-                        logger.warning(f"Failed to notify admin {oid}: {e}")
-    except Exception as notify_err:
-        logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
-
 @api_router.post("/support")
 async def submit_support(
     telegram_id: str = Form(...),
@@ -3315,12 +4196,18 @@ async def submit_support(
     story_name: str = Form(None),
     platform: str = Form(None),
     status: str = Form(None),
+    subject: str = Form(None),
+    priority: str = Form("Normal"),
+    category: str = Form(None),
+    description: str = Form(None),
+    device: str = Form(None),
+    client_platform: str = Form(None),
     file: UploadFile = File(None)
 ):
     """Submits a support ticket, feedback, or suggestion from the Mini App, with optional file attachment."""
     message = message.strip()
     
-    # For story requests, message is always provided. Allow requests without mandatory file.
+    # For story requests, message is always provided (from the form textMsg). Allow requests without file.
     if not telegram_id or (not message and not file and type != "request"):
         raise HTTPException(status_code=400, detail="Message or file is required")
 
@@ -3329,6 +4216,7 @@ async def submit_support(
     
     # 1. Upload file if provided
     file_url = None
+    file_contents = None
     if file:
         try:
             file_contents = await file.read()
@@ -3352,16 +4240,25 @@ async def submit_support(
             logger.error(f"Failed to upload file attachment: {upload_err}")
 
     # Always save to premium_feedback (for support panel + legacy compat)
+    ticket_ref = f"ARY-{int(datetime.now(timezone.utc).timestamp()) % 899999 + 100000}"
     fb_doc = {
         "user_id": uid,
         "bot_id": "mini_app",
+        "ticket_id": ticket_ref,
         "type": "photo" if file and file.content_type and file.content_type.startswith("image/") else ("video" if file and file.content_type and file.content_type.startswith("video/") else ("document" if file else "text")),
         "text": f"[{type.upper()}] {message}",
         "status": "open",
         "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
         "user_name": first_name,
         "username": username,
         "source": "mini_app",
+        "subject": subject or "",
+        "priority": priority or "Normal",
+        "category": (category or type).lower(),
+        "description": description or message,
+        "device": device or "Telegram Mini App",
+        "platform": client_platform or "Android / iOS"
     }
     if file_url:
         fb_doc["file_url"] = file_url
@@ -3394,71 +4291,432 @@ async def submit_support(
                 req_doc["file_name"] = file.filename or "file"
             await arya_db.db.premium_requests.insert_one(req_doc)
         
-        # Read file bytes for background Telegram notification task
-        file_bytes = None
-        if file:
-            await file.seek(0)
-            file_bytes = await file.read()
+        # Notify admins & send Telegram Bot DM notification to user
+        try:
+            from AryaPremium.config import Config
+            import aiohttp
             
-        # Notify admins via background task so the API response returns instantly
-        asyncio.create_task(
-            send_admin_support_notification_bg(
-                telegram_id=str(telegram_id),
-                type_str=type,
-                message=message,
-                first_name=first_name,
-                username=username,
-                file_bytes=file_bytes,
-                file_name=file.filename if file else None,
-                file_content_type=file.content_type if file else None
-            )
-        )
+            escaped_first_name = escape_html(first_name or "Mini App User")
+            escaped_username = f"@{escape_html(username)}" if username else "—"
+            escaped_message = escape_html(message)
+            escaped_subject = escape_html(subject or "General Support")
+            escaped_description = escape_html(description or message)
+
+            # Send Bot DM to user if ticket type
+            if type == "ticket" or category or subject:
+                try:
+                    user_bot_token = Config.BOT_TOKEN or Config.MGMT_BOT_TOKEN
+                    if user_bot_token and str(telegram_id).isdigit():
+                        user_msg = (
+                            f"🎫 <b>Ticket Created Successfully</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"Hello <b>{escaped_first_name}</b>!\n"
+                            f"Your support ticket has been registered.\n\n"
+                            f"🆔 <b>Ticket ID:</b> <code>{ticket_ref}</code>\n"
+                            f"📌 <b>Subject:</b> {escaped_subject}\n"
+                            f"📝 <b>Details:</b> {escaped_description[:150]}...\n"
+                            f"⏳ <b>Est. Resolution Time:</b> ~2 Hours\n\n"
+                            f"<i>You can check the status and admin responses directly in the Support section of the Mini App.</i>"
+                        )
+                        async with aiohttp.ClientSession() as session:
+                            await session.post(f"https://api.telegram.org/bot{user_bot_token}/sendMessage", json={
+                                "chat_id": telegram_id,
+                                "text": user_msg,
+                                "parse_mode": "HTML"
+                            }, timeout=5)
+                except Exception as u_err:
+                    logger.warning(f"Failed to send user ticket DM: {u_err}")
+            
+            if type == "request":
+                escaped_platform = escape_html(platform or "Not specified")
+                escaped_story_name = escape_html(story_name or "")
+                escaped_req_status = escape_html(status or "Unknown")
+                # Extract language from message if present
+                import re as _re
+                lang_match = _re.search(r'Language:\s*([^\n]+)', message)
+                escaped_language = escape_html(lang_match.group(1).strip() if lang_match else "Not specified")
+                link_match = _re.search(r'Link:\s*([^\n]+)', message)
+                story_link = escape_html(link_match.group(1).strip() if link_match else "")
+                
+                admin_txt = (
+                    f"🛎️ <b>New Story Request from Mini App</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>User:</b> {escaped_first_name}\n"
+                    f"<b>Username:</b> {escaped_username}\n"
+                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>📚 Story Name:</b> {escaped_story_name or escaped_message[:80]}\n"
+                    f"<b>📱 Platform:</b> {escaped_platform}\n"
+                    f"<b>🌐 Language:</b> {escaped_language}\n"
+                    f"<b>✅ Status:</b> {escaped_req_status}\n"
+                    + (f"<b>🔗 Link:</b> {story_link}\n" if story_link else "")
+                    + f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Full Request:</b>\n"
+                    f"<blockquote>{escaped_message[:500]}</blockquote>\n"
+                    f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
+                )
+            elif type == "ticket" or category or subject:
+                escaped_category = escape_html(category or "General")
+                escaped_priority = escape_html(priority or "Normal")
+                admin_txt = (
+                    f"🎫 <b>New Support Ticket from Mini App</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>User:</b> {escaped_first_name}\n"
+                    f"<b>Username:</b> {escaped_username}\n"
+                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                    f"<b>Ticket ID:</b> <code>{ticket_ref}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Category:</b> {escaped_category}\n"
+                    f"<b>Priority:</b> {escaped_priority}\n"
+                    f"<b>Subject:</b> {escaped_subject}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Description:</b>\n"
+                    f"<blockquote>{escaped_description[:800]}</blockquote>\n"
+                    f"<i>Manage from Admin Panel → Support Desk</i>"
+                )
+            else:
+                admin_txt = (
+                    f"💬 <b>New {type.title()} from Mini App</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>User:</b> {escaped_first_name}\n"
+                    f"<b>Username:</b> {escaped_username}\n"
+                    f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>Message:</b>\n"
+                    f"<blockquote>{escaped_message[:800]}</blockquote>"
+                )
+            
+            token = Config.MGMT_BOT_TOKEN
+            if token and Config.OWNER_IDS:
+                async with aiohttp.ClientSession() as session:
+                    for oid in Config.OWNER_IDS:
+                        try:
+                            if file_contents:
+                                form = aiohttp.FormData()
+                                form.add_field('chat_id', str(oid))
+                                form.add_field('caption', admin_txt)
+                                form.add_field('parse_mode', 'HTML')
+                                method = "sendDocument"
+                                field_name = "document"
+                                if file.content_type:
+                                    if file.content_type.startswith("image/"):
+                                        method = "sendPhoto"; field_name = "photo"
+                                    elif file.content_type.startswith("video/"):
+                                        method = "sendVideo"; field_name = "video"
+                                    elif file.content_type.startswith("audio/"):
+                                        method = "sendAudio"; field_name = "audio"
+                                form.add_field(field_name, file_contents, filename=file.filename or "file")
+                                await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
+                            else:
+                                await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                    "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
+                                }, timeout=3)
+                        except Exception as e:
+                            logger.warning(f"Failed to notify admin {oid}: {e}")
+        except Exception as notify_err:
+            logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
                         
-        return {"success": True, "message": "Support request submitted successfully"}
+        return {"success": True, "message": "Support request submitted successfully", "ticket_id": ticket_ref, "id": fb_id}
     except Exception as e:
         logger.error(f"Support submission failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to submit support request")
 
 
-# ─────────────────────────────────────────────────────────────────
-# POST /user/preferences
-# ─────────────────────────────────────────────────────────────────
-@api_router.post("/user/preferences")
-async def update_user_preferences(request: Request):
-    """Updates user preference toggles (e.g. ongoing_updates_enabled)."""
-    arya_db = app.state.db
+@api_router.get("/support/user-tickets")
+async def get_user_tickets(telegram_id: str):
+    """Retrieves all support tickets for a specific user."""
+    from bson.objectid import ObjectId
+    from datetime import datetime, timezone
     try:
-        data = await request.json()
-        telegram_id = data.get("telegram_id")
-        if not telegram_id:
-            return {"success": False, "message": "Missing telegram_id"}
-            
-        user_id_int = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
-        user_id_str = str(user_id_int)
+        arya_db = app.state.db
+        uid_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         
-        updates = {}
-        if "ongoingUpdatesEnabled" in data:
-            updates["ongoing_updates_enabled"] = bool(data["ongoingUpdatesEnabled"])
+        query = {
+            "user_id": {"$in": [uid_int, str(uid_int)]},
+            "$and": [
+                {
+                    "$or": [
+                        {"category": {"$exists": False}},
+                        {"category": None},
+                        {"category": {"$nin": ["Live Chat", "live_chat", "request", "Request", "feedback", "Feedback", "Security", "security"]}}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"text": {"$exists": False}},
+                        {"text": None},
+                        {"text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}}
+                    ]
+                }
+            ]
+        }
+        
+        cursor = arya_db.db.premium_feedback.find(query).sort("created_at", -1).limit(50)
+        tickets = []
+        async for doc in cursor:
+            created_dt = doc.get("created_at", datetime.now(timezone.utc))
+            created_str = created_dt.strftime("%d/%m/%Y, %H:%M") if isinstance(created_dt, datetime) else str(created_dt)
             
-        if updates:
-            await arya_db.db.users.update_many(
-                {"id": {"$in": [user_id_int, user_id_str]}},
-                {"$set": updates}
-            )
-            await arya_db.db.premium_users.update_many(
-                {"id": {"$in": [user_id_int, user_id_str]}},
-                {"$set": updates}
-            )
+            text_content = doc.get("text", "")
+            if text_content.startswith("[TICKET]") or text_content.startswith("[SUPPORT]"):
+                text_content = text_content.split("]", 1)[-1].strip()
             
-        return {"success": True, "data": updates}
+            subj = doc.get("subject") or text_content[:40] or "Live Chat Support"
+            desc = doc.get("description") or text_content
+            
+            msgs = doc.get("messages", [])
+            formatted_msgs = []
+            for m in msgs:
+                formatted_msgs.append({
+                    "id": m.get("id", "m_reply"),
+                    "from": m.get("from", "agent"),
+                    "body": m.get("body") or m.get("text") or "",
+                    "at": m.get("at", "12:00 PM"),
+                    "file_url": m.get("file_url")
+                })
+                
+            tickets.append({
+                "id": str(doc["_id"]),
+                "ticket_id": doc.get("ticket_id") or f"ARY-{str(doc['_id'])[-6:].upper()}",
+                "subject": subj,
+                "category": doc.get("category", "Support"),
+                "priority": doc.get("priority", "Normal"),
+                "status": doc.get("status", "Open").capitalize(),
+                "created_at": created_str,
+                "description": desc,
+                "file_url": doc.get("file_url"),
+                "messages": formatted_msgs,
+                "est_time": "~2 Hours",
+                "has_new_reply": doc.get("user_has_new_reply", False)
+            })
+        # ── Background: clear user_has_new_reply flag so badge disappears after user views ──
+        new_reply_ids = [t["id"] for t in tickets if t.get("has_new_reply")]
+        if new_reply_ids:
+            async def _clear_reply_flags():
+                try:
+                    from bson.objectid import ObjectId as _ObjId
+                    ids = [_ObjId(i) for i in new_reply_ids if len(i) == 24]
+                    if ids:
+                        await arya_db.db.premium_feedback.update_many(
+                            {"_id": {"$in": ids}},
+                            {"$set": {"user_has_new_reply": False}}
+                        )
+                except Exception as _e:
+                    logger.warning(f"Failed to clear reply flags: {_e}")
+            asyncio.create_task(_clear_reply_flags())
+
+        return {"success": True, "data": tickets}
     except Exception as e:
-        logger.error(f"Failed to update user preferences: {e}")
-        return {"success": False, "message": str(e)}
+        logger.error(f"Error fetching user tickets: {e}")
+        return {"success": False, "data": []}
+
+
+@api_router.post("/submit-order-review")
+async def submit_order_review(
+    order_id: str = Form(...),
+    telegram_id: str = Form(...),
+    message: str = Form(""),
+    file: UploadFile = File(...)
+):
+    """Submits a manual payment proof screenshot for review."""
+    message = message.strip()
+    arya_db = app.state.db
+    
+    # Check if order exists
+    order = await arya_db.db.orders.find_one({"order_id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    # Upload screenshot
+    screenshot_url = None
+    try:
+        file_contents = await file.read()
+        await file.seek(0)
+        
+        # Optimize and upload
+        screenshot_url = await optimize_and_upload_to_storage(file_contents)
+        if not screenshot_url:
+            screenshot_url = await upload_file_to_storage(file_contents, file.filename or "screenshot", file.content_type)
+            
+        if not screenshot_url:
+            raise HTTPException(status_code=500, detail="Failed to upload screenshot")
+    except Exception as e:
+        logger.error(f"Failed to upload order review screenshot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload proof")
+        
+    # Update order in DB
+    await arya_db.db.orders.update_one(
+        {"order_id": order_id},
+        {"$set": {
+            "status": "review_pending",
+            "review_screenshot": screenshot_url,
+            "review_message": message,
+            "review_submitted_at": datetime.now(timezone.utc)
+        }}
+    )
+    
+    # Notify admins via Telegram
+    try:
+        from AryaPremium.config import Config
+        import aiohttp
+        
+        user_name = order.get("username") or "User"
+        amount = order.get("total") or order.get("total_amount") or 0
+        story_names = ", ".join(order.get("story_names", []))
+        
+        admin_txt = (
+            f"🧾 <b>New Manual Payment Review</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Order ID:</b> <code>{order_id}</code>\n"
+            f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+            f"<b>Username:</b> @{user_name}\n"
+            f"<b>Amount:</b> ₹{amount}\n"
+            f"<b>Stories:</b> {story_names}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Message:</b>\n"
+            f"<blockquote>{message or '—'}</blockquote>\n"
+            f"<i>Manage this from the Admin Panel Orders Review section.</i>"
+        )
+        
+        token = Config.MGMT_BOT_TOKEN
+        if token and Config.OWNER_IDS:
+            async with aiohttp.ClientSession() as session:
+                for oid in Config.OWNER_IDS:
+                    try:
+                        # Send photo first
+                        form = aiohttp.FormData()
+                        form.add_field('chat_id', str(oid))
+                        form.add_field('caption', admin_txt)
+                        form.add_field('parse_mode', 'HTML')
+                        form.add_field('photo', file_contents, filename=file.filename or "screenshot")
+                        await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form, timeout=60)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin {oid} about review: {e}")
+    except Exception as notify_err:
+        logger.error(f"Failed to notify admin about review: {notify_err}")
+        
+    return {"success": True, "message": "Proof submitted successfully"}
+
+
+@api_router.get("/admin/pending-reviews")
+async def get_pending_reviews(telegram_id: str):
+    """Fetches all orders waiting for manual proof verification."""
+    if not is_admin(telegram_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    arya_db = app.state.db
+    orders = await arya_db.db.orders.find({"status": "review_pending"}).sort("review_submitted_at", -1).to_list(length=100)
+    
+    result = []
+    for o in orders:
+        result.append({
+            "order_id": o.get("order_id"),
+            "user_id": o.get("user_id"),
+            "username": o.get("username"),
+            "story_names": o.get("story_names", []),
+            "amount": o.get("total") or o.get("total_amount") or 0,
+            "review_screenshot": o.get("review_screenshot"),
+            "review_message": o.get("review_message"),
+            "created_at": o.get("created_at").isoformat() if isinstance(o.get("created_at"), datetime) else str(o.get("created_at")),
+            "review_submitted_at": o.get("review_submitted_at").isoformat() if isinstance(o.get("review_submitted_at"), datetime) else str(o.get("review_submitted_at"))
+        })
+    return {"success": True, "data": result}
+
+
+@api_router.post("/admin/resolve-order-review")
+async def resolve_order_review(payload: dict):
+    """Approves or rejects a manual payment proof review."""
+    telegram_id = str(payload.get("telegram_id", ""))
+    order_id = payload.get("order_id")
+    action = payload.get("action")  # "approve" or "reject"
+    reason = payload.get("reason", "")
+    
+    if not is_admin(telegram_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    if not order_id or action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Invalid request parameters")
+        
+    arya_db = app.state.db
+    order = await arya_db.db.orders.find_one({"order_id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    user_id = order.get("user_id")
+    story_ids = order.get("story_ids", [])
+    
+    if action == "approve":
+        # Update order status to paid
+        await arya_db.db.orders.update_one(
+            {"order_id": order_id},
+            {"$set": {
+                "status": "paid",
+                "resolved_at": datetime.now(timezone.utc),
+                "resolved_by": telegram_id
+            }}
+        )
+        
+        # Grant purchases
+        if user_id:
+            for sid in story_ids:
+                try:
+                    await arya_db.add_purchase(user_id, sid)
+                except Exception as e:
+                    logger.error(f"add_purchase error for {sid}: {e}")
+                    
+        # Log and audit records
+        updated_order = {**order, "status": "paid"}
+        asyncio.create_task(trigger_payment_log_from_order(updated_order))
+        asyncio.create_task(record_purchased_stories(updated_order))
+        
+        # Send confirmation message to user via Telegram Bot
+        asyncio.create_task(send_purchase_success_dm(
+            arya_db,
+            user_id,
+            order_doc=updated_order,
+            payment_method=order.get("source", "UPI (UTR)"),
+            verified_by="Access Granted By Team",
+            is_admin_manual=True
+        ))
+            
+    else:
+        # Reject review
+        await arya_db.db.orders.update_one(
+            {"order_id": order_id},
+            {"$set": {
+                "status": "review_rejected",
+                "reject_reason": reason,
+                "resolved_at": datetime.now(timezone.utc),
+                "resolved_by": telegram_id
+            }}
+        )
+        
+        # Send rejection message to user via Telegram Bot (optional)
+        try:
+            from AryaPremium.config import Config
+            import aiohttp
+            token = Config.MGMT_BOT_TOKEN
+            if token and user_id:
+                async with aiohttp.ClientSession() as session:
+                    reject_txt = (
+                        f"❌ <b>Order Review Rejected</b>\n"
+                        f"Your payment proof for order <code>{order_id}</code> was rejected.\n"
+                        f"<b>Reason:</b> {reason or 'Invalid or unclear proof'}"
+                    )
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                        "chat_id": user_id, "text": reject_txt, "parse_mode": "HTML"
+                    }, timeout=3)
+        except Exception:
+            pass
+            
+    return {"success": True, "message": f"Order review {action}d successfully"}
 
 
 # ─────────────────────────────────────────────────────────────────
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # GET /my-requests
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.get("/my-requests")
 async def get_my_requests(telegram_id: str):
     """Fetches user's story requests — reads from premium_requests (unified) + legacy feedback."""
@@ -3470,7 +4728,8 @@ async def get_my_requests(telegram_id: str):
         requests = []
         seen_feedback_ids = set()
 
-        # Primary: premium_requests — match both int and str stored user_id
+        # Primary: premium_requests (unified bot+miniapp collection)
+        # Use $in to match both int and string stored user_id values
         cursor = arya_db.db.premium_requests.find(
             {"user_id": {"$in": [user_id, user_id_str]}}
         ).sort("created_at", -1)
@@ -3532,6 +4791,7 @@ async def get_my_purchases(telegram_id: str):
     arya_db = app.state.db
     try:
         from bson.objectid import ObjectId
+        import asyncio
         
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         user_id_str = str(user_id_int)
@@ -3542,7 +4802,6 @@ async def get_my_purchases(telegram_id: str):
 
         # Robust fallback: fetch story IDs from all successfully paid/delivered orders
         try:
-            import asyncio
             order_story_ids = await asyncio.wait_for(
                 arya_db.db.orders.distinct(
                     "story_ids",
@@ -3562,7 +4821,6 @@ async def get_my_purchases(telegram_id: str):
 
         # Robust fallback: fetch story IDs from premium_purchases
         try:
-            import asyncio
             pp_story_ids = await asyncio.wait_for(
                 arya_db.db.premium_purchases.distinct(
                     "story_id",
@@ -3722,16 +4980,15 @@ async def get_my_purchases(telegram_id: str):
                             purchased_items.append(formatted)
                 except Exception:
                     pass
-                    
+
         return {"success": True, "data": purchased_items}
     except Exception as e:
         logger.error(f"Failed to fetch my-purchases: {e}")
         return {"success": False, "data": []}
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────
 # GET /admin/stats
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# --- ADMIN STATS CACHE ---
+# ─────────────────────────────────────────────────────────────────
 _buyers_data_lock = asyncio.Lock()
 _processed_buyers_cache = None
 _processed_buyers_cache_time = 0.0
@@ -3986,9 +5243,9 @@ async def fetch_processed_buyers_data(arya_db):
             story_id_str = str(story_id) if story_id else ""
             story_canon = sid_to_canonical.get(story_id_str, story_id_str)
 
-            if status_label == "paid":
-                if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
-                    continue
+            # If user already owns/paid for this story, skip ALL checkout records for this story
+            if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
+                continue
 
             story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
             sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
@@ -4108,28 +5365,20 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         # Bot Users
         bot_users_count = await arya_db.db.users.count_documents({})
         
-        from arya_enterprise_analytics import visitor_id_expression
-        bot_filter = {
-            "data.client_user_agent": {
-                "$not": {
-                    "$regex": "bot|crawler|spider|ping|uptime|status|http|curl|wget|python|node|axios|fetch|headless|selenium|puppeteer|playwright|scrape|scan|checker",
-                    "$options": "i"
-                }
-            }
-        }
-        
-        page_views_count = await arya_db.db.mini_app_analytics.count_documents({"type": "page_view", **bot_filter})
-        
-        miniapp_users_pipeline = [
-            {"$match": {"type": "page_view", **bot_filter}},
-            {"$project": {"visitor_id": visitor_id_expression()}},
-            {"$group": {"_id": "$visitor_id"}},
-            {"$count": "c"}
-        ]
-        miniapp_users_res = await arya_db.db.mini_app_analytics.aggregate(miniapp_users_pipeline).to_list(length=1)
-        miniapp_users_count = miniapp_users_res[0]["c"] if miniapp_users_res else 0
+        page_views_count = 0
+        miniapp_users_count = 0
+        try:
+            page_views_count = await arya_db.db.mini_app_analytics.count_documents({"type": "page_view"})
+            miniapp_users_res = await arya_db.db.mini_app_analytics.aggregate([
+                {"$match": {"type": "page_view"}},
+                {"$group": {"_id": "$user_id"}},
+                {"$count": "c"}
+            ]).to_list(length=1)
+            miniapp_users_count = miniapp_users_res[0]["c"] if miniapp_users_res else 0
+        except Exception as analytics_err:
+            logger.warning(f"Error fetching analytics count in stats: {analytics_err}")
+
         total_users_count = bot_users_count + miniapp_users_count
-        
         total_stories = await arya_db.db.premium_stories.count_documents({})
         
         # Feedbacks
@@ -4144,7 +5393,7 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
                 "type": doc.get("type"),
                 "text": doc.get("text"),
                 "status": doc.get("status"),
-                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at", "")
+                "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
             })
             
         # Recent Orders
@@ -4152,17 +5401,16 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
         ord_cursor = arya_db.db.orders.find({}).sort("created_at", -1).limit(10)
         async for doc in ord_cursor:
             user_doc = await arya_db.db.users.find_one({"id": doc.get("user_id")}) if doc.get("user_id") else None
-            if not user_doc: continue
-            _fn = (user_doc.get("first_name") or "").strip()
-            _ln = (user_doc.get("last_name") or "").strip()
-            _full = " ".join(filter(None, [_fn, _ln])) or user_doc.get("username", "") or "User"
+            _fn = ((user_doc.get("first_name") if user_doc else "") or "").strip()
+            _ln = ((user_doc.get("last_name") if user_doc else "") or "").strip()
+            _full = " ".join(filter(None, [_fn, _ln])) or (user_doc.get("username") if user_doc else "") or "User"
             orders.append({
                 "order_id": str(doc.get("order_id", doc.get("_id", ""))),
                 "amount": doc.get("total_amount") or doc.get("total") or doc.get("amount", 0),
                 "status": doc.get("status", "unknown"),
                 "user_id": doc.get("user_id", ""),
                 "first_name": _full,
-                "username": user_doc.get("username", ""),
+                "username": user_doc.get("username", "") if user_doc else "",
                 "story_names": doc.get("story_names", []),
                 "source": doc.get("source", "miniapp"),
                 "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat() if isinstance(doc.get("created_at"), datetime) else str(doc.get("created_at", ""))
@@ -4181,8 +5429,8 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
             "total_revenue": computed["total_revenue"],
             "miniapp_revenue": computed["miniapp_revenue"],
             "bot_revenue": computed["bot_revenue"],
-            "recent_feedback": feedbacks,
-            "recent_orders": orders
+            "feedbacks": feedbacks,
+            "orders": orders
         }
         
         _admin_stats_cache = result_data
@@ -4195,7 +5443,7 @@ async def get_admin_stats(telegram_id: str, force: bool = Query(False)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to fetch admin stats: {e}")
+        logger.error(f"Error fetching admin stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4250,7 +5498,8 @@ class StoryUpdate(BaseModel):
     description: Optional[str] = ""
     description_hi: Optional[str] = ""
     episodes: Optional[str] = "1"
-    status: Optional[str] = "available"
+    status: Optional[str] = "Ongoing"
+    visibility: Optional[str] = "available"
     genre: Optional[str] = ""
     language: Optional[str] = "Hindi"
     price: Optional[int] = 0
@@ -4415,6 +5664,18 @@ async def save_admin_story(request: Request):
                 logger.error(f"Failed to auto-outpaint story banner: {e}", exc_info=True)
 
         save_doc["updated_via"] = "mini_app_admin"
+
+        # ── Validate completion status ─────────────────────────────────────────
+        # Only 4 valid statuses allowed. Any other value (e.g. "available", etc.)
+        # gets normalised to "Ongoing" to keep the DB clean.
+        _valid_statuses = ("Ongoing", "Completed", "Unfinished", "Stucked")
+        raw_st = str(save_doc.get("status") or "").strip()
+        if raw_st not in _valid_statuses:
+            # Check is_completed flag as fallback
+            is_comp = bool(save_doc.get("is_completed") or raw_st.lower() == "completed")
+            save_doc["status"] = "Completed" if is_comp else "Ongoing"
+        # ──────────────────────────────────────────────────────────────────────
+
         arya_db = app.state.db
         await arya_db.save_story(save_doc)
 
@@ -4613,51 +5874,173 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @api_router.delete("/admin/story/{story_id}")
 async def delete_admin_story(story_id: str, telegram_id: str):
-    """Deletes a story."""
-    from AryaPremium.config import Config
+    """Deletes a story permanently from database and clears all caches."""
     try:
-        user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        await arya_db.delete_story(story_id)
-        # Clear /stories cache
-        global _stories_cache
+        sid_str = str(story_id).strip()
+        from bson.objectid import ObjectId
+
+        filters = [{"story_id": sid_str}, {"id": sid_str}, {"_id": sid_str}]
+        try:
+            if ObjectId.is_valid(sid_str):
+                filters.append({"_id": ObjectId(sid_str)})
+        except Exception:
+            pass
+
+        # 1. Permanently delete from database collections
+        for flt in filters:
+            await arya_db.db.premium_stories.delete_many(flt)
+            await arya_db.db.stories.delete_many(flt)
+            await arya_db.db.episodes.delete_many(flt)
+
+        # 2. Invalidate all in-memory caches
+        global _stories_cache, _stories_cache_time
         _stories_cache = None
-        return {"success": True, "message": "Story deleted successfully"}
+        _stories_cache_time = 0.0
+        invalidate_buyers_cache()
+
+        logger.info(f"✅ Permanently deleted story '{story_id}' from database")
+        return {"success": True, "message": "Story deleted permanently from database"}
     except Exception as e:
+        logger.error(f"Failed to delete story {story_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SUPPORT MANAGEMENT
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ─────────────────────────────────────────────────────────────────
-# USER SUPPORT & LIVE CHAT ENDPOINTS
-# ─────────────────────────────────────────────────────────────────
+async def send_admin_support_notification_bg(
+    telegram_id: str,
+    type_str: str,
+    message: str,
+    first_name: str,
+    username: str,
+    file_bytes: Optional[bytes] = None,
+    file_name: Optional[str] = None,
+    file_content_type: Optional[str] = None
+):
+    """Asynchronously notifies owners/admins of new support submissions in the background."""
+    from AryaPremium.config import Config
+    import aiohttp
+    
+    try:
+        escaped_first_name = escape_html(first_name or "Mini App User")
+        escaped_username = f"@{escape_html(username)}" if username else "—"
+        escaped_message = escape_html(message)
+        
+        if type_str == "request":
+            admin_txt = (
+                f"🛎️ <b>New Story Request from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>User:</b> {escaped_first_name}\n"
+                f"<b>Username:</b> {escaped_username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Request:</b>\n"
+                f"<blockquote>{escaped_message[:800]}</blockquote>\n"
+                f"<i>Manage from Admin Panel → Requests tab or Bot → STORY REQUESTS</i>"
+            )
+        elif type_str == "chat":
+            admin_txt = (
+                f"💬 <b>New Live Chat Message from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>User:</b> {escaped_first_name}\n"
+                f"<b>Username:</b> {escaped_username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Message:</b>\n"
+                f"<blockquote>{escaped_message[:800]}</blockquote>\n"
+                f"<i>Reply from Admin Panel → Live Chat</i>"
+            )
+        else:
+            admin_txt = (
+                f"💬 <b>New {type_str.title()} from Mini App</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>User:</b> {escaped_first_name}\n"
+                f"<b>Username:</b> {escaped_username}\n"
+                f"<b>User ID:</b> <code>{telegram_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Message:</b>\n"
+                f"<blockquote>{escaped_message[:800]}</blockquote>"
+            )
+        
+        token = Config.MGMT_BOT_TOKEN
+        if token and Config.OWNER_IDS:
+            async with aiohttp.ClientSession() as session:
+                for oid in Config.OWNER_IDS:
+                    try:
+                        if file_bytes:
+                            form = aiohttp.FormData()
+                            form.add_field('chat_id', str(oid))
+                            form.add_field('caption', admin_txt)
+                            form.add_field('parse_mode', 'HTML')
+                            method = "sendDocument"
+                            field_name = "document"
+                            if file_content_type:
+                                if file_content_type.startswith("image/"):
+                                    method = "sendPhoto"; field_name = "photo"
+                                elif file_content_type.startswith("video/"):
+                                    method = "sendVideo"; field_name = "video"
+                                elif file_content_type.startswith("audio/"):
+                                    method = "sendAudio"; field_name = "audio"
+                            form.add_field(field_name, file_bytes, filename=file_name or "file")
+                            await session.post(f"https://api.telegram.org/bot{token}/{method}", data=form, timeout=60)
+                        else:
+                            await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": oid, "text": admin_txt, "parse_mode": "HTML"
+                            }, timeout=10)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin {oid}: {e}")
+    except Exception as notify_err:
+        logger.error(f"Failed to process or send admin Telegram notification: {notify_err}")
+
+
+@api_router.post("/support/upload-file")
+async def support_upload_file(file: UploadFile = File(...)):
+    """Uploads any file (image, pdf, audio) for live chat support."""
+    try:
+        contents = await file.read()
+        file_url = None
+        if file.content_type and file.content_type.startswith("image/"):
+            try:
+                file_url = await optimize_and_upload_to_storage(contents)
+            except Exception:
+                pass
+        
+        if not file_url:
+            file_url = await upload_file_to_storage(contents, file.filename or "file", file.content_type or "application/octet-stream")
+            
+        return {"success": True, "url": file_url}
+    except Exception as e:
+        logger.error(f"Failed to upload file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload file")
+
 
 @api_router.get("/support/chat")
 async def get_support_chat(telegram_id: str):
     """Gets the active support chat ticket for a user, or creates one if none exists."""
+    from datetime import datetime, timezone
     import asyncio
     arya_db = app.state.db
     uid = int(telegram_id) if telegram_id.isdigit() else telegram_id
     uid_str = str(uid)
-
+    
     # ── Run ticket lookup and user_doc lookup in PARALLEL ──
-    ticket_query = arya_db.db.premium_feedback.find_one({
-        "user_id": {"$in": [uid, uid_str]},
-        "status": {"$nin": ["resolved", "closed"]},
-        "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
-    })
+    # (user_doc is only needed if ticket doesn't exist, but the lookup is fast)
+    ticket_query = arya_db.db.premium_feedback.find_one(
+        {"user_id": {"$in": [uid, uid_str]}, "category": "Live Chat"},
+        sort=[("created_at", -1)]
+    )
     user_query = arya_db.db.users.find_one(
         {"id": uid} if isinstance(uid, int) else {"username": uid},
+        # Only fetch the fields we need
         {"first_name": 1, "username": 1, "_id": 0}
     )
     ticket, user_doc = await asyncio.gather(ticket_query, user_query)
-
+    
     if not ticket:
         # Create a new active chat ticket with a default welcome message from the agent
-        welcome_at = datetime.now(timezone.utc).strftime("%I:%M %p")
         ticket_doc = {
             "user_id": uid,
             "bot_id": "mini_app",
@@ -4666,26 +6049,19 @@ async def get_support_chat(telegram_id: str):
             "subject": "Live Chat Support",
             "category": "Live Chat",
             "priority": "Normal",
-            "status": "open",
+            "status": "Open",
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
             "source": "mini_app",
             "unread": 0,
-            "messages": [
-                {
-                    "id": "m1",
-                    "from": "agent",
-                    "body": "Hi! You're connected to Arya Support. How can we help today?",
-                    "at": welcome_at
-                }
-            ]
+            "messages": []
         }
-
+        
         # Pre-populate user details (already fetched in parallel above)
         if user_doc:
             ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
             ticket_doc["username"] = user_doc.get("username") or ""
-
+        
         result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
         # Use ticket_doc directly — avoids extra find_one round trip
         ticket_doc["_id"] = result.inserted_id
@@ -4703,92 +6079,113 @@ async def get_support_chat(telegram_id: str):
                 pass
         asyncio.create_task(_reset_unread())
 
-    # Format the messages array for frontend compatibility
-    messages = ticket.get("messages", [])
-    if not messages:
-        welcome_at = ticket.get("created_at", datetime.now(timezone.utc)).strftime("%I:%M %p")
-        messages = [
-            {
-                "id": "m1",
-                "from": "agent",
-                "body": "Hi! You're connected to Arya Support. How can we help today?",
-                "at": welcome_at
-            }
-        ]
+    # Determine if agent is typing
+    now = datetime.now(timezone.utc)
+    agent_typing = False
+    agent_typing_until = ticket.get("agent_typing_until")
+    if agent_typing_until:
+        if agent_typing_until.tzinfo is None:
+            agent_typing_until = agent_typing_until.replace(tzinfo=timezone.utc)
+        if agent_typing_until > now:
+            agent_typing = True
 
+    messages = ticket.get("messages", [])
     return {
         "success": True,
         "ticket_id": str(ticket["_id"]),
-        "status": ticket.get("status", "open"),
-        "messages": messages
+        "status": ticket.get("status", "Open"),
+        "messages": messages,
+        "language": ticket.get("chat_language", ""),
+        "agent_typing": agent_typing
     }
+
 
 class ChatMessagePayload(BaseModel):
     telegram_id: str
-    message: str
+    message: Optional[str] = ""
+    selected_language: Optional[str] = None
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
 
 @api_router.post("/support/chat/send")
 async def send_support_chat_message(payload: ChatMessagePayload):
-    """User sends a message in the live chat."""
+    """User sends a message or updates language in the live chat."""
+    from datetime import datetime, timezone
+    from bson.objectid import ObjectId
     arya_db = app.state.db
     uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+    uid_str = str(uid)
     
-    # Find active ticket
-    ticket = await arya_db.db.premium_feedback.find_one({
-        "user_id": uid,
-        "status": {"$nin": ["resolved", "closed"]},
-        "text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
-    })
+    # Use $in to match both int and string stored user_id values
+    ticket = await arya_db.db.premium_feedback.find_one(
+        {"user_id": {"$in": [uid, uid_str]}, "category": "Live Chat"},
+        sort=[("created_at", -1)]
+    )
+    
+    # If the most recent ticket is closed, start a new active session or reopen it
+    if ticket and ticket.get("status", "Open") in ["closed", "Closed", "resolved", "Resolved"]:
+        ticket = None
+        
+    is_new_chat = (not ticket) or len(ticket.get("messages", [])) == 0
     
     msg_id = f"u-{int(time.time() * 1000)}"
     msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
-    new_msg = {
-        "id": msg_id,
-        "from": "user",
-        "body": payload.message,
-        "at": msg_at
-    }
     
+    new_msg = None
+    message_str = payload.message or ""
+    
+    if message_str.strip() or payload.file_url:
+        new_msg = {
+            "id": msg_id,
+            "from": "user",
+            "body": message_str or "Attachment",
+            "at": msg_at
+        }
+        if payload.file_url:
+            new_msg["file_url"] = payload.file_url
+            new_msg["file_type"] = payload.file_type or "application/octet-stream"
+        
+    update_fields = {
+        "updated_at": datetime.now(timezone.utc)
+    }
+    if message_str.strip():
+        update_fields["text"] = message_str
+    elif payload.file_url:
+        update_fields["text"] = "Shared a file"
+    if payload.selected_language:
+        update_fields["chat_language"] = payload.selected_language
+        
     if ticket:
-        # Append message to existing ticket
+        update_query = {"$set": update_fields}
+        if new_msg:
+            update_query["$push"] = {"messages": new_msg}
+            update_query["$inc"] = {"unread": 1}
+            
         await arya_db.db.premium_feedback.update_one(
             {"_id": ticket["_id"]},
-            {
-                "$push": {"messages": new_msg},
-                "$set": {
-                    "text": payload.message,  # update preview text
-                    "status": "open",
-                    "updated_at": datetime.now(timezone.utc)
-                },
-                "$inc": {"unread": 1}
-            }
+            update_query
         )
         ticket_id = str(ticket["_id"])
     else:
-        # Create a new ticket if none active
+        # Create a new ticket if none exists at all
         ticket_doc = {
             "user_id": uid,
             "bot_id": "mini_app",
             "type": "text",
-            "text": payload.message,
-            "subject": payload.message[:40] if len(payload.message) > 40 else payload.message,
+            "text": message_str or ("Shared a file" if payload.file_url else "Live Chat Support"),
+            "subject": (message_str[:40] if len(message_str) > 40 else message_str) if message_str else "Live Chat Support",
             "category": "Live Chat",
             "priority": "Normal",
-            "status": "open",
+            "status": "Open",
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
             "source": "mini_app",
-            "unread": 1,
-            "messages": [
-                {
-                    "id": "m1",
-                    "from": "agent",
-                    "body": "Hi! You're connected to Arya Support. How can we help today?",
-                    "at": datetime.now(timezone.utc).strftime("%I:%M %p")
-                },
-                new_msg
-            ]
+            "unread": 1 if new_msg else 0,
+            "messages": [new_msg] if new_msg else []
         }
+        if payload.selected_language:
+            ticket_doc["chat_language"] = payload.selected_language
+            
         user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
         if user_doc:
             ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
@@ -4797,34 +6194,157 @@ async def send_support_chat_message(payload: ChatMessagePayload):
         result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
         ticket_id = str(result.inserted_id)
         
-    # Trigger background admin notification
-    first_name = "User"
-    username = ""
-    user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
-    if user_doc:
-        first_name = user_doc.get("first_name") or "User"
-        username = user_doc.get("username") or ""
-        
-    asyncio.create_task(
-        send_admin_support_notification_bg(
-            telegram_id=payload.telegram_id,
-            type_str="chat",
-            message=payload.message,
-            first_name=first_name,
-            username=username,
-            file_bytes=None,
-            file_name=None,
-            file_content_type=None
+    # Trigger background admin notification ONLY if it is the first time user sends a query
+    if is_new_chat and message_str.strip():
+        first_name = "User"
+        username = ""
+        user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+        if user_doc:
+            first_name = user_doc.get("first_name") or "User"
+            username = user_doc.get("username") or ""
+            
+        asyncio.create_task(
+            send_admin_support_notification_bg(
+                telegram_id=payload.telegram_id,
+                type_str="chat",
+                message=message_str,
+                first_name=first_name,
+                username=username
+            )
         )
-    )
-    
+        
     updated_ticket = await arya_db.db.premium_feedback.find_one({"_id": ObjectId(ticket_id)})
     return {
         "success": True,
         "ticket_id": ticket_id,
-        "status": updated_ticket.get("status", "open"),
-        "messages": updated_ticket.get("messages", [])
+        "status": updated_ticket.get("status", "Open"),
+        "messages": updated_ticket.get("messages", []),
+        "language": updated_ticket.get("chat_language", "")
     }
+
+
+class NewChatPayload(BaseModel):
+    telegram_id: str
+    selected_language: Optional[str] = None
+
+@api_router.post("/support/chat/new")
+async def create_new_support_chat(payload: NewChatPayload):
+    """User starts a brand new support chat session by closing old ones."""
+    from datetime import datetime, timezone
+    arya_db = app.state.db
+    uid = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+    uid_str = str(uid)
+    
+    # Archive/Close all previous live chat tickets for this user (match both int and string user_id)
+    await arya_db.db.premium_feedback.update_many(
+        {"user_id": {"$in": [uid, uid_str]}, "category": "Live Chat", "status": {"$ne": "Closed"}},
+        {"$set": {"status": "Closed", "updated_at": datetime.now(timezone.utc)}}
+    )
+    
+    # Create new active ticket
+    ticket_doc = {
+        "user_id": uid,
+        "bot_id": "mini_app",
+        "type": "text",
+        "text": "Live Chat Support",
+        "subject": "Live Chat Support",
+        "category": "Live Chat",
+        "priority": "Normal",
+        "status": "Open",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "source": "mini_app",
+        "unread": 0,
+        "messages": []
+    }
+    if payload.selected_language:
+        ticket_doc["chat_language"] = payload.selected_language
+        
+    user_doc = await arya_db.db.users.find_one({"id": uid} if isinstance(uid, int) else {"username": uid})
+    if user_doc:
+        ticket_doc["user_name"] = user_doc.get("first_name") or user_doc.get("username") or "User"
+        ticket_doc["username"] = user_doc.get("username") or ""
+        
+    result = await arya_db.db.premium_feedback.insert_one(ticket_doc)
+    ticket_id = str(result.inserted_id)
+    
+    return {
+        "success": True,
+        "ticket_id": ticket_id,
+        "status": "Open",
+        "messages": [],
+        "language": payload.selected_language or ""
+    }
+
+
+class CloseChatPayload(BaseModel):
+    telegram_id: Optional[str] = None
+    ticket_id: Optional[str] = None
+
+@api_router.post("/support/chat/close")
+async def close_support_chat(payload: CloseChatPayload):
+    """Closes the specified support chat session by ticket_id or telegram_id."""
+    from datetime import datetime, timezone
+    from bson.objectid import ObjectId
+    arya_db = app.state.db
+    
+    query = {}
+    if payload.ticket_id and len(payload.ticket_id) == 24:
+        try:
+            query = {"_id": ObjectId(payload.ticket_id)}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    elif payload.telegram_id:
+        uid_int = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+        query = {
+            "user_id": {"$in": [uid_int, str(uid_int)]},
+            "category": {"$in": ["Live Chat", "live_chat"]},
+            "status": {"$ne": "Closed"}
+        }
+    else:
+        return {"success": False, "message": "Missing ticket_id or telegram_id"}
+        
+    res = await arya_db.db.premium_feedback.update_many(
+        query,
+        {"$set": {"status": "Closed", "updated_at": datetime.now(timezone.utc)}}
+    )
+    
+    return {
+        "success": True,
+        "status": "Closed",
+        "modified": res.modified_count
+    }
+
+
+class TypingPayload(BaseModel):
+    telegram_id: str
+    ticket_id: str = ""
+    is_typing: bool
+    from_agent: bool = False
+
+@api_router.post("/support/chat/typing")
+async def support_chat_typing(payload: TypingPayload):
+    """Updates typing state for user or agent in live chat."""
+    from datetime import datetime, timezone, timedelta
+    from bson.objectid import ObjectId
+    arya_db = app.state.db
+    
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=4) if payload.is_typing else None
+    update_field = "agent_typing_until" if payload.from_agent else "user_typing_until"
+    
+    query = {}
+    if payload.ticket_id and len(payload.ticket_id) == 24:
+        query["_id"] = ObjectId(payload.ticket_id)
+    else:
+        uid_int = int(payload.telegram_id) if payload.telegram_id.isdigit() else payload.telegram_id
+        query["$or"] = [{"user_id": uid_int}, {"user_id": str(uid_int)}]
+        
+    await arya_db.db.premium_feedback.update_many(
+        query,
+        {"$set": {update_field: expiry}}
+    )
+    return {"success": True}
+
 
 class TicketStatusPayload(BaseModel):
     telegram_id: str
@@ -4839,14 +6359,30 @@ async def update_support_status(payload: TicketStatusPayload):
         
     arya_db = app.state.db
     from bson.objectid import ObjectId
+    from datetime import datetime, timezone
     
-    status_val = payload.status  # Keep casing as selected (e.g. "Open", "In Progress", etc.)
+    status_val = payload.status  # "Open", "Waiting User", "Closed", etc.
     
-    await arya_db.db.premium_feedback.update_one(
-        {"_id": ObjectId(payload.ticket_id)},
-        {"$set": {"status": status_val, "updated_at": datetime.now(timezone.utc)}}
+    query = {}
+    if len(payload.ticket_id) == 24:
+        try:
+            query = {"$or": [{"_id": ObjectId(payload.ticket_id)}, {"ticket_id": payload.ticket_id}]}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    else:
+        query = {"ticket_id": payload.ticket_id}
+
+    update_payload = {"status": status_val, "updated_at": datetime.now(timezone.utc)}
+    # Clear polling flag when ticket is explicitly resolved/closed
+    if status_val.lower() in ("resolved", "closed"):
+        update_payload["user_has_new_reply"] = False
+
+    await arya_db.db.premium_feedback.update_many(
+        query,
+        {"$set": update_payload}
     )
     return {"success": True}
+
 
 class TicketNotesPayload(BaseModel):
     telegram_id: str
@@ -4861,49 +6397,210 @@ async def update_support_notes(payload: TicketNotesPayload):
         
     arya_db = app.state.db
     from bson.objectid import ObjectId
+    from datetime import datetime, timezone
     
-    await arya_db.db.premium_feedback.update_one(
-        {"_id": ObjectId(payload.ticket_id)},
+    query = {}
+    if len(payload.ticket_id) == 24:
+        try:
+            query = {"$or": [{"_id": ObjectId(payload.ticket_id)}, {"ticket_id": payload.ticket_id}]}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    else:
+        query = {"ticket_id": payload.ticket_id}
+
+    await arya_db.db.premium_feedback.update_many(
+        query,
         {"$set": {"notes": payload.notes, "updated_at": datetime.now(timezone.utc)}}
     )
     return {"success": True}
 
-# ─────────────────────────────────────────────────────────────────
-# SUPPORT MANAGEMENT (ADMIN SIDE)
-# ─────────────────────────────────────────────────────────────────
+
+class TicketUpdatePayload(BaseModel):
+    telegram_id: str
+    ticket_id: str
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    notes: Optional[str] = None
+    agent: Optional[str] = None
+    tags: Optional[list] = None
+    status: Optional[str] = None
+
+@api_router.post("/admin/support/update")
+async def update_support_fields(payload: TicketUpdatePayload):
+    """Admin updates any fields on a support ticket."""
+    if not is_admin(str(payload.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    from datetime import datetime, timezone
+    
+    update_data = {}
+    if payload.priority is not None:
+        update_data["priority"] = payload.priority
+    if payload.category is not None:
+        update_data["category"] = payload.category
+    if payload.notes is not None:
+        update_data["notes"] = payload.notes
+    if payload.agent is not None:
+        update_data["agent"] = payload.agent
+    if payload.tags is not None:
+        update_data["tags"] = payload.tags
+    if payload.status is not None:
+        update_data["status"] = payload.status
+        
+    if not update_data:
+        return {"success": True, "message": "No fields to update"}
+        
+    update_data["updated_at"] = datetime.now(timezone.utc)
+    
+    query = {}
+    if len(payload.ticket_id) == 24:
+        try:
+            query = {"$or": [{"_id": ObjectId(payload.ticket_id)}, {"ticket_id": payload.ticket_id}]}
+        except Exception:
+            query = {"ticket_id": payload.ticket_id}
+    else:
+        query = {"ticket_id": payload.ticket_id}
+
+    await arya_db.db.premium_feedback.update_many(
+        query,
+        {"$set": update_data}
+    )
+    return {"success": True}
+
+
 @api_router.get("/admin/support")
 async def get_admin_support(request: Request, telegram_id: str):
     from AryaPremium.config import Config
+    from bson.objectid import ObjectId
+    from datetime import datetime, timezone, timedelta
+    import asyncio
     try:
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
         arya_db = app.state.db
-        
-        is_owner = await is_request_owner(request)
         query_filter = {
-            "status": {"$nin": ["resolved", "closed", "Resolved", "Closed"]}
+            "$and": [
+                {
+                    "$or": [
+                        {"category": {"$exists": False}},
+                        {"category": None},
+                        {"category": {"$nin": [
+                            "request", "Request", "REQUEST", 
+                            "feedback", "Feedback", "FEEDBACK", 
+                            "security", "Security", "SECURITY", 
+                            "story-request", "story_request", "storyrequest"
+                        ]}}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"text": {"$exists": False}},
+                        {"text": None},
+                        {"text": {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}}
+                    ]
+                }
+            ]
         }
-        if is_owner:
-            query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK)\\]", "$options": "i"}}
+
+        # Limit to 120 tickets for top list performance
+        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(120)
+        tickets_docs = await cursor.to_list(length=None)
+        
+        # 1. Collect all user IDs
+        user_ids = []
+        for doc in tickets_docs:
+            uid = doc.get("user_id")
+            if uid is not None:
+                user_ids.append(uid)
+                if str(uid).isdigit():
+                    user_ids.append(int(uid))
+                    user_ids.append(str(uid))
+        
+        unique_user_ids = list(set(user_ids))
+        
+        # 2. Fetch users, orders, and analytics concurrently
+        async def fetch_users():
+            try:
+                return await arya_db.db.users.find({"id": {"$in": unique_user_ids}}).to_list(length=None)
+            except Exception as e:
+                logger.warning(f"Error batch fetching users: {e}")
+                return []
+
+        async def fetch_orders():
+            try:
+                return await arya_db.db.orders.find({
+                    "user_id": {"$in": unique_user_ids},
+                    "status": {"$in": ["paid", "delivered"]}
+                }).to_list(length=None)
+            except Exception as e:
+                logger.warning(f"Error batch fetching orders: {e}")
+                return []
+
+        async def fetch_analytics():
+            try:
+                events = await arya_db.db.mini_app_analytics.find(
+                    {"user_id": {"$in": unique_user_ids}}
+                ).sort("_id", -1).limit(300).to_list(length=300)
+                res_map = {}
+                for ev in events:
+                    uid = ev.get("user_id")
+                    if uid is not None and uid not in res_map:
+                        res_map[uid] = ev
+                return [(uid, res_map.get(uid)) for uid in unique_user_ids]
+            except Exception as e:
+                logger.warning(f"Error batch fetching analytics: {e}")
+                return []
+
+        if unique_user_ids:
+            user_docs, orders_docs, analytics_results = await asyncio.gather(
+                fetch_users(),
+                fetch_orders(),
+                fetch_analytics()
+            )
         else:
-            query_filter["text"] = {"$not": {"$regex": "^\\[(REQUEST|FEEDBACK|SECURITY)\\]", "$options": "i"}}
-            
-        cursor = arya_db.db.premium_feedback.find(query_filter).sort("updated_at", -1).limit(100)
+            user_docs, orders_docs, analytics_results = [], [], []
+        
+        # 3. Create mapping dictionaries for fast lookup
+        user_map = {}
+        for u in user_docs:
+            uid = u.get("id")
+            if uid is not None:
+                user_map[uid] = u
+                user_map[str(uid)] = u
+                if str(uid).isdigit():
+                    user_map[int(uid)] = u
+                    
+        orders_by_user = {}
+        for o in orders_docs:
+            uid = o.get("user_id")
+            if uid is not None:
+                orders_by_user.setdefault(uid, []).append(o)
+                if str(uid).isdigit():
+                    orders_by_user.setdefault(int(uid), []).append(o)
+                    orders_by_user.setdefault(str(uid), []).append(o)
+                    
+        analytics_map = {}
+        for uid, ev in analytics_results:
+            if ev:
+                analytics_map[uid] = ev
+                if str(uid).isdigit():
+                    analytics_map[int(uid)] = ev
+                    analytics_map[str(uid)] = ev
+
         tickets = []
-        async for doc in cursor:
-            # Format date/time
+        for doc in tickets_docs:
             created_dt = doc.get("created_at", datetime.now(timezone.utc))
             updated_dt = doc.get("updated_at", created_dt)
             
             created_str = created_dt.strftime("%d/%m/%Y, %H:%M") if isinstance(created_dt, datetime) else str(created_dt)
             last_active = updated_dt.strftime("%I:%M %p") if isinstance(updated_dt, datetime) else "09:00"
             
-            # Format messages
             msgs = doc.get("messages", [])
             if not msgs:
-                # Seed with original message as a fallback
                 msg_body = doc.get("text", "")
                 if msg_body.startswith("[TICKET]") or msg_body.startswith("[SUPPORT]"):
                     msg_body = msg_body.split("]", 1)[-1].strip()
@@ -4916,13 +6613,104 @@ async def get_admin_support(request: Request, telegram_id: str):
                     }
                 ]
             
-            # Extract subject
             subj = doc.get("subject", "")
             if not subj:
                 text_content = doc.get("text", "")
                 if text_content.startswith("[TICKET]") or text_content.startswith("[SUPPORT]"):
                     text_content = text_content.split("]", 1)[-1].strip()
                 subj = text_content[:40] + ("..." if len(text_content) > 40 else "") or "Live Chat Support"
+
+            # Enrich from maps
+            ticket_uid = doc.get("user_id")
+            online = False
+            photo_url = None
+            joined_str = "—"
+            first_purchase = "N/A"
+            total_purchases = 0
+            last_activity_desc = "Unknown"
+            device_desc = doc.get("device", "Telegram Mini App")
+            
+            if ticket_uid is not None:
+                user_doc = user_map.get(ticket_uid)
+                if user_doc:
+                    photo_url = user_doc.get("photoUrl")
+                    
+                    # 5-minute inactivity check
+                    last_active_val = user_doc.get("last_active")
+                    if last_active_val:
+                        if isinstance(last_active_val, (int, float)):
+                            last_active_dt = datetime.fromtimestamp(last_active_val, tz=timezone.utc)
+                        elif isinstance(last_active_val, str):
+                            try:
+                                last_active_dt = datetime.fromisoformat(last_active_val.replace("Z", "+00:00"))
+                            except:
+                                last_active_dt = None
+                        else:
+                            last_active_dt = last_active_val
+                            
+                        if last_active_dt:
+                            if last_active_dt.tzinfo is None:
+                                last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
+                            if datetime.now(timezone.utc) - last_active_dt < timedelta(minutes=5):
+                                online = True
+                                
+                    # Joined date formatting
+                    joined_val = user_doc.get("joined_date") or user_doc.get("joined_at") or user_doc.get("created_at")
+                    if not joined_val:
+                        doc_id = user_doc.get("_id")
+                        if doc_id and isinstance(doc_id, ObjectId):
+                            joined_val = doc_id.generation_time
+                    if isinstance(joined_val, datetime):
+                        joined_str = joined_val.strftime("%d/%m/%Y")
+                    elif isinstance(joined_val, (int, float)):
+                        joined_str = datetime.fromtimestamp(joined_val, tz=timezone.utc).strftime("%d/%m/%Y")
+                    elif isinstance(joined_val, str):
+                        joined_str = joined_val.split("T")[0]
+                        
+                    # Total purchases
+                    purchased_list = user_doc.get("purchases", [])
+                    user_orders = orders_by_user.get(ticket_uid, [])
+                    total_purchases = max(len(purchased_list), len(user_orders))
+                    
+                    # First purchase name
+                    if user_orders:
+                        try:
+                            tz_min = datetime.min.replace(tzinfo=timezone.utc)
+                            sorted_orders = sorted(user_orders, key=lambda o: o.get("created_at") or tz_min)
+                            first_order = sorted_orders[0]
+                            if first_order.get("story_names"):
+                                first_purchase = first_order["story_names"][0]
+                        except Exception:
+                            pass
+                    
+                    if first_purchase == "N/A" and purchased_list:
+                        first_purchase = "Story Entry"
+                            
+                    # Device lookup
+                    if user_doc.get("device"):
+                        device_desc = user_doc["device"]
+                    else:
+                        latest_event = analytics_map.get(ticket_uid)
+                        if latest_event and latest_event.get("device"):
+                            device_desc = latest_event["device"].capitalize()
+                            
+                    # Last activity description
+                    latest_event = analytics_map.get(ticket_uid)
+                    if latest_event:
+                        event_name = latest_event.get("event", latest_event.get("type", "App View"))
+                        last_activity_desc = event_name.replace("_", " ").title()
+                    elif last_active_val:
+                        last_activity_desc = "Active Recently"
+
+            # User typing indicator status
+            now = datetime.now(timezone.utc)
+            user_typing = False
+            user_typing_until = doc.get("user_typing_until")
+            if user_typing_until:
+                if user_typing_until.tzinfo is None:
+                    user_typing_until = user_typing_until.replace(tzinfo=timezone.utc)
+                if user_typing_until > now:
+                    user_typing = True
 
             tickets.append({
                 "id": str(doc["_id"]),
@@ -4936,18 +6724,21 @@ async def get_admin_support(request: Request, telegram_id: str):
                 "unread": doc.get("unread", 0),
                 "lastActive": last_active,
                 "createdAt": created_str,
-                "device": doc.get("device", "Telegram Mini App"),
+                "device": device_desc,
                 "platform": doc.get("platform", "Android / iOS"),
                 "agent": doc.get("assigned_agent", "Unassigned"),
                 "tags": doc.get("tags", ["app"]),
                 "notes": doc.get("notes", ""),
                 "messages": msgs,
-                "file_url": doc.get("file_url", "")
+                "online": online,
+                "photoUrl": photo_url,
+                "joined": joined_str,
+                "firstPurchase": first_purchase,
+                "totalPurchases": total_purchases,
+                "lastActivity": last_activity_desc,
+                "user_typing": user_typing
             })
         return {"success": True, "data": tickets}
-    except Exception as e:
-        logger.error(f"Error fetching support: {e}")
-        return {"success": False, "data": []}
     except Exception as e:
         logger.error(f"Error fetching support: {e}")
         return {"success": False, "data": []}
@@ -5142,8 +6933,15 @@ async def update_request_status(request_id: str, data: RequestStatusUpdate):
         try:
             user_chat_id = doc.get("user_id")
             if user_chat_id:
-                # Use MGMT_BOT_TOKEN directly — most reliable
-                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+                # Use the Arya Premium Delivery Bot — NOT the management bot
+                # Prefer: user's specific delivery bot → any delivery bot → BOT_TOKEN → MGMT last resort
+                try:
+                    uid_for_token = int(user_chat_id) if str(user_chat_id).isdigit() else None
+                    token = await get_customer_bot_token(uid_for_token) if uid_for_token else None
+                except Exception:
+                    token = None
+                if not token:
+                    token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None)
                 if token:
                     # Status label with emoji
                     status_emojis = {
@@ -5200,12 +6998,15 @@ class SupportReply(BaseModel):
     reply_text: str
     reply_media_file_id: Optional[str] = None  # Telegram file_id to forward as media
     reply_media_type: Optional[str] = None  # photo, video, audio, document
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
 
 @api_router.post("/admin/support/reply")
 async def reply_support(data: SupportReply):
     from AryaPremium.config import Config
     from bson.objectid import ObjectId
     import aiohttp
+    import time
     try:
         user_id_int = int(data.telegram_id) if data.telegram_id.isdigit() else data.telegram_id
         if not is_admin(str(data.telegram_id)):
@@ -5216,13 +7017,23 @@ async def reply_support(data: SupportReply):
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
-        # Determine which bot token to use (seller bot preferred, fallback to config)
+        # Determine which bot token to use
         token = None
         try:
-            user_doc = await arya_db.db.users.find_one({"id": int(ticket["user_id"])})
+            raw_uid = ticket["user_id"]
+            try:
+                uid_int = int(raw_uid)
+            except (ValueError, TypeError):
+                uid_int = None
+            user_doc = await arya_db.db.users.find_one(
+                {"id": uid_int} if uid_int is not None else {"username": str(raw_uid)}
+            )
             if user_doc and user_doc.get("bot_ids"):
                 for bid in user_doc["bot_ids"]:
-                    bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                    try:
+                        bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                    except Exception:
+                        bot_doc = None
                     if bot_doc and bot_doc.get("token"):
                         token = bot_doc["token"]
                         break
@@ -5238,57 +7049,93 @@ async def reply_support(data: SupportReply):
                 pass
 
         if not token:
-            token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
+            # Last resort: use main delivery bot token, NEVER management bot as first choice
+            token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None)
 
+        # Build message object
+        msg_id = f"a-{int(time.time() * 1000)}"
+        msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
+        reply_body = data.reply_text or "Attachment"
+        new_msg = {
+            "id": msg_id,
+            "from": "agent",
+            "body": reply_body,
+            "at": msg_at,
+            "status": "seen"
+        }
+        if data.file_url:
+            new_msg["file_url"] = data.file_url
+            new_msg["file_type"] = data.file_type or "application/octet-stream"
+
+        # Send Telegram Bot DM to User with detailed ticket response summary
         if token:
             try:
                 async with aiohttp.ClientSession() as session:
-                    chat_id = ticket["user_id"]
-                    # Send text reply
-                    if data.reply_text:
-                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": f"<b>Admin Reply:</b>\n\n{escape_html(data.reply_text)}",
-                            "parse_mode": "HTML"
-                        })
-                    # Forward media if provided
+                    raw_cid = ticket["user_id"]
+                    try:
+                        chat_id = int(raw_cid)
+                    except (ValueError, TypeError):
+                        chat_id = raw_cid
+                    is_live_chat = ticket.get("category") == "Live Chat"
+                    ticket_ref = ticket.get("ticket_id") or f"ARY-{str(ticket['_id'])[-6:].upper()}"
+                    subj = ticket.get("subject") or "Support Ticket"
+
+                    if is_live_chat:
+                        dm_txt = (
+                            f"💬 <b>New Message in Live Chat</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"<b>Support Team:</b>\n"
+                            f"<blockquote>{escape_html(reply_body[:500])}</blockquote>\n"
+                            f"<i>Open Mini App Support section to continue chatting.</i>"
+                        )
+                    else:
+                        dm_txt = (
+                            f"💬 <b>Support Ticket Update</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🆔 <b>Ticket ID:</b> <code>{ticket_ref}</code>\n"
+                            f"📌 <b>Subject:</b> {escape_html(subj)}\n\n"
+                            f"<b>Admin Reply:</b>\n"
+                            f"<blockquote>{escape_html(reply_body[:500])}</blockquote>\n\n"
+                            f"<i>You can check full status & details in the Support section of Mini App.</i>"
+                        )
+
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": dm_txt,
+                        "parse_mode": "HTML"
+                    }, timeout=5)
+
+                    # Forward media if provided via bot API media methods
                     if data.reply_media_file_id and data.reply_media_type:
-                        method_map = {
-                            "photo": "sendPhoto", "video": "sendVideo",
-                            "audio": "sendAudio", "document": "sendDocument"
-                        }
+                        method_map = {"photo": "sendPhoto", "video": "sendVideo", "audio": "sendAudio", "document": "sendDocument"}
                         method = method_map.get(data.reply_media_type, "sendDocument")
-                        field_map = {
-                            "photo": "photo", "video": "video",
-                            "audio": "audio", "document": "document"
-                        }
+                        field_map = {"photo": "photo", "video": "video", "audio": "audio", "document": "document"}
                         field = field_map.get(data.reply_media_type, "document")
                         await session.post(f"https://api.telegram.org/bot{token}/{method}", json={
                             "chat_id": chat_id,
                             field: data.reply_media_file_id
-                        })
+                        }, timeout=5)
             except Exception as notify_err:
-                logger.error(f"Failed to send support reply Telegram notification: {notify_err}", exc_info=True)
-        
-        # Append message to conversation thread & reset unread count
-        msg_id = f"a-{int(time.time() * 1000)}"
-        msg_at = datetime.now(timezone.utc).strftime("%I:%M %p")
-        agent_msg = {
-            "id": msg_id,
-            "from": "agent",
-            "body": data.reply_text,
-            "at": msg_at
-        }
+                logger.error(f"Failed to send support reply Telegram notification: {notify_err}")
+
+        # Update database for both Live Chat and Support Tickets
+        is_live = ticket.get("category") == "Live Chat"
+        # ✅ FIX: Do NOT auto-set "Resolved" after every reply.
+        # Live Chat stays "Open"; support tickets go to "Waiting User"
+        # so admin can still see the thread. Only explicit status-change
+        # endpoint (update_support_status) should set Resolved/Closed.
+        new_status = "Open" if is_live else "Waiting User"
         
         await arya_db.db.premium_feedback.update_one(
             {"_id": ObjectId(data.ticket_id)},
             {
-                "$push": {"messages": agent_msg},
+                "$push": {"messages": new_msg},
                 "$set": {
-                    "status": "waiting user",
-                    "admin_reply": data.reply_text,
-                    "updated_at": datetime.now(timezone.utc),
-                    "unread": 0
+                    "status": new_status,
+                    "admin_reply": reply_body,
+                    "unread": 0,              # admin unread reset
+                    "user_has_new_reply": True,  # user-side polling flag
+                    "updated_at": datetime.now(timezone.utc)
                 }
             }
         )
@@ -5548,85 +7395,6 @@ async def delete_admin_banner(telegram_id: str, banner_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# BUYERS MANAGEMENT
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ─────────────────────────────────────────────────────────────────────────────
-# PREMIUM UNIFIED BAN MANAGEMENT
-# ─────────────────────────────────────────────────────────────────────────────
-@api_router.get("/admin/bans")
-async def get_admin_bans(telegram_id: str):
-    try:
-        if not is_admin(str(telegram_id)):
-            raise HTTPException(status_code=403, detail="Not authorized")
-        arya_db = app.state.db
-        
-        # Fetch all premium bans
-        bans = await arya_db.db.premium_bans.find().sort("banned_at", -1).to_list(length=None)
-        for b in bans:
-            b["_id"] = str(b["_id"])
-            if "banned_at" in b and isinstance(b["banned_at"], datetime):
-                b["banned_at"] = b["banned_at"].isoformat()
-            if "ips" in b and isinstance(b["ips"], list):
-                b["ip_details"] = [{"ip": ip, "universal": _is_universal_ip(ip)} for ip in b["ips"]]
-                
-        # Fetch live activity attempts (last 100)
-        activity = await arya_db.db.premium_ban_activity.find().sort("timestamp", -1).to_list(length=100)
-        for a in activity:
-            a["_id"] = str(a["_id"])
-            if "timestamp" in a and isinstance(a["timestamp"], datetime):
-                a["timestamp"] = a["timestamp"].isoformat()
-                
-        return {"success": True, "bans": bans, "activity": activity}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/admin/scan-universal-ips")
-async def scan_and_clean_universal_ips(payload: dict):
-    telegram_id = payload.get("telegram_id")
-    if not is_admin(str(telegram_id)):
-        raise HTTPException(status_code=403, detail="Not authorized")
-        
-    arya_db = app.state.db
-    if not arya_db:
-        raise HTTPException(status_code=500, detail="Database not available")
-        
-    bans_cursor = arya_db.db.premium_bans.find()
-    bans = await bans_cursor.to_list(length=None)
-    
-    cleaned_records = 0
-    total_universal_removed = 0
-    removed_report = []
-    
-    for ban in bans:
-        ips = ban.get("ips", [])
-        if not ips:
-            continue
-            
-        universal_ips = [ip for ip in ips if _is_universal_ip(ip)]
-        if universal_ips:
-            # Filter them out
-            clean_ips = [ip for ip in ips if not _is_universal_ip(ip)]
-            await arya_db.db.premium_bans.update_one(
-                {"_id": ban["_id"]},
-                {"$set": {"ips": clean_ips}}
-            )
-            cleaned_records += 1
-            total_universal_removed += len(universal_ips)
-            removed_report.append({
-                "telegram_id": str(ban["_id"]),
-                "name": ban.get("name", "Unknown"),
-                "removed_ips": universal_ips
-            })
-            
-    return {
-        "success": True,
-        "cleaned_records_count": cleaned_records,
-        "total_universal_removed": total_universal_removed,
-        "report": removed_report
-    }
-
-
 # ── Admin Series endpoints ──────────────────────────────────────────────────
 @api_router.get("/admin/series")
 async def get_admin_series(telegram_id: str):
@@ -5770,6 +7538,85 @@ async def delete_admin_utr(utr_val: str, telegram_id: str):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BUYERS MANAGEMENT
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# PREMIUM UNIFIED BAN MANAGEMENT
+# ─────────────────────────────────────────────────────────────────────────────
+@api_router.get("/admin/bans")
+async def get_admin_bans(telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        # Fetch all premium bans
+        bans = await arya_db.db.premium_bans.find().sort("banned_at", -1).to_list(length=None)
+        for b in bans:
+            b["_id"] = str(b["_id"])
+            if "banned_at" in b and isinstance(b["banned_at"], datetime):
+                b["banned_at"] = b["banned_at"].isoformat()
+            if "ips" in b and isinstance(b["ips"], list):
+                b["ip_details"] = [{"ip": ip, "universal": _is_universal_ip(ip)} for ip in b["ips"]]
+                
+        # Fetch live activity attempts (last 100)
+        activity = await arya_db.db.premium_ban_activity.find().sort("timestamp", -1).to_list(length=100)
+        for a in activity:
+            a["_id"] = str(a["_id"])
+            if "timestamp" in a and isinstance(a["timestamp"], datetime):
+                a["timestamp"] = a["timestamp"].isoformat()
+                
+        return {"success": True, "bans": bans, "activity": activity}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/scan-universal-ips")
+async def scan_and_clean_universal_ips(payload: dict):
+    telegram_id = payload.get("telegram_id")
+    if not is_admin(str(telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    arya_db = app.state.db
+    if not arya_db:
+        raise HTTPException(status_code=500, detail="Database not available")
+        
+    bans_cursor = arya_db.db.premium_bans.find()
+    bans = await bans_cursor.to_list(length=None)
+    
+    cleaned_records = 0
+    total_universal_removed = 0
+    removed_report = []
+    
+    for ban in bans:
+        ips = ban.get("ips", [])
+        if not ips:
+            continue
+            
+        universal_ips = [ip for ip in ips if _is_universal_ip(ip)]
+        if universal_ips:
+            # Filter them out
+            clean_ips = [ip for ip in ips if not _is_universal_ip(ip)]
+            await arya_db.db.premium_bans.update_one(
+                {"_id": ban["_id"]},
+                {"$set": {"ips": clean_ips}}
+            )
+            cleaned_records += 1
+            total_universal_removed += len(universal_ips)
+            removed_report.append({
+                "telegram_id": str(ban["_id"]),
+                "name": ban.get("name", "Unknown"),
+                "removed_ips": universal_ips
+            })
+            
+    return {
+        "success": True,
+        "cleaned_records_count": cleaned_records,
+        "total_universal_removed": total_universal_removed,
+        "report": removed_report
+    }
+
 
 @api_router.post("/admin/ban")
 async def admin_ban_user(payload: dict):
@@ -5936,7 +7783,6 @@ async def admin_unban_user(payload: dict):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 @api_router.get("/admin/buyers")
 async def get_admin_buyers(telegram_id: str):
     """Fetches all buyers and detailed user purchase logs for the admin dashboard."""
@@ -5953,6 +7799,456 @@ async def get_admin_buyers(telegram_id: str):
         logger.error(f"Error fetching buyers: {e}")
         return {"success": False, "data": []}
 
+# ══════════════════════════════════════════════════
+# BROADCAST ENGINE & LIVE STATUS TRACKING
+# ══════════════════════════════════════════════════
+_broadcast_jobs: Dict[str, Dict[str, Any]] = {}
+
+class BroadcastPayload(BaseModel):
+    telegram_id: str
+    target_user_id: Optional[Union[int, str]] = None
+    audience: Optional[str] = "all"  # "paid", "pending", "all"
+    message: str
+    media_url: Optional[str] = None
+    media_type: Optional[str] = "none"  # "none", "image", "video", "document"
+    buttons: Optional[List[Dict[str, str]]] = None
+
+async def _send_tg_bot_message(bot_token: str, chat_id: Union[int, str], text: str, media_url: str = None, media_type: str = None, buttons: list = None) -> dict:
+    import aiohttp
+    
+    reply_markup = None
+    if buttons and isinstance(buttons, list) and len(buttons) > 0:
+        keyboard_rows = []
+        for btn in buttons:
+            if isinstance(btn, dict) and btn.get("label") and btn.get("url"):
+                keyboard_rows.append([{"text": str(btn["label"]), "url": str(btn["url"])}])
+        if keyboard_rows:
+            reply_markup = {"inline_keyboard": keyboard_rows}
+
+    payload = {
+        "chat_id": chat_id,
+        "parse_mode": "HTML"
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
+    method_name = "sendMessage"
+    if media_url and str(media_url).strip():
+        m_type = str(media_type or "image").lower()
+        if "video" in m_type:
+            method_name = "sendVideo"
+            payload["video"] = media_url
+            payload["caption"] = text
+        elif "doc" in m_type or "file" in m_type:
+            method_name = "sendDocument"
+            payload["document"] = media_url
+            payload["caption"] = text
+        else:
+            method_name = "sendPhoto"
+            payload["photo"] = media_url
+            payload["caption"] = text
+    else:
+        payload["text"] = text
+
+    url = f"https://api.telegram.org/bot{bot_token}/{method_name}"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=12) as resp:
+                res_data = await resp.json()
+                if res_data.get("ok"):
+                    return {"success": True, "message_id": res_data.get("result", {}).get("message_id")}
+                else:
+                    err_desc = res_data.get("description", "Unknown Telegram API error")
+                    return {"success": False, "error": err_desc}
+    except Exception as err:
+        return {"success": False, "error": str(err)}
+
+async def _resolve_bot_token_for_broadcast(arya_db, user_id: int = None) -> str:
+    from AryaPremium.config import Config
+    token = ""
+    if user_id:
+        try:
+            token = await get_customer_bot_token(user_id)
+        except Exception:
+            pass
+    if not token:
+        token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "")
+    return token
+
+async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[int]:
+    target_ids = set()
+    mode = str(audience_mode or "all").lower()
+
+    if mode == "paid":
+        paid_orders = await arya_db.db.orders.find(
+            {"status": {"$in": ["paid", "approved", "completed", "delivered"]}},
+            {"user_id": 1}
+        ).to_list(length=100000)
+        for o in paid_orders:
+            uid = o.get("user_id")
+            if uid and str(uid).isdigit():
+                target_ids.add(int(uid))
+
+        prem_pur = await arya_db.db.premium_purchases.find({}, {"user_id": 1}).to_list(length=100000)
+        for p in prem_pur:
+            uid = p.get("user_id")
+            if uid and str(uid).isdigit():
+                target_ids.add(int(uid))
+
+        users = await arya_db.db.users.find(
+            {"purchases.0": {"$exists": True}},
+            {"id": 1}
+        ).to_list(length=100000)
+        for u in users:
+            uid = u.get("id")
+            if uid and str(uid).isdigit():
+                target_ids.add(int(uid))
+
+    elif mode == "pending":
+        paid_uids = set(await resolve_broadcast_audience_ids(arya_db, "paid"))
+
+        pending_orders = await arya_db.db.orders.find(
+            {"status": {"$in": ["pending", "created", "processing", "waiting_screenshot", "failed", "rejected"]}},
+            {"user_id": 1}
+        ).to_list(length=100000)
+        for o in pending_orders:
+            uid = o.get("user_id")
+            if uid and str(uid).isdigit() and int(uid) not in paid_uids:
+                target_ids.add(int(uid))
+
+        pending_checkouts = await arya_db.db.premium_checkout.find(
+            {"status": {"$in": ["pending", "created", "processing", "waiting_screenshot", "failed", "rejected"]}},
+            {"user_id": 1}
+        ).to_list(length=100000)
+        for c in pending_checkouts:
+            uid = c.get("user_id")
+            if uid and str(uid).isdigit() and int(uid) not in paid_uids:
+                target_ids.add(int(uid))
+
+    else:  # "all"
+        users = await arya_db.db.users.find({}, {"id": 1}).to_list(length=200000)
+        for u in users:
+            uid = u.get("id")
+            if uid and str(uid).isdigit():
+                target_ids.add(int(uid))
+
+        prem_users = await arya_db.db.premium_users.find({}, {"id": 1, "telegram_id": 1}).to_list(length=200000)
+        for u in prem_users:
+            uid = u.get("id") or u.get("telegram_id")
+            if uid and str(uid).isdigit():
+                target_ids.add(int(uid))
+
+    return list(target_ids)
+
+@api_router.post("/admin/broadcast/single")
+async def send_single_broadcast(data: BroadcastPayload):
+    if not is_admin(str(data.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if not data.target_user_id:
+        raise HTTPException(status_code=400, detail="target_user_id is required")
+
+    arya_db = app.state.db
+    target_uid = int(data.target_user_id) if str(data.target_user_id).isdigit() else 0
+    if not target_uid:
+        raise HTTPException(status_code=400, detail="Invalid target user ID")
+
+    bot_token = await _resolve_bot_token_for_broadcast(arya_db, target_uid)
+    if not bot_token:
+        raise HTTPException(status_code=500, detail="Bot token not configured")
+
+    res = await _send_tg_bot_message(
+        bot_token=bot_token,
+        chat_id=target_uid,
+        text=data.message,
+        media_url=data.media_url,
+        media_type=data.media_type,
+        buttons=data.buttons
+    )
+    return res
+
+@api_router.post("/admin/broadcast/send")
+async def start_bulk_broadcast(data: BroadcastPayload):
+    if not is_admin(str(data.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    arya_db = app.state.db
+    audience_mode = data.audience or "all"
+    target_ids = await resolve_broadcast_audience_ids(arya_db, audience_mode)
+
+    if not target_ids:
+        return {"success": False, "detail": f"No users found for audience filter '{audience_mode}'"}
+
+    import uuid
+    job_id = f"bcast_{uuid.uuid4().hex[:8]}"
+
+    job_info = {
+        "job_id": job_id,
+        "status": "running",
+        "audience": audience_mode,
+        "total": len(target_ids),
+        "sent": 0,
+        "failed": 0,
+        "progress": 0.0,
+        "logs": [f"Broadcast started for {len(target_ids)} users ({audience_mode})"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    _broadcast_jobs[job_id] = job_info
+
+    asyncio.create_task(_run_bulk_broadcast_worker(job_id, target_ids, data, arya_db))
+
+    return {"success": True, "job_id": job_id, "total": len(target_ids), "audience": audience_mode}
+
+async def _run_bulk_broadcast_worker(job_id: str, target_ids: List[int], data: BroadcastPayload, arya_db):
+    job = _broadcast_jobs.get(job_id)
+    if not job:
+        return
+
+    bot_token = await _resolve_bot_token_for_broadcast(arya_db)
+    if not bot_token:
+        job["status"] = "failed"
+        job["logs"].append("Error: Bot token missing")
+        return
+
+    total = len(target_ids)
+    for idx, uid in enumerate(target_ids):
+        if job.get("status") == "cancelled":
+            job["logs"].append("Broadcast cancelled by admin")
+            break
+
+        res = await _send_tg_bot_message(
+            bot_token=bot_token,
+            chat_id=uid,
+            text=data.message,
+            media_url=data.media_url,
+            media_type=data.media_type,
+            buttons=data.buttons
+        )
+
+        if res.get("success"):
+            job["sent"] += 1
+        else:
+            job["failed"] += 1
+            if len(job["logs"]) < 60:
+                job["logs"].append(f"Failed User {uid}: {res.get('error', 'Error')}")
+
+        processed = idx + 1
+        job["progress"] = round((processed / total) * 100, 1)
+
+        if processed % 25 == 0:
+            await asyncio.sleep(1.0)
+        else:
+            await asyncio.sleep(0.05)
+
+    if job.get("status") == "running":
+        job["status"] = "completed"
+        job["progress"] = 100.0
+        job["logs"].append(f"Broadcast Completed! Delivered: {job['sent']}, Failed: {job['failed']}")
+
+@api_router.get("/admin/broadcast/status/{job_id}")
+async def get_broadcast_status(job_id: str, telegram_id: str):
+    if not is_admin(str(telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    job = _broadcast_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"success": True, "job": job}
+
+@api_router.post("/admin/broadcast/cancel/{job_id}")
+async def cancel_broadcast(job_id: str, telegram_id: str):
+    if not is_admin(str(telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    job = _broadcast_jobs.get(job_id)
+    if job:
+        job["status"] = "cancelled"
+        return {"success": True, "message": "Broadcast cancelled"}
+    return {"success": False, "detail": "Job not found"}
+
+@api_router.get("/admin/shared-ips")
+async def get_shared_ips(telegram_id: str):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+        arya_db = app.state.db
+        
+        # Aggregate logs in mini_app_analytics to find IPs with > 2 unique users
+        pipeline = [
+            {"$match": {"ip": {"$exists": True, "$ne": None, "$nin": ["", "127.0.0.1", "::1", "unknown"]}}},
+            {
+                "$group": {
+                    "_id": "$ip",
+                    "unique_users": {"$addToSet": "$user_id"},
+                    "total_hits": {"$sum": 1}
+                }
+            },
+            {
+                "$project": {
+                    "ip": "$_id",
+                    "unique_users": "$unique_users",
+                    "unique_users_count": {"$size": "$unique_users"},
+                    "total_hits": "$total_hits"
+                }
+            },
+            {"$match": {"unique_users_count": {"$gt": 2}}},
+            {"$sort": {"unique_users_count": -1}},
+            {"$limit": 50}
+        ]
+        
+        shared_ips = []
+        async for doc in arya_db.db.mini_app_analytics.aggregate(pipeline):
+            users_list = []
+            for uid in doc.get("unique_users", []):
+                if not uid:
+                    continue
+                try:
+                    uid_int = int(uid)
+                    user_doc = await arya_db.db.users.find_one({"id": uid_int})
+                    username = user_doc.get("username") if user_doc else None
+                    first_name = user_doc.get("first_name") if user_doc else None
+                    name = f"@{username}" if username else (first_name or f"User {uid}")
+                    users_list.append({"id": uid_int, "name": name})
+                except Exception:
+                    users_list.append({"id": uid, "name": f"User {uid}"})
+            
+            shared_ips.append({
+                "ip": doc["ip"],
+                "users": users_list,
+                "users_count": doc["unique_users_count"],
+                "total_hits": doc["total_hits"]
+            })
+            
+        return {"success": True, "shared_ips": shared_ips}
+    except Exception as e:
+        logger.error(f"Error fetching shared IPs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# Admin: Order ID Lookup
+# ==========================================
+
+@api_router.get("/admin/order-lookup")
+async def admin_order_lookup(order_id: str, telegram_id: str = ""):
+    """
+    Given an order_id (from user's payment screen / session), return:
+    - Full order document (status, amount, story_ids, upi_id_shown, created_at, etc.)
+    - Buyer profile (name, username, telegram_id) so admin can identify the user
+    - story_names resolved from DB
+    Used by admin to find and manually approve a pending/failed UPI payment.
+    """
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="DB unavailable")
+
+    order_id = str(order_id).strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+
+    # Auth: require admin telegram_id (same pattern as other admin endpoints)
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    admin_ids_raw = cfg.get("admin_telegram_ids", "") or os.environ.get("ADMIN_TELEGRAM_IDS", "") or os.environ.get("ADMIN_ID", "")
+    admin_ids = [str(x).strip() for x in str(admin_ids_raw).split(",") if str(x).strip()]
+    if admin_ids and telegram_id and str(telegram_id) not in admin_ids:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # 1. Find order — search across ALL relevant collections
+    order = None
+    order_collection_name = "orders"
+
+    # Search in orders collection first (exact match)
+    order = await db.db.orders.find_one({"order_id": order_id})
+
+    # Fallback: partial match in orders (last 8 chars)
+    if not order and len(order_id) >= 6:
+        order = await db.db.orders.find_one({"order_id": {"$regex": re.escape(order_id[-8:]), "$options": "i"}})
+
+    # Fallback: search in premium_checkout (new orders often land here first)
+    if not order:
+        order_collection_name = "premium_checkout"
+        order = await db.db.premium_checkout.find_one({"order_id": order_id})
+        if not order:
+            order = await db.db.premium_checkout.find_one({"track_id": order_id})
+        if not order and len(order_id) >= 6:
+            order = await db.db.premium_checkout.find_one({"order_id": {"$regex": re.escape(order_id[-8:]), "$options": "i"}})
+
+    # Fallback: search in premium_purchases (paid/completed records)
+    if not order:
+        order_collection_name = "premium_purchases"
+        order = await db.db.premium_purchases.find_one({"order_id": order_id})
+        if not order and len(order_id) >= 6:
+            order = await db.db.premium_purchases.find_one({"order_id": {"$regex": re.escape(order_id[-8:]), "$options": "i"}})
+
+    # Fallback: search in purchases collection (older records)
+    if not order:
+        order_collection_name = "purchases"
+        order = await db.db.purchases.find_one({"order_id": order_id})
+
+    if not order:
+        return {"success": False, "found": False, "message": f"No order found with ID: {order_id}"}
+
+    user_id = order.get("user_id")
+
+    # 3. Resolve story names if not stored
+    story_ids = order.get("story_ids", [])
+    story_names = order.get("story_names", [])
+    if story_ids and not story_names:
+        from bson.objectid import ObjectId
+        for sid in story_ids:
+            try:
+                doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                if doc:
+                    story_names.append(doc.get("story_name_en", doc.get("title", sid)))
+            except Exception:
+                story_names.append(sid)
+
+    # 4. Try to get buyer profile from purchases collection
+    buyer_profile = {}
+    if user_id:
+        buyer_doc = await db.db.purchases.find_one({"user_id": user_id})
+        if not buyer_doc:
+            buyer_doc = await db.db.purchases.find_one({"user_id": str(user_id)})
+        if buyer_doc:
+            buyer_profile = {
+                "first_name": buyer_doc.get("first_name", order.get("first_name", "")),
+                "last_name": buyer_doc.get("last_name", order.get("last_name", "")),
+                "username": buyer_doc.get("username", order.get("username", "")),
+                "user_id": user_id,
+            }
+        else:
+            buyer_profile = {
+                "first_name": order.get("first_name", ""),
+                "last_name": order.get("last_name", ""),
+                "username": order.get("username", ""),
+                "user_id": user_id,
+            }
+
+    # 5. Build clean response (exclude MongoDB _id)
+    order_out = {
+        "order_id":      order.get("order_id", order_id),
+        "status":        order.get("status", "unknown"),
+        "amount":        order.get("total", order.get("amount", 0)),
+        "story_ids":     story_ids,
+        "story_names":   story_names,
+        "upi_id_shown":  order.get("upi_id_shown", ""),  # exact UPI shown to user
+        "utr":           order.get("utr", ""),
+        "source":        order.get("source", ""),
+        "promo_code":    order.get("promo_code", ""),
+        "created_at":    str(order.get("created_at", order.get("paid_at", ""))),
+        "paid_at":       str(order.get("paid_at", "")),
+        "invoice_number": order.get("invoice_number", ""),
+        "user_id":       user_id,
+        "username":      order.get("username", ""),
+        "first_name":    order.get("first_name", ""),
+    }
+
+    logger.info(f"admin_order_lookup: found order {order_id} status={order_out['status']} user={user_id}")
+    return {
+        "success": True,
+        "found": True,
+        "order": order_out,
+        "buyer": buyer_profile,
+    }
+
 
 class ManualPurchase(BaseModel):
     telegram_id: str
@@ -5967,6 +8263,7 @@ class ManualPurchase(BaseModel):
 
 @api_router.post("/admin/manual-purchase")
 async def manual_purchase(data: ManualPurchase):
+    global _stories_cache
     from AryaPremium.config import Config
     try:
         user_id_int = int(data.telegram_id) if str(data.telegram_id).isdigit() else data.telegram_id
@@ -5997,6 +8294,50 @@ async def manual_purchase(data: ManualPurchase):
         method_label = data.method or "UPI (QR)"
         utr_clean = str(data.utr_number or "").strip() if data.utr_number else None
         
+        # ── DUPLICATE CHECK: If user already has a paid/approved order for this story, skip creating another ──
+        existing_order = await arya_db.db.orders.find_one({
+            "user_id": {"$in": uid_filter},
+            "story_ids": story_id_str,
+            "status": {"$in": ["paid", "approved", "completed", "delivered"]}
+        })
+        if existing_order:
+            logger.info(f"Manual purchase: order already exists for user {target_uid}, story {story_id_str} — skipping duplicate order creation")
+            # Still ensure user record is up-to-date
+            await arya_db.db.users.update_one(
+                {"id": {"$in": uid_filter}},
+                {"$addToSet": {"purchases": story_id_str}},
+            )
+            purchase_record = {
+                "user_id": target_uid,
+                "story_id": story_id_str,
+                "title": story.get("story_name_en", story.get("title", "")),
+                "source": source_label,
+                "paid_at": datetime.now(timezone.utc).isoformat()
+            }
+            await arya_db.db.premium_purchases.update_one(
+                {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
+                {"$set": purchase_record},
+                upsert=True
+            )
+            await arya_db.db.purchases.update_one(
+                {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
+                {"$set": purchase_record},
+                upsert=True
+            )
+
+            # Send Bot DM Purchase Success Message to user
+            asyncio.create_task(send_purchase_success_dm(
+                arya_db,
+                target_uid,
+                order_doc=existing_order,
+                payment_method=method_label,
+                verified_by="Access Granted By Team",
+                is_admin_manual=True
+            ))
+
+            _stories_cache = None
+            return {"success": True, "source": source_label, "note": "already_exists"}
+
         # Upsert user
         user = await arya_db.db.users.find_one({"id": {"$in": uid_filter}})
         if not user:
@@ -6014,7 +8355,7 @@ async def manual_purchase(data: ManualPurchase):
             )
             
         # Insert Order with explicit source and method
-        manual_oid = f"MANUAL_{target_uid}_{int(datetime.now().timestamp())}"
+        manual_oid = await _make_arya_order_id(arya_db, str(target_uid), [story_id_str], source=source_label)
         order_doc = {
             "order_id": manual_oid,
             "user_id": target_uid,
@@ -6033,6 +8374,19 @@ async def manual_purchase(data: ManualPurchase):
             order_doc["utr_number"] = utr_clean
 
         await arya_db.db.orders.insert_one(order_doc)
+
+        # Delete any pending/obsolete checkouts or pending orders for this user & story so no duplicate Razorpay/pending orders remain
+        st_ids_to_clean = list(filter(None, [story_id_str, str(story.get("story_id", "")), str(story.get("_id", ""))]))
+        await arya_db.db.premium_checkout.delete_many({
+            "user_id": {"$in": uid_filter},
+            "story_id": {"$in": st_ids_to_clean}
+        })
+        await arya_db.db.orders.delete_many({
+            "user_id": {"$in": uid_filter},
+            "story_ids": {"$in": st_ids_to_clean},
+            "status": {"$in": ["pending", "created", "processing", "waiting_screenshot", "pending_gateway"]}
+        })
+        invalidate_buyers_cache()
 
         # Record 12-digit UTR in used_utrs collection if provided
         if utr_clean and len(utr_clean) == 12 and utr_clean.isdigit():
@@ -6073,9 +8427,8 @@ async def manual_purchase(data: ManualPurchase):
             upsert=True
         )
         
-        # Log and audit records
+        # Log payment to channel
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
-        asyncio.create_task(record_purchased_stories(order_doc))
 
         # Send Bot DM Purchase Success Message to user!
         asyncio.create_task(send_purchase_success_dm(
@@ -6087,7 +8440,6 @@ async def manual_purchase(data: ManualPurchase):
             is_admin_manual=True
         ))
         
-        global _stories_cache
         _stories_cache = None
 
         return {"success": True, "source": source_label}
@@ -6216,6 +8568,58 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
         raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
         logger.error(f"Buyer action error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/buyers/bulk-action")
+async def admin_bulk_buyer_action(telegram_id: str, payload: dict):
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        action = payload.get("action")
+        user_ids = payload.get("user_ids", [])
+        story_id = payload.get("story_id", "all")
+        if not user_ids:
+            raise HTTPException(status_code=400, detail="No user_ids provided")
+
+        uid_filter = []
+        for uid in user_ids:
+            target_uid = int(uid) if str(uid).isdigit() else uid
+            uid_filter.extend([target_uid, str(target_uid)])
+            if isinstance(target_uid, int):
+                uid_filter.append(target_uid)
+
+        arya_db = app.state.db
+
+        if action in ("wipe", "delete_orders"):
+            await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.support_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.story_requests.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.user_tickets.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.premium_feedback.delete_many({"telegram_id": {"$in": uid_filter}})
+            await arya_db.db.premium_requests.delete_many({"telegram_id": {"$in": uid_filter}})
+            invalidate_buyers_cache()
+            return {"success": True, "message": f"Bulk action '{action}' completed for {len(user_ids)} users."}
+
+        elif action == "remove_story" and story_id == "all":
+            await arya_db.db.users.update_many(
+                {"id": {"$in": uid_filter}},
+                {"$set": {"purchases": []}}
+            )
+            await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.purchases.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
+            await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
+            invalidate_buyers_cache()
+            return {"success": True, "message": f"Story access removed for {len(user_ids)} users."}
+
+        raise HTTPException(status_code=400, detail="Invalid bulk action")
+    except Exception as e:
+        logger.error(f"Bulk buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.delete("/admin/requests/{request_id}")
@@ -7336,20 +9740,6 @@ async def get_admin_settings(request: Request, telegram_id: str):
             "data": {
                 "mini_app_enabled": cfg.get("mini_app_enabled", True),
                 "tnc_enabled": cfg.get("tnc_enabled", True),
-                "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
-                "razorpay_disabled": cfg.get("razorpay_disabled", False),
-                "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
-                "upi_id": cfg.get("upi_id", ""),
-                "upi_payee_name": cfg.get("upi_payee_name", ""),
-                "upi_id_2": cfg.get("upi_id_2", ""),
-                "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
-                "upi_id_3": cfg.get("upi_id_3", ""),
-                "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
-                "upi_id_4": cfg.get("upi_id_4", ""),
-                "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
-                "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
-                "gmail_user": cfg.get("gmail_user", ""),
-                "gmail_app_password": cfg.get("gmail_app_password", ""),
                 "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
                 "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
                 "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
@@ -7360,6 +9750,21 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "replicate_api_key": cfg.get("replicate_api_key", ""),
                 "fal_api_key": cfg.get("fal_api_key", ""),
                 "stability_api_key": cfg.get("stability_api_key", ""),
+                "razorpay_disabled": cfg.get("razorpay_disabled", False),
+                "razorpay_status": cfg.get("razorpay_status", "disabled" if cfg.get("razorpay_disabled", False) else "active"),
+                "upi_manual_enabled": cfg.get("upi_manual_enabled", True),
+                "upi_id": cfg.get("upi_id", ""),
+                "upi_payee_name": cfg.get("upi_payee_name", "Arya Premium"),
+                "upi_id_2": cfg.get("upi_id_2", ""),
+                "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
+                "upi_id_3": cfg.get("upi_id_3", ""),
+                "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
+                "upi_id_4": cfg.get("upi_id_4", ""),
+                "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
+                "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
+                "gmail_user": cfg.get("gmail_user", ""),
+                "gmail_app_password": cfg.get("gmail_app_password", ""),
+                "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
                 "paytm_status": cfg.get("paytm_status", "hidden"),
                 "paytm_mid": cfg.get("paytm_mid", ""),
                 "paytm_merchant_key": cfg.get("paytm_merchant_key", ""),
@@ -7375,8 +9780,13 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
                 "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
                 "cashfree_secret_key": cfg.get("cashfree_secret_key", ""),
-                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://aryapremium.store/api/cashfree-callback"),
+                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback"),
                 "cashfree_env": cfg.get("cashfree_env", "sandbox"),
+                "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
+                "dodopayments_api_key": cfg.get("dodopayments_api_key", ""),
+                "dodopayments_environment": cfg.get("dodopayments_environment", "test"),
+                "dodopayments_product_id": cfg.get("dodopayments_product_id", ""),
+                "dodopayments_webhook_secret": cfg.get("dodopayments_webhook_secret", ""),
                 "is_owner": is_owner_flag,
             }
         }
@@ -7401,10 +9811,33 @@ async def update_admin_settings(payload: dict):
             update_fields["mini_app_enabled"] = bool(payload["mini_app_enabled"])
         if "tnc_enabled" in payload:
             update_fields["tnc_enabled"] = bool(payload["tnc_enabled"])
-        if "mint_theme_enabled" in payload:
-            update_fields["mint_theme_enabled"] = bool(payload["mint_theme_enabled"])
+        if "razorpay_fee_percent" in payload:
+            update_fields["razorpay_fee_percent"] = float(payload["razorpay_fee_percent"])
+        if "razorpay_fee_enabled" in payload:
+            update_fields["razorpay_fee_enabled"] = bool(payload["razorpay_fee_enabled"])
+        if "platform_fee_amount" in payload:
+            update_fields["platform_fee_amount"] = float(payload["platform_fee_amount"])
+        if "platform_fee_enabled" in payload:
+            update_fields["platform_fee_enabled"] = bool(payload["platform_fee_enabled"])
+        if "outpaint_enabled" in payload:
+            update_fields["outpaint_enabled"] = bool(payload["outpaint_enabled"])
+        if "outpaint_provider" in payload:
+            update_fields["outpaint_provider"] = str(payload["outpaint_provider"]).strip().lower()
+        if "replicate_api_key" in payload:
+            update_fields["replicate_api_key"] = str(payload["replicate_api_key"]).strip()
+        if "fal_api_key" in payload:
+            update_fields["fal_api_key"] = str(payload["fal_api_key"]).strip()
+        if "stability_api_key" in payload:
+            update_fields["stability_api_key"] = str(payload["stability_api_key"]).strip()
         if "razorpay_disabled" in payload:
             update_fields["razorpay_disabled"] = bool(payload["razorpay_disabled"])
+        if "razorpay_status" in payload:
+            rzp_st = str(payload["razorpay_status"]).strip().lower()
+            update_fields["razorpay_status"] = rzp_st
+            if rzp_st in ["disabled", "hidden"]:
+                update_fields["razorpay_disabled"] = True
+            else:
+                update_fields["razorpay_disabled"] = False
         if "upi_manual_enabled" in payload:
             update_fields["upi_manual_enabled"] = bool(payload["upi_manual_enabled"])
         if "upi_id" in payload:
@@ -7429,24 +9862,8 @@ async def update_admin_settings(payload: dict):
             update_fields["gmail_user"] = str(payload["gmail_user"]).strip()
         if "gmail_app_password" in payload:
             update_fields["gmail_app_password"] = str(payload["gmail_app_password"]).strip()
-        if "razorpay_fee_percent" in payload:
-            update_fields["razorpay_fee_percent"] = float(payload["razorpay_fee_percent"])
-        if "razorpay_fee_enabled" in payload:
-            update_fields["razorpay_fee_enabled"] = bool(payload["razorpay_fee_enabled"])
-        if "platform_fee_amount" in payload:
-            update_fields["platform_fee_amount"] = float(payload["platform_fee_amount"])
-        if "platform_fee_enabled" in payload:
-            update_fields["platform_fee_enabled"] = bool(payload["platform_fee_enabled"])
-        if "outpaint_enabled" in payload:
-            update_fields["outpaint_enabled"] = bool(payload["outpaint_enabled"])
-        if "outpaint_provider" in payload:
-            update_fields["outpaint_provider"] = str(payload["outpaint_provider"]).strip().lower()
-        if "replicate_api_key" in payload:
-            update_fields["replicate_api_key"] = str(payload["replicate_api_key"]).strip()
-        if "fal_api_key" in payload:
-            update_fields["fal_api_key"] = str(payload["fal_api_key"]).strip()
-        if "stability_api_key" in payload:
-            update_fields["stability_api_key"] = str(payload["stability_api_key"]).strip()
+        if "mint_theme_enabled" in payload:
+            update_fields["mint_theme_enabled"] = bool(payload["mint_theme_enabled"])
         if "paytm_status" in payload:
             update_fields["paytm_status"] = str(payload["paytm_status"]).strip()
         if "paytm_mid" in payload:
@@ -7459,6 +9876,7 @@ async def update_admin_settings(payload: dict):
             update_fields["paytm_callback_url"] = str(payload["paytm_callback_url"]).strip()
         if "paytm_env" in payload:
             update_fields["paytm_env"] = str(payload["paytm_env"]).strip()
+
         if "payu_status" in payload:
             update_fields["payu_status"] = str(payload["payu_status"]).strip()
         if "payu_merchant_key" in payload:
@@ -7484,6 +9902,17 @@ async def update_admin_settings(payload: dict):
             update_fields["cashfree_callback_url"] = str(payload["cashfree_callback_url"]).strip()
         if "cashfree_env" in payload:
             update_fields["cashfree_env"] = str(payload["cashfree_env"]).strip()
+
+        if "dodopayments_status" in payload:
+            update_fields["dodopayments_status"] = str(payload["dodopayments_status"]).strip()
+        if "dodopayments_api_key" in payload:
+            update_fields["dodopayments_api_key"] = str(payload["dodopayments_api_key"]).strip()
+        if "dodopayments_environment" in payload:
+            update_fields["dodopayments_environment"] = str(payload["dodopayments_environment"]).strip()
+        if "dodopayments_product_id" in payload:
+            update_fields["dodopayments_product_id"] = str(payload["dodopayments_product_id"]).strip()
+        if "dodopayments_webhook_secret" in payload:
+            update_fields["dodopayments_webhook_secret"] = str(payload["dodopayments_webhook_secret"]).strip()
         
         # Merge promo codes directly in the collection
         if "promo_codes" in payload:
@@ -7721,30 +10150,37 @@ async def get_public_settings():
             "success": True,
             "mini_app_enabled": cfg.get("mini_app_enabled", True),
             "tnc_enabled": cfg.get("tnc_enabled", True),
-            "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
+            "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
+            "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
+            "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
+            "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
+            "promo_codes": promo_codes_list,
             "razorpay_disabled": cfg.get("razorpay_disabled", False),
-            "upi_manual_enabled": cfg.get("upi_manual_enabled", False),
-            "upi_id": cfg.get("upi_id", ""),
-            "upi_payee_name": cfg.get("upi_payee_name", ""),
+            "razorpay_status": cfg.get("razorpay_status", "disabled" if cfg.get("razorpay_disabled", False) else "active"),
+            "upi_manual_enabled": cfg.get("upi_manual_enabled", True),
+            "upi_id": cfg.get("upi_id", "") or os.environ.get("UPI_ID", ""),
+            "upi_payee_name": cfg.get("upi_payee_name", "") or os.environ.get("UPI_PAYEE_NAME", "") or "Arya Premium",
             "upi_id_2": cfg.get("upi_id_2", ""),
             "upi_payee_name_2": cfg.get("upi_payee_name_2", ""),
             "upi_id_3": cfg.get("upi_id_3", ""),
             "upi_payee_name_3": cfg.get("upi_payee_name_3", ""),
             "upi_id_4": cfg.get("upi_id_4", ""),
             "upi_payee_name_4": cfg.get("upi_payee_name_4", ""),
-            "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
-            "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
-            "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
-            "platform_fee_enabled": cfg.get("platform_fee_enabled", True),
-            "promo_codes": promo_codes_list,
+            "gmail_verification_enabled": cfg.get("gmail_verification_enabled", False),
+            "mint_theme_enabled": cfg.get("mint_theme_enabled", False),
             "paytm_status": cfg.get("paytm_status", "hidden"),
             "paytm_mid": cfg.get("paytm_mid", ""),
             "payu_status": cfg.get("payu_status", "hidden"),
             "payu_merchant_key": cfg.get("payu_merchant_key", ""),
+            "payu_callback_url": cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback"),
+            "payu_env": cfg.get("payu_env", "sandbox"),
             "cashfree_status": cfg.get("cashfree_status", "hidden"),
             "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
             "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
             "cashfree_env": cfg.get("cashfree_env", "sandbox"),
+            "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
+            "dodopayments_environment": cfg.get("dodopayments_environment", "test"),
+            "dodopayments_product_id": cfg.get("dodopayments_product_id", ""),
         }
     except Exception as e:
         logger.warning(f"get_public_settings error: {e}")
@@ -7752,18 +10188,28 @@ async def get_public_settings():
             "success": True,
             "mini_app_enabled": True,
             "tnc_enabled": True,
-            "mint_theme_enabled": False,
-            "razorpay_disabled": False,
-            "upi_manual_enabled": True,
             "razorpay_fee_percent": 2.36,
             "razorpay_fee_enabled": True,
             "platform_fee_amount": 5.0,
             "platform_fee_enabled": True,
             "promo_codes": [],
+            "razorpay_disabled": False,
+            "upi_manual_enabled": True,
+            "upi_id": os.environ.get("UPI_ID", ""),
+            "upi_payee_name": os.environ.get("UPI_PAYEE_NAME", "Arya Premium"),
+            "upi_id_2": "",
+            "upi_payee_name_2": "",
+            "upi_id_3": "",
+            "upi_payee_name_3": "",
+            "upi_id_4": "",
+            "upi_payee_name_4": "",
+            "gmail_verification_enabled": False,
             "paytm_status": "hidden",
             "paytm_mid": "",
             "payu_status": "hidden",
             "payu_merchant_key": "",
+            "payu_callback_url": "https://aryapremium.store/api/payu-callback",
+            "payu_env": "sandbox",
             "cashfree_status": "hidden",
             "cashfree_app_id": "",
             "cashfree_api_id": "",
@@ -8062,6 +10508,8 @@ async def trigger_payment_log_from_order(order: dict):
         method = "razorpay"
         if "oxapay" in source.lower():
             method = "oxapay"
+        elif "upi_manual" in source.lower():
+            method = "manual_upi"
         elif "manual" in source.lower():
             method = "manual_admin"
 
@@ -8075,7 +10523,7 @@ async def trigger_payment_log_from_order(order: dict):
             "manual_admin": "👑 Manual Admin",
         }.get(method.lower(), method.capitalize())
 
-        receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or ""
+        receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or order.get("utr") or ""
 
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
@@ -8845,6 +11293,113 @@ async def admin_auth_middleware(request: Request, call_next):
     response = await call_next(request)
     return response
 
+# ─── Paage (Link-in-Bio) API Endpoints ──────────────────────────────────────────
+
+@api_router.get("/paage/public/{username}")
+async def get_paage_public_profile(username: str):
+    db = getattr(app.state, "db", None)
+    clean_username = username.lstrip("@").lower().strip()
+    default_profile = {
+        "username": clean_username,
+        "display_name": clean_username.capitalize(),
+        "bio": "Creator, builder, explorer.",
+        "avatar_url": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+        "theme": "default",
+        "socials": {
+            "github": f"https://github.com/{clean_username}",
+            "twitter": f"https://x.com/{clean_username}"
+        }
+    }
+    default_cards = [
+        {
+            "id": "card-1",
+            "type": "link",
+            "title": "SliceURL — Shorten & Monetize",
+            "url": "https://sliceurl.app/",
+            "content": "Supercharge your links with intelligent analytics.",
+            "grid_span": "col-span-2",
+            "order_index": 1
+        },
+        {
+            "id": "card-2",
+            "type": "note",
+            "title": "Welcome to Paage",
+            "content": "Create your own customizable Bento grid profile in seconds.",
+            "grid_span": "col-span-1",
+            "order_index": 2
+        },
+        {
+            "id": "card-3",
+            "type": "video",
+            "title": "Featured Stream",
+            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "grid_span": "col-span-1",
+            "order_index": 3
+        }
+    ]
+
+    if not db:
+        return {"ok": True, "profile": default_profile, "cards": default_cards}
+
+    try:
+        prof = await db.db.paage_profiles.find_one({"username": clean_username}, {"_id": 0})
+        if not prof:
+            return {"ok": True, "profile": default_profile, "cards": default_cards}
+        
+        cards = await db.db.paage_cards.find({"profile_id": clean_username}).sort("order_index", 1).to_list(length=100)
+        clean_cards = []
+        for c in cards:
+            c.pop("_id", None)
+            clean_cards.append(c)
+
+        return {"ok": True, "profile": prof, "cards": clean_cards or default_cards}
+    except Exception as e:
+        return {"ok": True, "profile": default_profile, "cards": default_cards}
+
+
+@api_router.post("/paage/profile")
+async def save_paage_profile(payload: dict = Body(...)):
+    db = getattr(app.state, "db", None)
+    username = payload.get("username", "").lstrip("@").lower().strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+
+    profile_data = {
+        "username": username,
+        "display_name": payload.get("display_name", username),
+        "bio": payload.get("bio", ""),
+        "avatar_url": payload.get("avatar_url", ""),
+        "theme": payload.get("theme", "default"),
+        "socials": payload.get("socials", {}),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    if db:
+        await db.db.paage_profiles.update_one(
+            {"username": username},
+            {"$set": profile_data},
+            upsert=True
+        )
+
+    return {"ok": True, "profile": profile_data}
+
+
+@api_router.post("/paage/cards")
+async def save_paage_cards(payload: dict = Body(...)):
+    db = getattr(app.state, "db", None)
+    username = payload.get("username", "").lstrip("@").lower().strip()
+    cards = payload.get("cards", [])
+
+    if db and username:
+        await db.db.paage_cards.delete_many({"profile_id": username})
+        if cards:
+            for idx, c in enumerate(cards):
+                c["profile_id"] = username
+                c["order_index"] = idx + 1
+            await db.db.paage_cards.insert_many(cards)
+
+    return {"ok": True, "count": len(cards)}
+
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
 
@@ -8888,6 +11443,52 @@ async def analytics_websocket(
             await websocket.receive_text()
     except WebSocketDisconnect:
         await _analytics_ws_hub.disconnect(websocket)
+
+try:
+    from paage_backend import paage_router
+    app.include_router(paage_router, prefix="/api")
+    app.include_router(paage_router)
+except Exception as e:
+    logger.warning(f"Failed to load paage_backend router: {e}")
+
+# ─── Serve Front-End SPA Static Files & Catch-All Routes ──────────────────────
+DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pocket-arya-store-new", "dist")
+
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("ws/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    
+    # Check if target static file exists in dist
+    target_file = os.path.join(DIST_DIR, full_path)
+    if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
+        return FileResponse(target_file)
+    
+    # Check index.html in dist
+    index_file = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    
+    # Check app.html or landing.html in dist
+    for alt in ["app.html", "landing.html"]:
+        alt_file = os.path.join(DIST_DIR, alt)
+        if os.path.exists(alt_file):
+            return FileResponse(alt_file)
+    
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        content="""<!DOCTYPE html>
+<html>
+<head><title>Paage — Bento Link-in-Bio Platform</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="background:#070709;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+<div style="text-align:center;padding:20px;">
+<h1 style="font-size:2rem;margin-bottom:0.5rem;color:#818cf8;">Paage App</h1>
+<p style="color:#a1a1aa;font-size:0.9rem;">Building production SPA assets... Please run <code>npm run build</code> in <code>pocket-arya-store-new</code>.</p>
+</div>
+</body>
+</html>""",
+        status_code=200
+    )
 
 
 if __name__ == "__main__":
