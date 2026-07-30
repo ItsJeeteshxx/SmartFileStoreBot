@@ -3946,10 +3946,10 @@ async def create_dodopayments_order(payload: dict):
         }
     }
 
-    if product_id:
-        dodo_payload["product_cart"] = [
-            {"product_id": product_id, "quantity": 1}
-        ]
+    pid_to_use = product_id if product_id else "pdt_default"
+    dodo_payload["product_cart"] = [
+        {"product_id": pid_to_use, "quantity": 1}
+    ]
 
     headers = {
         "Authorization": f"Bearer {api_key}",
