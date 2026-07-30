@@ -11156,28 +11156,51 @@ async def analytics_websocket(
     except WebSocketDisconnect:
         await _analytics_ws_hub.disconnect(websocket)
 
+try:
+    from paage_backend import paage_router
+    app.include_router(paage_router, prefix="/api")
+    app.include_router(paage_router)
+except Exception as e:
+    logger.warning(f"Failed to load paage_backend router: {e}")
+
 # ─── Serve Front-End SPA Static Files & Catch-All Routes ──────────────────────
 DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pocket-arya-store-new", "dist")
 
-if os.path.exists(DIST_DIR):
-    assets_dir = os.path.join(DIST_DIR, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        if full_path.startswith("api/") or full_path.startswith("ws/"):
-            raise HTTPException(status_code=404, detail="API endpoint not found")
-        
-        target_file = os.path.join(DIST_DIR, full_path)
-        if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
-            return FileResponse(target_file)
-        
-        index_file = os.path.join(DIST_DIR, "index.html")
-        if os.path.exists(index_file):
-            return FileResponse(index_file)
-        
-        raise HTTPException(status_code=404, detail="SPA index.html not found")
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("ws/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    
+    # Check if target static file exists in dist
+    target_file = os.path.join(DIST_DIR, full_path)
+    if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
+        return FileResponse(target_file)
+    
+    # Check index.html in dist
+    index_file = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    
+    # Check app.html or landing.html in dist
+    for alt in ["app.html", "landing.html"]:
+        alt_file = os.path.join(DIST_DIR, alt)
+        if os.path.exists(alt_file):
+            return FileResponse(alt_file)
+    
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        content="""<!DOCTYPE html>
+<html>
+<head><title>Paage — Bento Link-in-Bio Platform</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="background:#070709;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+<div style="text-align:center;padding:20px;">
+<h1 style="font-size:2rem;margin-bottom:0.5rem;color:#818cf8;">Paage App</h1>
+<p style="color:#a1a1aa;font-size:0.9rem;">Building production SPA assets... Please run <code>npm run build</code> in <code>pocket-arya-store-new</code>.</p>
+</div>
+</body>
+</html>""",
+        status_code=200
+    )
 
 
 if __name__ == "__main__":
