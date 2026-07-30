@@ -2908,7 +2908,9 @@ async def create_paytm_order(payload: dict):
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
     website = cfg.get("paytm_website", "WEBSTAGING" if is_sandbox else "DEFAULT").strip()
     
-    callback_url = cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback").strip()
+    callback_url = cfg.get("paytm_callback_url", "https://sliceurl.app/api/paytm-callback").strip()
+    if "aryapremium.store" in callback_url:
+        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
     
     body = {
         "requestType": "Payment",
@@ -3622,11 +3624,13 @@ async def create_cashfree_order(payload: dict):
     import uuid
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
     customer_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
-    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
+    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
-    callback_url = cfg.get("cashfree_callback_url", "https://aryapremium.store/api/cashfree-callback").strip()
-    return_url = f"https://aryapremium.store/app.html#/payment-processing?order_id={order_id}&cf_order_id={{order_id}}"
+    callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
+    if "aryapremium.store" in callback_url:
+        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
+    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={{order_id}}"
     
     cf_payload = {
         "order_id": order_id,
