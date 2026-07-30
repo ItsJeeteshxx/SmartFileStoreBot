@@ -3946,15 +3946,47 @@ async def create_dodopayments_order(payload: dict):
         }
     }
 
-    pid_to_use = product_id if product_id else "pdt_default"
-    dodo_payload["product_cart"] = [
-        {"product_id": pid_to_use, "quantity": 1}
-    ]
-
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
+
+    # Smart product_id resolution: use admin settings, or auto-fetch existing product, or create dynamic product
+    pid_to_use = product_id.strip() if product_id and product_id.strip() else ""
+    if not pid_to_use:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                p_resp = await client.get(f"{base_url}/products", headers=headers)
+                if p_resp.status_code == 200:
+                    items = p_resp.json().get("items", [])
+                    if items and isinstance(items, list) and len(items) > 0:
+                        pid_to_use = items[0].get("product_id", "")
+                
+                if not pid_to_use:
+                    create_prod_payload = {
+                        "name": "Arya Premium Access",
+                        "price": {
+                            "type": "one_time_price",
+                            "price": int(total_amount * 100),
+                            "currency": "INR",
+                            "discount": 0,
+                            "purchasing_power_parity": False,
+                            "pay_what_you_want": False
+                        },
+                        "tax_category": "digital_products"
+                    }
+                    cp_resp = await client.post(f"{base_url}/products", json=create_prod_payload, headers=headers)
+                    if cp_resp.status_code in (200, 201):
+                        pid_to_use = cp_resp.json().get("product_id", "")
+        except Exception as e:
+            logger.warning(f"Failed to auto-fetch or create Dodo product: {e}")
+
+    if not pid_to_use:
+        raise HTTPException(status_code=400, detail="No valid Dodo Payments Product ID found. Please enter a Product ID in Admin Settings or create one in Dodo Payments Dashboard.")
+
+    dodo_payload["product_cart"] = [
+        {"product_id": pid_to_use, "quantity": 1}
+    ]
 
     checkout_url = ""
     payment_session_id = ""
