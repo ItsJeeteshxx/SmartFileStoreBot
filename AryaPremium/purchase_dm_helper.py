@@ -18,7 +18,9 @@ def format_payment_method_display(method_raw: Optional[str]) -> str:
     if not method_raw:
         return "UPI (QR)"
     m = str(method_raw).strip().lower()
-    if "qr" in m or "utr" in m or m == "upi" or "upi (qr)" in m or "manual_upi" in m:
+    if "dodo" in m:
+        return "Dodo Payments"
+    elif "qr" in m or "utr" in m or m == "upi" or "upi (qr)" in m or "manual_upi" in m:
         return "UPI (QR)"
     elif "payu" in m:
         return "PayU PG"
