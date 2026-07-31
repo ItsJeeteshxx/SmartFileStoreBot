@@ -2661,7 +2661,7 @@ async def create_oxapay_order(payload: dict):
                     "order_id": oid,
                     "description": f"{len(valid_stories)} Arya Premium stories for {customer_name}",
                     "customer_name": customer_name,
-                    "callback_url": "https://sliceurl.app/api/oxapay-webhook",
+                    "callback_url": "https://aryapremium.store/api/oxapay-webhook",
                     "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                     "sandbox": is_sandbox,
                 }
@@ -3264,12 +3264,10 @@ async def create_payu_order(payload: dict):
     txnid = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
     
     action_url = "https://test.payu.in/_payment" if is_sandbox else "https://secure.payu.in/_payment"
-    callback_url = cfg.get("payu_callback_url", "https://sliceurl.app/api/payu-callback").strip()
-    if "aryapremium.store" in callback_url:
-        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
+    callback_url = cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback").strip()
     
     firstname = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
-    email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
+    email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
     phone = payload.get("phone", "").strip() or "9999999999"
     productinfo = f"{len(valid_stories)} Audiobook Stories"
     amount_str = f"{total:.2f}"
@@ -9944,12 +9942,12 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "paytm_mid": cfg.get("paytm_mid", ""),
                 "paytm_merchant_key": cfg.get("paytm_merchant_key", ""),
                 "paytm_website": cfg.get("paytm_website", "DEFAULT"),
-                "paytm_callback_url": cfg.get("paytm_callback_url", "https://sliceurl.app/api/paytm-callback"),
+                "paytm_callback_url": cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback"),
                 "paytm_env": cfg.get("paytm_env", "staging"),
                 "payu_status": cfg.get("payu_status", "hidden"),
                 "payu_merchant_key": cfg.get("payu_merchant_key", ""),
                 "payu_merchant_salt": cfg.get("payu_merchant_salt", ""),
-                "payu_callback_url": cfg.get("payu_callback_url", "https://sliceurl.app/api/payu-callback"),
+                "payu_callback_url": cfg.get("payu_callback_url", "https://aryapremium.store/api/payu-callback"),
                 "payu_env": cfg.get("payu_env", "sandbox"),
                 "cashfree_status": cfg.get("cashfree_status", "hidden"),
                 "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
@@ -10383,7 +10381,7 @@ async def get_public_settings():
             "paytm_mid": "",
             "payu_status": "hidden",
             "payu_merchant_key": "",
-            "payu_callback_url": "https://sliceurl.app/api/payu-callback",
+            "payu_callback_url": "https://aryapremium.store/api/payu-callback",
             "payu_env": "sandbox",
             "cashfree_status": "hidden",
             "cashfree_app_id": "",
