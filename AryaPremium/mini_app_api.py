@@ -3621,9 +3621,10 @@ async def create_cashfree_order(payload: dict):
     base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
     links_url = f"{base_url}/links"
     
-    import uuid
+    import uuid, re
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
-    customer_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
+    raw_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
+    customer_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip() or "Customer"
     customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
