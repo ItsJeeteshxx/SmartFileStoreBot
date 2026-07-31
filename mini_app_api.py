@@ -3925,9 +3925,9 @@ async def create_dodopayments_order(payload: dict):
     order_seq = int(time.time() * 1000) % 100000
     order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
 
-    # Return URL redirects user directly to Telegram bot to prevent 404 on sliceurl.app
+    # Return URL opens Mini App directly to purchased library section
     bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot").strip("@")
-    return_url = f"https://t.me/{bot_username}"
+    return_url = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
 
     dodo_payload = {
         "billing": {
@@ -4148,7 +4148,7 @@ async def dodopayments_webhook(request: Request):
         res = await verify_dodopayments_payment(order_id=order_id)
         if request.method == "GET":
             bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot").strip("@")
-            bot_url = f"https://t.me/{bot_username}"
+            bot_url = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
             
             if res.get("success"):
                 html_content = f"""<!DOCTYPE html>
