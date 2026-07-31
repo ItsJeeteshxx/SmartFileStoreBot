@@ -3794,16 +3794,22 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                             except Exception as e:
                                 logger.error(f"add_purchase error for {sid}: {e}")
                                 
+                    story_names = order.get("story_names", []) if order else []
                     updated_order = {
                         "order_id": oid,
                         "user_id": user_id,
                         "story_ids": story_ids,
+                        "story_names": story_names,
                         "total": float(res_json.get("order_amount", 0.0)),
                         "status": "paid",
-                        "payment_id": str(payment_id)
+                        "payment_id": str(payment_id),
+                        "payment_method": "Cashfree",
+                        "source": "Cashfree"
                     }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
+                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
+
                     
                     return {"success": True, "status": "paid", "order_id": oid, "payment_id": str(payment_id)}
                 else:
@@ -10570,11 +10576,14 @@ async def trigger_payment_log_from_order(order: dict):
             method = "manual_upi"
         elif "dodo" in source.lower():
             method = "dodopayments"
+        elif "cashfree" in source.lower():
+            method = "cashfree"
         elif "manual" in source.lower():
             method = "manual_admin"
 
         method_badge = {
             "razorpay":    "💳 Razorpay (Automatic)",
+            "cashfree":    "💳 Cashfree (Automatic)",
             "dodopayments":"🦤 Dodo Payments (Automatic)",
             "easebuzz":    "💸 Easebuzz (Automatic)",
             "upi":         "🏦 Manual UPI",
@@ -10582,6 +10591,7 @@ async def trigger_payment_log_from_order(order: dict):
             "oxapay":       "🪙 Oxapay (Crypto)",
             "crypto":       "🪙 Oxapay (Crypto)",
             "manual_admin": "👑 Manual Admin",
+
         }.get(method.lower(), method.capitalize())
 
         receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or order.get("utr") or ""
