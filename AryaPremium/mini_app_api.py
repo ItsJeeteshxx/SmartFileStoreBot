@@ -3692,12 +3692,13 @@ async def create_cashfree_order(payload: dict):
             except Exception as _ex:
                 logger.warning(f"Failed to insert pending cashfree order: {_ex}")
 
+            checkout_pay_link = f"https://aryapremium.store/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sandbox else 'false'}"
             return {
                 "success": True,
                 "order_id": order_id,
                 "cf_order_id": cf_order_id,
                 "payment_session_id": payment_session_id,
-                "payment_link": payment_link,
+                "payment_link": checkout_pay_link,
                 "amount": total,
                 "is_sandbox": is_sandbox,
                 "app_id": app_id
@@ -3707,6 +3708,108 @@ async def create_cashfree_order(payload: dict):
     except Exception as e:
         logger.error(f"Cashfree create order exception: {e}")
         raise HTTPException(status_code=500, detail=f"Cashfree Exception: {str(e)}")
+
+
+@api_router.get("/cashfree-pay", response_class=HTMLResponse)
+@api_router.get("/pay/cashfree", response_class=HTMLResponse)
+async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(False)):
+    """Serves full-screen Cashfree checkout page for external browser launch."""
+    is_sandbox_str = "true" if sandbox else "false"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arya Premium - Secure Payment</title>
+  <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      background: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+      text-align: center;
+    }}
+    .card {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 36px 24px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);
+    }}
+    .spinner {{
+      border: 4px solid rgba(255,255,255,0.1);
+      border-left-color: #6366f1;
+      border-radius: 50%;
+      width: 42px;
+      height: 42px;
+      animation: spin 0.8s linear infinite;
+      margin: 24px auto;
+    }}
+    @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+    h2 {{ font-size: 1.35rem; font-weight: 700; margin-bottom: 8px; color: #f8fafc; }}
+    p {{ font-size: 0.9rem; color: #94a3b8; line-height: 1.5; }}
+    .btn {{
+      display: inline-block;
+      margin-top: 20px;
+      padding: 14px 28px;
+      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      border-radius: 12px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(99,102,241,0.4);
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🔒 Opening Cashfree Gateway...</h2>
+    <p>Please wait while we redirect you to secure checkout.</p>
+    <div class="spinner"></div>
+    <div id="fallback" style="display:none;">
+      <p style="color:#ef4444; margin-top:12px;">Tap below to start payment:</p>
+      <button onclick="startCheckout()" class="btn">Pay with Cashfree</button>
+    </div>
+  </div>
+  <script>
+    const sessionId = "{session_id}";
+    const isSandbox = {is_sandbox_str};
+
+    function startCheckout() {{
+      if (!sessionId) {{
+        document.querySelector('.card').innerHTML = '<h2 style="color:#ef4444">Invalid Session</h2><p>Payment session ID is missing.</p>';
+        return;
+      }}
+      try {{
+        const cashfree = Cashfree({{ mode: isSandbox ? "sandbox" : "production" }});
+        cashfree.checkout({{
+          paymentSessionId: sessionId,
+          redirectTarget: "_self"
+        }});
+      }} catch (e) {{
+        console.error("Cashfree Checkout error:", e);
+        document.getElementById('fallback').style.display = 'block';
+      }}
+    }}
+
+    setTimeout(startCheckout, 200);
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
+
 
 
 
