@@ -3670,9 +3670,9 @@ async def create_cashfree_order(payload: dict):
             payment_link = res_json.get("payment_link")
             if not payment_link and payment_session_id:
                 if is_sandbox:
-                    payment_link = f"https://sandbox.cashfree.com/pg/orders/sessions/{payment_session_id}"
+                    payment_link = f"https://sandbox.cashfree.com/order/#token={payment_session_id}"
                 else:
-                    payment_link = f"https://payments.cashfree.com/orders/sessions/{payment_session_id}"
+                    payment_link = f"https://payments.cashfree.com/order/#token={payment_session_id}"
 
             tg_id_int = int(tg_id) if str(tg_id).isdigit() else tg_id
             order_doc = {
