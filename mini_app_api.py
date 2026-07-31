@@ -3619,7 +3619,7 @@ async def create_cashfree_order(payload: dict):
     order_id = await _make_arya_order_id(arya_db, str(tg_id), story_ids, source="miniapp")
     
     base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
-    orders_url = f"{base_url}/orders"
+    links_url = f"{base_url}/links"
     
     import uuid
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
@@ -3631,20 +3631,20 @@ async def create_cashfree_order(payload: dict):
     return_url = "https://t.me/UseAryaBot/apminibyarya?startapp=purchased"
     
     cf_payload = {
-        "order_id": order_id,
-        "order_amount": round(total, 2),
-        "order_currency": "INR",
+        "link_id": order_id,
+        "link_amount": round(total, 2),
+        "link_currency": "INR",
+        "link_purpose": f"Arya Premium - {len(valid_stories)} Stories",
         "customer_details": {
             "customer_id": customer_id[:50],
             "customer_name": customer_name[:50],
             "customer_email": customer_email[:50],
             "customer_phone": customer_phone[:15]
         },
-        "order_meta": {
+        "link_meta": {
             "return_url": return_url,
             "notify_url": callback_url
-        },
-        "order_note": f"Arya Premium - {len(valid_stories)} Stories"
+        }
     }
 
     headers = {
@@ -3656,23 +3656,37 @@ async def create_cashfree_order(payload: dict):
     
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(orders_url, json=cf_payload, headers=headers)
+            resp = await client.post(links_url, json=cf_payload, headers=headers)
             res_json = resp.json()
-            logger.info(f"Cashfree create order response: status={resp.status_code}, body={res_json}")
+            logger.info(f"Cashfree create link response: status={resp.status_code}, body={res_json}")
             
-            if resp.status_code not in (200, 201):
-                err_msg = res_json.get("message") or res_json.get("detail") or f"Cashfree HTTP {resp.status_code}"
-                raise HTTPException(status_code=400, detail=f"Cashfree API Error: {err_msg}")
-                
-            payment_session_id = res_json.get("payment_session_id")
-            cf_order_id = res_json.get("cf_order_id") or res_json.get("order_id") or order_id
+            # Fallback to /pg/orders if /pg/links not supported or failed
+            payment_link = res_json.get("link_url")
+            cf_order_id = res_json.get("link_id") or order_id
             
-            payment_link = res_json.get("payment_link")
-            if not payment_link and payment_session_id:
-                if is_sandbox:
-                    payment_link = f"https://sandbox.cashfree.com/order/#token={payment_session_id}"
+            if resp.status_code not in (200, 201) or not payment_link:
+                # Try standard /pg/orders as fallback
+                orders_url = f"{base_url}/orders"
+                order_payload = {
+                    "order_id": order_id,
+                    "order_amount": round(total, 2),
+                    "order_currency": "INR",
+                    "customer_details": cf_payload["customer_details"],
+                    "order_meta": cf_payload["link_meta"],
+                    "order_note": cf_payload["link_purpose"]
+                }
+                resp_ord = await client.post(orders_url, json=order_payload, headers=headers)
+                res_ord_json = resp_ord.json()
+                logger.info(f"Cashfree fallback order response: status={resp_ord.status_code}, body={res_ord_json}")
+                if resp_ord.status_code in (200, 201):
+                    payment_session_id = res_ord_json.get("payment_session_id")
+                    cf_order_id = res_ord_json.get("cf_order_id") or order_id
+                    payment_link = res_ord_json.get("payment_link")
                 else:
-                    payment_link = f"https://payments.cashfree.com/order/#token={payment_session_id}"
+                    err_msg = res_json.get("message") or res_ord_json.get("message") or f"Cashfree HTTP {resp.status_code}"
+                    raise HTTPException(status_code=400, detail=f"Cashfree API Error: {err_msg}")
+            else:
+                payment_session_id = res_json.get("link_id")
 
             tg_id_int = int(tg_id) if str(tg_id).isdigit() else tg_id
             order_doc = {
@@ -3703,6 +3717,7 @@ async def create_cashfree_order(payload: dict):
                 "cf_order_id": cf_order_id,
                 "payment_session_id": payment_session_id,
                 "payment_link": payment_link,
+                "checkout_url": payment_link,
                 "amount": total,
                 "is_sandbox": is_sandbox,
                 "app_id": app_id
@@ -3712,6 +3727,7 @@ async def create_cashfree_order(payload: dict):
     except Exception as e:
         logger.error(f"Cashfree create order exception: {e}")
         raise HTTPException(status_code=500, detail=f"Cashfree Exception: {str(e)}")
+
 
 
 @api_router.post("/verify-cashfree-payment")
