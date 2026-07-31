@@ -3692,7 +3692,7 @@ async def create_cashfree_order(payload: dict):
             except Exception as _ex:
                 logger.warning(f"Failed to insert pending cashfree order: {_ex}")
 
-            checkout_pay_link = f"https://aryapremium.store/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sandbox else 'false'}"
+            checkout_pay_link = f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sandbox else 'false'}"
             return {
                 "success": True,
                 "order_id": order_id,
