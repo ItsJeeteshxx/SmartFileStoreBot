@@ -147,7 +147,17 @@ class PremiumDatabase:
         return story_id in user.get("purchases", [])
         
     async def add_purchase(self, user_id: int, story_id: str):
-        await self.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": story_id}}, upsert=True)
+        uid_int = int(user_id) if str(user_id).isdigit() else user_id
+        await self.users.update_one({"$or": [{"id": uid_int}, {"id": str(user_id)}]}, {"$addToSet": {"purchases": str(story_id)}}, upsert=True)
+        try:
+            await self.db.premium_purchases.update_one(
+                {"user_id": uid_int, "story_id": str(story_id)},
+                {"$set": {"user_id": uid_int, "story_id": str(story_id), "created_at": datetime.now(timezone.utc)}},
+                upsert=True
+            )
+        except Exception:
+            pass
+
 
     async def is_paid_user(self, user_id) -> bool:
         """Check if user is a paid user (has at least 1 purchased story or completed order)."""

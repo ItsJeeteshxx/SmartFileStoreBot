@@ -3738,7 +3738,8 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
         return {"success": False, "detail": "Cashfree credentials missing"}
 
     base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
-    check_url = f"{base_url}/orders/{oid}"
+    cf_query_id = (order.get("order_id") if order else None) or oid
+    check_url = f"{base_url}/orders/{cf_query_id}"
 
     headers = {
         "x-client-id": app_id,
@@ -3753,10 +3754,10 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
             if resp.status_code == 200:
                 res_json = resp.json()
                 cf_status = str(res_json.get("order_status", "")).upper()
-                logger.info(f"Cashfree status check for {oid}: status={cf_status}")
+                logger.info(f"Cashfree status check for {cf_query_id}: status={cf_status}")
                 
                 if cf_status in ("PAID", "SUCCESS"):
-                    payment_id = res_json.get("cf_order_id") or oid
+                    payment_id = res_json.get("cf_order_id") or cf_query_id
                     
                     cust_details = res_json.get("customer_details", {})
                     cust_id_str = str(cust_details.get("customer_id", ""))
@@ -4964,9 +4965,33 @@ async def get_my_purchases(telegram_id: str):
         user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
         user_id_str = str(user_id_int)
         
+        # Auto-verify any pending orders created within the last 2 hours
+        try:
+            from datetime import timedelta
+            two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+            pending_orders = await arya_db.db.orders.find({
+                "user_id": {"$in": [user_id_int, user_id_str]},
+                "status": "pending",
+                "created_at": {"$gte": two_hours_ago}
+            }).to_list(length=10)
+            
+            for p_order in pending_orders:
+                gw = p_order.get("gateway")
+                p_oid = p_order.get("order_id")
+                if p_oid:
+                    if gw == "cashfree":
+                        await verify_cashfree_payment(order_id=p_oid)
+                    elif gw == "dodopayments":
+                        await verify_dodopayments_payment(order_id=p_oid)
+                    elif gw == "paytm":
+                        await check_paytm_order_status(p_oid)
+        except Exception as p_err:
+            logger.warning(f"Auto-verification of pending orders error for user {user_id_int}: {p_err}")
+
         # In AryaPremium, purchases are in user.purchases
         user = await arya_db.db.users.find_one({"id": user_id_int})
         purchased_story_ids = list(user.get("purchases", [])) if user else []
+
 
         # Robust fallback: fetch story IDs from all successfully paid/delivered orders
         try:
