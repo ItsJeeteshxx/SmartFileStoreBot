@@ -10684,43 +10684,24 @@ async def record_purchased_stories(order: dict):
 
 
 async def send_purchase_receipt_to_user(order: dict):
-    """Sends exact delivery choice message (✅ Access Granted!) to user's Telegram DM via Delivery Bot."""
+    """Sends standardized Purchase Complete DM to user - same format as UPI/manual payments."""
     try:
         arya_db = app.state.db
         user_id = order.get("user_id")
         if not user_id:
             return
 
-        story_ids = order.get("story_ids", [])
-        if not story_ids:
-            return
-
-        from bson.objectid import ObjectId
-        from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
-
-        # Resolve seller client bot
-        user_doc = await arya_db.db.users.find_one({"id": int(user_id)})
-        bot_id = None
-        if user_doc and user_doc.get("bot_ids"):
-            bot_id = user_doc["bot_ids"][0]
-
-        seller_cli = None
-        if bot_id and str(bot_id) in market_clients:
-            seller_cli = market_clients.get(str(bot_id))
-        if not seller_cli and market_clients:
-            seller_cli = list(market_clients.values())[0]
-
-        for sid in story_ids:
-            try:
-                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-                if not story:
-                    story = await arya_db.db.premium_stories.find_one({"story_id": sid})
-                if story and seller_cli:
-                    await dispatch_delivery_choice(seller_cli, int(user_id), story)
-            except Exception as se:
-                logger.error(f"Error dispatching delivery choice for story {sid}: {se}")
+        from purchase_dm_helper import send_purchase_success_dm
+        pm = order.get("payment_method") or order.get("source") or "Dodo Payments"
+        await send_purchase_success_dm(
+            db=arya_db,
+            user_id=user_id,
+            order_doc=order,
+            payment_method=pm,
+            verified_by="Auto Verified By System"
+        )
     except Exception as e:
-        logger.error(f"Failed to send purchase receipt/delivery to user {order.get('user_id')}: {e}", exc_info=True)
+        logger.error(f"Failed to send purchase receipt to user {order.get('user_id')}: {e}", exc_info=True)
 
 @api_router.post("/admin/auth/setup-email")
 async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)):
