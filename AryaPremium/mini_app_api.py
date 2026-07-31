@@ -3915,6 +3915,11 @@ async def create_dodopayments_order(payload: dict):
                 promo_discount = min(p_val, subtotal)
 
     total_amount = max(1.0, round(subtotal - promo_discount, 2))
+    if total_amount < 50.0:
+        raise HTTPException(
+            status_code=400,
+            detail="Dodo Payments requires a minimum order amount of ₹50 ($0.50 USD)."
+        )
 
     import random, time
     order_seq = int(time.time() * 1000) % 100000
@@ -4106,10 +4111,12 @@ async def verify_dodopayments_payment(payload: dict = None, order_id: str = None
                         "story_ids": story_ids,
                         "total": float(order.get("total", 0.0)) if order else 0.0,
                         "status": "paid",
-                        "payment_id": str(dodo_pid)
+                        "payment_id": str(dodo_pid),
+                        "source": "dodopayments"
                     }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
+                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
 
                     return {"success": True, "status": "paid", "order_id": oid}
                 else:
@@ -10541,16 +10548,19 @@ async def trigger_payment_log_from_order(order: dict):
             method = "oxapay"
         elif "upi_manual" in source.lower():
             method = "manual_upi"
+        elif "dodo" in source.lower():
+            method = "dodopayments"
         elif "manual" in source.lower():
             method = "manual_admin"
 
         method_badge = {
-            "razorpay":  "💳 Razorpay (Automatic)",
-            "easebuzz":  "💸 Easebuzz (Automatic)",
-            "upi":       "🏦 Manual UPI",
-            "manual_upi":"🏦 Manual UPI",
-            "oxapay":     "🪙 Oxapay (Crypto)",
-            "crypto":     "🪙 Oxapay (Crypto)",
+            "razorpay":    "💳 Razorpay (Automatic)",
+            "dodopayments":"🦤 Dodo Payments (Automatic)",
+            "easebuzz":    "💸 Easebuzz (Automatic)",
+            "upi":         "🏦 Manual UPI",
+            "manual_upi":  "🏦 Manual UPI",
+            "oxapay":       "🪙 Oxapay (Crypto)",
+            "crypto":       "🪙 Oxapay (Crypto)",
             "manual_admin": "👑 Manual Admin",
         }.get(method.lower(), method.capitalize())
 
@@ -10671,6 +10681,75 @@ async def record_purchased_stories(order: dict):
                 logger.error(f"Failed to increment usage count for promo code {promo_code}: {pe}")
     except Exception as e:
         logger.error(f"Error in record_purchased_stories: {e}", exc_info=True)
+
+
+async def send_purchase_receipt_to_user(order: dict):
+    """Sends purchase confirmation receipt directly to the Telegram user in DM."""
+    from AryaPremium.config import Config
+    token = getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN")
+    if not token:
+        return
+    
+    tg_id = order.get("user_id")
+    if not tg_id:
+        return
+
+    try:
+        arya_db = app.state.db
+        story_ids = order.get("story_ids", [])
+        story_names = []
+        from bson.objectid import ObjectId
+        for sid in story_ids:
+            try:
+                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                if not story:
+                    story = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                if story:
+                    story_names.append(story.get("story_name_en", story.get("title", "")))
+            except Exception:
+                pass
+        
+        s_title = ", ".join(story_names) if story_names else "Premium Story Access"
+        amount = float(order.get("total", 0.0))
+        oid = order.get("order_id", "N/A")
+        pid = order.get("payment_id") or order.get("dodo_payment_id") or "N/A"
+        source = str(order.get("source", "Dodo Payments"))
+        
+        method_str = "🦤 Dodo Payments"
+        if "cashfree" in source.lower():
+            method_str = "💳 Cashfree Payments"
+        elif "oxapay" in source.lower() or "crypto" in source.lower():
+            method_str = "🪙 OxaPay Crypto"
+        elif "payu" in source.lower():
+            method_str = "💳 PayU"
+        elif "paytm" in source.lower():
+            method_str = "💙 Paytm"
+
+        msg = (
+            f"🎉 <b>PAYMENT CONFIRMED!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Thank you for your purchase! Your premium content is now unlocked.\n\n"
+            f"<b>❖ Order ID:</b> <code>{oid}</code>\n"
+            f"<b>❖ Story:</b> {escape_html(s_title)}\n"
+            f"<b>❖ Amount Paid:</b> ₹{amount:.2f}\n"
+            f"<b>❖ Payment Method:</b> {method_str}\n"
+            f"<b>❖ Transaction ID:</b> <code>{pid}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"✨ You can now read your story directly inside the Mini App under <b>Library</b>!"
+        )
+
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": int(tg_id),
+                    "text": msg,
+                    "parse_mode": "HTML"
+                }
+            )
+    except Exception as e:
+        logger.error(f"Failed to send purchase receipt to user {tg_id}: {e}")
 
 @api_router.post("/admin/auth/setup-email")
 async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)):
