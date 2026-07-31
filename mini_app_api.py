@@ -3925,8 +3925,9 @@ async def create_dodopayments_order(payload: dict):
     order_seq = int(time.time() * 1000) % 100000
     order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
 
-    # Return URL strictly using sliceurl.app as required by user
-    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
+    # Return URL redirects user directly to Telegram bot to prevent 404 on sliceurl.app
+    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot").strip("@")
+    return_url = f"https://t.me/{bot_username}"
 
     dodo_payload = {
         "billing": {
@@ -4146,16 +4147,150 @@ async def dodopayments_webhook(request: Request):
     if order_id:
         res = await verify_dodopayments_payment(order_id=order_id)
         if request.method == "GET":
+            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot").strip("@")
+            bot_url = f"https://t.me/{bot_username}"
+            
             if res.get("success"):
-                return Response(
-                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>✅ Payment Successful!</h2><p>Your Dodo Payment was verified.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#10b981;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
-                    media_type="text/html"
-                )
+                html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful - Arya Premium</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            background-color: #09090b;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            text-align: center;
+        }}
+        .card {{
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 24px;
+            padding: 32px 24px;
+            max-width: 360px;
+            width: 88%;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+        }}
+        .icon {{
+            width: 64px;
+            height: 64px;
+            background: rgba(16, 185, 129, 0.15);
+            border: 2px solid #10b981;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px auto;
+            color: #10b981;
+            font-size: 32px;
+            font-weight: bold;
+        }}
+        h2 {{
+            margin: 0 0 8px 0;
+            font-size: 22px;
+            font-weight: 800;
+        }}
+        p {{
+            color: #a1a1aa;
+            font-size: 13.5px;
+            line-height: 1.5;
+            margin: 0 0 24px 0;
+        }}
+        .btn {{
+            display: block;
+            background: #ec4899;
+            color: #ffffff;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 15px;
+            padding: 14px 24px;
+            border-radius: 14px;
+            box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
+            transition: transform 0.2s;
+        }}
+        .btn:active {{
+            transform: scale(0.97);
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">✓</div>
+        <h2>Payment Successful!</h2>
+        <p>Aapka order <b>{order_id}</b> confirm ho chuka hai.<br><br>Is page ko close karke Telegram open kijiye, aapki story Library me purchase section me mil jayegi!</p>
+        <a href="{bot_url}" class="btn">Open Telegram Bot (@{bot_username})</a>
+    </div>
+    <script>
+        setTimeout(function() {{
+            window.location.href = "{bot_url}";
+        }}, 2200);
+    </script>
+</body>
+</html>"""
+                return Response(content=html_content, media_type="text/html")
             else:
-                return Response(
-                    content=f"""<html><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>Processing Payment...</h2><p>{res.get('detail', 'Verification pending')}</p></body></html>""",
-                    media_type="text/html"
-                )
+                html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Processing Payment - Arya Premium</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            background-color: #09090b;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            text-align: center;
+        }}
+        .card {{
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 24px;
+            padding: 32px 24px;
+            max-width: 360px;
+            width: 88%;
+        }}
+        .btn {{
+            display: block;
+            background: #ec4899;
+            color: #ffffff;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 15px;
+            padding: 14px 24px;
+            border-radius: 14px;
+            margin-top: 20px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Processing Payment...</h2>
+        <p>Aapka payment verify ho raha hai. Is page ko close karke Telegram open kijiye.</p>
+        <a href="{bot_url}" class="btn">Open Telegram Bot (@{bot_username})</a>
+    </div>
+    <script>
+        setTimeout(function() {{
+            window.location.href = "{bot_url}";
+        }}, 2500);
+    </script>
+</body>
+</html>"""
+                return Response(content=html_content, media_type="text/html")
     return {"status": "ok"}
 
 
