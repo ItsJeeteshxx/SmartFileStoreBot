@@ -3627,10 +3627,8 @@ async def create_cashfree_order(payload: dict):
     customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
-    callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
-    if "aryapremium.store" in callback_url:
-        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
-    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={{order_id}}"
+    callback_url = cfg.get("cashfree_callback_url", "https://aryapremium.store/api/cashfree-callback").strip()
+    return_url = "https://t.me/UseAryaBot/apminibyarya?startapp=purchased"
     
     cf_payload = {
         "order_id": order_id,
