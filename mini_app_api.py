@@ -30,7 +30,7 @@ _inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 import uuid
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from purchase_dm_helper import send_purchase_success_dm
 import httpx
 try:
