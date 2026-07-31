@@ -2661,7 +2661,7 @@ async def create_oxapay_order(payload: dict):
                     "order_id": oid,
                     "description": f"{len(valid_stories)} Arya Premium stories for {customer_name}",
                     "customer_name": customer_name,
-                    "callback_url": "https://aryapremium.store/api/oxapay-webhook",
+                    "callback_url": "https://sliceurl.app/api/oxapay-webhook",
                     "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
                     "sandbox": is_sandbox,
                 }
