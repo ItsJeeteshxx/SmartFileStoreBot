@@ -5997,25 +5997,36 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
         
         import asyncio
         import os
-        import uuid
-        from decouple import config
+        raw_filename = getattr(file, "filename", "file.bin") or "file.bin"
         
-        r2_account_id = config("R2_ACCOUNT_ID", default="")
-        r2_access_key = config("R2_ACCESS_KEY_ID", default="")
-        r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
-        r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
-        r2_domain = config("R2_CUSTOM_DOMAIN", default="")
-        
-        def process_and_upload(data_bytes):
-            # Compress image
-            img = Image.open(io.BytesIO(data_bytes))
-            if img.mode == "CMYK":
-                img = img.convert("RGB")
-            img.thumbnail((800, 800))
-            output = io.BytesIO()
-            img.save(output, format="WEBP", quality=75)
-            compressed_bytes = output.getvalue()
-            
+        def process_and_upload(data_bytes, filename_input):
+            ext = "bin"
+            if "." in filename_input:
+                ext = filename_input.rsplit(".", 1)[-1].lower()
+
+            compressed_bytes = data_bytes
+            is_image = False
+            try:
+                img = Image.open(io.BytesIO(data_bytes))
+                if img.mode == "CMYK":
+                    img = img.convert("RGB")
+                img.thumbnail((1200, 1200))
+                output = io.BytesIO()
+                img.save(output, format="WEBP", quality=80)
+                compressed_bytes = output.getvalue()
+                is_image = True
+                ext = "webp"
+            except Exception:
+                is_image = False
+
+            mime_types = {
+                "webp": "image/webp", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo", "webm": "video/webm",
+                "mp3": "audio/mpeg", "ogg": "audio/ogg", "wav": "audio/wav", "m4a": "audio/mp4",
+                "pdf": "application/pdf", "zip": "application/zip", "doc": "application/msword", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }
+            content_type = mime_types.get(ext, getattr(file, "content_type", None) or "application/octet-stream")
+
             url = ""
             if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
                 import boto3
@@ -6027,26 +6038,26 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
                         aws_secret_access_key=r2_secret_key,
                         region_name="auto"
                     )
-                    filename = f"{uuid.uuid4().hex}.webp"
+                    out_name = f"{uuid.uuid4().hex}.{ext}"
                     s3.put_object(
                         Bucket=r2_bucket,
-                        Key=filename,
+                        Key=out_name,
                         Body=compressed_bytes,
-                        ContentType="image/webp"
+                        ContentType=content_type
                     )
                     if r2_domain:
                         domain = r2_domain.strip("/")
                         if not domain.startswith("http"):
                             domain = "https://" + domain
-                        url = f"{domain}/{filename}"
+                        url = f"{domain}/{out_name}"
                     else:
-                        url = f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{filename}"
+                        url = f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{out_name}"
                 except Exception as e:
                     logger.error(f"Cloudflare R2 upload failed: {e}")
             
-            return compressed_bytes, url
+            return compressed_bytes, url, ext, content_type, is_image
             
-        img_bytes, poster_url = await asyncio.to_thread(process_and_upload, contents)
+        img_bytes, poster_url, file_ext, file_content_type, is_img = await asyncio.to_thread(process_and_upload, contents, raw_filename)
         
         file_id = ""
         
@@ -6056,31 +6067,13 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
                 async with aiohttp.ClientSession() as session:
                     form = aiohttp.FormData()
                     form.add_field("reqtype", "fileupload")
-                    form.add_field("fileToUpload", img_bytes, filename="poster.webp", content_type="image/webp")
-                    async with session.post("https://catbox.moe/user/api.php", data=form, timeout=6) as resp:
+                    form.add_field("fileToUpload", img_bytes, filename=f"upload.{file_ext}", content_type=file_content_type)
+                    async with session.post("https://catbox.moe/user/api.php", data=form, timeout=12) as resp:
                         if resp.status == 200:
                             poster_url = (await resp.text()).strip()
             except Exception as e:
                 logger.error(f"Catbox upload failed: {e}")
                 poster_url = ""
-        
-        # Upload to Telegram to get file_id
-        token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None)
-        if token:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    form = aiohttp.FormData()
-                    form.add_field("chat_id", str(user_id_int))
-                    form.add_field("photo", img_bytes, filename="poster.webp", content_type="image/webp")
-                    form.add_field("caption", f"Auto-uploaded poster from Mini App Admin")
-                    async with session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form, timeout=6) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            photos = data.get("result", {}).get("photo", [])
-                            if photos:
-                                file_id = photos[-1]["file_id"]
-            except Exception as e:
-                logger.error(f"Telegram upload failed: {e}")
         
         return {"success": True, "poster_url": poster_url, "file_id": file_id}
     except Exception as e:
@@ -7874,6 +7867,35 @@ async def get_admin_bans(telegram_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _resolve_bot_token_for_broadcast(arya_db, user_id: Optional[Union[int, str]] = None) -> str:
+    token = ""
+    if user_id:
+        try:
+            token = await get_customer_bot_token(user_id)
+        except Exception as e:
+            logger.warning(f"📢 [Broadcast Token] Failed resolving user {user_id} token: {e}")
+            
+    mgmt_token = str(getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN", "")).strip()
+
+    # Try finding delivery bot token from DB first
+    if not token and arya_db:
+        try:
+            bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
+            if bot_doc and bot_doc.get("token"):
+                token = bot_doc.get("token", "")
+        except Exception:
+            pass
+
+    if not token:
+        token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or os.environ.get("DELIVERY_BOT_TOKEN", "")
+        
+    if not token:
+        token = mgmt_token
+            
+    token_str = str(token or "").strip()
+    logger.info(f"📢 [Broadcast Token Resolved] User: {user_id} | Token Prefix: {token_str[:10]}...")
+    return token_str
+
 @api_router.post("/admin/scan-universal-ips")
 async def scan_and_clean_universal_ips(payload: dict):
     telegram_id = payload.get("telegram_id")
@@ -8154,7 +8176,11 @@ async def _send_tg_bot_message(bot_token: str, chat_id: Union[int, str], text: s
             method_name = "sendVideo"
             payload["video"] = str(media_url).strip()
             payload["caption"] = text
-        elif "doc" in m_type or "file" in m_type:
+        elif "audio" in m_type or "voice" in m_type or "mp3" in m_type:
+            method_name = "sendAudio"
+            payload["audio"] = str(media_url).strip()
+            payload["caption"] = text
+        elif "doc" in m_type or "file" in m_type or "pdf" in m_type or "document" in m_type:
             method_name = "sendDocument"
             payload["document"] = str(media_url).strip()
             payload["caption"] = text
