@@ -5451,6 +5451,57 @@ async def fetch_processed_buyers_data(arya_db):
             payments = data["payments"]
             if not payments: continue
 
+            # Group payments by order_id so multi-story cart checkouts (where 1 cart order generates 1 purchase record per story)
+            # appear as ONE single order entry in Admin Panel with the true order amount (not amount multiplied by story count).
+            grouped_payments = {}
+            for p_item in payments:
+                oid = str(p_item.get("order_id") or "").strip()
+                if not oid or oid.startswith("uid_"):
+                    oid = f"single_{p_item.get('story_id')}_{p_item.get('date')}"
+                
+                if oid not in grouped_payments:
+                    grouped_payments[oid] = {
+                        "order_id": oid,
+                        "story_id": p_item.get("story_id", ""),
+                        "story_ids": [p_item.get("story_id")] if p_item.get("story_id") else [],
+                        "story_names": [p_item.get("story_name")] if p_item.get("story_name") else [],
+                        "stories": [{
+                            "story_id": p_item.get("story_id", ""),
+                            "story_name": p_item.get("story_name", "")
+                        }] if p_item.get("story_id") else [],
+                        "amount": float(p_item.get("amount", 0.0) or 0.0),
+                        "method": p_item.get("method", "UPI"),
+                        "status": p_item.get("status", "paid"),
+                        "date": p_item.get("date"),
+                        "source": p_item.get("source", "miniapp")
+                    }
+                else:
+                    g = grouped_payments[oid]
+                    sid = p_item.get("story_id")
+                    if sid and sid not in g["story_ids"]:
+                        g["story_ids"].append(sid)
+                        g["story_names"].append(p_item.get("story_name", sid))
+                        g["stories"].append({
+                            "story_id": sid,
+                            "story_name": p_item.get("story_name", sid)
+                        })
+                    curr_amt = float(p_item.get("amount", 0.0) or 0.0)
+                    if curr_amt > 0:
+                        g["amount"] = max(g["amount"], curr_amt)
+
+            final_payments = []
+            for oid, g in grouped_payments.items():
+                if len(g["story_names"]) > 1:
+                    g["story_name"] = f"{', '.join(g['story_names'][:2])} (+{len(g['story_names']) - 2} more)" if len(g['story_names']) > 3 else ", ".join(g["story_names"])
+                elif len(g["story_names"]) == 1:
+                    g["story_name"] = g["story_names"][0]
+                else:
+                    g["story_name"] = "Store Purchase"
+                final_payments.append(g)
+
+            data["payments"] = final_payments
+            payments = final_payments
+
             paid_payments = [p for p in payments if p["status"] in ["paid", "approved", "delivered", "completed", "success"]]
             pending_payments = [p for p in payments if p["status"] in ["pending", "processing", "waiting_screenshot"]]
 
@@ -5488,7 +5539,7 @@ async def fetch_processed_buyers_data(arya_db):
                 "amount": user_amount,
                 "status": user_status,
                 "source": data["source"],
-                "payments": sorted(payments, key=lambda x: x["date"], reverse=True),
+                "payments": sorted(payments, key=lambda x: str(x.get("date", "")), reverse=True),
                 "date": data["date"],
                 "joined_at": data.get("joined_at")
             })
