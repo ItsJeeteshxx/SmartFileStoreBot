@@ -8118,12 +8118,25 @@ class BroadcastPayload(BaseModel):
 async def _send_tg_bot_message(bot_token: str, chat_id: Union[int, str], text: str, media_url: str = None, media_type: str = None, buttons: list = None) -> dict:
     import aiohttp
     
+    clean_token = str(bot_token or "").strip()
+    if clean_token.lower().startswith("bot"):
+        clean_token = clean_token[3:].strip()
+
+    if not clean_token:
+        logger.error(f"📢 [Broadcast Telegram API Error] Bot token is empty for chat_id={chat_id}")
+        return {"success": False, "error": "Bot token is empty"}
+
     reply_markup = None
     if buttons and isinstance(buttons, list) and len(buttons) > 0:
         keyboard_rows = []
         for btn in buttons:
-            if isinstance(btn, dict) and btn.get("label") and btn.get("url"):
-                keyboard_rows.append([{"text": str(btn["label"]), "url": str(btn["url"])}])
+            if isinstance(btn, dict) and btn.get("label"):
+                label_str = str(btn["label"]).strip()
+                url_str = str(btn.get("url") or "").strip()
+                if label_str and url_str:
+                    if not (url_str.startswith("http://") or url_str.startswith("https://") or url_str.startswith("tg://")):
+                        url_str = f"https://{url_str}"
+                    keyboard_rows.append([{"text": label_str, "url": url_str}])
         if keyboard_rows:
             reply_markup = {"inline_keyboard": keyboard_rows}
 
@@ -8139,31 +8152,50 @@ async def _send_tg_bot_message(bot_token: str, chat_id: Union[int, str], text: s
         m_type = str(media_type or "image").lower()
         if "video" in m_type:
             method_name = "sendVideo"
-            payload["video"] = media_url
+            payload["video"] = str(media_url).strip()
             payload["caption"] = text
         elif "doc" in m_type or "file" in m_type:
             method_name = "sendDocument"
-            payload["document"] = media_url
+            payload["document"] = str(media_url).strip()
             payload["caption"] = text
         else:
             method_name = "sendPhoto"
-            payload["photo"] = media_url
+            payload["photo"] = str(media_url).strip()
             payload["caption"] = text
     else:
         payload["text"] = text
 
-    url = f"https://api.telegram.org/bot{bot_token}/{method_name}"
+    url = f"https://api.telegram.org/bot{clean_token}/{method_name}"
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=12) as resp:
+            async with session.post(url, json=payload, timeout=15) as resp:
                 res_data = await resp.json()
                 if res_data.get("ok"):
-                    return {"success": True, "message_id": res_data.get("result", {}).get("message_id")}
+                    msg_id = res_data.get("result", {}).get("message_id")
+                    logger.info(f"📢 [Broadcast Telegram API Success] Delivered to {chat_id} (msg_id: {msg_id})")
+                    return {"success": True, "message_id": msg_id}
                 else:
                     err_desc = res_data.get("description", "Unknown Telegram API error")
+                    logger.warning(f"📢 [Broadcast Telegram API Failed] chat_id={chat_id}: {err_desc}")
+                    
+                    # If HTML formatting failed, retry without HTML parse_mode
+                    if "can't parse entities" in err_desc.lower() or "parse" in err_desc.lower():
+                        logger.info(f"📢 [Broadcast Telegram API] Retrying without HTML parse_mode for {chat_id}...")
+                        payload.pop("parse_mode", None)
+                        async with session.post(url, json=payload, timeout=15) as retry_resp:
+                            retry_data = await retry_resp.json()
+                            if retry_data.get("ok"):
+                                msg_id = retry_data.get("result", {}).get("message_id")
+                                logger.info(f"📢 [Broadcast Telegram API Success - Plain Retry] Delivered to {chat_id} (msg_id: {msg_id})")
+                                return {"success": True, "message_id": msg_id}
+                            else:
+                                err_desc2 = retry_data.get("description", err_desc)
+                                return {"success": False, "error": err_desc2}
+                                
                     return {"success": False, "error": err_desc}
     except Exception as err:
+        logger.error(f"📢 [Broadcast Telegram API Exception] chat_id={chat_id}: {err}")
         return {"success": False, "error": str(err)}
 
 async def _resolve_bot_token_for_broadcast(arya_db, user_id: int = None) -> str:
@@ -8172,11 +8204,23 @@ async def _resolve_bot_token_for_broadcast(arya_db, user_id: int = None) -> str:
     if user_id:
         try:
             token = await get_customer_bot_token(user_id)
+        except Exception as e:
+            logger.warning(f"📢 [Broadcast Token] Failed resolving user {user_id} token: {e}")
+            
+    if not token:
+        token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or os.environ.get("MGMT_BOT_TOKEN", "")
+        
+    if not token and arya_db:
+        try:
+            bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
+            if bot_doc:
+                token = bot_doc.get("token", "")
         except Exception:
             pass
-    if not token:
-        token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "")
-    return token
+            
+    token_str = str(token or "").strip()
+    logger.info(f"📢 [Broadcast Token Resolved] User: {user_id} | Token Prefix: {token_str[:10]}...")
+    return token_str
 
 async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[int]:
     target_ids = set()
@@ -8189,13 +8233,13 @@ async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[in
         ).to_list(length=100000)
         for o in paid_orders:
             uid = o.get("user_id")
-            if uid and str(uid).isdigit():
+            if uid and str(uid).isdigit() and int(uid) > 0:
                 target_ids.add(int(uid))
 
         prem_pur = await arya_db.db.premium_purchases.find({}, {"user_id": 1}).to_list(length=100000)
         for p in prem_pur:
             uid = p.get("user_id")
-            if uid and str(uid).isdigit():
+            if uid and str(uid).isdigit() and int(uid) > 0:
                 target_ids.add(int(uid))
 
         users = await arya_db.db.users.find(
@@ -8204,7 +8248,7 @@ async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[in
         ).to_list(length=100000)
         for u in users:
             uid = u.get("id")
-            if uid and str(uid).isdigit():
+            if uid and str(uid).isdigit() and int(uid) > 0:
                 target_ids.add(int(uid))
 
     elif mode == "pending":
@@ -8216,7 +8260,7 @@ async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[in
         ).to_list(length=100000)
         for o in pending_orders:
             uid = o.get("user_id")
-            if uid and str(uid).isdigit() and int(uid) not in paid_uids:
+            if uid and str(uid).isdigit() and int(uid) not in paid_uids and int(uid) > 0:
                 target_ids.add(int(uid))
 
         pending_checkouts = await arya_db.db.premium_checkout.find(
@@ -8225,38 +8269,59 @@ async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[in
         ).to_list(length=100000)
         for c in pending_checkouts:
             uid = c.get("user_id")
-            if uid and str(uid).isdigit() and int(uid) not in paid_uids:
+            if uid and str(uid).isdigit() and int(uid) not in paid_uids and int(uid) > 0:
                 target_ids.add(int(uid))
 
     else:  # "all"
         users = await arya_db.db.users.find({}, {"id": 1}).to_list(length=200000)
         for u in users:
             uid = u.get("id")
-            if uid and str(uid).isdigit():
+            if uid and str(uid).isdigit() and int(uid) > 0:
                 target_ids.add(int(uid))
 
         prem_users = await arya_db.db.premium_users.find({}, {"id": 1, "telegram_id": 1}).to_list(length=200000)
         for u in prem_users:
             uid = u.get("id") or u.get("telegram_id")
-            if uid and str(uid).isdigit():
+            if uid and str(uid).isdigit() and int(uid) > 0:
                 target_ids.add(int(uid))
 
-    return list(target_ids)
+        orders = await arya_db.db.orders.find({}, {"user_id": 1}).to_list(length=200000)
+        for o in orders:
+            uid = o.get("user_id")
+            if uid and str(uid).isdigit() and int(uid) > 0:
+                target_ids.add(int(uid))
+
+        purchases = await arya_db.db.premium_purchases.find({}, {"user_id": 1}).to_list(length=200000)
+        for p in purchases:
+            uid = p.get("user_id")
+            if uid and str(uid).isdigit() and int(uid) > 0:
+                target_ids.add(int(uid))
+
+    res_list = list(target_ids)
+    logger.info(f"📢 [Broadcast Audience Filter '{mode}'] Resolved {len(res_list)} target user IDs")
+    return res_list
 
 @api_router.post("/admin/broadcast/single")
 async def send_single_broadcast(data: BroadcastPayload):
     if not is_admin(str(data.telegram_id)):
+        logger.warning(f"📢 [Broadcast Single] Unauthorized access attempt by {data.telegram_id}")
         raise HTTPException(status_code=403, detail="Not authorized")
-    if not data.target_user_id:
+        
+    target_raw = data.target_user_id
+    if not target_raw:
+        logger.warning("📢 [Broadcast Single] Missing target_user_id")
         raise HTTPException(status_code=400, detail="target_user_id is required")
 
     arya_db = app.state.db
-    target_uid = int(data.target_user_id) if str(data.target_user_id).isdigit() else 0
+    target_uid = int(target_raw) if str(target_raw).isdigit() else 0
     if not target_uid:
+        logger.warning(f"📢 [Broadcast Single] Invalid target user ID: {target_raw}")
         raise HTTPException(status_code=400, detail="Invalid target user ID")
 
+    logger.info(f"📢 [Broadcast Single] Initiating single broadcast from Admin {data.telegram_id} to User {target_uid}")
     bot_token = await _resolve_bot_token_for_broadcast(arya_db, target_uid)
     if not bot_token:
+        logger.error(f"📢 [Broadcast Single] Bot token missing for target user {target_uid}")
         raise HTTPException(status_code=500, detail="Bot token not configured")
 
     res = await _send_tg_bot_message(
@@ -8267,18 +8332,23 @@ async def send_single_broadcast(data: BroadcastPayload):
         media_type=data.media_type,
         buttons=data.buttons
     )
+    logger.info(f"📢 [Broadcast Single Result] User {target_uid} -> {res}")
     return res
 
 @api_router.post("/admin/broadcast/send")
 async def start_bulk_broadcast(data: BroadcastPayload):
     if not is_admin(str(data.telegram_id)):
+        logger.warning(f"📢 [Broadcast Bulk] Unauthorized access attempt by {data.telegram_id}")
         raise HTTPException(status_code=403, detail="Not authorized")
 
     arya_db = app.state.db
     audience_mode = data.audience or "all"
+    logger.info(f"📢 [Broadcast Bulk] Initiating bulk broadcast by Admin {data.telegram_id} (audience filter: '{audience_mode}')")
+    
     target_ids = await resolve_broadcast_audience_ids(arya_db, audience_mode)
 
     if not target_ids:
+        logger.warning(f"📢 [Broadcast Bulk] No target users found for audience filter '{audience_mode}'")
         return {"success": False, "detail": f"No users found for audience filter '{audience_mode}'"}
 
     import uuid
@@ -8297,6 +8367,7 @@ async def start_bulk_broadcast(data: BroadcastPayload):
     }
     _broadcast_jobs[job_id] = job_info
 
+    logger.info(f"📢 [Broadcast Bulk Launched] Job ID: {job_id} | Total Targets: {len(target_ids)}")
     asyncio.create_task(_run_bulk_broadcast_worker(job_id, target_ids, data, arya_db))
 
     return {"success": True, "job_id": job_id, "total": len(target_ids), "audience": audience_mode}
@@ -8304,18 +8375,23 @@ async def start_bulk_broadcast(data: BroadcastPayload):
 async def _run_bulk_broadcast_worker(job_id: str, target_ids: List[int], data: BroadcastPayload, arya_db):
     job = _broadcast_jobs.get(job_id)
     if not job:
+        logger.error(f"📢 [Broadcast Worker Error] Job {job_id} not found in _broadcast_jobs")
         return
 
     bot_token = await _resolve_bot_token_for_broadcast(arya_db)
     if not bot_token:
         job["status"] = "failed"
         job["logs"].append("Error: Bot token missing")
+        logger.error(f"📢 [Broadcast Worker Error] Job {job_id} failed: Bot token missing")
         return
 
     total = len(target_ids)
+    logger.info(f"📢 [Broadcast Worker Started] Job {job_id} sending to {total} users...")
+    
     for idx, uid in enumerate(target_ids):
         if job.get("status") == "cancelled":
             job["logs"].append("Broadcast cancelled by admin")
+            logger.info(f"📢 [Broadcast Worker] Job {job_id} cancelled by admin at {idx}/{total}")
             break
 
         res = await _send_tg_bot_message(
@@ -8338,6 +8414,7 @@ async def _run_bulk_broadcast_worker(job_id: str, target_ids: List[int], data: B
         job["progress"] = round((processed / total) * 100, 1)
 
         if processed % 25 == 0:
+            logger.info(f"📢 [Broadcast Worker Progress] Job {job_id}: {processed}/{total} processed ({job['progress']}%) — Sent: {job['sent']}, Failed: {job['failed']}")
             await asyncio.sleep(1.0)
         else:
             await asyncio.sleep(0.05)
@@ -8346,6 +8423,7 @@ async def _run_bulk_broadcast_worker(job_id: str, target_ids: List[int], data: B
         job["status"] = "completed"
         job["progress"] = 100.0
         job["logs"].append(f"Broadcast Completed! Delivered: {job['sent']}, Failed: {job['failed']}")
+        logger.info(f"🎉 📢 [Broadcast Worker Completed] Job {job_id} Finished! Total: {total} | Delivered: {job['sent']} | Failed: {job['failed']}")
 
 @api_router.get("/admin/broadcast/status/{job_id}")
 async def get_broadcast_status(job_id: str, telegram_id: str):
