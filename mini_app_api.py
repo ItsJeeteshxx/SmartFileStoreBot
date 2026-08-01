@@ -6124,9 +6124,19 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
     from PIL import Image
 
     user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
-    if not is_admin(str(telegram_id)):
-        raise HTTPException(status_code=403, detail="Not authorized")
-
+    try:
+        contents = await file.read()
+        
+        import asyncio
+        import os
+        import uuid
+        from decouple import config
+        
+        r2_account_id = config("R2_ACCOUNT_ID", default="")
+        r2_access_key = config("R2_ACCESS_KEY_ID", default="")
+        r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
+        r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
+        r2_domain = config("R2_CUSTOM_DOMAIN", default="")
         raw_filename = getattr(file, "filename", "file.bin") or "file.bin"
         
         def process_and_upload(data_bytes, filename_input):
