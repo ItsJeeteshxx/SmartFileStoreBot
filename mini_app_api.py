@@ -8364,29 +8364,7 @@ async def _send_tg_bot_message(bot_token: str, chat_id: Union[int, str], text: s
         logger.error(f"📢 [Broadcast Telegram API Exception] chat_id={chat_id}: {err}")
         return {"success": False, "error": str(err)}
 
-async def _resolve_bot_token_for_broadcast(arya_db, user_id: int = None) -> str:
-    from AryaPremium.config import Config
-    token = ""
-    if user_id:
-        try:
-            token = await get_customer_bot_token(user_id)
-        except Exception as e:
-            logger.warning(f"📢 [Broadcast Token] Failed resolving user {user_id} token: {e}")
-            
-    if not token:
-        token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or os.environ.get("MGMT_BOT_TOKEN", "")
-        
-    if not token and arya_db:
-        try:
-            bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
-            if bot_doc:
-                token = bot_doc.get("token", "")
-        except Exception:
-            pass
-            
-    token_str = str(token or "").strip()
-    logger.info(f"📢 [Broadcast Token Resolved] User: {user_id} | Token Prefix: {token_str[:10]}...")
-    return token_str
+
 
 async def resolve_broadcast_audience_ids(arya_db, audience_mode: str) -> List[int]:
     target_ids = set()
@@ -8544,8 +8522,8 @@ async def _run_bulk_broadcast_worker(job_id: str, target_ids: List[int], data: B
         logger.error(f"📢 [Broadcast Worker Error] Job {job_id} not found in _broadcast_jobs")
         return
 
-    bot_token = await _resolve_bot_token_for_broadcast(arya_db)
-    if not bot_token:
+    default_delivery_token = await _resolve_bot_token_for_broadcast(arya_db)
+    if not default_delivery_token:
         job["status"] = "failed"
         job["logs"].append("Error: Bot token missing")
         logger.error(f"📢 [Broadcast Worker Error] Job {job_id} failed: Bot token missing")
@@ -8560,8 +8538,10 @@ async def _run_bulk_broadcast_worker(job_id: str, target_ids: List[int], data: B
             logger.info(f"📢 [Broadcast Worker] Job {job_id} cancelled by admin at {idx}/{total}")
             break
 
+        user_bot_token = (await _resolve_bot_token_for_broadcast(arya_db, uid)) or default_delivery_token
+
         res = await _send_tg_bot_message(
-            bot_token=bot_token,
+            bot_token=user_bot_token,
             chat_id=uid,
             text=data.message,
             media_url=data.media_url,
