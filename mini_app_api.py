@@ -5373,14 +5373,31 @@ async def fetch_processed_buyers_data(arya_db):
 
         def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
             raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
+            ref = (doc.get("reference") or doc.get("utr") or doc.get("payment_id") or doc.get("transaction_id")) if isinstance(doc, dict) else None
+
             if raw_oid:
                 oid_str = str(raw_oid).strip()
-                if oid_str and not any(oid_str.startswith(p) for p in ("checkout_", "purchase_", "order_", "uid_", "OD_", "OD-")):
-                    return oid_str
-            from datetime import datetime as _dt
-            import random
+                if oid_str and not oid_str.startswith("uid_"):
+                    if oid_str.startswith("AB-") or oid_str.startswith("AM-") or oid_str.startswith("ORD-") or oid_str.startswith("PAY-"):
+                        return oid_str
+                    clean_base = oid_str.replace("checkout_", "").replace("purchase_", "").replace("order_", "").replace("OD_", "").replace("OD-", "").strip()
+                    if clean_base:
+                        pfx = "AB" if "bot" in str(source).lower() else "AM"
+                        return f"{pfx}-{clean_base}"
+
+            if ref:
+                ref_str = str(ref).strip().upper()
+                if ref_str:
+                    pfx = "AB" if "bot" in str(source).lower() else "AM"
+                    return f"{pfx}-{uid_str}-{ref_str[-8:]}"
+
+            date_val = (doc.get("purchased_at") or doc.get("created_at") or "") if isinstance(doc, dict) else ""
+            date_part = date_val.strftime("%d%m") if isinstance(date_val, datetime) else "0108"
+            
+            doc_id_str = str(doc.get("_id", "")) if isinstance(doc, dict) else ""
+            stable_hash = str(abs(hash(doc_id_str or str(story_ids))) % 90000 + 10000)
             pfx = "AB" if "bot" in str(source).lower() else "AM"
-            return f"{pfx}-{uid_str}-{_dt.now().strftime('%d%m')}-{random.randint(10000, 99999)}"
+            return f"{pfx}-{uid_str}-{date_part}-{stable_hash}"
 
         def get_or_create_buyer(uid_str, fallback_doc=None, fallback_source="miniapp"):
             if uid_str not in buyers_map:
@@ -5453,6 +5470,7 @@ async def fetch_processed_buyers_data(arya_db):
 
             b["payments"].append({
                 "order_id": _clean_order_id_value(p, uid_str, [story_id_str], source=source_label),
+                "reference": str(p.get("reference") or p.get("utr") or p.get("payment_id") or p.get("order_id") or "").strip(),
                 "story_id": story_id_str,
                 "story_name": sname,
                 "amount": amt,
@@ -5515,6 +5533,7 @@ async def fetch_processed_buyers_data(arya_db):
 
             b["payments"].append({
                 "order_id": _clean_order_id_value(doc, uid_str, story_ids, source=source_label),
+                "reference": str(doc.get("reference") or doc.get("utr") or doc.get("payment_id") or doc.get("order_id") or "").strip(),
                 "story_id": story_ids[0] if story_ids else "",
                 "story_name": ", ".join(story_names) if story_names else "Store Order",
                 "amount": amt,
@@ -5566,6 +5585,7 @@ async def fetch_processed_buyers_data(arya_db):
 
             b["payments"].append({
                 "order_id": _clean_order_id_value(c, uid_str, [story_id_str], source="bot"),
+                "reference": str(c.get("reference") or c.get("utr") or c.get("payment_id") or c.get("order_id") or "").strip(),
                 "story_id": story_id_str,
                 "story_name": sname,
                 "amount": amt,
@@ -5586,17 +5606,31 @@ async def fetch_processed_buyers_data(arya_db):
             payments = data["payments"]
             if not payments: continue
 
-            # Group payments by order_id so multi-story cart checkouts (where 1 cart order generates 1 purchase record per story)
-            # appear as ONE single order entry in Admin Panel with the true order amount (not amount multiplied by story count).
+            # Group payments by order_id / reference / date-minute so multi-story cart checkouts
+            # appear as ONE single order entry in Admin Panel with true order total (no duplicate revenue multiplication).
             grouped_payments = {}
             for p_item in payments:
+                ref = str(p_item.get("reference") or "").strip()
                 oid = str(p_item.get("order_id") or "").strip()
-                if not oid or oid.startswith("uid_"):
-                    oid = f"single_{p_item.get('story_id')}_{p_item.get('date')}"
+                date_str = str(p_item.get("date") or "")
+                date_minute = date_str[:16] if len(date_str) >= 16 else date_str
                 
-                if oid not in grouped_payments:
-                    grouped_payments[oid] = {
-                        "order_id": oid,
+                # Determine stable grouping key for multi-story cart checkouts
+                if ref and len(ref) > 3 and not ref.startswith("uid_"):
+                    group_key = f"ref_{ref}"
+                elif oid and not oid.startswith("uid_") and not oid.startswith("single_"):
+                    parts = oid.split("-")
+                    if len(parts) >= 4 and parts[0] in ("AB", "AM") and parts[1].isdigit() and parts[2].isdigit():
+                        group_key = f"order_{parts[0]}-{parts[1]}-{parts[2]}"
+                    else:
+                        group_key = f"order_{oid}"
+                else:
+                    group_key = f"batch_{p_item.get('source')}_{p_item.get('method')}_{date_minute}"
+
+                if group_key not in grouped_payments:
+                    grouped_payments[group_key] = {
+                        "order_id": oid or f"AM-{uid_str}-{group_key[-8:]}",
+                        "reference": ref,
                         "story_id": p_item.get("story_id", ""),
                         "story_ids": [p_item.get("story_id")] if p_item.get("story_id") else [],
                         "story_names": [p_item.get("story_name")] if p_item.get("story_name") else [],
@@ -5604,6 +5638,7 @@ async def fetch_processed_buyers_data(arya_db):
                             "story_id": p_item.get("story_id", ""),
                             "story_name": p_item.get("story_name", "")
                         }] if p_item.get("story_id") else [],
+                        "raw_amounts": [float(p_item.get("amount", 0.0) or 0.0)],
                         "amount": float(p_item.get("amount", 0.0) or 0.0),
                         "method": p_item.get("method", "UPI"),
                         "status": p_item.get("status", "paid"),
@@ -5611,7 +5646,7 @@ async def fetch_processed_buyers_data(arya_db):
                         "source": p_item.get("source", "miniapp")
                     }
                 else:
-                    g = grouped_payments[oid]
+                    g = grouped_payments[group_key]
                     sid = p_item.get("story_id")
                     if sid and sid not in g["story_ids"]:
                         g["story_ids"].append(sid)
@@ -5621,11 +5656,19 @@ async def fetch_processed_buyers_data(arya_db):
                             "story_name": p_item.get("story_name", sid)
                         })
                     curr_amt = float(p_item.get("amount", 0.0) or 0.0)
-                    if curr_amt > 0:
-                        g["amount"] = max(g["amount"], curr_amt)
+                    g["raw_amounts"].append(curr_amt)
 
             final_payments = []
-            for oid, g in grouped_payments.items():
+            for group_key, g in grouped_payments.items():
+                raw_amts = g.pop("raw_amounts", [g["amount"]])
+                if raw_amts:
+                    # Fix duplicate revenue: if all items in this grouped order share the same order total amount (e.g. [524.0, 524.0, 524.0, 524.0]),
+                    # use the single 524.0. If distinct item prices were stored, sum them up.
+                    if all(a == raw_amts[0] for a in raw_amts):
+                        g["amount"] = raw_amts[0]
+                    else:
+                        g["amount"] = sum(raw_amts)
+
                 if len(g["story_names"]) > 1:
                     g["story_name"] = f"{', '.join(g['story_names'][:2])} (+{len(g['story_names']) - 2} more)" if len(g['story_names']) > 3 else ", ".join(g["story_names"])
                 elif len(g["story_names"]) == 1:
