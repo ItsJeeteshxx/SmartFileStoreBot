@@ -1212,12 +1212,30 @@ async def _run_job(jid, uid, bot):
             except Exception as e:
                 logger.warning(f"[MG {jid}] collect: {e}")
                 current += 200; continue
+
+            batch_added = 0
             for m in sorted([x for x in msgs if x and not x.empty and not x.service], key=lambda x: x.id):
                 if not m.media: continue
                 for attr in ('audio','video','document','voice','video_note'):
                     if getattr(m, attr, None):
                         all_msgs_ordered.append(m)
+                        batch_added += 1
                         break
+
+            # Fallback: if get_messages returned all-empty, try get_chat_history for this range
+            if batch_added == 0:
+                try:
+                    async for m in client.get_chat_history(from_chat, offset_id=batch_end + 1, limit=len(ids)):
+                        if not m or m.empty or m.service or m.id < current: break
+                        if m.id > batch_end: continue
+                        if not m.media: continue
+                        for attr in ('audio','video','document','voice','video_note'):
+                            if getattr(m, attr, None):
+                                all_msgs_ordered.append(m)
+                                break
+                except Exception as fb_e:
+                    logger.warning(f"[MG {jid}] collect fallback: {fb_e}")
+
             current = batch_end + 1
             await asyncio.sleep(0.2)
 
@@ -2555,28 +2573,32 @@ async def _create_flow(bot, uid, mtype="audio"):
         try: scan_msg = await bot.send_message(uid, "<i>Scanning source messages (calculating duration and size)...</i>")
         except: pass
         tot_bytes = 0
-        tot_secs = 0
+        tot_secs  = 0
         valid_count = 0
         try:
-            ch_id = int(from_chat) if str(from_chat).lstrip("-").isdigit() else from_chat
+            ch_id   = int(from_chat) if str(from_chat).lstrip("-").isdigit() else from_chat
             msg_ids = list(range(sid, eid + 1))
-            
-            # Start UI clone bot for scan so we don't hit Pyrogram channel invalid error 
-            ui_client = await start_clone_bot(_CLIENT.client(acc))
+
+            # Always use the main account client (same one that will do the actual download)
+            scan_client = await start_clone_bot(_CLIENT.client(acc))
             try:
-                await _safe_resolve_peer(ui_client, ch_id)
-                
+                # Force peer resolution — ensures channel is in the session cache
+                await _safe_resolve_peer(scan_client, ch_id)
+
                 for i in range(0, len(msg_ids), 200):
                     chunk = msg_ids[i:i + 200]
                     while True:
                         try:
-                            msgs = await ui_client.get_messages(ch_id, chunk)
+                            msgs = await scan_client.get_messages(ch_id, chunk)
                             break
+                        except FloodWait as _fw:
+                            await asyncio.sleep(_fw.value + 2)
+                            continue
                         except Exception as e:
                             from plugins.utils import format_tg_error
                             err_msg = format_tg_error(e, "Scan Error")
                             try:
-                                ask_res = await bot.ask(uid, f"{err_msg}\n\n<i>Fix the issue (e.g. ensure bot/clone is Admin), then click Retry!</i>", 
+                                ask_res = await bot.ask(uid, f"{err_msg}\n\n<i>Fix the issue (e.g. ensure bot/clone is Admin), then click Retry!</i>",
                                     reply_markup=ReplyKeyboardMarkup([["🔄 Retry Scan"], ["⛔ Cancel Process"]], resize_keyboard=True), timeout=600)
                                 if not ask_res.text or any(x in ask_res.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']):
                                     return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
@@ -2586,6 +2608,9 @@ async def _create_flow(bot, uid, mtype="audio"):
                                 return await bot.send_message(uid, "<b>‣ Scan Error:</b> Timed out waiting for retry.", reply_markup=ReplyKeyboardRemove())
 
                     if not isinstance(msgs, list): msgs = [msgs]
+
+                    # Count only non-empty messages with media
+                    chunk_valid = 0
                     for m_ in msgs:
                         if not m_ or m_.empty: continue
                         media_obj = None
@@ -2593,10 +2618,31 @@ async def _create_flow(bot, uid, mtype="audio"):
                             media_obj = getattr(m_, attr, None)
                             if media_obj: break
                         if media_obj:
-                            tot_bytes += getattr(media_obj, 'file_size', 0) or 0
-                            dur = getattr(media_obj, 'duration', 0) or 0
-                            tot_secs += dur
+                            tot_bytes   += getattr(media_obj, 'file_size', 0) or 0
+                            tot_secs    += getattr(media_obj, 'duration', 0) or 0
                             valid_count += 1
+                            chunk_valid += 1
+
+                    # ── Fallback: if get_messages returned all-empty for this chunk,
+                    #    try iter_messages with offset_id (works better for some private channels)
+                    if chunk_valid == 0 and chunk:
+                        try:
+                            min_id = chunk[0] - 1
+                            max_id = chunk[-1]
+                            async for m_ in scan_client.get_chat_history(ch_id, offset_id=max_id + 1, limit=len(chunk)):
+                                if not m_ or m_.empty or m_.id < chunk[0]: break
+                                if m_.id > max_id: continue
+                                media_obj = None
+                                for attr in ('audio', 'video', 'document', 'voice', 'video_note'):
+                                    media_obj = getattr(m_, attr, None)
+                                    if media_obj: break
+                                if media_obj:
+                                    tot_bytes   += getattr(media_obj, 'file_size', 0) or 0
+                                    tot_secs    += getattr(media_obj, 'duration', 0) or 0
+                                    valid_count += 1
+                        except Exception as fb_err:
+                            logger.warning(f"[MG scan fallback] iter_messages failed: {fb_err}")
+
                 if scan_msg: await scan_msg.delete()
             finally:
                 pass
