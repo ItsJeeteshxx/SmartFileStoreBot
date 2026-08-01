@@ -6393,6 +6393,18 @@ async def get_support_chat(telegram_id: str):
     ticket, user_doc = await asyncio.gather(ticket_query, user_query)
     
     if not ticket:
+        # DO NOT auto-create support tickets for banned or blocked users!
+        if await check_user_is_banned(arya_db, uid):
+            return {
+                "ticket_id": "banned",
+                "status": "Closed",
+                "chat_language": "en",
+                "agent_typing": False,
+                "user_typing": False,
+                "unread": 0,
+                "messages": []
+            }
+
         # Create a new active chat ticket with a default welcome message from the agent
         ticket_doc = {
             "user_id": uid,
@@ -6735,6 +6747,78 @@ async def update_support_status(payload: TicketStatusPayload):
         {"$set": update_payload}
     )
     return {"success": True}
+
+
+class BulkTicketStatusPayload(BaseModel):
+    telegram_id: str
+    ticket_ids: List[str]
+    status: str
+
+@api_router.post("/admin/support/bulk-status")
+async def bulk_update_support_status(payload: BulkTicketStatusPayload):
+    """Admin bulk updates ticket status for multiple selected support tickets."""
+    if not is_admin(str(payload.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    if not payload.ticket_ids:
+        return {"success": True, "modified": 0}
+
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    from datetime import datetime, timezone
+    
+    obj_ids = []
+    str_ids = []
+    for tid in payload.ticket_ids:
+        tid_s = str(tid).strip()
+        if not tid_s: continue
+        str_ids.append(tid_s)
+        if len(tid_s) == 24:
+            try:
+                obj_ids.append(ObjectId(tid_s))
+            except Exception:
+                pass
+
+    query = {"$or": [{"_id": {"$in": obj_ids}}, {"ticket_id": {"$in": str_ids}}]}
+    update_payload = {"status": payload.status, "updated_at": datetime.now(timezone.utc)}
+    if payload.status.lower() in ("resolved", "closed"):
+        update_payload["user_has_new_reply"] = False
+
+    res = await arya_db.db.premium_feedback.update_many(query, {"$set": update_payload})
+    return {"success": True, "modified": res.modified_count}
+
+
+class BulkTicketDeletePayload(BaseModel):
+    telegram_id: str
+    ticket_ids: List[str]
+
+@api_router.post("/admin/support/bulk-delete")
+async def bulk_delete_support_tickets(payload: BulkTicketDeletePayload):
+    """Admin bulk deletes multiple selected support tickets."""
+    if not is_admin(str(payload.telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    if not payload.ticket_ids:
+        return {"success": True, "deleted": 0}
+
+    arya_db = app.state.db
+    from bson.objectid import ObjectId
+    
+    obj_ids = []
+    str_ids = []
+    for tid in payload.ticket_ids:
+        tid_s = str(tid).strip()
+        if not tid_s: continue
+        str_ids.append(tid_s)
+        if len(tid_s) == 24:
+            try:
+                obj_ids.append(ObjectId(tid_s))
+            except Exception:
+                pass
+
+    query = {"$or": [{"_id": {"$in": obj_ids}}, {"ticket_id": {"$in": str_ids}}]}
+    res = await arya_db.db.premium_feedback.delete_many(query)
+    return {"success": True, "deleted": res.deleted_count}
 
 
 class TicketNotesPayload(BaseModel):
