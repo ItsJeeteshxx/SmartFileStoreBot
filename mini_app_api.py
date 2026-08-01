@@ -4491,6 +4491,13 @@ async def submit_support(
 
     arya_db = app.state.db
     uid = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
+
+    # Check if user is banned or blocked — completely ignore ticket creation
+    if isinstance(uid, int):
+        banned = await arya_db.db.banned_users.find_one({"user_id": uid})
+        if banned:
+            logger.info(f"Ignored support ticket submission from banned user {uid}")
+            return {"success": True, "message": "Support request received", "ticket_id": "IGN-BANNED"}
     
     # 1. Upload file if provided
     file_url = None
