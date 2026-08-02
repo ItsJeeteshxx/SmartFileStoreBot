@@ -5684,6 +5684,47 @@ async def fetch_processed_buyers_data(arya_db):
                     g["story_name"] = "Store Purchase"
                 final_payments.append(g)
 
+            # ── Smart Payment Deduplication Pass ──
+            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI').
+            # Groups payments by (canonical_story_key, date_day) per user and keeps 1 clean canonical payment record!
+            dedup_payments = {}
+            specific_gateways = ("CASHFREE", "CASHFREE_UPI", "UPI_MANUAL", "UPI_MANUAL_MINIAPP", "RAZORPAY", "OXAPAY", "DODO_PAYMENTS", "PAYU", "PAYTM")
+
+            for p_item in final_payments:
+                s_key = str(p_item.get("story_id") or p_item.get("story_name") or "").strip()
+                s_canon = sid_to_canonical.get(s_key, s_key)
+                p_date = str(p_item.get("date") or "")[:10]  # YYYY-MM-DD
+                p_status = str(p_item.get("status", "")).lower()
+
+                # Build unique transaction deduplication key per user: (story + date_day)
+                uniq_key = f"{s_canon}_{p_date}" if s_canon else str(p_item.get("order_id"))
+
+                if uniq_key not in dedup_payments:
+                    dedup_payments[uniq_key] = p_item
+                else:
+                    existing = dedup_payments[uniq_key]
+                    e_status = str(existing.get("status", "")).lower()
+
+                    # 1. If existing is NOT paid, but new p_item IS paid, replace with paid!
+                    if p_status in ("paid", "approved", "delivered", "completed", "success") and e_status not in ("paid", "approved", "delivered", "completed", "success"):
+                        dedup_payments[uniq_key] = p_item
+                        continue
+
+                    # 2. If both are paid (or same status), prefer the specific gateway method!
+                    m_existing = str(existing.get("method", "")).upper()
+                    m_new = str(p_item.get("method", "")).upper()
+
+                    if any(g in m_new for g in specific_gateways) and not any(g in m_existing for g in specific_gateways):
+                        existing["method"] = m_new
+                        if p_item.get("source"): existing["source"] = p_item["source"]
+
+                    if p_item.get("reference") and not existing.get("reference"):
+                        existing["reference"] = p_item["reference"]
+
+                    if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
+                        existing["order_id"] = p_item["order_id"]
+
+            final_payments = list(dedup_payments.values())
             data["payments"] = final_payments
             payments = final_payments
 
@@ -11232,6 +11273,18 @@ async def send_purchase_receipt_to_user(order: dict):
         user_id = order.get("user_id")
         if not user_id:
             return
+
+        order_id = order.get("order_id")
+        if order_id and arya_db and hasattr(arya_db, "db"):
+            res = await arya_db.db.orders.find_one_and_update(
+                {"order_id": order_id, "receipt_sent": {"$ne": True}},
+                {"$set": {"receipt_sent": True}}
+            )
+            if not res:
+                chk = await arya_db.db.orders.find_one({"order_id": order_id, "receipt_sent": True})
+                if chk:
+                    logger.info(f"[Receipt DM] Receipt already sent for order_id={order_id}, skipping.")
+                    return
 
         try:
             from purchase_dm_helper import send_purchase_success_dm

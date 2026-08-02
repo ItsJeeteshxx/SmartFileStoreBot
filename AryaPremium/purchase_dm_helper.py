@@ -145,6 +145,27 @@ async def send_purchase_success_dm(
         if not tg_id_int:
             return
 
+        # ── Atomic Idempotency Claim Check ──
+        # Guarantees that EXACTLY ONE DM receipt is sent per order attempt across webhooks/polling/retries
+        rec_oid = order_id or (order_doc.get("order_id") if order_doc else None) or (order_doc.get("payment_id") if order_doc else None)
+        if not rec_oid:
+            s_list = story_ids or (order_doc.get("story_ids") if order_doc else [])
+            rec_oid = "_".join(str(s) for s in s_list) if s_list else "unknown"
+
+        claim_key = f"receipt_{tg_id_int}_{rec_oid}"
+        if db and hasattr(db, "db"):
+            try:
+                claim = await db.db.sent_receipts.find_one_and_update(
+                    {"_id": claim_key},
+                    {"$setOnInsert": {"user_id": tg_id_int, "sent_at": datetime.now(timezone.utc)}},
+                    upsert=True
+                )
+                if claim is not None:
+                    logger.info(f"[Receipt DM] Receipt already sent for claim_key={claim_key}, skipping duplicate DM.")
+                    return
+            except Exception as claim_err:
+                logger.warning(f"[Receipt DM] Claim check exception: {claim_err}")
+
         # Resolve Bot Token first so we can fetch live Telegram user chat info if needed
         bot_token = ""
         try:
