@@ -5696,8 +5696,9 @@ async def fetch_processed_buyers_data(arya_db):
                 p_date = str(p_item.get("date") or "")[:10]  # YYYY-MM-DD
                 p_status = str(p_item.get("status", "")).lower()
 
-                # Build unique transaction deduplication key per user: (story + date_day)
-                uniq_key = f"{s_canon}_{p_date}" if s_canon else str(p_item.get("order_id"))
+                p_oid = str(p_item.get("order_id") or p_item.get("reference") or "").strip()
+                # Build unique transaction deduplication key per user: (story + order_id + date_day)
+                uniq_key = f"{s_canon}_{p_oid}_{p_date}" if (s_canon and p_oid) else (p_oid or f"{s_canon}_{p_date}")
 
                 if uniq_key not in dedup_payments:
                     dedup_payments[uniq_key] = p_item
