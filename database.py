@@ -679,6 +679,89 @@ class Database:
         except Exception:
             return False
 
+    async def has_purchase(self, user_id: int, story_id: str) -> bool:
+        """Checks if a user has purchased a given story across users, orders, premium_purchases, and premium_checkout collections."""
+        if not user_id or not story_id:
+            return False
+        try:
+            uid_int = int(user_id) if str(user_id).isdigit() else user_id
+            uid_str = str(user_id)
+            u_filter = [uid_int, uid_str]
+            sid_str = str(story_id).strip()
+
+            story_aliases = set([sid_str])
+            try:
+                from bson.objectid import ObjectId
+                from bson.errors import InvalidId
+                story_doc = None
+                try:
+                    o_id = ObjectId(sid_str)
+                    story_doc = await self.db.premium_stories.find_one({"_id": o_id})
+                except InvalidId:
+                    pass
+                if not story_doc:
+                    story_doc = await self.db.premium_stories.find_one({"_id": sid_str})
+                if not story_doc:
+                    story_doc = await self.db.premium_stories.find_one({"story_id": sid_str})
+
+                if story_doc:
+                    story_aliases.add(str(story_doc["_id"]))
+                    if story_doc.get("story_id"):
+                        story_aliases.add(str(story_doc["story_id"]))
+            except Exception as se:
+                logger.warning(f"Error fetching story aliases in has_purchase: {se}")
+
+            story_aliases_list = list(story_aliases)
+
+            # 1. Check users collection
+            user = await self.col.find_one({"id": {"$in": u_filter}})
+            if user:
+                purchases = [str(p) for p in user.get("purchases", [])]
+                for alias in story_aliases_list:
+                    if alias in purchases:
+                        return True
+
+            # 2. Check orders collection
+            order = await self.db.orders.find_one({
+                "user_id": {"$in": u_filter},
+                "status": {"$in": ["paid", "delivered", "completed", "success"]},
+                "$or": [
+                    {"story_id": {"$in": story_aliases_list}},
+                    {"story_ids": {"$in": story_aliases_list}},
+                    {"items.id": {"$in": story_aliases_list}}
+                ]
+            })
+            if order:
+                return True
+
+            # 3. Check premium_purchases collection
+            purchase = await self.db.premium_purchases.find_one({
+                "user_id": {"$in": u_filter},
+                "$or": [
+                    {"story_id": {"$in": story_aliases_list}},
+                    {"story_ids": {"$in": story_aliases_list}}
+                ]
+            })
+            if purchase:
+                return True
+
+            # 4. Check premium_checkout collection
+            checkout = await self.db.premium_checkout.find_one({
+                "user_id": {"$in": u_filter},
+                "status": {"$in": ["approved", "completed", "paid", "success"]},
+                "$or": [
+                    {"story_id": {"$in": story_aliases_list}},
+                    {"story_ids": {"$in": story_aliases_list}}
+                ]
+            })
+            if checkout:
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Error in has_purchase: {e}")
+            return False
+
     async def auto_unblock_paid_users(self):
         """
         Scans all paid users across orders, premium_purchases, premium_checkout, and users.

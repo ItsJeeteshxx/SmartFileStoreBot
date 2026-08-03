@@ -142,21 +142,124 @@ class PremiumDatabase:
     async def update_user(self, user_id: int, data: dict):
         await self.users.update_one({"id": int(user_id)}, {"$set": data}, upsert=True)
 
-    async def has_purchase(self, user_id: int, story_id: str):
-        user = await self.get_user(user_id)
-        return story_id in user.get("purchases", [])
-        
+    async def has_purchase(self, user_id: int, story_id: str) -> bool:
+        """Checks if a user has purchased a given story across users, orders, premium_purchases, and premium_checkout collections."""
+        if not user_id or not story_id:
+            return False
+        try:
+            uid_int = int(user_id) if str(user_id).isdigit() else user_id
+            uid_str = str(user_id)
+            u_filter = [uid_int, uid_str]
+            sid_str = str(story_id).strip()
+
+            # Build list of possible story ID aliases (ObjectId string vs custom story_id)
+            story_aliases = set([sid_str])
+            try:
+                from bson.objectid import ObjectId
+                from bson.errors import InvalidId
+                story_doc = None
+                try:
+                    o_id = ObjectId(sid_str)
+                    story_doc = await self.db.premium_stories.find_one({"_id": o_id})
+                except InvalidId:
+                    pass
+                if not story_doc:
+                    story_doc = await self.db.premium_stories.find_one({"_id": sid_str})
+                if not story_doc:
+                    story_doc = await self.db.premium_stories.find_one({"story_id": sid_str})
+
+                if story_doc:
+                    story_aliases.add(str(story_doc["_id"]))
+                    if story_doc.get("story_id"):
+                        story_aliases.add(str(story_doc["story_id"]))
+            except Exception as se:
+                logger.warning(f"Error fetching story aliases in has_purchase: {se}")
+
+            story_aliases_list = list(story_aliases)
+
+            # 1. Check users collection
+            user = await self.users.find_one({"id": {"$in": u_filter}})
+            if user:
+                purchases = [str(p) for p in user.get("purchases", [])]
+                for alias in story_aliases_list:
+                    if alias in purchases:
+                        return True
+
+            # 2. Check orders collection (paid, delivered, completed, success)
+            order = await self.db.orders.find_one({
+                "user_id": {"$in": u_filter},
+                "status": {"$in": ["paid", "delivered", "completed", "success"]},
+                "$or": [
+                    {"story_id": {"$in": story_aliases_list}},
+                    {"story_ids": {"$in": story_aliases_list}},
+                    {"items.id": {"$in": story_aliases_list}}
+                ]
+            })
+            if order:
+                try:
+                    await self.add_purchase(uid_int, sid_str)
+                except Exception:
+                    pass
+                return True
+
+            # 3. Check premium_purchases collection
+            purchase = await self.db.premium_purchases.find_one({
+                "user_id": {"$in": u_filter},
+                "$or": [
+                    {"story_id": {"$in": story_aliases_list}},
+                    {"story_ids": {"$in": story_aliases_list}}
+                ]
+            })
+            if purchase:
+                try:
+                    await self.add_purchase(uid_int, sid_str)
+                except Exception:
+                    pass
+                return True
+
+            # 4. Check premium_checkout collection (approved/paid manual UPI checkout)
+            checkout = await self.db.premium_checkout.find_one({
+                "user_id": {"$in": u_filter},
+                "status": {"$in": ["approved", "completed", "paid", "success"]},
+                "$or": [
+                    {"story_id": {"$in": story_aliases_list}},
+                    {"story_ids": {"$in": story_aliases_list}}
+                ]
+            })
+            if checkout:
+                try:
+                    await self.add_purchase(uid_int, sid_str)
+                except Exception:
+                    pass
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Error in has_purchase: {e}")
+            return False
+
     async def add_purchase(self, user_id: int, story_id: str):
+        if not user_id or not story_id:
+            return
         uid_int = int(user_id) if str(user_id).isdigit() else user_id
-        await self.users.update_one({"$or": [{"id": uid_int}, {"id": str(user_id)}]}, {"$addToSet": {"purchases": str(story_id)}}, upsert=True)
+        uid_str = str(user_id)
+        sid_str = str(story_id).strip()
+
+        try:
+            await self.users.update_one({"id": uid_int}, {"$addToSet": {"purchases": sid_str}}, upsert=True)
+            if uid_str != str(uid_int):
+                await self.users.update_one({"id": uid_str}, {"$addToSet": {"purchases": sid_str}}, upsert=False)
+        except Exception as ue:
+            logger.warning(f"Failed to update users collection in add_purchase: {ue}")
+
         try:
             await self.db.premium_purchases.update_one(
-                {"user_id": uid_int, "story_id": str(story_id)},
-                {"$set": {"user_id": uid_int, "story_id": str(story_id), "created_at": datetime.now(timezone.utc)}},
+                {"user_id": uid_int, "story_id": sid_str},
+                {"$set": {"user_id": uid_int, "story_id": sid_str, "created_at": datetime.now(timezone.utc)}},
                 upsert=True
             )
-        except Exception:
-            pass
+        except Exception as pe:
+            logger.warning(f"Failed to upsert premium_purchases in add_purchase: {pe}")
 
 
     async def is_paid_user(self, user_id) -> bool:

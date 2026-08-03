@@ -2918,6 +2918,11 @@ async def _process_start(client, message):
             return await message.reply_text("❌ <b>Story not found!</b>\n\nThe link is invalid or this story has been removed.", parse_mode=enums.ParseMode.HTML)
 
         has_paid = await db.has_purchase(user_id, story_id)
+        if not has_paid and story:
+            has_paid = await db.has_purchase(user_id, str(story['_id']))
+        if not has_paid and story and story.get('story_id'):
+            has_paid = await db.has_purchase(user_id, str(story.get('story_id')))
+
         if not has_paid:
             # User doesn't actually own it — redirect to normal purchase flow
             return await message.reply_text(
