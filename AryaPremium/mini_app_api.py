@@ -5492,11 +5492,7 @@ async def fetch_processed_buyers_data(arya_db):
                 if ref and len(ref) > 3 and not ref.startswith("uid_"):
                     group_key = f"ref_{ref}"
                 elif oid and not oid.startswith("uid_") and not oid.startswith("single_"):
-                    parts = oid.split("-")
-                    if len(parts) >= 4 and parts[0] in ("AB", "AM") and parts[1].isdigit() and parts[2].isdigit():
-                        group_key = f"order_{parts[0]}-{parts[1]}-{parts[2]}"
-                    else:
-                        group_key = f"order_{oid}"
+                    group_key = f"order_{oid}"
                 else:
                     group_key = f"batch_{p_item.get('source')}_{p_item.get('method')}_{date_minute}"
 
@@ -8786,13 +8782,16 @@ async def manual_purchase(data: ManualPurchase):
                 {"id": {"$in": uid_filter}},
                 {"$addToSet": {"purchases": story_id_str}},
             )
+            now_dt = datetime.now(timezone.utc)
             purchase_record = {
                 "user_id": target_uid,
                 "story_id": story_id_str,
                 "title": story.get("story_name_en", story.get("title", "")),
                 "source": source_label,
                 "method": method_label,
-                "paid_at": datetime.now(timezone.utc).isoformat()
+                "order_id": existing_order.get("order_id") or f"AM-EXISTING-{story_id_str[-6:]}",
+                "purchased_at": now_dt,
+                "paid_at": now_dt.isoformat()
             }
             await arya_db.db.premium_purchases.update_one(
                 {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
@@ -8889,13 +8888,16 @@ async def manual_purchase(data: ManualPurchase):
                 logger.warning(f"Failed to save UTR to used_utrs: {utr_err}")
 
         # Upsert into premium_purchases and purchases so all endpoints see it instantly
+        now_dt = datetime.now(timezone.utc)
         purchase_record = {
             "user_id": target_uid,
             "story_id": story_id_str,
             "title": story.get("story_name_en", story.get("title", "")),
             "source": source_label,
             "method": method_label,
-            "paid_at": datetime.now(timezone.utc).isoformat()
+            "order_id": manual_oid,
+            "purchased_at": now_dt,
+            "paid_at": now_dt.isoformat()
         }
         await arya_db.db.premium_purchases.update_one(
             {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
