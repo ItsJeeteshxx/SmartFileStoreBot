@@ -8735,6 +8735,8 @@ class ManualPurchase(BaseModel):
     source: Optional[str] = "miniapp"
     method: Optional[str] = "UPI (QR)"
     utr_number: Optional[str] = None
+    custom_date: Optional[str] = None
+    skip_notification: Optional[bool] = False
 
 @api_router.post("/admin/manual-purchase")
 async def manual_purchase(data: ManualPurchase):
@@ -8768,6 +8770,23 @@ async def manual_purchase(data: ManualPurchase):
         source_label = "bot" if "bot" in source_raw else "miniapp"
         method_label = data.method or "UPI (QR)"
         utr_clean = str(data.utr_number or "").strip() if data.utr_number else None
+
+        # Parse custom creation/purchase date if provided
+        created_dt = datetime.now(timezone.utc)
+        if data.custom_date and str(data.custom_date).strip():
+            c_str = str(data.custom_date).strip()
+            try:
+                dt_parsed = datetime.fromisoformat(c_str)
+                if dt_parsed.tzinfo is None:
+                    dt_parsed = dt_parsed.replace(tzinfo=timezone.utc)
+                created_dt = dt_parsed
+            except Exception:
+                try:
+                    # Try YYYY-MM-DD
+                    dt_parsed = datetime.strptime(c_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    created_dt = dt_parsed
+                except Exception:
+                    pass
         
         # ── DUPLICATE CHECK: If user already has a paid/approved order for this story, skip creating another ──
         existing_order = await arya_db.db.orders.find_one({
@@ -8782,7 +8801,6 @@ async def manual_purchase(data: ManualPurchase):
                 {"id": {"$in": uid_filter}},
                 {"$addToSet": {"purchases": story_id_str}},
             )
-            now_dt = datetime.now(timezone.utc)
             purchase_record = {
                 "user_id": target_uid,
                 "story_id": story_id_str,
@@ -8790,8 +8808,8 @@ async def manual_purchase(data: ManualPurchase):
                 "source": source_label,
                 "method": method_label,
                 "order_id": existing_order.get("order_id") or f"AM-EXISTING-{story_id_str[-6:]}",
-                "purchased_at": now_dt,
-                "paid_at": now_dt.isoformat()
+                "purchased_at": created_dt,
+                "paid_at": created_dt.isoformat()
             }
             await arya_db.db.premium_purchases.update_one(
                 {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
@@ -8805,14 +8823,15 @@ async def manual_purchase(data: ManualPurchase):
             )
 
             # Send Bot DM Purchase Success Message to user
-            asyncio.create_task(send_purchase_success_dm(
-                arya_db,
-                target_uid,
-                order_doc=existing_order,
-                payment_method=method_label,
-                verified_by="Access Granted By Team",
-                is_admin_manual=True
-            ))
+            if not data.skip_notification:
+                asyncio.create_task(send_purchase_success_dm(
+                    arya_db,
+                    target_uid,
+                    order_doc=existing_order,
+                    payment_method=method_label,
+                    verified_by="Access Granted By Team",
+                    is_admin_manual=True
+                ))
 
             _stories_cache = None
             return {"success": True, "source": source_label, "note": "already_exists"}
@@ -8825,7 +8844,7 @@ async def manual_purchase(data: ManualPurchase):
                 "first_name": data.first_name,
                 "username": data.username,
                 "purchases": [story_id_str],
-                "joined_date": datetime.now(timezone.utc)
+                "joined_date": created_dt
             })
         else:
             await arya_db.db.users.update_one(
@@ -8846,7 +8865,8 @@ async def manual_purchase(data: ManualPurchase):
             "method": method_label,
             "status": "paid",
             "source": source_label,
-            "created_at": datetime.now(timezone.utc)
+            "created_at": created_dt,
+            "paid_at": created_dt
         }
         if utr_clean:
             order_doc["utr"] = utr_clean
@@ -8880,7 +8900,7 @@ async def manual_purchase(data: ManualPurchase):
                         "amount": data.amount,
                         "method": method_label,
                         "added_by": "admin",
-                        "used_at": datetime.now(timezone.utc)
+                        "used_at": created_dt
                     }},
                     upsert=True
                 )
@@ -8888,7 +8908,6 @@ async def manual_purchase(data: ManualPurchase):
                 logger.warning(f"Failed to save UTR to used_utrs: {utr_err}")
 
         # Upsert into premium_purchases and purchases so all endpoints see it instantly
-        now_dt = datetime.now(timezone.utc)
         purchase_record = {
             "user_id": target_uid,
             "story_id": story_id_str,
@@ -8896,8 +8915,8 @@ async def manual_purchase(data: ManualPurchase):
             "source": source_label,
             "method": method_label,
             "order_id": manual_oid,
-            "purchased_at": now_dt,
-            "paid_at": now_dt.isoformat()
+            "purchased_at": created_dt,
+            "paid_at": created_dt.isoformat()
         }
         await arya_db.db.premium_purchases.update_one(
             {"user_id": {"$in": uid_filter}, "story_id": story_id_str},
@@ -8914,14 +8933,15 @@ async def manual_purchase(data: ManualPurchase):
         asyncio.create_task(trigger_payment_log_from_order(order_doc))
 
         # Send Bot DM Purchase Success Message to user!
-        asyncio.create_task(send_purchase_success_dm(
-            arya_db,
-            target_uid,
-            order_doc=order_doc,
-            payment_method=method_label,
-            verified_by="Access Granted By Team",
-            is_admin_manual=True
-        ))
+        if not data.skip_notification:
+            asyncio.create_task(send_purchase_success_dm(
+                arya_db,
+                target_uid,
+                order_doc=order_doc,
+                payment_method=method_label,
+                verified_by="Access Granted By Team",
+                is_admin_manual=True
+            ))
         
         _stories_cache = None
 
