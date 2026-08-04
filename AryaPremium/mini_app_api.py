@@ -5234,7 +5234,7 @@ async def fetch_processed_buyers_data(arya_db):
 
         ord_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "created_at": 1}
         chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1}
-        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "amount": 1, "source": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1}
+        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "amount": 1, "source": 1, "method": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1}
 
         orders = await arya_db.db.orders.find({}, ord_proj).sort("created_at", -1).to_list(length=50000)
         checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
@@ -5346,7 +5346,7 @@ async def fetch_processed_buyers_data(arya_db):
                 "story_id": story_id_str,
                 "story_name": sname,
                 "amount": amt,
-                "method": str(p.get("source", "UPI")).upper(),
+                "method": str(p.get("method") or p.get("source", "UPI")).upper(),
                 "status": "paid",
                 "date": date_str,
                 "source": source_label
@@ -5384,6 +5384,7 @@ async def fetch_processed_buyers_data(arya_db):
                         if p_item["story_id"] in story_ids:
                             if amt > 0: p_item["amount"] = amt
                             p_item["source"] = source_label
+                            p_item["method"] = str(doc.get("method", doc.get("payment_method", p_item.get("method") or "UPI"))).upper()
                     continue
 
             story_names = []
@@ -8790,6 +8791,7 @@ async def manual_purchase(data: ManualPurchase):
                 "story_id": story_id_str,
                 "title": story.get("story_name_en", story.get("title", "")),
                 "source": source_label,
+                "method": method_label,
                 "paid_at": datetime.now(timezone.utc).isoformat()
             }
             await arya_db.db.premium_purchases.update_one(
@@ -8892,6 +8894,7 @@ async def manual_purchase(data: ManualPurchase):
             "story_id": story_id_str,
             "title": story.get("story_name_en", story.get("title", "")),
             "source": source_label,
+            "method": method_label,
             "paid_at": datetime.now(timezone.utc).isoformat()
         }
         await arya_db.db.premium_purchases.update_one(
@@ -10982,30 +10985,55 @@ async def trigger_payment_log_from_order(order: dict):
         amount = order.get("total") or order.get("amount_paid", 0)
         source = order.get("source", "")
         
-        # Map source to method name
+        # Check order's method field first!
+        method_val = str(order.get("method") or order.get("payment_method") or "").strip().lower()
+        if not method_val:
+            if "oxapay" in source.lower() or "crypto" in source.lower():
+                method_val = "oxapay"
+            elif "upi_manual" in source.lower() or "upi" in source.lower():
+                method_val = "manual_upi"
+            elif "dodo" in source.lower():
+                method_val = "dodopayments"
+            elif "cashfree" in source.lower():
+                method_val = "cashfree"
+            elif "manual" in source.lower():
+                method_val = "manual_admin"
+            else:
+                method_val = "razorpay"
+
+        # Map method_val to badge keys
         method = "razorpay"
-        if "oxapay" in source.lower():
+        if "oxapay" in method_val or "crypto" in method_val:
             method = "oxapay"
-        elif "upi_manual" in source.lower():
-            method = "manual_upi"
-        elif "dodo" in source.lower():
+        elif "upi" in method_val:
+            method = "upi"
+        elif "dodo" in method_val:
             method = "dodopayments"
-        elif "cashfree" in source.lower():
+        elif "cashfree" in method_val:
             method = "cashfree"
-        elif "manual" in source.lower():
+        elif "paytm" in method_val:
+            method = "paytm"
+        elif "payu" in method_val:
+            method = "payu"
+        elif "easebuzz" in method_val:
+            method = "easebuzz"
+        elif "manual" in method_val or "admin" in method_val:
             method = "manual_admin"
+        else:
+            method = method_val
 
         method_badge = {
-            "razorpay":    "💳 Razorpay (Automatic)",
-            "cashfree":    "💳 Cashfree (Automatic)",
-            "dodopayments":"🦤 Dodo Payments (Automatic)",
-            "easebuzz":    "💸 Easebuzz (Automatic)",
-            "upi":         "🏦 Manual UPI",
-            "manual_upi":  "🏦 Manual UPI",
+            "razorpay":     "💳 Razorpay (Automatic)",
+            "cashfree":     "💳 Cashfree (Automatic)",
+            "dodopayments": "🦤 Dodo Payments (Automatic)",
+            "easebuzz":     "💸 Easebuzz (Automatic)",
+            "paytm":        "📱 Paytm (Automatic)",
+            "payu":         "💰 PayU (Automatic)",
+            "upi":          "🏦 Manual UPI (QR)",
+            "manual_upi":   "🏦 Manual UPI (QR)",
             "oxapay":       "🪙 Oxapay (Crypto)",
             "crypto":       "🪙 Oxapay (Crypto)",
             "manual_admin": "👑 Manual Admin",
-
         }.get(method.lower(), method.capitalize())
 
         receipt_id = order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or order.get("razorpay_order_id") or order.get("utr") or ""
@@ -11105,6 +11133,7 @@ async def record_purchased_stories(order: dict):
                         "bot_id": bot_id,
                         "purchased_at": datetime.now(timezone.utc),
                         "source": order.get("source", "miniapp"),
+                        "method": order.get("method") or order.get("payment_method") or "UPI",
                         "amount": order.get("total", 0),
                         "reference": order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or "",
                         "order_id": order.get("order_id") or ""
