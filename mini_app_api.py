@@ -4030,9 +4030,8 @@ async def create_dodopayments_order(payload: dict):
     order_seq = int(time.time() * 1000) % 100000
     order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
 
-    # Return URL opens Mini App directly to purchased library section
-    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot").strip("@")
-    return_url = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
+    # Return URL strictly using sliceurl.app as required by user
+    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
 
     dodo_payload = {
         "billing": {
@@ -4252,150 +4251,16 @@ async def dodopayments_webhook(request: Request):
     if order_id:
         res = await verify_dodopayments_payment(order_id=order_id)
         if request.method == "GET":
-            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot").strip("@")
-            bot_url = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
-            
             if res.get("success"):
-                html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment Successful - Arya Premium</title>
-    <style>
-        body {{
-            margin: 0;
-            padding: 0;
-            background-color: #09090b;
-            color: #ffffff;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            text-align: center;
-        }}
-        .card {{
-            background: #18181b;
-            border: 1px solid #27272a;
-            border-radius: 24px;
-            padding: 32px 24px;
-            max-width: 360px;
-            width: 88%;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-        }}
-        .icon {{
-            width: 64px;
-            height: 64px;
-            background: rgba(16, 185, 129, 0.15);
-            border: 2px solid #10b981;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 20px auto;
-            color: #10b981;
-            font-size: 32px;
-            font-weight: bold;
-        }}
-        h2 {{
-            margin: 0 0 8px 0;
-            font-size: 22px;
-            font-weight: 800;
-        }}
-        p {{
-            color: #a1a1aa;
-            font-size: 13.5px;
-            line-height: 1.5;
-            margin: 0 0 24px 0;
-        }}
-        .btn {{
-            display: block;
-            background: #ec4899;
-            color: #ffffff;
-            text-decoration: none;
-            font-weight: 700;
-            font-size: 15px;
-            padding: 14px 24px;
-            border-radius: 14px;
-            box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
-            transition: transform 0.2s;
-        }}
-        .btn:active {{
-            transform: scale(0.97);
-        }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="icon">✓</div>
-        <h2>Payment Successful!</h2>
-        <p>Aapka order <b>{order_id}</b> confirm ho chuka hai.<br><br>Is page ko close karke Telegram open kijiye, aapki story Library me purchase section me mil jayegi!</p>
-        <a href="{bot_url}" class="btn">Open Telegram Bot (@{bot_username})</a>
-    </div>
-    <script>
-        setTimeout(function() {{
-            window.location.href = "{bot_url}";
-        }}, 2200);
-    </script>
-</body>
-</html>"""
-                return Response(content=html_content, media_type="text/html")
+                return Response(
+                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>✅ Payment Successful!</h2><p>Your Dodo Payment was verified.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#10b981;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
+                    media_type="text/html"
+                )
             else:
-                html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Processing Payment - Arya Premium</title>
-    <style>
-        body {{
-            margin: 0;
-            padding: 0;
-            background-color: #09090b;
-            color: #ffffff;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            text-align: center;
-        }}
-        .card {{
-            background: #18181b;
-            border: 1px solid #27272a;
-            border-radius: 24px;
-            padding: 32px 24px;
-            max-width: 360px;
-            width: 88%;
-        }}
-        .btn {{
-            display: block;
-            background: #ec4899;
-            color: #ffffff;
-            text-decoration: none;
-            font-weight: 700;
-            font-size: 15px;
-            padding: 14px 24px;
-            border-radius: 14px;
-            margin-top: 20px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h2>Processing Payment...</h2>
-        <p>Aapka payment verify ho raha hai. Is page ko close karke Telegram open kijiye.</p>
-        <a href="{bot_url}" class="btn">Open Telegram Bot (@{bot_username})</a>
-    </div>
-    <script>
-        setTimeout(function() {{
-            window.location.href = "{bot_url}";
-        }}, 2500);
-    </script>
-</body>
-</html>"""
-                return Response(content=html_content, media_type="text/html")
+                return Response(
+                    content=f"""<html><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>Processing Payment...</h2><p>{res.get('detail', 'Verification pending')}</p></body></html>""",
+                    media_type="text/html"
+                )
     return {"status": "ok"}
 
 
@@ -4492,13 +4357,13 @@ async def submit_support(
     arya_db = app.state.db
     uid = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
 
-    # Check if user is banned or blocked — completely ignore ticket creation
+    # Block banned/blocked users — silently ignore ticket, no DB write, no bot notification
     if isinstance(uid, int):
         banned = await arya_db.db.banned_users.find_one({"user_id": uid})
         if banned:
-            logger.info(f"Ignored support ticket submission from banned user {uid}")
+            logger.info(f"Ignored support ticket from banned user {uid}")
             return {"success": True, "message": "Support request received", "ticket_id": "IGN-BANNED"}
-    
+
     # 1. Upload file if provided
     file_url = None
     file_contents = None
@@ -6216,19 +6081,14 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
     from PIL import Image
 
     user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
+    if not is_admin(str(telegram_id)):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
     try:
         contents = await file.read()
         
         import asyncio
         import os
-        import uuid
-        from decouple import config
-        
-        r2_account_id = config("R2_ACCOUNT_ID", default="")
-        r2_access_key = config("R2_ACCESS_KEY_ID", default="")
-        r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
-        r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
-        r2_domain = config("R2_CUSTOM_DOMAIN", default="")
         raw_filename = getattr(file, "filename", "file.bin") or "file.bin"
         
         def process_and_upload(data_bytes, filename_input):
@@ -11287,11 +11147,7 @@ async def send_purchase_receipt_to_user(order: dict):
                     logger.info(f"[Receipt DM] Receipt already sent for order_id={order_id}, skipping.")
                     return
 
-        try:
-            from purchase_dm_helper import send_purchase_success_dm
-        except ImportError:
-            from AryaPremium.purchase_dm_helper import send_purchase_success_dm
-
+        from purchase_dm_helper import send_purchase_success_dm
         pm = order.get("payment_method") or order.get("source") or "Dodo Payments"
         await send_purchase_success_dm(
             db=arya_db,
