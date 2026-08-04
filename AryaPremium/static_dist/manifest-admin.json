@@ -1,0 +1,24 @@
+{
+  "name": "Arya Premium Admin",
+  "short_name": "Arya Admin",
+  "description": "Admin Console for Arya Premium Store",
+  "start_url": "/admin.html",
+  "display": "standalone",
+  "background_color": "#09090B",
+  "theme_color": "#09090B",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    }
+  ]
+}
