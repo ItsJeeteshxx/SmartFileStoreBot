@@ -304,6 +304,7 @@ async def _poster_bot_publisher_worker(arya_db):
         first_run = True
         is_first_run_trigger = False
 
+        tick_count = 0
         while True:
             try:
                 if first_run:
@@ -311,8 +312,11 @@ async def _poster_bot_publisher_worker(arya_db):
                 else:
                     await asyncio.sleep(15)  # Check every 15 seconds
 
+                tick_count += 1
                 cfg = await _get_poster_bot_config(arya_db)
                 if not cfg:
+                    if tick_count % 4 == 0:
+                        logger.info("[PosterBot Daemon] ⚠️ No poster_bot_config document in MongoDB yet. Please save settings in Admin Panel → Poster Bot.")
                     continue
 
                 # Always force poster_mode = bot_api (clean up any legacy userbot overrides)
@@ -331,11 +335,13 @@ async def _poster_bot_publisher_worker(arya_db):
                 target_channel = str(cfg.get("channel_id") or "").strip()
 
                 if not is_enabled:
-                    logger.info("[PosterBot Daemon] Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
+                    if tick_count % 4 == 0:
+                        logger.info("[PosterBot Daemon] ⏸️ Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
                     continue
 
                 if not b_token or not target_channel:
-                    logger.warning(f"[PosterBot Daemon] Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
+                    if tick_count % 4 == 0:
+                        logger.warning(f"[PosterBot Daemon] ⚠️ Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post. Please save settings in Admin Panel → Poster Bot.")
                     continue
 
                 interval_mins = float(cfg.get("post_interval_mins") or 30)
@@ -344,7 +350,7 @@ async def _poster_bot_publisher_worker(arya_db):
 
                 should_post = False
                 if first_run or not last_posted:
-                    logger.info("[PosterBot Daemon] ACTIVE — Instant post trigger on startup/first-run (under 1 minute)")
+                    logger.info("[PosterBot Daemon] 🚀 ACTIVE — Instant post trigger on startup/first-run (under 1 minute)")
                     should_post = True
                     first_run = False
                 else:
@@ -361,12 +367,14 @@ async def _poster_bot_publisher_worker(arya_db):
                         elapsed_mins = (now - last_posted).total_seconds() / 60.0
 
                         if elapsed_mins >= interval_mins or elapsed_mins < 0:
-                            logger.info(f"[PosterBot Daemon] ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
+                            logger.info(f"[PosterBot Daemon] 🚀 ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
                             should_post = True
                         else:
+                            if tick_count % 4 == 0:
+                                logger.info(f"[PosterBot Daemon] ⏳ ACTIVE — Waiting: elapsed={elapsed_mins:.1f}m < interval={interval_mins:.1f}m (Next post in ~{interval_mins - elapsed_mins:.1f}m)")
                             should_post = False
                     else:
-                        logger.info("[PosterBot Daemon] ACTIVE — Triggering post (invalid/unparseable last_posted_at)")
+                        logger.info("[PosterBot Daemon] 🚀 ACTIVE — Triggering post (invalid/unparseable last_posted_at)")
                         should_post = True
 
                 if not should_post:
