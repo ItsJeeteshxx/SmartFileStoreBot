@@ -12667,10 +12667,17 @@ async def poster_post_now(payload: dict = Body(...)):
         
     # Select story
     story_id = payload.get("story_id")
+    story = None
     if story_id:
-        from bson.objectid import ObjectId
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
-    else:
+        story = await db.db.premium_stories.find_one({"_id": str(story_id)})
+        if not story:
+            try:
+                from bson.objectid import ObjectId
+                story = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+            except Exception:
+                pass
+
+    if not story:
         # Flexible query for story selection
         pipeline = [
             {"$match": {
@@ -12862,21 +12869,23 @@ async def save_paage_cards(payload: dict = Body(...)):
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
 
-# ─── Direct App Routes for Userbot OTP (Guarantees 0% routing errors) ──────────
-@app.api_route("/api/admin/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/admin/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
-async def direct_userbot_send_otp(request: Request, payload: dict = Body(default={})):
-    return await userbot_send_otp(request, payload)
+# ─── Direct App Routes for Poster Bot (Guarantees 0% 404/405 routing errors) ───
+@app.api_route("/api/admin/poster-post-now", methods=["POST", "OPTIONS"])
+@app.api_route("/admin/poster-post-now", methods=["POST", "OPTIONS"])
+async def direct_poster_post_now(request: Request, payload: dict = Body(default={})):
+    return await poster_post_now(payload)
 
-@app.api_route("/api/admin/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/admin/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
-async def direct_userbot_verify_otp(request: Request, payload: dict = Body(default={})):
-    return await userbot_verify_otp(request, payload)
+@app.api_route("/api/admin/poster-config", methods=["GET", "POST", "OPTIONS"])
+@app.api_route("/admin/poster-config", methods=["GET", "POST", "OPTIONS"])
+async def direct_poster_config(request: Request, payload: dict = Body(default={}), telegram_id: int = Query(0)):
+    if request.method == "GET":
+        return await get_poster_config(telegram_id)
+    return await update_poster_config(payload)
 
-@app.api_route("/api/admin/userbot/logout", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/admin/userbot/logout", methods=["GET", "POST", "OPTIONS"])
-async def direct_userbot_logout(request: Request):
-    return await userbot_logout(request)
+@app.api_route("/api/admin/poster-delete-now", methods=["POST", "OPTIONS"])
+@app.api_route("/admin/poster-delete-now", methods=["POST", "OPTIONS"])
+async def direct_poster_delete_now(request: Request, payload: dict = Body(default={})):
+    return await poster_delete_now(payload)
 
 
 
