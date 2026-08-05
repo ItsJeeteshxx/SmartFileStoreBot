@@ -280,36 +280,48 @@ async def _get_poster_bot_config(db_conn) -> dict:
 async def _poster_bot_publisher_worker(arya_db):
     """
     Background daemon: publishes stories to target channel sequentially on rotation.
-    Checks config every 60s.
+    Polls every 30s; posts when elapsed time >= configured interval.
     """
     import os
     from AryaPremium.config import Config
     from AryaPremium.poster_helper import send_story_to_channel
 
+    logger.info("[PosterBot] Publisher worker started")
+
     while True:
         try:
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)  # Check every 30 seconds (not 60)
             cfg = await _get_poster_bot_config(arya_db)
             if not cfg or not cfg.get("enabled"):
                 continue
 
-            last_posted = cfg.get("last_posted_at")
             interval_mins = int(cfg.get("post_interval_mins") or 30)
-
             now = datetime.now(timezone.utc)
-            if last_posted:
-                if isinstance(last_posted, str):
-                    last_posted = datetime.fromisoformat(last_posted)
-                if last_posted.tzinfo is None:
-                    last_posted = last_posted.replace(tzinfo=timezone.utc)
-                elapsed_mins = (now - last_posted).total_seconds() / 60.0
-                if elapsed_mins < interval_mins:
-                    continue
 
-            # Sequential rotation:
+            last_posted = cfg.get("last_posted_at")
+            if last_posted:
+                # Normalize: could be datetime object or ISO string
+                if isinstance(last_posted, str):
+                    # Strip trailing Z for Python 3.10 compat (fromisoformat doesn't handle Z)
+                    last_posted_str = last_posted.replace("Z", "+00:00")
+                    try:
+                        last_posted = datetime.fromisoformat(last_posted_str)
+                    except Exception:
+                        last_posted = None
+                if last_posted and isinstance(last_posted, datetime):
+                    # Ensure timezone-aware
+                    if last_posted.tzinfo is None:
+                        last_posted = last_posted.replace(tzinfo=timezone.utc)
+                    elapsed_mins = (now - last_posted).total_seconds() / 60.0
+                    if elapsed_mins < interval_mins:
+                        continue  # Not time yet
+                    logger.info(f"[PosterBot] Interval elapsed: {elapsed_mins:.1f}m >= {interval_mins}m — posting now")
+
+            # Sequential rotation over available stories
             stories_cursor = arya_db.db.premium_stories.find({"visibility": "available"}).sort("_id", 1)
             stories = [s async for s in stories_cursor]
             if not stories:
+                logger.warning("[PosterBot] No available stories found for auto-post")
                 continue
 
             rot_idx = int(cfg.get("rotation_index") or 0)
@@ -325,8 +337,10 @@ async def _poster_bot_publisher_worker(arya_db):
 
             target_channel = str(cfg.get("channel_id") or "").strip()
             if not b_token or not target_channel:
+                logger.warning("[PosterBot] Missing bot_token or channel_id — skipping auto-post")
                 continue
 
+            logger.info(f"[PosterBot] Auto-posting story idx={rot_idx}: '{target_story.get('story_name_en')}' → {target_channel}")
             res = await send_story_to_channel(
                 b_token,
                 target_channel,
@@ -364,9 +378,12 @@ async def _poster_bot_publisher_worker(arya_db):
                     }},
                     upsert=True
                 )
-                logger.info(f"[PosterBot] Auto posted story: name={target_story.get('story_name_en')}, msg_id={msg_id}")
+                logger.info(f"[PosterBot] ✅ Auto-posted story: '{target_story.get('story_name_en')}', msg_id={msg_id}, next_rot={next_rot}")
+            else:
+                logger.error(f"[PosterBot] ❌ Auto-post failed: {res.get('error')}")
         except Exception as e:
-            logger.error(f"[PosterBot] Publisher error: {e}")
+            logger.error(f"[PosterBot] Publisher worker error: {e}", exc_info=True)
+
 
 async def _poster_bot_cleanup_worker(arya_db):
     """
@@ -12352,7 +12369,9 @@ async def save_poster_config(payload: dict = Body(...)):
     if not db:
         raise HTTPException(status_code=500, detail="Database not connected")
         
-    update_doc = {
+    # Only update the config fields — DO NOT touch watermark file fields
+    # (has_custom_watermark, watermark_updated_at) which are managed by /upload-watermark
+    update_fields = {
         "enabled": bool(payload.get("enabled", False)),
         "bot_token": str(payload.get("bot_token", "")).strip(),
         "channel_id": str(payload.get("channel_id", "")).strip(),
@@ -12360,15 +12379,21 @@ async def save_poster_config(payload: dict = Body(...)):
         "delete_delay_hours": int(payload.get("delete_delay_hours") or 72),
         "watermark_enabled": bool(payload.get("watermark_enabled", True)),
         "watermark_position": str(payload.get("watermark_position", "bottom_right")).strip(),
-        "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else 0.8)
+        "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else 0.8),
+        "_key": "poster_bot_config",
     }
     
     await db.db.mini_app_config.update_one(
         {"_id": "poster_bot_config"},
-        {"$set": {
-            "_key": "poster_bot_config",
-            **update_doc
-        }},
+        {
+            "$set": update_fields,
+            # Only set these fields when creating the doc for the first time
+            "$setOnInsert": {
+                "has_custom_watermark": False,
+                "watermark_updated_at": "",
+                "rotation_index": 0,
+            }
+        },
         upsert=True
     )
     return {"success": True}
