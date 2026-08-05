@@ -249,8 +249,19 @@ def is_admin(telegram_id: str = "") -> bool:
     return False
 
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mini_app_api")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _ch = logging.StreamHandler(sys.stdout)
+    _ch.setLevel(logging.INFO)
+    _ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(_ch)
+
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Use AryaPremium's own database module (already tested, working)
@@ -325,20 +336,20 @@ async def _poster_bot_publisher_worker(arya_db):
             while True:
                 try:
                     if first_run:
-                        await asyncio.sleep(3)  # Immediate post on startup
+                        await asyncio.sleep(1)  # Immediate post check on startup
                     else:
                         await asyncio.sleep(15)  # Check every 15 seconds
 
                     tick_count += 1
 
                     if not arya_db or getattr(arya_db, "db", None) is None:
-                        if tick_count % 4 == 0:
+                        if tick_count == 1 or tick_count % 4 == 0:
                             logger.info("[PosterBot Daemon] ⏳ Waiting for MongoDB connection to initialize...")
                         continue
 
                     cfg = await _get_poster_bot_config(arya_db)
                     if not cfg:
-                        if tick_count % 4 == 0:
+                        if tick_count == 1 or tick_count % 4 == 0:
                             logger.info("[PosterBot Daemon] ⚠️ No poster_bot_config document in MongoDB yet. Please save settings in Admin Panel → Poster Bot.")
                         continue
 
@@ -358,12 +369,12 @@ async def _poster_bot_publisher_worker(arya_db):
                     target_channel = str(cfg.get("channel_id") or "").strip()
 
                     if not is_enabled:
-                        if tick_count % 4 == 0:
+                        if tick_count == 1 or tick_count % 4 == 0:
                             logger.info("[PosterBot Daemon] ⏸️ Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
                         continue
 
                     if not b_token or not target_channel:
-                        if tick_count % 4 == 0:
+                        if tick_count == 1 or tick_count % 4 == 0:
                             logger.warning(f"[PosterBot Daemon] ⚠️ Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post. Please save settings in Admin Panel → Poster Bot.")
                         continue
 
@@ -373,7 +384,7 @@ async def _poster_bot_publisher_worker(arya_db):
 
                     should_post = False
                     if first_run or not last_posted:
-                        logger.info("[PosterBot Daemon] 🚀 ACTIVE — Instant post trigger on startup/first-run (under 1 minute)")
+                        logger.info(f"[PosterBot Daemon] 🚀 ACTIVE — Startup instant post trigger (interval={interval_mins:.1f}m)")
                         should_post = True
                         first_run = False
                     else:
@@ -393,7 +404,7 @@ async def _poster_bot_publisher_worker(arya_db):
                                 logger.info(f"[PosterBot Daemon] 🚀 ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
                                 should_post = True
                             else:
-                                if tick_count % 4 == 0:
+                                if tick_count == 1 or tick_count % 4 == 0:
                                     logger.info(f"[PosterBot Daemon] ⏳ ACTIVE — Waiting: elapsed={elapsed_mins:.1f}m < interval={interval_mins:.1f}m (Next post in ~{interval_mins - elapsed_mins:.1f}m)")
                                 should_post = False
                         else:
