@@ -272,6 +272,25 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
             logger.error(f"[PosterBot] Resize failed: {e}")
             return img_bytes
 
+    async def _try_download_telegram_file_id(file_id: str, token: str) -> bytes | None:
+        """Download image directly from Telegram servers using file_id."""
+        if not token:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                gf_res = await client.get(f"https://api.telegram.org/bot{token}/getFile", params={"file_id": file_id})
+                if gf_res.status_code == 200 and gf_res.json().get("ok"):
+                    file_path = gf_res.json().get("result", {}).get("file_path")
+                    if file_path:
+                        dl_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+                        img_res = await client.get(dl_url)
+                        if img_res.status_code == 200 and len(img_res.content) > 512:
+                            logger.info(f"[PosterBot] Downloaded image from Telegram file_id ({len(img_res.content)//1024}KB)")
+                            return img_res.content
+        except Exception as e:
+            logger.warning(f"[PosterBot] Failed to download Telegram file_id {file_id}: {e}")
+        return None
+
     photo_bytes = None
     attempted_urls = []
 
@@ -279,15 +298,30 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         raw_val = story_doc.get(field)
         if not raw_val or not str(raw_val).strip():
             continue
-        abs_url = _build_absolute_url(str(raw_val))
-        if abs_url in attempted_urls:
-            continue  # Skip duplicate URLs across fields
-        attempted_urls.append(abs_url)
+        val_str = str(raw_val).strip()
 
-        data = await _try_download_image(abs_url)
+        # Check if value is a Telegram file_id
+        is_file_id = (
+            val_str.startswith("AgAC") or 
+            val_str.startswith("BAAC") or 
+            val_str.startswith("CAAC") or 
+            (not val_str.startswith("http") and "/" not in val_str and len(val_str) > 20)
+        )
+
+        data = None
+        if is_file_id:
+            logger.info(f"[PosterBot] Field '{field}' has Telegram file_id: {val_str[:15]}...")
+            data = await _try_download_telegram_file_id(val_str, bot_token)
+        else:
+            abs_url = _build_absolute_url(val_str)
+            if abs_url in attempted_urls:
+                continue
+            attempted_urls.append(abs_url)
+            data = await _try_download_image(abs_url)
+
         if data:
             photo_bytes = _resize_if_needed(data)
-            logger.info(f"[PosterBot] Using image from field='{field}' url={abs_url}")
+            logger.info(f"[PosterBot] Successfully acquired image from field='{field}'")
             break
         else:
             logger.warning(f"[PosterBot] Field '{field}' image failed, trying next field...")
