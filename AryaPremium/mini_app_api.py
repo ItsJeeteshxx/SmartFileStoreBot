@@ -315,138 +315,138 @@ async def _poster_bot_publisher_worker(arya_db):
                 cfg = await _get_poster_bot_config(arya_db)
                 is_enabled = bool(cfg and cfg.get("enabled"))
 
-            if not is_enabled:
-                logger.info("[PosterBot Daemon] Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
-                continue
+                if not is_enabled:
+                    logger.info("[PosterBot Daemon] Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
+                    continue
 
-            interval_mins = float(cfg.get("post_interval_mins") or 30)
-            now = datetime.now(timezone.utc)
+                interval_mins = float(cfg.get("post_interval_mins") or 30)
+                now = datetime.now(timezone.utc)
 
-            # Resolve bot token and channel
-            b_token = str(cfg.get("bot_token") or "").strip()
-            if not b_token:
-                b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+                # Resolve bot token and channel
+                b_token = str(cfg.get("bot_token") or "").strip()
+                if not b_token:
+                    b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
 
-            target_channel = str(cfg.get("channel_id") or "").strip()
-            if not b_token or not target_channel:
-                logger.warning(f"[PosterBot Daemon] Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
-                continue
+                target_channel = str(cfg.get("channel_id") or "").strip()
+                if not b_token or not target_channel:
+                    logger.warning(f"[PosterBot Daemon] Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
+                    continue
 
-            last_posted = cfg.get("last_posted_at")
-            should_post = False
+                last_posted = cfg.get("last_posted_at")
+                should_post = False
 
-            if not last_posted or is_first_run_trigger:
-                logger.info("[PosterBot Daemon] ACTIVE — Instant post trigger on daemon startup (under 1 minute)")
-                should_post = True
-                is_first_run_trigger = False
-            else:
-                if isinstance(last_posted, str):
-                    last_posted_str = last_posted.replace("Z", "+00:00")
-                    try:
-                        last_posted = datetime.fromisoformat(last_posted_str)
-                    except Exception:
-                        last_posted = None
-
-                if last_posted and isinstance(last_posted, datetime):
-                    if last_posted.tzinfo is None:
-                        last_posted = last_posted.replace(tzinfo=timezone.utc)
-                    elapsed_mins = (now - last_posted).total_seconds() / 60.0
-
-                    if elapsed_mins >= interval_mins or elapsed_mins < 0:
-                        logger.info(f"[PosterBot Daemon] ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
-                        should_post = True
-                    else:
-                        logger.info(f"[PosterBot Daemon] ACTIVE — Waiting: elapsed={elapsed_mins:.1f}m < interval={interval_mins:.1f}m (next post in ~{interval_mins - elapsed_mins:.1f}m)")
-                        should_post = False
-                else:
-                    logger.info("[PosterBot Daemon] ACTIVE — Triggering post (invalid/unparseable last_posted_at)")
+                if not last_posted or is_first_run_trigger:
+                    logger.info("[PosterBot Daemon] ACTIVE — Instant post trigger on daemon startup (under 1 minute)")
                     should_post = True
+                    is_first_run_trigger = False
+                else:
+                    if isinstance(last_posted, str):
+                        last_posted_str = last_posted.replace("Z", "+00:00")
+                        try:
+                            last_posted = datetime.fromisoformat(last_posted_str)
+                        except Exception:
+                            last_posted = None
 
-            if not should_post:
-                continue
+                    if last_posted and isinstance(last_posted, datetime):
+                        if last_posted.tzinfo is None:
+                            last_posted = last_posted.replace(tzinfo=timezone.utc)
+                        elapsed_mins = (now - last_posted).total_seconds() / 60.0
 
-            # Fetch ALL available stories in sequential order (_id ascending)
-            stories_cursor = arya_db.db.premium_stories.find({
-                "$or": [
-                    {"visibility": "available"},
-                    {"visibility": {"$exists": False}},
-                    {"visibility": None},
-                    {"visibility": ""},
-                    {"status": "available"},
-                    {"status": "active"},
-                    {"status": "Completed"},
-                    {"status": "Ongoing"}
-                ]
-            }).sort("_id", 1)
-            stories = [s async for s in stories_cursor]
+                        if elapsed_mins >= interval_mins or elapsed_mins < 0:
+                            logger.info(f"[PosterBot Daemon] ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
+                            should_post = True
+                        else:
+                            logger.info(f"[PosterBot Daemon] ACTIVE — Waiting: elapsed={elapsed_mins:.1f}m < interval={interval_mins:.1f}m (next post in ~{interval_mins - elapsed_mins:.1f}m)")
+                            should_post = False
+                    else:
+                        logger.info("[PosterBot Daemon] ACTIVE — Triggering post (invalid/unparseable last_posted_at)")
+                        should_post = True
 
-            if not stories:
-                # Fallback to any non-hidden story
-                stories_cursor = arya_db.db.premium_stories.find({"visibility": {"$ne": "hidden"}}).sort("_id", 1)
+                if not should_post:
+                    continue
+
+                # Fetch ALL available stories in sequential order (_id ascending)
+                stories_cursor = arya_db.db.premium_stories.find({
+                    "$or": [
+                        {"visibility": "available"},
+                        {"visibility": {"$exists": False}},
+                        {"visibility": None},
+                        {"visibility": ""},
+                        {"status": "available"},
+                        {"status": "active"},
+                        {"status": "Completed"},
+                        {"status": "Ongoing"}
+                    ]
+                }).sort("_id", 1)
                 stories = [s async for s in stories_cursor]
-            if not stories:
-                # Absolute fallback to all stories in DB
-                stories_cursor = arya_db.db.premium_stories.find({}).sort("_id", 1)
-                stories = [s async for s in stories_cursor]
 
-            if not stories:
-                logger.warning("[PosterBot Daemon] No stories found in database to post")
-                continue
+                if not stories:
+                    # Fallback to any non-hidden story
+                    stories_cursor = arya_db.db.premium_stories.find({"visibility": {"$ne": "hidden"}}).sort("_id", 1)
+                    stories = [s async for s in stories_cursor]
+                if not stories:
+                    # Absolute fallback to all stories in DB
+                    stories_cursor = arya_db.db.premium_stories.find({}).sort("_id", 1)
+                    stories = [s async for s in stories_cursor]
 
-            rot_idx = int(cfg.get("rotation_index") or 0)
-            if rot_idx >= len(stories):
-                rot_idx = 0
+                if not stories:
+                    logger.warning("[PosterBot Daemon] No stories found in database to post")
+                    continue
 
-            target_story = stories[rot_idx]
-            logger.info(f"[PosterBot Daemon] Posting story idx={rot_idx+1}/{len(stories)}: '{target_story.get('story_name_en')}' → channel {target_channel}")
+                rot_idx = int(cfg.get("rotation_index") or 0)
+                if rot_idx >= len(stories):
+                    rot_idx = 0
 
-            res = await send_story_to_channel(
-                b_token,
-                target_channel,
-                target_story,
-                {
-                    "poster_mode": cfg.get("poster_mode", "bot_api"),
-                    "api_id": cfg.get("api_id", ""),
-                    "api_hash": cfg.get("api_hash", ""),
-                    "session_string": cfg.get("session_string", ""),
-                    "watermark_enabled": cfg.get("watermark_enabled", True),
-                    "watermark_position": cfg.get("watermark_position", "bottom_right"),
-                    "watermark_opacity": cfg.get("watermark_opacity", 0.8)
-                }
-            )
+                target_story = stories[rot_idx]
+                logger.info(f"[PosterBot Daemon] Posting story idx={rot_idx+1}/{len(stories)}: '{target_story.get('story_name_en')}' → channel {target_channel}")
 
-            if res.get("success"):
-                msg_id = res.get("message_id")
-                chn_id = res.get("channel_id")
-
-                del_hours = int(cfg.get("delete_delay_hours") or 72)
-                post_log = {
-                    "message_id": msg_id,
-                    "channel_id": chn_id,
-                    "story_id": str(target_story["_id"]),
-                    "story_name": target_story.get("story_name_en") or target_story.get("title") or "Story",
-                    "posted_at": now,
-                    "delete_at": now + timedelta(hours=del_hours),
-                    "deleted": False
-                }
-                await arya_db.db.poster_bot_posts.insert_one(post_log)
-
-                next_rot = (rot_idx + 1) % len(stories)
-                await arya_db.db.mini_app_config.update_one(
-                    {"_id": "poster_bot_config"},
-                    {"$set": {
-                        "_key": "poster_bot_config",
-                        "last_posted_at": now,
-                        "rotation_index": next_rot
-                    }},
-                    upsert=True
+                res = await send_story_to_channel(
+                    b_token,
+                    target_channel,
+                    target_story,
+                    {
+                        "poster_mode": cfg.get("poster_mode", "bot_api"),
+                        "api_id": cfg.get("api_id", ""),
+                        "api_hash": cfg.get("api_hash", ""),
+                        "session_string": cfg.get("session_string", ""),
+                        "watermark_enabled": cfg.get("watermark_enabled", True),
+                        "watermark_position": cfg.get("watermark_position", "bottom_right"),
+                        "watermark_opacity": cfg.get("watermark_opacity", 0.8)
+                    }
                 )
-                logger.info(f"[PosterBot Daemon] ✅ AUTO-POST SUCCESS! Story: '{target_story.get('story_name_en')}', msg_id={msg_id}, next_rot={next_rot}/{len(stories)}")
-            else:
-                logger.error(f"[PosterBot Daemon] ❌ AUTO-POST FAILED: {res.get('error')}")
 
-        except Exception as e:
-            logger.error(f"[PosterBot Daemon] Error in publisher loop: {e}", exc_info=True)
+                if res.get("success"):
+                    msg_id = res.get("message_id")
+                    chn_id = res.get("channel_id")
+
+                    del_hours = int(cfg.get("delete_delay_hours") or 72)
+                    post_log = {
+                        "message_id": msg_id,
+                        "channel_id": chn_id,
+                        "story_id": str(target_story["_id"]),
+                        "story_name": target_story.get("story_name_en") or target_story.get("title") or "Story",
+                        "posted_at": now,
+                        "delete_at": now + timedelta(hours=del_hours),
+                        "deleted": False
+                    }
+                    await arya_db.db.poster_bot_posts.insert_one(post_log)
+
+                    next_rot = (rot_idx + 1) % len(stories)
+                    await arya_db.db.mini_app_config.update_one(
+                        {"_id": "poster_bot_config"},
+                        {"$set": {
+                            "_key": "poster_bot_config",
+                            "last_posted_at": now,
+                            "rotation_index": next_rot
+                        }},
+                        upsert=True
+                    )
+                    logger.info(f"[PosterBot Daemon] ✅ AUTO-POST SUCCESS! Story: '{target_story.get('story_name_en')}', msg_id={msg_id}, next_rot={next_rot}/{len(stories)}")
+                else:
+                    logger.error(f"[PosterBot Daemon] ❌ AUTO-POST FAILED: {res.get('error')}")
+
+            except Exception as e:
+                logger.error(f"[PosterBot Daemon] Error in publisher loop: {e}", exc_info=True)
     except Exception as fatal_err:
         logger.error(f"❌ [PosterBot Daemon CRITICAL] Publisher worker crashed: {fatal_err}", exc_info=True)
 
