@@ -85,6 +85,23 @@ def overlay_watermark(banner_bytes: bytes, watermark_path: str, position: str = 
         banner.convert("RGB").save(out_buf, format="JPEG", quality=85)
         return out_buf.getvalue()
 
+def to_bold_serif(text: str) -> str:
+    """
+    Converts alphanumeric ASCII characters to Mathematical Bold Serif characters.
+    """
+    res = []
+    for char in text:
+        o = ord(char)
+        if 65 <= o <= 90:  # A-Z
+            res.append(chr(o + 119713))
+        elif 97 <= o <= 122:  # a-z
+            res.append(chr(o + 119711))
+        elif 48 <= o <= 57:  # 0-9
+            res.append(chr(o + 120734))
+        else:
+            res.append(char)
+    return "".join(res)
+
 async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict, watermark_config: dict = None) -> dict:
     """
     Downloads banner, applies watermark (if enabled), builds keyboard, and posts to Telegram channel.
@@ -94,25 +111,44 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
     status = story_doc.get("status") or "Ongoing"
     platform = story_doc.get("platform") or "N/A"
     genre = story_doc.get("genre") or "N/A"
-    episodes = str(story_doc.get("episodes") or "1")
     price = str(story_doc.get("price") or "0")
     desc = story_doc.get("description") or ""
 
-    # Clean description to about 2 lines (approx 150 chars)
+    # Extract first genre tag
+    first_genre = "N/A"
+    if genre and genre != "N/A":
+        parts = re.split(r'[,/;|\\]', str(genre))
+        if parts:
+            first_genre = parts[0].strip()
+
+    # Format episodes
+    status_lower = str(status).lower()
+    is_completed = story_doc.get("is_completed") or story_doc.get("isCompleted") or ("completed" in status_lower) or ("complete" in status_lower)
+    ep_count = str(story_doc.get("episodes") or story_doc.get("ep_count") or story_doc.get("total_eps") or "1").strip()
+    if is_completed:
+        episodes_str = f"{ep_count}/{ep_count}"
+    else:
+        episodes_str = f"{ep_count}/∞"
+
+    # Clean description to 10-15 words (combining first 6 and last 6) and translate to unicode bold serif
     desc_clean = desc.strip()
-    if len(desc_clean) > 150:
-        desc_clean = desc_clean[:147] + "..."
+    words = desc_clean.split()
+    if len(words) > 12:
+        desc_clean = " ".join(words[:6]) + " ... " + " ".join(words[-6:])
+    else:
+        desc_clean = " ".join(words)
+    desc_unicode = to_bold_serif(desc_clean)
 
     # Formatted text as requested: Bold headings and values
     caption = (
-        f"♨️ **Story : {story_name}**\n"
-        f"🔰 **Status : {status}**\n"
-        f"🖥 **Platform : {platform}**\n"
-        f"🧩 **Genre : {genre}**\n"
-        f"🎬 **Episodes : {episodes}**\n\n"
-        f"**[ Price :  ₹{price}  ]**\n\n"
-        f"**Story Description :-**\n"
-        f"**{desc_clean}**"
+        f"♨️ **Story :** **{story_name}**\n"
+        f"🔰 **Status :** **{status}**\n"
+        f"🖥 **Platform :** **{platform}**\n"
+        f"🧩 **Genre :** **{first_genre}**\n"
+        f"🎬 **Episodes :** **{episodes_str}**\n"
+        f"**█▓▒▒ᑭᖇIᑕE - ₹{price} ▒▒▓█**\n"
+        f"**Story Description :**\n"
+        f"{desc_unicode}"
     )
 
     bot_un = story_doc.get("bot_username")
@@ -134,10 +170,19 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         ]
     }
 
-    # Resolve photo image bytes
+    # Resolve photo image bytes with fallback and prefixing relative URLs
     photo_bytes = None
-    img_url = story_doc.get("poster_url") or story_doc.get("image")
-    if img_url and img_url.startswith("http"):
+    img_url = None
+    for attr in ["banner_url", "poster_url", "cover", "image_url", "image"]:
+        val = story_doc.get(attr)
+        if val:
+            img_url = str(val).strip()
+            break
+
+    if img_url:
+        if not img_url.startswith("http://") and not img_url.startswith("https://"):
+            img_url = "https://aryapremium.store/" + img_url.lstrip("/")
+        
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(img_url)

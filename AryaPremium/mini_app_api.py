@@ -12304,6 +12304,14 @@ async def get_poster_config():
         "watermark_opacity": 0.8
     }
     
+    if "_id" in cfg:
+        cfg["_id"] = str(cfg["_id"])
+    if "last_posted_at" in cfg and cfg["last_posted_at"]:
+        if hasattr(cfg["last_posted_at"], "isoformat"):
+            cfg["last_posted_at"] = cfg["last_posted_at"].isoformat()
+        else:
+            cfg["last_posted_at"] = str(cfg["last_posted_at"])
+            
     # Fetch recent logs from poster_bot_posts
     logs_cursor = db.db.poster_bot_posts.find({}).sort("posted_at", -1).limit(50)
     logs = []
