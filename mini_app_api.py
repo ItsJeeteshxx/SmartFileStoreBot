@@ -3735,7 +3735,7 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
       min-height: 100vh;
       padding: 24px;
       text-align: center;
-    }
+    }}
     .card {{
       background: rgba(30, 41, 59, 0.45);
       backdrop-filter: blur(16px);
