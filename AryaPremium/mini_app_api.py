@@ -307,46 +307,46 @@ async def _poster_bot_publisher_worker(arya_db):
         while True:
             try:
                 if first_run:
-                    await asyncio.sleep(2)  # Immediate post under 1 min on server startup
-                    first_run = False
-                    is_first_run_trigger = True
+                    await asyncio.sleep(2)  # Immediate post on startup
                 else:
-                    await asyncio.sleep(30)  # Check every 30 seconds
+                    await asyncio.sleep(15)  # Check every 15 seconds
+
                 cfg = await _get_poster_bot_config(arya_db)
-                is_enabled = bool(cfg and cfg.get("enabled"))
+                if not cfg:
+                    continue
+
+                # Always force poster_mode = bot_api (clean up any legacy userbot overrides)
+                if cfg.get("poster_mode") == "userbot":
+                    await arya_db.db.mini_app_config.update_one(
+                        {"_id": "poster_bot_config"},
+                        {"$set": {"poster_mode": "bot_api"}},
+                        upsert=True
+                    )
+                    cfg["poster_mode"] = "bot_api"
+
+                is_enabled = bool(cfg.get("enabled", True))
+                b_token = str(cfg.get("bot_token") or "").strip()
+                if not b_token:
+                    b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+                target_channel = str(cfg.get("channel_id") or "").strip()
 
                 if not is_enabled:
                     logger.info("[PosterBot Daemon] Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
                     continue
 
+                if not b_token or not target_channel:
+                    logger.warning(f"[PosterBot Daemon] Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
+                    continue
+
                 interval_mins = float(cfg.get("post_interval_mins") or 30)
                 now = datetime.now(timezone.utc)
-
-                # Resolve bot token and channel / userbot session
-                p_mode = str(cfg.get("poster_mode") or "bot_api").strip()
-                b_token = str(cfg.get("bot_token") or "").strip()
-                if not b_token:
-                    b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
-
-                target_channel = str(cfg.get("channel_id") or "").strip()
-                session_str = str(cfg.get("session_string") or "").strip()
-
-                if p_mode == "userbot":
-                    if not session_str or not target_channel:
-                        logger.warning(f"[PosterBot Daemon] Active in Userbot mode but missing channel_id ('{target_channel}') or session_string — skipping auto-post")
-                        continue
-                else:
-                    if not b_token or not target_channel:
-                        logger.warning(f"[PosterBot Daemon] Active in Bot API mode but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
-                        continue
-
                 last_posted = cfg.get("last_posted_at")
-                should_post = False
 
-                if not last_posted or is_first_run_trigger:
-                    logger.info("[PosterBot Daemon] ACTIVE — Instant post trigger on daemon startup (under 1 minute)")
+                should_post = False
+                if first_run or not last_posted:
+                    logger.info("[PosterBot Daemon] ACTIVE — Instant post trigger on startup/first-run (under 1 minute)")
                     should_post = True
-                    is_first_run_trigger = False
+                    first_run = False
                 else:
                     if isinstance(last_posted, str):
                         last_posted_str = last_posted.replace("Z", "+00:00")
@@ -364,7 +364,6 @@ async def _poster_bot_publisher_worker(arya_db):
                             logger.info(f"[PosterBot Daemon] ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
                             should_post = True
                         else:
-                            logger.info(f"[PosterBot Daemon] ACTIVE — Waiting: elapsed={elapsed_mins:.1f}m < interval={interval_mins:.1f}m (next post in ~{interval_mins - elapsed_mins:.1f}m)")
                             should_post = False
                     else:
                         logger.info("[PosterBot Daemon] ACTIVE — Triggering post (invalid/unparseable last_posted_at)")
@@ -389,11 +388,9 @@ async def _poster_bot_publisher_worker(arya_db):
                 stories = [s async for s in stories_cursor]
 
                 if not stories:
-                    # Fallback to any non-hidden story
                     stories_cursor = arya_db.db.premium_stories.find({"visibility": {"$ne": "hidden"}}).sort("_id", 1)
                     stories = [s async for s in stories_cursor]
                 if not stories:
-                    # Absolute fallback to all stories in DB
                     stories_cursor = arya_db.db.premium_stories.find({}).sort("_id", 1)
                     stories = [s async for s in stories_cursor]
 
@@ -413,10 +410,7 @@ async def _poster_bot_publisher_worker(arya_db):
                     target_channel,
                     target_story,
                     {
-                        "poster_mode": cfg.get("poster_mode", "bot_api"),
-                        "api_id": cfg.get("api_id", ""),
-                        "api_hash": cfg.get("api_hash", ""),
-                        "session_string": cfg.get("session_string", ""),
+                        "poster_mode": "bot_api",
                         "watermark_enabled": cfg.get("watermark_enabled", True),
                         "watermark_position": cfg.get("watermark_position", "bottom_right"),
                         "watermark_opacity": cfg.get("watermark_opacity", 0.8)
@@ -444,6 +438,8 @@ async def _poster_bot_publisher_worker(arya_db):
                         {"_id": "poster_bot_config"},
                         {"$set": {
                             "_key": "poster_bot_config",
+                            "enabled": True,
+                            "poster_mode": "bot_api",
                             "last_posted_at": now,
                             "rotation_index": next_rot
                         }},
