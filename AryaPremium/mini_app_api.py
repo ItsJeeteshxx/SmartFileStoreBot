@@ -286,41 +286,64 @@ async def _poster_bot_publisher_worker(arya_db):
     from AryaPremium.config import Config
     from AryaPremium.poster_helper import send_story_to_channel
 
-    logger.info("[PosterBot] Publisher worker started")
+    logger.info("[PosterBot] Publisher worker daemon started")
 
     while True:
         try:
-            await asyncio.sleep(30)  # Check every 30 seconds (not 60)
+            await asyncio.sleep(30)  # Check every 30 seconds
             cfg = await _get_poster_bot_config(arya_db)
-            if not cfg or not cfg.get("enabled"):
+            is_enabled = bool(cfg and cfg.get("enabled"))
+
+            if not is_enabled:
+                logger.info("[PosterBot Daemon] Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
                 continue
 
-            interval_mins = int(cfg.get("post_interval_mins") or 30)
+            interval_mins = float(cfg.get("post_interval_mins") or 30)
             now = datetime.now(timezone.utc)
 
+            # Resolve bot token and channel
+            b_token = str(cfg.get("bot_token") or "").strip()
+            if not b_token:
+                b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+
+            target_channel = str(cfg.get("channel_id") or "").strip()
+            if not b_token or not target_channel:
+                logger.warning(f"[PosterBot Daemon] Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
+                continue
+
             last_posted = cfg.get("last_posted_at")
-            if last_posted:
-                # Normalize: could be datetime object or ISO string
+            should_post = False
+
+            if not last_posted:
+                logger.info("[PosterBot Daemon] ACTIVE — First post trigger (no last_posted_at timestamp found)")
+                should_post = True
+            else:
                 if isinstance(last_posted, str):
-                    # Strip trailing Z for Python 3.10 compat
                     last_posted_str = last_posted.replace("Z", "+00:00")
                     try:
                         last_posted = datetime.fromisoformat(last_posted_str)
                     except Exception:
                         last_posted = None
+
                 if last_posted and isinstance(last_posted, datetime):
                     if last_posted.tzinfo is None:
                         last_posted = last_posted.replace(tzinfo=timezone.utc)
                     elapsed_mins = (now - last_posted).total_seconds() / 60.0
-                    
-                    # If elapsed_mins is between 0 and interval_mins, skip (not time yet).
-                    # If elapsed_mins < 0 (future timestamp/clock skew) or >= interval_mins, proceed to post!
-                    if 0 <= elapsed_mins < interval_mins:
-                        logger.info(f"[PosterBot Daemon] Waiting: {elapsed_mins:.1f}m < interval {interval_mins}m")
-                        continue
-                    logger.info(f"[PosterBot Daemon] Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins}m — posting now!")
 
-            # Sequential rotation over available stories (flexible query for visibility/status)
+                    if elapsed_mins >= interval_mins or elapsed_mins < 0:
+                        logger.info(f"[PosterBot Daemon] ACTIVE — Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins:.1f}m")
+                        should_post = True
+                    else:
+                        logger.info(f"[PosterBot Daemon] ACTIVE — Waiting: elapsed={elapsed_mins:.1f}m < interval={interval_mins:.1f}m (next post in ~{interval_mins - elapsed_mins:.1f}m)")
+                        should_post = False
+                else:
+                    logger.info("[PosterBot Daemon] ACTIVE — Triggering post (invalid/unparseable last_posted_at)")
+                    should_post = True
+
+            if not should_post:
+                continue
+
+            # Fetch ALL available stories in sequential order (_id ascending)
             stories_cursor = arya_db.db.premium_stories.find({
                 "$or": [
                     {"visibility": "available"},
@@ -334,6 +357,7 @@ async def _poster_bot_publisher_worker(arya_db):
                 ]
             }).sort("_id", 1)
             stories = [s async for s in stories_cursor]
+
             if not stories:
                 # Fallback to any non-hidden story
                 stories_cursor = arya_db.db.premium_stories.find({"visibility": {"$ne": "hidden"}}).sort("_id", 1)
@@ -344,7 +368,7 @@ async def _poster_bot_publisher_worker(arya_db):
                 stories = [s async for s in stories_cursor]
 
             if not stories:
-                logger.warning("[PosterBot] No stories found in DB for auto-post")
+                logger.warning("[PosterBot Daemon] No stories found in database to post")
                 continue
 
             rot_idx = int(cfg.get("rotation_index") or 0)
@@ -352,18 +376,8 @@ async def _poster_bot_publisher_worker(arya_db):
                 rot_idx = 0
 
             target_story = stories[rot_idx]
+            logger.info(f"[PosterBot Daemon] Posting story idx={rot_idx+1}/{len(stories)}: '{target_story.get('story_name_en')}' → channel {target_channel}")
 
-            # Resolve bot token
-            b_token = str(cfg.get("bot_token") or "").strip()
-            if not b_token:
-                b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
-
-            target_channel = str(cfg.get("channel_id") or "").strip()
-            if not b_token or not target_channel:
-                logger.warning("[PosterBot] Missing bot_token or channel_id — skipping auto-post")
-                continue
-
-            logger.info(f"[PosterBot] Auto-posting story idx={rot_idx}: '{target_story.get('story_name_en')}' → {target_channel}")
             res = await send_story_to_channel(
                 b_token,
                 target_channel,
@@ -401,11 +415,12 @@ async def _poster_bot_publisher_worker(arya_db):
                     }},
                     upsert=True
                 )
-                logger.info(f"[PosterBot] ✅ Auto-posted story: '{target_story.get('story_name_en')}', msg_id={msg_id}, next_rot={next_rot}")
+                logger.info(f"[PosterBot Daemon] ✅ AUTO-POST SUCCESS! Story: '{target_story.get('story_name_en')}', msg_id={msg_id}, next_rot={next_rot}/{len(stories)}")
             else:
-                logger.error(f"[PosterBot] ❌ Auto-post failed: {res.get('error')}")
+                logger.error(f"[PosterBot Daemon] ❌ AUTO-POST FAILED: {res.get('error')}")
+
         except Exception as e:
-            logger.error(f"[PosterBot] Publisher worker error: {e}", exc_info=True)
+            logger.error(f"[PosterBot Daemon] Error in publisher loop: {e}", exc_info=True)
 
 
 async def _poster_bot_cleanup_worker(arya_db):
