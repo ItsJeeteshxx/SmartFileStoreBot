@@ -317,11 +317,31 @@ async def _poster_bot_publisher_worker(arya_db):
                         continue  # Not time yet
                     logger.info(f"[PosterBot] Interval elapsed: {elapsed_mins:.1f}m >= {interval_mins}m — posting now")
 
-            # Sequential rotation over available stories
-            stories_cursor = arya_db.db.premium_stories.find({"visibility": "available"}).sort("_id", 1)
+            # Sequential rotation over available stories (flexible query for visibility/status)
+            stories_cursor = arya_db.db.premium_stories.find({
+                "$or": [
+                    {"visibility": "available"},
+                    {"visibility": {"$exists": False}},
+                    {"visibility": None},
+                    {"visibility": ""},
+                    {"status": "available"},
+                    {"status": "active"},
+                    {"status": "Completed"},
+                    {"status": "Ongoing"}
+                ]
+            }).sort("_id", 1)
             stories = [s async for s in stories_cursor]
             if not stories:
-                logger.warning("[PosterBot] No available stories found for auto-post")
+                # Fallback to any non-hidden story
+                stories_cursor = arya_db.db.premium_stories.find({"visibility": {"$ne": "hidden"}}).sort("_id", 1)
+                stories = [s async for s in stories_cursor]
+            if not stories:
+                # Absolute fallback to all stories in DB
+                stories_cursor = arya_db.db.premium_stories.find({}).sort("_id", 1)
+                stories = [s async for s in stories_cursor]
+
+            if not stories:
+                logger.warning("[PosterBot] No stories found in DB for auto-post")
                 continue
 
             rot_idx = int(cfg.get("rotation_index") or 0)
