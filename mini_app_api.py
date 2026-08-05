@@ -268,6 +268,144 @@ if _arya_path not in sys.path:
 STALE_ORDER_HOURS = 24
 CLEANUP_INTERVAL_SECS = 3600  # Check every 1 hour
 
+
+async def _poster_bot_publisher_worker(arya_db):
+    """
+    Background daemon: publishes stories to target channel sequentially on rotation.
+    Checks config every 60s.
+    """
+    import os
+    from AryaPremium.config import Config
+    from AryaPremium.poster_helper import send_story_to_channel
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            cfg = await arya_db.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+            if not cfg or not cfg.get("enabled"):
+                continue
+
+            last_posted = cfg.get("last_posted_at")
+            interval_mins = int(cfg.get("post_interval_mins") or 30)
+
+            now = datetime.now(timezone.utc)
+            if last_posted:
+                if isinstance(last_posted, str):
+                    last_posted = datetime.fromisoformat(last_posted)
+                if last_posted.tzinfo is None:
+                    last_posted = last_posted.replace(tzinfo=timezone.utc)
+                elapsed_mins = (now - last_posted).total_seconds() / 60.0
+                if elapsed_mins < interval_mins:
+                    continue
+
+            # Sequential rotation:
+            stories_cursor = arya_db.db.premium_stories.find({"visibility": "available"}).sort("_id", 1)
+            stories = [s async for s in stories_cursor]
+            if not stories:
+                continue
+
+            rot_idx = int(cfg.get("rotation_index") or 0)
+            if rot_idx >= len(stories):
+                rot_idx = 0
+
+            target_story = stories[rot_idx]
+
+            # Resolve bot token
+            b_token = str(cfg.get("bot_token") or "").strip()
+            if not b_token:
+                b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+
+            target_channel = str(cfg.get("channel_id") or "").strip()
+            if not b_token or not target_channel:
+                continue
+
+            res = await send_story_to_channel(
+                b_token,
+                target_channel,
+                target_story,
+                {
+                    "watermark_enabled": cfg.get("watermark_enabled", True),
+                    "watermark_position": cfg.get("watermark_position", "bottom_right"),
+                    "watermark_opacity": cfg.get("watermark_opacity", 0.8)
+                }
+            )
+
+            if res.get("success"):
+                msg_id = res.get("message_id")
+                chn_id = res.get("channel_id")
+
+                del_hours = int(cfg.get("delete_delay_hours") or 72)
+                post_log = {
+                    "message_id": msg_id,
+                    "channel_id": chn_id,
+                    "story_id": str(target_story["_id"]),
+                    "story_name": target_story.get("story_name_en") or target_story.get("title") or "Story",
+                    "posted_at": now,
+                    "delete_at": now + timedelta(hours=del_hours),
+                    "deleted": False
+                }
+                await arya_db.db.poster_bot_posts.insert_one(post_log)
+
+                next_rot = (rot_idx + 1) % len(stories)
+                await arya_db.db.mini_app_config.update_one(
+                    {"_key": "poster_bot_config"},
+                    {"$set": {
+                        "last_posted_at": now,
+                        "rotation_index": next_rot
+                    }},
+                    upsert=True
+                )
+                logger.info(f"[PosterBot] Auto posted story: name={target_story.get('story_name_en')}, msg_id={msg_id}")
+        except Exception as e:
+            logger.error(f"[PosterBot] Publisher error: {e}")
+
+async def _poster_bot_cleanup_worker(arya_db):
+    """
+    Background daemon: automatically deletes posts from channel after 72h.
+    Checks DB logs every 5 minutes.
+    """
+    import os
+    from AryaPremium.config import Config
+
+    while True:
+        try:
+            await asyncio.sleep(300)
+            cfg = await arya_db.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+            b_token = ""
+            if cfg:
+                b_token = str(cfg.get("bot_token") or "").strip()
+            if not b_token:
+                b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+
+            if not b_token:
+                continue
+
+            now = datetime.now(timezone.utc)
+            cursor = arya_db.db.poster_bot_posts.find({"deleted": False, "delete_at": {"$lte": now}})
+            async for post in cursor:
+                msg_id = post.get("message_id")
+                chn_id = post.get("channel_id")
+
+                url = f"https://api.telegram.org/bot{b_token}/deleteMessage"
+                target_chat = chn_id
+                if str(chn_id).replace("-", "").isdigit():
+                    target_chat = int(chn_id)
+
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        r = await client.post(url, json={"chat_id": target_chat, "message_id": int(msg_id)})
+                        logger.info(f"[PosterBot] Auto delete message {msg_id}: status={r.status_code}, response={r.text}")
+                except Exception as del_err:
+                    logger.warning(f"[PosterBot] Auto delete call exception: {del_err}")
+
+                await arya_db.db.poster_bot_posts.update_one(
+                    {"_id": post["_id"]},
+                    {"$set": {"deleted": True, "deleted_at": now}}
+                )
+        except Exception as e:
+            logger.error(f"[PosterBot] Cleanup worker error: {e}")
+
+
 async def _stale_orders_cleanup_worker(arya_db):
     """
     Background worker: archives pending/failed orders older than 24h.
@@ -12146,6 +12284,163 @@ async def save_paage_profile(payload: dict = Body(...)):
 
     return {"ok": True, "profile": profile_data}
 
+
+
+# ─── Poster Bot Endpoints ──────────────────────
+@api_router.get("/admin/poster-config")
+async def get_poster_config():
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    
+    cfg = await db.db.mini_app_config.find_one({"_key": "poster_bot_config"}) or {
+        "enabled": False,
+        "bot_token": "",
+        "channel_id": "",
+        "post_interval_mins": 30,
+        "delete_delay_hours": 72,
+        "watermark_enabled": True,
+        "watermark_position": "bottom_right",
+        "watermark_opacity": 0.8
+    }
+    
+    # Fetch recent logs from poster_bot_posts
+    logs_cursor = db.db.poster_bot_posts.find({}).sort("posted_at", -1).limit(50)
+    logs = []
+    async for l in logs_cursor:
+        l["_id"] = str(l["_id"])
+        if "posted_at" in l and l["posted_at"]:
+            l["posted_at"] = l["posted_at"].isoformat()
+        if "delete_at" in l and l["delete_at"]:
+            l["delete_at"] = l["delete_at"].isoformat()
+        if "deleted_at" in l and l["deleted_at"]:
+            l["deleted_at"] = l["deleted_at"].isoformat()
+        logs.append(l)
+        
+    return {"config": cfg, "logs": logs}
+
+@api_router.post("/admin/poster-config")
+async def save_poster_config(payload: dict = Body(...)):
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not connected")
+        
+    update_doc = {
+        "enabled": bool(payload.get("enabled", False)),
+        "bot_token": str(payload.get("bot_token", "")).strip(),
+        "channel_id": str(payload.get("channel_id", "")).strip(),
+        "post_interval_mins": int(payload.get("post_interval_mins") or 30),
+        "delete_delay_hours": int(payload.get("delete_delay_hours") or 72),
+        "watermark_enabled": bool(payload.get("watermark_enabled", True)),
+        "watermark_position": str(payload.get("watermark_position", "bottom_right")).strip(),
+        "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else 0.8)
+    }
+    
+    await db.db.mini_app_config.update_one(
+        {"_key": "poster_bot_config"},
+        {"$set": update_doc},
+        upsert=True
+    )
+    return {"success": True}
+
+@api_router.post("/admin/poster-post-now")
+async def poster_post_now(payload: dict = Body(...)):
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not connected")
+        
+    cfg = await db.db.mini_app_config.find_one({"_key": "poster_bot_config"}) or {}
+    
+    b_token = str(payload.get("bot_token") or cfg.get("bot_token") or "").strip()
+    if not b_token:
+        from AryaPremium.config import Config
+        b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+        
+    target_channel = str(payload.get("channel_id") or cfg.get("channel_id") or "").strip()
+    
+    if not b_token or not target_channel:
+        raise HTTPException(status_code=400, detail="Bot token and target channel must be configured")
+        
+    # Select story
+    story_id = payload.get("story_id")
+    if story_id:
+        from bson.objectid import ObjectId
+        story = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+    else:
+        # Pick a random available story
+        pipeline = [{"$match": {"visibility": "available"}}, {"$sample": {"size": 1}}]
+        stories = [s async for s in db.db.premium_stories.aggregate(pipeline)]
+        story = stories[0] if stories else None
+        
+    if not story:
+        raise HTTPException(status_code=404, detail="No stories found to post")
+        
+    from AryaPremium.poster_helper import send_story_to_channel
+    
+    watermark_config = {
+        "watermark_enabled": bool(payload.get("watermark_enabled", cfg.get("watermark_enabled", True))),
+        "watermark_position": str(payload.get("watermark_position", cfg.get("watermark_position", "bottom_right"))),
+        "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else cfg.get("watermark_opacity", 0.8))
+    }
+    
+    res = await send_story_to_channel(b_token, target_channel, story, watermark_config)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "Failed to post to Telegram channel")
+        
+    now = datetime.now(timezone.utc)
+    del_hours = int(cfg.get("delete_delay_hours") or 72)
+    post_log = {
+        "message_id": res.get("message_id"),
+        "channel_id": res.get("channel_id"),
+        "story_id": str(story["_id"]),
+        "story_name": story.get("story_name_en") or story.get("title") or "Story",
+        "posted_at": now,
+        "delete_at": now + timedelta(hours=del_hours),
+        "deleted": False
+    }
+    await db.db.poster_bot_posts.insert_one(post_log)
+    return {"success": True, "message_id": res.get("message_id")}
+
+@api_router.post("/admin/poster-delete-now")
+async def poster_delete_now(payload: dict = Body(...)):
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not connected")
+        
+    msg_id = payload.get("message_id")
+    chn_id = payload.get("channel_id")
+    
+    if not msg_id or not chn_id:
+        raise HTTPException(status_code=400, detail="Missing message_id or channel_id")
+        
+    cfg = await db.db.mini_app_config.find_one({"_key": "poster_bot_config"}) or {}
+    b_token = str(cfg.get("bot_token") or "").strip()
+    if not b_token:
+        from AryaPremium.config import Config
+        b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+        
+    if not b_token:
+        raise HTTPException(status_code=400, detail="No bot token configured to perform deletion")
+        
+    url = f"https://api.telegram.org/bot{b_token}/deleteMessage"
+    target_chat = chn_id
+    if str(chn_id).replace("-", "").isdigit():
+        target_chat = int(chn_id)
+        
+    success = False
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(url, json={"chat_id": target_chat, "message_id": int(msg_id)})
+            if r.status_code == 200 and r.json().get("ok"):
+                success = True
+    except Exception as e:
+        logger.warning(f"Manual deleteMessage call failed: {e}")
+        
+    await db.db.poster_bot_posts.update_one(
+        {"message_id": int(msg_id), "channel_id": str(chn_id)},
+        {"$set": {"deleted": True, "deleted_at": datetime.now(timezone.utc)}}
+    )
+    return {"success": True, "deleted_from_telegram": success}
 
 @api_router.post("/paage/cards")
 async def save_paage_cards(payload: dict = Body(...)):
