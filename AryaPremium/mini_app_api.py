@@ -322,15 +322,23 @@ async def _poster_bot_publisher_worker(arya_db):
                 interval_mins = float(cfg.get("post_interval_mins") or 30)
                 now = datetime.now(timezone.utc)
 
-                # Resolve bot token and channel
+                # Resolve bot token and channel / userbot session
+                p_mode = str(cfg.get("poster_mode") or "bot_api").strip()
                 b_token = str(cfg.get("bot_token") or "").strip()
                 if not b_token:
                     b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
 
                 target_channel = str(cfg.get("channel_id") or "").strip()
-                if not b_token or not target_channel:
-                    logger.warning(f"[PosterBot Daemon] Active but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
-                    continue
+                session_str = str(cfg.get("session_string") or "").strip()
+
+                if p_mode == "userbot":
+                    if not session_str or not target_channel:
+                        logger.warning(f"[PosterBot Daemon] Active in Userbot mode but missing channel_id ('{target_channel}') or session_string — skipping auto-post")
+                        continue
+                else:
+                    if not b_token or not target_channel:
+                        logger.warning(f"[PosterBot Daemon] Active in Bot API mode but missing channel_id ('{target_channel}') or bot_token — skipping auto-post")
+                        continue
 
                 last_posted = cfg.get("last_posted_at")
                 should_post = False
@@ -12853,6 +12861,22 @@ async def save_paage_cards(payload: dict = Body(...)):
 
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
+
+# ─── Direct App Routes for Userbot OTP (Guarantees 0% routing errors) ──────────
+@app.api_route("/api/admin/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
+@app.api_route("/admin/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
+async def direct_userbot_send_otp(request: Request, payload: dict = Body(default={})):
+    return await userbot_send_otp(request, payload)
+
+@app.api_route("/api/admin/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
+@app.api_route("/admin/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
+async def direct_userbot_verify_otp(request: Request, payload: dict = Body(default={})):
+    return await userbot_verify_otp(request, payload)
+
+@app.api_route("/api/admin/userbot/logout", methods=["GET", "POST", "OPTIONS"])
+@app.api_route("/admin/userbot/logout", methods=["GET", "POST", "OPTIONS"])
+async def direct_userbot_logout(request: Request):
+    return await userbot_logout(request)
 
 
 
