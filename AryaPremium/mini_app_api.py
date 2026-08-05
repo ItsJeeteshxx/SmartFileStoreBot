@@ -294,10 +294,15 @@ async def _poster_bot_publisher_worker(arya_db):
         from poster_helper import send_story_to_channel
 
     logger.info("🚀 [PosterBot Daemon] Publisher worker daemon STARTED & RUNNING!")
+    first_run = True
 
     while True:
         try:
-            await asyncio.sleep(30)  # Check every 30 seconds
+            if first_run:
+                await asyncio.sleep(5)
+                first_run = False
+            else:
+                await asyncio.sleep(30)  # Check every 30 seconds
             cfg = await _get_poster_bot_config(arya_db)
             is_enabled = bool(cfg and cfg.get("enabled"))
 
@@ -655,11 +660,20 @@ async def lifespan(app: FastAPI):
         except Exception as worker_err:
             logger.warning(f"Failed to launch stale orders cleanup worker: {worker_err}")
 
-        # Launch Poster Bot background workers
+        # Launch Poster Bot background workers with strong references (prevents Python GC)
         try:
-            asyncio.create_task(_poster_bot_publisher_worker(arya_db))
-            asyncio.create_task(_poster_bot_cleanup_worker(arya_db))
-            logger.info("✅ Poster Bot background publisher and cleanup workers started")
+            if not hasattr(app.state, "background_tasks"):
+                app.state.background_tasks = set()
+
+            t_pub = asyncio.create_task(_poster_bot_publisher_worker(arya_db))
+            app.state.background_tasks.add(t_pub)
+            t_pub.add_done_callback(lambda t: app.state.background_tasks.discard(t))
+
+            t_cln = asyncio.create_task(_poster_bot_cleanup_worker(arya_db))
+            app.state.background_tasks.add(t_cln)
+            t_cln.add_done_callback(lambda t: app.state.background_tasks.discard(t))
+
+            logger.info("✅ Poster Bot background publisher and cleanup workers started with persistent task references")
         except Exception as worker_err:
             logger.warning(f"Failed to launch Poster Bot background workers: {worker_err}")
             

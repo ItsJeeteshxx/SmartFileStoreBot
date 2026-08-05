@@ -179,6 +179,7 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         f"🖥 <b>Platform :</b> <b>{platform_esc}</b>\n"
         f"🧩 <b>Genre :</b> <b>{first_genre_esc}</b>\n"
         f"🎬 <b>Episodes :</b> <b>{episodes_str_esc}</b>\n"
+        f"\n"
         f"   █▓▒▒░░░ᑭᖇIᑕE - ₹<b>{price_esc}</b> ░░░▒▒▓█\n"
         f"\n"
         f"<b>Story Description :</b>\n"
