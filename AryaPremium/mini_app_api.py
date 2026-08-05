@@ -305,223 +305,185 @@ def _handle_background_task_result(task: asyncio.Task):
     except Exception as e:
         logger.error(f"Error checking background task result: {e}")
 
-def _run_poster_bot_in_thread(arya_db):
+def _run_poster_bot_in_thread(main_loop, arya_db):
     """
-    Runs the poster bot publisher daemon in a dedicated background thread
-    with its own asyncio event loop. This guarantees it gets CPU time
-    independent of the main uvicorn event loop (which may be starved by HTTP traffic).
+    PosterBot thread: uses time.sleep() for scheduling (no event loop needed),
+    and asyncio.run_coroutine_threadsafe() to run DB/HTTP work on the MAIN event loop.
+    This is the ONLY correct way to do background scheduling with motor (async MongoDB).
     """
-    import sys as _sys
-    import asyncio as _asyncio
+    import time
+    import sys
+    print("[PosterBot Thread] ✅ Thread STARTED! Will tick every 15s.", flush=True, file=sys.stderr)
+    logger.info("[PosterBot Thread] ✅ Background publisher thread started!")
 
-    print("[PosterBot Thread] 🚀 Thread STARTED — creating dedicated event loop", flush=True, file=_sys.stderr)
-
-    # Create a brand-new event loop for this thread
-    loop = _asyncio.new_event_loop()
-    _asyncio.set_event_loop(loop)
-
-    try:
-        loop.run_until_complete(_poster_bot_publisher_coroutine(arya_db, loop))
-    except Exception as e:
-        print(f"[PosterBot Thread] ❌ FATAL: {e}", flush=True, file=_sys.stderr)
-        logger.error(f"[PosterBot Thread] FATAL: {e}", exc_info=True)
-    finally:
-        loop.close()
-
-
-async def _poster_bot_publisher_coroutine(arya_db, loop):
-    """
-    The actual async publisher coroutine, runs inside the dedicated thread's event loop.
-    Uses motor's AsyncIOMotorClient which works with the given event loop.
-    """
-    import sys as _sys
-    import asyncio as _asyncio
-
-    print("[PosterBot Daemon] 🚀 COROUTINE STARTED — initializing!", flush=True, file=_sys.stderr)
-    logger.info("🚀 [PosterBot Daemon] Publisher coroutine STARTED in dedicated thread!")
-
-    # Import dependencies
-    _config_obj = None
-    _send_story_fn = None
-    try:
-        try:
-            from AryaPremium.config import Config as _Cfg
-        except Exception:
-            from config import Config as _Cfg
-        _config_obj = _Cfg
-
-        try:
-            from AryaPremium.poster_helper import send_story_to_channel as _sstc
-        except Exception:
-            from poster_helper import send_story_to_channel as _sstc
-        _send_story_fn = _sstc
-
-        print("[PosterBot Daemon] ✅ Imports done — entering main loop!", flush=True, file=_sys.stderr)
-        logger.info("🚀 [PosterBot Daemon] Imports complete — entering main publish loop!")
-    except Exception as init_err:
-        print(f"[PosterBot Daemon] ❌ IMPORT FAILED: {init_err}", flush=True, file=_sys.stderr)
-        logger.error(f"❌ [PosterBot Daemon Init Failed]: {init_err}", exc_info=True)
-
-    # Wait for DB to be available
-    await _asyncio.sleep(3)
+    time.sleep(5)  # Give service time to fully start up
 
     first_run = True
-    tick_count = 0
-
     while True:
         try:
-            if first_run:
-                await _asyncio.sleep(2)
-            else:
-                await _asyncio.sleep(15)
+            print(f"[PosterBot Thread] ⏰ Tick! Submitting job to main event loop...", flush=True, file=sys.stderr)
+            logger.info("[PosterBot Thread] ⏰ Tick — submitting poster job to main event loop")
 
-            tick_count += 1
-
-            if not arya_db or getattr(arya_db, "db", None) is None:
-                if tick_count % 4 == 0:
-                    logger.info("[PosterBot Daemon] ⏳ Waiting for MongoDB...")
-                continue
-
-            cfg = await _get_poster_bot_config(arya_db)
-            if not cfg:
-                if tick_count % 4 == 0:
-                    logger.info("[PosterBot Daemon] ⚠️ No poster_bot_config in MongoDB. Save settings in Admin Panel → Poster Bot.")
-                continue
-
-            if cfg.get("poster_mode") == "userbot":
-                await arya_db.db.mini_app_config.update_one(
-                    {"_id": "poster_bot_config"},
-                    {"$set": {"poster_mode": "bot_api"}},
-                    upsert=True
-                )
-                cfg["poster_mode"] = "bot_api"
-
-            is_enabled = bool(cfg.get("enabled", True))
-            b_token = str(cfg.get("bot_token") or "").strip()
-            if not b_token and _config_obj:
-                b_token = getattr(_config_obj, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(_config_obj, "MGMT_BOT_TOKEN", None) or ""
-            target_channel = str(cfg.get("channel_id") or "").strip()
-
-            if not is_enabled:
-                if tick_count == 1 or tick_count % 4 == 0:
-                    logger.info("[PosterBot Daemon] ⏸️ DISABLED — enable via Admin Panel → Poster Bot")
-                continue
-
-            if not b_token or not target_channel:
-                if tick_count == 1 or tick_count % 4 == 0:
-                    logger.warning(f"[PosterBot Daemon] ⚠️ Missing bot_token or channel_id. Configure in Admin Panel → Poster Bot. (token={bool(b_token)}, channel='{target_channel}')")
-                continue
-
-            interval_mins = float(cfg.get("post_interval_mins") or 30)
-            now = datetime.now(timezone.utc)
-            last_posted = cfg.get("last_posted_at")
-
-            should_post = False
-            if first_run or not last_posted:
-                logger.info(f"[PosterBot Daemon] 🚀 ACTIVE — First-run post trigger! interval={interval_mins:.1f}m, channel={target_channel}")
-                should_post = True
-                first_run = False
-            else:
-                if isinstance(last_posted, str):
-                    try:
-                        last_posted = datetime.fromisoformat(last_posted.replace("Z", "+00:00"))
-                    except Exception:
-                        last_posted = None
-
-                if last_posted and isinstance(last_posted, datetime):
-                    if last_posted.tzinfo is None:
-                        last_posted = last_posted.replace(tzinfo=timezone.utc)
-                    elapsed_mins = (now - last_posted).total_seconds() / 60.0
-                    if elapsed_mins >= interval_mins or elapsed_mins < 0:
-                        logger.info(f"[PosterBot Daemon] 🚀 Interval triggered: elapsed={elapsed_mins:.1f}m >= {interval_mins:.1f}m")
-                        should_post = True
-                    else:
-                        if tick_count == 1 or tick_count % 4 == 0:
-                            logger.info(f"[PosterBot Daemon] ⏳ Waiting: {elapsed_mins:.1f}m / {interval_mins:.1f}m (next in ~{interval_mins - elapsed_mins:.1f}m)")
-                else:
-                    logger.info("[PosterBot Daemon] 🚀 Triggering post (no valid last_posted_at)")
-                    should_post = True
-
-            if not should_post:
-                continue
-
-            # Fetch stories
-            stories_cursor = arya_db.db.premium_stories.find({
-                "$or": [
-                    {"visibility": "available"},
-                    {"visibility": {"$exists": False}},
-                    {"visibility": None},
-                    {"visibility": ""},
-                    {"status": "available"},
-                    {"status": "active"},
-                    {"status": "Completed"},
-                    {"status": "Ongoing"}
-                ]
-            }).sort("_id", 1)
-            stories = [s async for s in stories_cursor]
-            if not stories:
-                stories = [s async for s in arya_db.db.premium_stories.find({}).sort("_id", 1)]
-
-            if not stories:
-                logger.warning("[PosterBot Daemon] ⚠️ No stories found in DB!")
-                continue
-
-            rot_idx = int(cfg.get("rotation_index") or 0)
-            if rot_idx >= len(stories):
-                rot_idx = 0
-
-            target_story = stories[rot_idx]
-            logger.info(f"[PosterBot Daemon] 📤 Posting story {rot_idx+1}/{len(stories)}: '{target_story.get('story_name_en')}' → {target_channel}")
-
-            if not _send_story_fn:
-                logger.error("[PosterBot Daemon] ❌ send_story_to_channel not loaded!")
-                await _asyncio.sleep(30)
-                continue
-
-            res = await _send_story_fn(
-                b_token, target_channel, target_story,
-                {
-                    "poster_mode": "bot_api",
-                    "watermark_enabled": cfg.get("watermark_enabled", True),
-                    "watermark_position": cfg.get("watermark_position", "bottom_right"),
-                    "watermark_opacity": cfg.get("watermark_opacity", 0.8)
-                }
+            # Submit async work to the MAIN event loop (where motor/DB is correctly attached)
+            future = asyncio.run_coroutine_threadsafe(
+                _do_poster_bot_tick(arya_db, first_run),
+                main_loop
             )
+            result = future.result(timeout=120)  # Wait up to 2 minutes for the post to complete
+            first_run = False
 
-            if res.get("success"):
-                msg_id = res.get("message_id")
-                chn_id = res.get("channel_id")
-                del_hours = int(cfg.get("delete_delay_hours") or 72)
-                await arya_db.db.poster_bot_posts.insert_one({
-                    "message_id": msg_id, "channel_id": chn_id,
-                    "story_id": str(target_story["_id"]),
-                    "story_name": target_story.get("story_name_en") or "Story",
-                    "posted_at": now,
-                    "delete_at": now + timedelta(hours=del_hours),
-                    "deleted": False
-                })
-                next_rot = (rot_idx + 1) % len(stories)
-                await arya_db.db.mini_app_config.update_one(
-                    {"_id": "poster_bot_config"},
-                    {"$set": {"_key": "poster_bot_config", "enabled": True, "poster_mode": "bot_api",
-                               "last_posted_at": now, "rotation_index": next_rot}},
-                    upsert=True
-                )
-                logger.info(f"[PosterBot Daemon] ✅ AUTO-POST SUCCESS! '{target_story.get('story_name_en')}', msg_id={msg_id}, next={next_rot}/{len(stories)}")
+            # Dynamic sleep: use interval from config or default 15s
+            sleep_secs = 15
+            if isinstance(result, dict):
+                sleep_secs = result.get("next_sleep_secs", 15)
+            print(f"[PosterBot Thread] 💤 Sleeping {sleep_secs}s until next tick...", flush=True, file=sys.stderr)
+            time.sleep(sleep_secs)
+
+        except Exception as e:
+            print(f"[PosterBot Thread] ❌ Error: {e}", flush=True, file=sys.stderr)
+            logger.error(f"[PosterBot Thread] Error: {e}", exc_info=True)
+            time.sleep(15)
+
+
+async def _do_poster_bot_tick(arya_db, first_run: bool) -> dict:
+    """
+    Single poster bot tick — runs on the MAIN event loop.
+    Returns dict with next_sleep_secs so the thread knows when to tick again.
+    """
+    try:
+        # Import helper
+        try:
+            from AryaPremium.poster_helper import send_story_to_channel
+        except Exception:
+            from poster_helper import send_story_to_channel
+
+        try:
+            from AryaPremium.config import Config
+        except Exception:
+            from config import Config
+
+        if not arya_db or getattr(arya_db, "db", None) is None:
+            logger.warning("[PosterBot Tick] ⏳ DB not ready yet, skipping tick")
+            return {"next_sleep_secs": 10}
+
+        cfg = await _get_poster_bot_config(arya_db)
+        if not cfg:
+            logger.info("[PosterBot Tick] ⚠️ No poster_bot_config in MongoDB. Configure in Admin Panel → Poster Bot.")
+            return {"next_sleep_secs": 15}
+
+        is_enabled = bool(cfg.get("enabled", True))
+        if not is_enabled:
+            logger.info("[PosterBot Tick] ⏸️ DISABLED — enable in Admin Panel → Poster Bot")
+            return {"next_sleep_secs": 30}
+
+        b_token = str(cfg.get("bot_token") or "").strip()
+        if not b_token:
+            b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None) or ""
+        target_channel = str(cfg.get("channel_id") or "").strip()
+
+        if not b_token or not target_channel:
+            logger.warning(f"[PosterBot Tick] ⚠️ Missing config — token={bool(b_token)}, channel='{target_channel}'. Configure in Admin Panel → Poster Bot.")
+            return {"next_sleep_secs": 30}
+
+        interval_mins = float(cfg.get("post_interval_mins") or 30)
+        now = datetime.now(timezone.utc)
+        last_posted = cfg.get("last_posted_at")
+
+        # Decide if we should post now
+        should_post = False
+        if first_run or not last_posted:
+            logger.info(f"[PosterBot Tick] 🚀 First-run trigger! interval={interval_mins:.1f}m → channel={target_channel}")
+            should_post = True
+        else:
+            if isinstance(last_posted, str):
+                try:
+                    last_posted = datetime.fromisoformat(last_posted.replace("Z", "+00:00"))
+                except Exception:
+                    last_posted = None
+            if last_posted and isinstance(last_posted, datetime):
+                if last_posted.tzinfo is None:
+                    last_posted = last_posted.replace(tzinfo=timezone.utc)
+                elapsed_mins = (now - last_posted).total_seconds() / 60.0
+                remaining_mins = interval_mins - elapsed_mins
+                if elapsed_mins >= interval_mins or elapsed_mins < 0:
+                    logger.info(f"[PosterBot Tick] 🚀 Interval elapsed! {elapsed_mins:.1f}m >= {interval_mins:.1f}m → POSTING NOW")
+                    should_post = True
+                else:
+                    logger.info(f"[PosterBot Tick] ⏳ Not yet. {elapsed_mins:.1f}/{interval_mins:.1f}m elapsed. Next post in ~{remaining_mins:.1f}m")
+                    # Sleep until next post time (max 60s ticks for responsiveness)
+                    return {"next_sleep_secs": min(60, max(15, int(remaining_mins * 60)))}
             else:
-                logger.error(f"[PosterBot Daemon] ❌ POST FAILED: {res.get('error')}")
+                logger.info("[PosterBot Tick] 🚀 No valid last_posted_at → POSTING NOW")
+                should_post = True
 
-        except Exception as err:
-            logger.error(f"[PosterBot Daemon] Loop error: {err}", exc_info=True)
-            await _asyncio.sleep(10)
+        if not should_post:
+            return {"next_sleep_secs": 15}
+
+        # Fetch story by rotation index
+        total = await arya_db.db.premium_stories.count_documents({})
+        if total == 0:
+            logger.warning("[PosterBot Tick] ⚠️ No stories in DB!")
+            return {"next_sleep_secs": 60}
+
+        rot_idx = int(cfg.get("rotation_index") or 0) % total
+        story = await arya_db.db.premium_stories.find_one({}, skip=rot_idx)
+        if not story:
+            # fallback: get first story
+            story = await arya_db.db.premium_stories.find_one({})
+
+        if not story:
+            logger.warning("[PosterBot Tick] ⚠️ Could not fetch story!")
+            return {"next_sleep_secs": 30}
+
+        logger.info(f"[PosterBot Tick] 📤 Posting story {rot_idx+1}/{total}: '{story.get('story_name_en')}' → {target_channel}")
+
+        res = await send_story_to_channel(
+            b_token, target_channel, story,
+            {
+                "poster_mode": "bot_api",
+                "watermark_enabled": cfg.get("watermark_enabled", True),
+                "watermark_position": cfg.get("watermark_position", "bottom_right"),
+                "watermark_opacity": float(cfg.get("watermark_opacity") or 0.8)
+            }
+        )
+
+        if res.get("success"):
+            msg_id = res.get("message_id")
+            chn_id = res.get("channel_id")
+            del_hours = int(cfg.get("delete_delay_hours") or 72)
+            next_rot = (rot_idx + 1) % total
+
+            await arya_db.db.poster_bot_posts.insert_one({
+                "message_id": msg_id, "channel_id": chn_id,
+                "story_id": str(story["_id"]),
+                "story_name": story.get("story_name_en") or "Story",
+                "posted_at": now,
+                "delete_at": now + timedelta(hours=del_hours),
+                "deleted": False
+            })
+            await arya_db.db.mini_app_config.update_one(
+                {"_id": "poster_bot_config"},
+                {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
+                upsert=True
+            )
+            logger.info(f"[PosterBot Tick] ✅ AUTO-POST SUCCESS! '{story.get('story_name_en')}', msg_id={msg_id}, next_idx={next_rot}/{total}")
+            return {"next_sleep_secs": max(15, int(interval_mins * 60))}
+        else:
+            logger.error(f"[PosterBot Tick] ❌ POST FAILED: {res.get('error')}")
+            return {"next_sleep_secs": 30}
+
+    except Exception as e:
+        logger.error(f"[PosterBot Tick] ❌ Exception in tick: {e}", exc_info=True)
+        return {"next_sleep_secs": 15}
 
 
-# Keep this as a thin async wrapper so existing create_task() calls still work
+# Legacy wrapper (kept for any remaining create_task calls)
 async def _poster_bot_publisher_worker(arya_db):
-    """Thin async wrapper — actual work done in _poster_bot_publisher_coroutine via dedicated thread."""
-    import sys as _sys
-    print("[PosterBot Daemon] ⚠️ _poster_bot_publisher_worker called (should use thread version)", flush=True, file=_sys.stderr)
-    await _poster_bot_publisher_coroutine(arya_db, None)
+    """Legacy no-op wrapper. Publisher now runs via _run_poster_bot_in_thread."""
+    logger.info("[PosterBot] Legacy _poster_bot_publisher_worker called (no-op, thread handles this)")
+    await asyncio.sleep(99999)
+
+
 
 
 async def _poster_bot_cleanup_worker(arya_db):
@@ -749,29 +711,33 @@ async def lifespan(app: FastAPI):
         except Exception as worker_err:
             logger.warning(f"Failed to launch stale orders cleanup worker: {worker_err}")
 
-        # Launch Poster Bot publisher in a DEDICATED THREAD with its own event loop
-        # This prevents the daemon from being starved by high HTTP traffic on the main event loop
+        # Launch Poster Bot publisher in a DEDICATED THREAD
+        # Thread uses time.sleep() + asyncio.run_coroutine_threadsafe() to submit
+        # DB/HTTP work back to the MAIN event loop where motor is correctly attached.
         try:
             import threading as _threading
             if not hasattr(app.state, "background_tasks"):
                 app.state.background_tasks = set()
 
+            # CRITICAL: capture the running event loop NOW (inside async context)
+            _main_loop = asyncio.get_running_loop()
+
             poster_thread = _threading.Thread(
                 target=_run_poster_bot_in_thread,
-                args=(arya_db,),
+                args=(_main_loop, arya_db),   # Pass main_loop so thread can submit work back
                 name="PosterBotPublisher",
                 daemon=True  # Dies with main process
             )
             poster_thread.start()
             app.state.poster_bot_thread = poster_thread
 
-            # Cleanup worker still runs as asyncio task (lightweight)
+            # Cleanup worker as asyncio task (lightweight, infrequent)
             t_cln = asyncio.create_task(_poster_bot_cleanup_worker(arya_db))
             app.state.background_tasks.add(t_cln)
             t_cln.add_done_callback(_handle_background_task_result)
             t_cln.add_done_callback(lambda t: app.state.background_tasks.discard(t))
 
-            logger.info("✅ Poster Bot: publisher in DEDICATED THREAD, cleanup as asyncio task")
+            logger.info("✅ Poster Bot: publisher THREAD started + cleanup asyncio task launched")
         except Exception as worker_err:
             logger.warning(f"Failed to launch Poster Bot workers: {worker_err}")
             
