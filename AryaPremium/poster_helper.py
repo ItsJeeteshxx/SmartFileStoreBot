@@ -105,18 +105,23 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
 
     # Formatted text as requested: Bold headings and values
     caption = (
-        f"♨️ **Story**: **{story_name}**\n"
-        f"🔰 **Status**: **{status}**\n"
-        f"🖥 **Platform**: **{platform}**\n"
-        f"🧩 **Genre**: **{genre}**\n"
-        f"🎬 **Episodes**: **{episodes}**\n\n"
+        f"♨️ **Story : {story_name}**\n"
+        f"🔰 **Status : {status}**\n"
+        f"🖥 **Platform : {platform}**\n"
+        f"🧩 **Genre : {genre}**\n"
+        f"🎬 **Episodes : {episodes}**\n\n"
         f"**[ Price :  ₹{price}  ]**\n\n"
-        f"**Story Description** :-\n"
+        f"**Story Description :-**\n"
         f"**{desc_clean}**"
     )
 
+    bot_un = story_doc.get("bot_username")
+    if not bot_un:
+        bot_un = "UseAryaBot"
+    bot_un = str(bot_un).lstrip("@").strip()
+
     story_id = str(story_doc.get("_id") or story_doc.get("story_id"))
-    buy_url = f"https://t.me/UseAryaBot/apminibyarya?startapp=story_{story_id}"
+    buy_url = f"https://t.me/{bot_un}/apminibyarya?startapp=story_{story_id}"
     tutorial_url = "https://t.me/StoriesFinderBot?start=guide"
 
     # 2 Inline buttons
