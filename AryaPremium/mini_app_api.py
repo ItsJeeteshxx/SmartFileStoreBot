@@ -302,20 +302,23 @@ async def _poster_bot_publisher_worker(arya_db):
             if last_posted:
                 # Normalize: could be datetime object or ISO string
                 if isinstance(last_posted, str):
-                    # Strip trailing Z for Python 3.10 compat (fromisoformat doesn't handle Z)
+                    # Strip trailing Z for Python 3.10 compat
                     last_posted_str = last_posted.replace("Z", "+00:00")
                     try:
                         last_posted = datetime.fromisoformat(last_posted_str)
                     except Exception:
                         last_posted = None
                 if last_posted and isinstance(last_posted, datetime):
-                    # Ensure timezone-aware
                     if last_posted.tzinfo is None:
                         last_posted = last_posted.replace(tzinfo=timezone.utc)
                     elapsed_mins = (now - last_posted).total_seconds() / 60.0
-                    if elapsed_mins < interval_mins:
-                        continue  # Not time yet
-                    logger.info(f"[PosterBot] Interval elapsed: {elapsed_mins:.1f}m >= {interval_mins}m — posting now")
+                    
+                    # If elapsed_mins is between 0 and interval_mins, skip (not time yet).
+                    # If elapsed_mins < 0 (future timestamp/clock skew) or >= interval_mins, proceed to post!
+                    if 0 <= elapsed_mins < interval_mins:
+                        logger.debug(f"[PosterBot Check] Waiting: {elapsed_mins:.1f}m < {interval_mins}m")
+                        continue
+                    logger.info(f"[PosterBot] Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins}m — posting now")
 
             # Sequential rotation over available stories (flexible query for visibility/status)
             stories_cursor = arya_db.db.premium_stories.find({
@@ -12222,8 +12225,9 @@ async def admin_auth_middleware(request: Request, call_next):
     path = request.url.path
     is_admin_path = ("/admin/" in path) or ("/analytics/" in path)
     is_auth_endpoint = "/admin/auth/" in path
+    is_watermark_endpoint = "custom-watermark" in path
     
-    if is_admin_path and not is_auth_endpoint:
+    if is_admin_path and not is_auth_endpoint and not is_watermark_endpoint:
         session_token = request.headers.get("X-Admin-Session")
         db = getattr(app.state, "db", None)
         
@@ -12553,6 +12557,7 @@ async def upload_watermark(file: UploadFile = File(...)):
         logger.error(f"Error saving watermark: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@api_router.get("/custom-watermark")
 @api_router.get("/admin/custom-watermark")
 async def get_custom_watermark():
     # Check multiple candidate paths so it works regardless of where API process runs from
