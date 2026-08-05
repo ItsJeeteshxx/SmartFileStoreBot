@@ -347,6 +347,71 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
     if str(channel_id).lstrip("-").isdigit():
         target_chat = int(channel_id)
 
+    # ── Userbot Mode Check (Pyrogram / Telethon String Session) ───────────────
+    poster_mode = (watermark_config or {}).get("poster_mode", "bot_api")
+    session_string = str((watermark_config or {}).get("session_string", "")).strip()
+    api_id_val = str((watermark_config or {}).get("api_id", "")).strip()
+    api_hash_val = str((watermark_config or {}).get("api_hash", "")).strip()
+
+    if poster_mode == "userbot" and session_string:
+        logger.info(f"[PosterBot Userbot] Attempting send via Userbot String Session to {target_chat}...")
+        # 1. Try Pyrogram first
+        try:
+            from pyrogram import Client as PyroClient
+            import io as _io
+            api_id_int = int(api_id_val) if api_id_val.isdigit() else 6
+            api_hash_str = api_hash_val or "eb06630096e540092c71336c1380cd08"
+            
+            async with PyroClient("poster_userbot", api_id=api_id_int, api_hash=api_hash_str, session_string=session_string, in_memory=True) as app:
+                if photo_bytes:
+                    sent_msg = await app.send_photo(
+                        chat_id=target_chat,
+                        photo=_io.BytesIO(photo_bytes),
+                        caption=caption,
+                        parse_mode="html"
+                    )
+                else:
+                    sent_msg = await app.send_message(
+                        chat_id=target_chat,
+                        text=caption,
+                        parse_mode="html"
+                    )
+                msg_id = getattr(sent_msg, "id", None) or getattr(sent_msg, "message_id", 1)
+                logger.info(f"[PosterBot Userbot] ✅ Pyrogram post success! msg_id={msg_id}")
+                return {"success": True, "message_id": msg_id, "channel_id": str(target_chat)}
+        except Exception as pyro_err:
+            logger.warning(f"[PosterBot Userbot] Pyrogram failed: {pyro_err}. Trying Telethon or Bot API fallback...")
+
+        # 2. Try Telethon as secondary userbot library
+        try:
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+            import io as _io
+            api_id_int = int(api_id_val) if api_id_val.isdigit() else 6
+            api_hash_str = api_hash_val or "eb06630096e540092c71336c1380cd08"
+            
+            async with TelegramClient(StringSession(session_string), api_id_int, api_hash_str) as client:
+                if photo_bytes:
+                    photo_file = _io.BytesIO(photo_bytes)
+                    photo_file.name = "cover.jpg"
+                    sent_msg = await client.send_file(
+                        entity=target_chat,
+                        file=photo_file,
+                        caption=caption,
+                        parse_mode="html"
+                    )
+                else:
+                    sent_msg = await client.send_message(
+                        entity=target_chat,
+                        message=caption,
+                        parse_mode="html"
+                    )
+                msg_id = getattr(sent_msg, "id", 1)
+                logger.info(f"[PosterBot Userbot] ✅ Telethon post success! msg_id={msg_id}")
+                return {"success": True, "message_id": msg_id, "channel_id": str(target_chat)}
+        except Exception as tele_err:
+            logger.warning(f"[PosterBot Userbot] Telethon failed: {tele_err}. Falling back to Bot API.")
+
     reply_markup_json = _json.dumps(reply_markup)
     photo_sent = False
 

@@ -302,12 +302,14 @@ async def _poster_bot_publisher_worker(arya_db):
 
         logger.info("🚀 [PosterBot Daemon] Publisher worker daemon STARTED & RUNNING!")
         first_run = True
+        is_first_run_trigger = False
 
         while True:
             try:
                 if first_run:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)  # Immediate post under 1 min on server startup
                     first_run = False
+                    is_first_run_trigger = True
                 else:
                     await asyncio.sleep(30)  # Check every 30 seconds
                 cfg = await _get_poster_bot_config(arya_db)
@@ -333,9 +335,10 @@ async def _poster_bot_publisher_worker(arya_db):
             last_posted = cfg.get("last_posted_at")
             should_post = False
 
-            if not last_posted:
-                logger.info("[PosterBot Daemon] ACTIVE — First post trigger (no last_posted_at timestamp found)")
+            if not last_posted or is_first_run_trigger:
+                logger.info("[PosterBot Daemon] ACTIVE — Instant post trigger on daemon startup (under 1 minute)")
                 should_post = True
+                is_first_run_trigger = False
             else:
                 if isinstance(last_posted, str):
                     last_posted_str = last_posted.replace("Z", "+00:00")
@@ -402,6 +405,10 @@ async def _poster_bot_publisher_worker(arya_db):
                 target_channel,
                 target_story,
                 {
+                    "poster_mode": cfg.get("poster_mode", "bot_api"),
+                    "api_id": cfg.get("api_id", ""),
+                    "api_hash": cfg.get("api_hash", ""),
+                    "session_string": cfg.get("session_string", ""),
                     "watermark_enabled": cfg.get("watermark_enabled", True),
                     "watermark_position": cfg.get("watermark_position", "bottom_right"),
                     "watermark_opacity": cfg.get("watermark_opacity", 0.8)
@@ -12447,7 +12454,11 @@ async def save_poster_config(payload: dict = Body(...)):
     # (has_custom_watermark, watermark_updated_at) which are managed by /upload-watermark
     update_fields = {
         "enabled": bool(payload.get("enabled", False)),
+        "poster_mode": str(payload.get("poster_mode") or "bot_api").strip(),
         "bot_token": str(payload.get("bot_token", "")).strip(),
+        "api_id": str(payload.get("api_id", "")).strip(),
+        "api_hash": str(payload.get("api_hash", "")).strip(),
+        "session_string": str(payload.get("session_string", "")).strip(),
         "channel_id": str(payload.get("channel_id", "")).strip(),
         "post_interval_mins": int(payload.get("post_interval_mins") or 30),
         "delete_delay_hours": int(payload.get("delete_delay_hours") or 72),
