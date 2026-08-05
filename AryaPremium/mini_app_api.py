@@ -12442,7 +12442,148 @@ async def get_poster_config():
             l["deleted_at"] = l["deleted_at"].isoformat()
         logs.append(l)
         
-    return {"config": cfg, "logs": logs}
+# ─────────────────────────────────────────────────────────────────
+# Userbot Mobile Number OTP Authentication Endpoints
+# ─────────────────────────────────────────────────────────────────
+USERBOT_AUTH_SESSIONS = {}
+
+@api_router.post("/admin/userbot/send-otp")
+async def userbot_send_otp(payload: dict = Body(...)):
+    phone = str(payload.get("phone_number") or "").strip().replace(" ", "").replace("-", "")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        
+        api_id = int(payload.get("api_id") or 6)
+        api_hash = str(payload.get("api_hash") or "eb06630096e540092c71336c1380cd08").strip()
+
+        client = TelegramClient(StringSession(), api_id, api_hash)
+        await client.connect()
+
+        code_res = await client.send_code_request(phone)
+
+        USERBOT_AUTH_SESSIONS[phone] = {
+            "client": client,
+            "phone_code_hash": code_res.phone_code_hash,
+            "api_id": api_id,
+            "api_hash": api_hash,
+            "created_at": datetime.now(timezone.utc)
+        }
+
+        logger.info(f"[Userbot Auth] Sent login OTP code to {phone}")
+        return {
+            "success": True,
+            "phone_code_hash": code_res.phone_code_hash,
+            "message": f"OTP code successfully sent to your Telegram account for {phone}!"
+        }
+    except Exception as e:
+        logger.error(f"[Userbot Auth Error] send-otp failed for {phone}: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to send OTP code: {str(e)}")
+
+@api_router.post("/admin/userbot/verify-otp")
+async def userbot_verify_otp(payload: dict = Body(...)):
+    phone = str(payload.get("phone_number") or "").strip().replace(" ", "").replace("-", "")
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    code = str(payload.get("code") or "").strip()
+    password = str(payload.get("password") or "").strip()
+    phone_code_hash_req = str(payload.get("phone_code_hash") or "").strip()
+
+    if not phone or not code:
+        raise HTTPException(status_code=400, detail="Phone number and OTP code are required")
+
+    session_data = USERBOT_AUTH_SESSIONS.get(phone)
+    client = session_data.get("client") if session_data else None
+    phone_code_hash = session_data.get("phone_code_hash") if session_data else phone_code_hash_req
+
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        from telethon.errors import SessionPasswordNeededError
+
+        api_id = session_data.get("api_id") if session_data else int(payload.get("api_id") or 6)
+        api_hash = session_data.get("api_hash") if session_data else str(payload.get("api_hash") or "eb06630096e540092c71336c1380cd08").strip()
+
+        if not client or not client.is_connected():
+            client = TelegramClient(StringSession(), api_id, api_hash)
+            await client.connect()
+
+        try:
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+        except SessionPasswordNeededError:
+            if not password:
+                return {
+                    "success": False,
+                    "requires_2fa": True,
+                    "message": "Two-Factor Authentication (2FA) Password required for this account."
+                }
+            await client.sign_in(password=password)
+
+        me = await client.get_me()
+        string_session = client.session.save()
+
+        db = getattr(app.state, "db", None)
+        if db:
+            await db.db.mini_app_config.update_one(
+                {"_id": "poster_bot_config"},
+                {
+                    "$set": {
+                        "poster_mode": "userbot",
+                        "userbot_phone": phone,
+                        "userbot_user_id": getattr(me, "id", None),
+                        "userbot_username": getattr(me, "username", "") or "",
+                        "userbot_first_name": getattr(me, "first_name", "") or "",
+                        "session_string": string_session,
+                        "api_id": str(api_id),
+                        "api_hash": api_hash,
+                        "last_updated_at": datetime.now(timezone.utc)
+                    }
+                },
+                upsert=True
+            )
+
+        USERBOT_AUTH_SESSIONS.pop(phone, None)
+        await client.disconnect()
+
+        logger.info(f"[Userbot Auth] ✅ Authenticated successfully for phone {phone} (@{getattr(me, 'username', '')})")
+        return {
+            "success": True,
+            "message": f"Userbot connected successfully as @{getattr(me, 'username', getattr(me, 'first_name', 'User'))}!",
+            "session_string": string_session,
+            "user": {
+                "id": getattr(me, "id", None),
+                "username": getattr(me, "username", ""),
+                "first_name": getattr(me, "first_name", ""),
+                "phone": phone
+            }
+        }
+    except Exception as e:
+        logger.error(f"[Userbot Auth Error] verify-otp failed for {phone}: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
+
+@api_router.post("/admin/userbot/logout")
+async def userbot_logout():
+    db = getattr(app.state, "db", None)
+    if db:
+        await db.db.mini_app_config.update_one(
+            {"_id": "poster_bot_config"},
+            {
+                "$set": {
+                    "poster_mode": "bot_api",
+                    "session_string": "",
+                    "userbot_phone": "",
+                    "userbot_username": "",
+                    "userbot_first_name": ""
+                }
+            }
+        )
+    return {"success": True, "message": "Userbot session logged out"}
 
 @api_router.post("/admin/poster-config")
 async def save_poster_config(payload: dict = Body(...)):
