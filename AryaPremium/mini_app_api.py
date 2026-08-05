@@ -310,22 +310,30 @@ async def _poster_bot_publisher_worker(arya_db):
     Background daemon: publishes stories to target channel sequentially on rotation.
     Polls every 15s; posts when elapsed time >= configured interval.
     """
+    import sys as _sys
+    print("[PosterBot Daemon] 🚀 STARTING UP - entry point reached!", flush=True, file=_sys.stderr)
     logger.info("🚀 [PosterBot Daemon] Publisher worker entry point reached!")
 
+    # Pre-import modules at module level (these are already imported when this file loads)
+    _config_obj = None
+    _send_story_fn = None
     try:
-        import os
         try:
-            from AryaPremium.config import Config
+            from AryaPremium.config import Config as _Cfg
         except Exception:
-            from config import Config
+            from config import Config as _Cfg
+        _config_obj = _Cfg
 
         try:
-            from AryaPremium.poster_helper import send_story_to_channel
+            from AryaPremium.poster_helper import send_story_to_channel as _sstc
         except Exception:
-            from poster_helper import send_story_to_channel
+            from poster_helper import send_story_to_channel as _sstc
+        _send_story_fn = _sstc
 
+        print("[PosterBot Daemon] 🚀 IMPORTS SUCCESS - daemon STARTED & RUNNING!", flush=True, file=_sys.stderr)
         logger.info("🚀 [PosterBot Daemon] Publisher worker daemon STARTED & RUNNING!")
     except Exception as init_err:
+        print(f"[PosterBot Daemon] ❌ IMPORT FAILED: {init_err}", flush=True, file=_sys.stderr)
         logger.error(f"❌ [PosterBot Daemon Init Failed]: {init_err}", exc_info=True)
 
     while True:
@@ -364,8 +372,8 @@ async def _poster_bot_publisher_worker(arya_db):
 
                     is_enabled = bool(cfg.get("enabled", True))
                     b_token = str(cfg.get("bot_token") or "").strip()
-                    if not b_token:
-                        b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
+                    if not b_token and _config_obj:
+                        b_token = getattr(_config_obj, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(_config_obj, "MGMT_BOT_TOKEN", None) or ""
                     target_channel = str(cfg.get("channel_id") or "").strip()
 
                     if not is_enabled:
@@ -447,7 +455,12 @@ async def _poster_bot_publisher_worker(arya_db):
                     target_story = stories[rot_idx]
                     logger.info(f"[PosterBot Daemon] 📤 Auto-Posting story idx={rot_idx+1}/{len(stories)}: '{target_story.get('story_name_en')}' → channel {target_channel}")
 
-                    res = await send_story_to_channel(
+                    if not _send_story_fn:
+                        logger.error("[PosterBot Daemon] ❌ send_story_to_channel not loaded! Cannot post.")
+                        await asyncio.sleep(30)
+                        continue
+
+                    res = await _send_story_fn(
                         b_token,
                         target_channel,
                         target_story,
