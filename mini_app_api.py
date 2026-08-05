@@ -3629,7 +3629,7 @@ async def create_cashfree_order(payload: dict):
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
     callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
-    return_url = "https://t.me/UseAryaBot/apminibyarya?startapp=purchased"
+    return_url = f"{callback_url}?order_id={order_id}"
     
     cf_payload = {
         "order_id": order_id,
@@ -3645,7 +3645,7 @@ async def create_cashfree_order(payload: dict):
             "return_url": return_url,
             "notify_url": callback_url
         },
-        "order_note": f"Arya Premium - {len(valid_stories)} Stories"
+        "order_note": order_id
     }
 
     headers = {
@@ -3948,15 +3948,157 @@ async def cashfree_webhook(request: Request):
         res = await verify_cashfree_payment(order_id=order_id)
         if request.method == "GET":
             if res.get("success"):
-                return Response(
-                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>✅ Payment Successful!</h2><p>Your Cashfree payment was verified.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#10b981;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
-                    media_type="text/html"
-                )
+                success_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Successful</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      background: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 40px 24px;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    .icon {
+      font-size: 52px;
+      margin-bottom: 20px;
+    }
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #10b981;
+    }
+    p {
+      font-size: 0.95rem;
+      color: #9ca3af;
+      line-height: 1.6;
+      margin-bottom: 28px;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 30px;
+      background: #10b981;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      background: #059669;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h2>Payment Successful!</h2>
+    <p>Your payment has been successful. Now please check your purchase on the store.</p>
+    <button onclick="window.Telegram?.WebApp?.close() || window.close()" class="btn">Return to App</button>
+  </div>
+</body>
+</html>"""
+                return Response(content=success_html, media_type="text/html")
             else:
-                return Response(
-                    content="""<html><head><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body style="background:#111;color:#fff;text-align:center;padding:50px;"><h2>⚠️ Payment Pending</h2><p>Payment verification in progress.</p><button onclick="window.Telegram?.WebApp?.close() || window.close()" style="padding:10px 20px;background:#6b7280;color:#fff;border:none;border-radius:8px;">Return to App</button></body></html>""",
-                    media_type="text/html"
-                )
+                pending_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Pending</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      background: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 40px 24px;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    .icon {
+      font-size: 52px;
+      margin-bottom: 20px;
+    }
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #f59e0b;
+    }
+    p {
+      font-size: 0.95rem;
+      color: #9ca3af;
+      line-height: 1.6;
+      margin-bottom: 28px;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 30px;
+      background: #4b5563;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(75, 85, 99, 0.3);
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      background: #374151;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">⚠️</div>
+    <h2>Payment Pending</h2>
+    <p>Payment verification is in progress. Please check your purchase on the store in a few moments.</p>
+    <button onclick="window.Telegram?.WebApp?.close() || window.close()" class="btn">Return to App</button>
+  </div>
+</body>
+</html>"""
+                return Response(content=pending_html, media_type="text/html")
                 
     return {"status": "OK"}
 
