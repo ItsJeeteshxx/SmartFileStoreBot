@@ -269,6 +269,14 @@ STALE_ORDER_HOURS = 24
 CLEANUP_INTERVAL_SECS = 3600  # Check every 1 hour
 
 
+async def _get_poster_bot_config(db_conn) -> dict:
+    if not db_conn:
+        return {}
+    cfg = await db_conn.db.mini_app_config.find_one({"_id": "poster_bot_config"})
+    if not cfg:
+        cfg = await db_conn.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+    return cfg or {}
+
 async def _poster_bot_publisher_worker(arya_db):
     """
     Background daemon: publishes stories to target channel sequentially on rotation.
@@ -281,7 +289,7 @@ async def _poster_bot_publisher_worker(arya_db):
     while True:
         try:
             await asyncio.sleep(60)
-            cfg = await arya_db.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+            cfg = await _get_poster_bot_config(arya_db)
             if not cfg or not cfg.get("enabled"):
                 continue
 
@@ -348,8 +356,9 @@ async def _poster_bot_publisher_worker(arya_db):
 
                 next_rot = (rot_idx + 1) % len(stories)
                 await arya_db.db.mini_app_config.update_one(
-                    {"_key": "poster_bot_config"},
+                    {"_id": "poster_bot_config"},
                     {"$set": {
+                        "_key": "poster_bot_config",
                         "last_posted_at": now,
                         "rotation_index": next_rot
                     }},
@@ -370,7 +379,7 @@ async def _poster_bot_cleanup_worker(arya_db):
     while True:
         try:
             await asyncio.sleep(300)
-            cfg = await arya_db.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+            cfg = await _get_poster_bot_config(arya_db)
             b_token = ""
             if cfg:
                 b_token = str(cfg.get("bot_token") or "").strip()
@@ -578,6 +587,14 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Stale orders auto-cleanup worker started")
         except Exception as worker_err:
             logger.warning(f"Failed to launch stale orders cleanup worker: {worker_err}")
+
+        # Launch Poster Bot background workers
+        try:
+            asyncio.create_task(_poster_bot_publisher_worker(arya_db))
+            asyncio.create_task(_poster_bot_cleanup_worker(arya_db))
+            logger.info("✅ Poster Bot background publisher and cleanup workers started")
+        except Exception as worker_err:
+            logger.warning(f"Failed to launch Poster Bot background workers: {worker_err}")
             
     except Exception as e:
         logger.error(f"DB connect failed: {e}")
@@ -12293,16 +12310,18 @@ async def get_poster_config():
     if not db:
         raise HTTPException(status_code=500, detail="Database not connected")
     
-    cfg = await db.db.mini_app_config.find_one({"_key": "poster_bot_config"}) or {
-        "enabled": False,
-        "bot_token": "",
-        "channel_id": "",
-        "post_interval_mins": 30,
-        "delete_delay_hours": 72,
-        "watermark_enabled": True,
-        "watermark_position": "bottom_right",
-        "watermark_opacity": 0.8
-    }
+    cfg = await _get_poster_bot_config(db)
+    if not cfg:
+        cfg = {
+            "enabled": False,
+            "bot_token": "",
+            "channel_id": "",
+            "post_interval_mins": 30,
+            "delete_delay_hours": 72,
+            "watermark_enabled": True,
+            "watermark_position": "bottom_right",
+            "watermark_opacity": 0.8
+        }
     
     if "_id" in cfg:
         cfg["_id"] = str(cfg["_id"])
@@ -12345,8 +12364,11 @@ async def save_poster_config(payload: dict = Body(...)):
     }
     
     await db.db.mini_app_config.update_one(
-        {"_key": "poster_bot_config"},
-        {"$set": update_doc},
+        {"_id": "poster_bot_config"},
+        {"$set": {
+            "_key": "poster_bot_config",
+            **update_doc
+        }},
         upsert=True
     )
     return {"success": True}
@@ -12357,7 +12379,7 @@ async def poster_post_now(payload: dict = Body(...)):
     if not db:
         raise HTTPException(status_code=500, detail="Database not connected")
         
-    cfg = await db.db.mini_app_config.find_one({"_key": "poster_bot_config"}) or {}
+    cfg = await _get_poster_bot_config(db)
     
     b_token = str(payload.get("bot_token") or cfg.get("bot_token") or "").strip()
     if not b_token:
@@ -12421,7 +12443,7 @@ async def poster_delete_now(payload: dict = Body(...)):
     if not msg_id or not chn_id:
         raise HTTPException(status_code=400, detail="Missing message_id or channel_id")
         
-    cfg = await db.db.mini_app_config.find_one({"_key": "poster_bot_config"}) or {}
+    cfg = await _get_poster_bot_config(db)
     b_token = str(cfg.get("bot_token") or "").strip()
     if not b_token:
         from AryaPremium.config import Config
