@@ -171,9 +171,8 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
     episodes_str_esc = escape_html(episodes_str)
     price_esc = escape_html(price)
 
-    # Formatted caption as HTML: Bold labels and values, gap after episodes, price line (centered), gap, and blockquote description
-    # Center the price line using Unicode em-spaces for Telegram's fixed-width alignment
-    price_line = f"        🏷 ₹{price_esc}  •  Buy Now"
+    # Formatted caption as HTML: Bold labels and values, gap after episodes, price line (user format, centered), gap, blockquote description
+    # Center price using leading spaces since Telegram HTML doesn't support center-align
     caption = (
         f"♨️ <b>Story :</b> <b>{story_name_esc}</b>\n"
         f"🔰 <b>Status :</b> <b>{status_esc}</b>\n"
@@ -181,9 +180,7 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         f"🧩 <b>Genre :</b> <b>{first_genre_esc}</b>\n"
         f"🎬 <b>Episodes :</b> <b>{episodes_str_esc}</b>\n"
         f"\n"
-        f"<b>┌─────── 💰 PRICE ───────┐</b>\n"
-        f"<b>          ₹{price_esc}</b>\n"
-        f"<b>└────────────────────────┘</b>\n"
+        f"   <b>█▓▒▒░░░ᑭᖇIᑕE - ( ₹{price_esc} )░░░▒▒▓█</b>\n"
         f"\n"
         f"<b>📖 Story Description :</b>\n"
         f"<blockquote>{desc_monospace}</blockquote>"

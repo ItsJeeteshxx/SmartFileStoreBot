@@ -12510,14 +12510,36 @@ async def upload_watermark(file: UploadFile = File(...)):
 
 @api_router.get("/admin/custom-watermark")
 async def get_custom_watermark():
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    watermark_path = os.path.join(base_dir, "custom_watermark.png")
-    if not os.path.exists(watermark_path):
-        fallback_path = os.path.join(base_dir, "WatermarkIMG.png")
-        if os.path.exists(fallback_path):
-            return FileResponse(fallback_path)
-        raise HTTPException(status_code=404, detail="No watermark uploaded yet")
-    return FileResponse(watermark_path)
+    # Check multiple candidate paths so it works regardless of where API process runs from
+    this_dir = os.path.dirname(os.path.abspath(__file__))  # AryaPremium/
+    parent_dir = os.path.dirname(this_dir)                  # project root
+    cwd = os.getcwd()
+    candidate_paths = [
+        os.path.join(this_dir, "custom_watermark.png"),
+        os.path.join(parent_dir, "custom_watermark.png"),
+        os.path.join(cwd, "custom_watermark.png"),
+    ]
+    fallback_paths = [
+        os.path.join(this_dir, "WatermarkIMG.png"),
+        os.path.join(parent_dir, "WatermarkIMG.png"),
+        os.path.join(cwd, "WatermarkIMG.png"),
+    ]
+    from fastapi.responses import FileResponse as FR
+    from starlette.responses import Response
+    no_cache_headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    for cp in candidate_paths:
+        if os.path.exists(cp):
+            logger.info(f"[WatermarkServe] Serving custom watermark from: {cp}")
+            return FR(cp, media_type="image/png", headers=no_cache_headers)
+    for fp in fallback_paths:
+        if os.path.exists(fp):
+            logger.info(f"[WatermarkServe] Serving fallback watermark from: {fp}")
+            return FR(fp, media_type="image/png", headers=no_cache_headers)
+    raise HTTPException(status_code=404, detail="No watermark file found")
 
 @api_router.post("/paage/cards")
 async def save_paage_cards(payload: dict = Body(...)):
