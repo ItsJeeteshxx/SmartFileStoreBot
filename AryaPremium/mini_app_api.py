@@ -12447,8 +12447,14 @@ async def get_poster_config():
 # ─────────────────────────────────────────────────────────────────
 USERBOT_AUTH_SESSIONS = {}
 
-@api_router.post("/admin/userbot/send-otp")
-async def userbot_send_otp(payload: dict = Body(...)):
+@api_router.api_route("/admin/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
+@api_router.api_route("/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
+async def userbot_send_otp(request: Request, payload: dict = Body(default={})):
+    if request.method == "OPTIONS":
+        return Response(status_code=200)
+    if request.method == "GET":
+        return {"message": "Use POST with phone_number to send OTP"}
+
     phone = str(payload.get("phone_number") or "").strip().replace(" ", "").replace("-", "")
     if not phone:
         raise HTTPException(status_code=400, detail="Phone number is required")
@@ -12485,8 +12491,14 @@ async def userbot_send_otp(payload: dict = Body(...)):
         logger.error(f"[Userbot Auth Error] send-otp failed for {phone}: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Failed to send OTP code: {str(e)}")
 
-@api_router.post("/admin/userbot/verify-otp")
-async def userbot_verify_otp(payload: dict = Body(...)):
+@api_router.api_route("/admin/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
+@api_router.api_route("/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
+async def userbot_verify_otp(request: Request, payload: dict = Body(default={})):
+    if request.method == "OPTIONS":
+        return Response(status_code=200)
+    if request.method == "GET":
+        return {"message": "Use POST with phone_number and code to verify OTP"}
+
     phone = str(payload.get("phone_number") or "").strip().replace(" ", "").replace("-", "")
     if not phone.startswith("+"):
         phone = "+" + phone
@@ -12567,8 +12579,11 @@ async def userbot_verify_otp(payload: dict = Body(...)):
         logger.error(f"[Userbot Auth Error] verify-otp failed for {phone}: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
 
-@api_router.post("/admin/userbot/logout")
-async def userbot_logout():
+@api_router.api_route("/admin/userbot/logout", methods=["GET", "POST", "OPTIONS"])
+@api_router.api_route("/userbot/logout", methods=["GET", "POST", "OPTIONS"])
+async def userbot_logout(request: Request):
+    if request.method == "OPTIONS":
+        return Response(status_code=200)
     db = getattr(app.state, "db", None)
     if db:
         await db.db.mini_app_config.update_one(
