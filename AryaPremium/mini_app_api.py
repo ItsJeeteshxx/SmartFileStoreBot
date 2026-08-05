@@ -316,9 +316,9 @@ async def _poster_bot_publisher_worker(arya_db):
                     # If elapsed_mins is between 0 and interval_mins, skip (not time yet).
                     # If elapsed_mins < 0 (future timestamp/clock skew) or >= interval_mins, proceed to post!
                     if 0 <= elapsed_mins < interval_mins:
-                        logger.debug(f"[PosterBot Check] Waiting: {elapsed_mins:.1f}m < {interval_mins}m")
+                        logger.info(f"[PosterBot Daemon] Waiting: {elapsed_mins:.1f}m < interval {interval_mins}m")
                         continue
-                    logger.info(f"[PosterBot] Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins}m — posting now")
+                    logger.info(f"[PosterBot Daemon] Interval trigger: elapsed={elapsed_mins:.1f}m >= interval={interval_mins}m — posting now!")
 
             # Sequential rotation over available stories (flexible query for visibility/status)
             stories_cursor = arya_db.db.premium_stories.find({
@@ -12589,7 +12589,15 @@ async def get_custom_watermark():
         if os.path.exists(fp):
             logger.info(f"[WatermarkServe] Serving fallback watermark from: {fp}")
             return FR(fp, media_type="image/png", headers=no_cache_headers)
-    raise HTTPException(status_code=404, detail="No watermark file found")
+    # Generate 1x1 transparent PNG fallback if no file exists yet on disk
+    try:
+        from PIL import Image
+        img = Image.new("RGBA", (100, 30), (0, 0, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return Response(content=buf.getvalue(), media_type="image/png", headers=no_cache_headers)
+    except Exception:
+        raise HTTPException(status_code=404, detail="No watermark file found")
 
 @api_router.post("/paage/cards")
 async def save_paage_cards(payload: dict = Body(...)):
