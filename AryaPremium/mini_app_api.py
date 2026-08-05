@@ -7,8 +7,13 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 
 # ── CRITICAL: Load .env into os.environ BEFORE importing Config ───
 # This must use __file__ (absolute script path), NOT the current working dir.
+import sys
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
 
 def _inject_env(filepath):
     """Read a .env file and inject values into os.environ (only if key not already set)."""
@@ -282,29 +287,31 @@ async def _poster_bot_publisher_worker(arya_db):
     Background daemon: publishes stories to target channel sequentially on rotation.
     Polls every 30s; posts when elapsed time >= configured interval.
     """
-    import os
+    logger.info("🚀 [PosterBot Daemon] Publisher worker entry point reached!")
     try:
-        from AryaPremium.config import Config
-    except ImportError:
-        from config import Config
-
-    try:
-        from AryaPremium.poster_helper import send_story_to_channel
-    except ImportError:
-        from poster_helper import send_story_to_channel
-
-    logger.info("🚀 [PosterBot Daemon] Publisher worker daemon STARTED & RUNNING!")
-    first_run = True
-
-    while True:
+        import os
         try:
-            if first_run:
-                await asyncio.sleep(5)
-                first_run = False
-            else:
-                await asyncio.sleep(30)  # Check every 30 seconds
-            cfg = await _get_poster_bot_config(arya_db)
-            is_enabled = bool(cfg and cfg.get("enabled"))
+            from AryaPremium.config import Config
+        except Exception:
+            from config import Config
+
+        try:
+            from AryaPremium.poster_helper import send_story_to_channel
+        except Exception:
+            from poster_helper import send_story_to_channel
+
+        logger.info("🚀 [PosterBot Daemon] Publisher worker daemon STARTED & RUNNING!")
+        first_run = True
+
+        while True:
+            try:
+                if first_run:
+                    await asyncio.sleep(5)
+                    first_run = False
+                else:
+                    await asyncio.sleep(30)  # Check every 30 seconds
+                cfg = await _get_poster_bot_config(arya_db)
+                is_enabled = bool(cfg and cfg.get("enabled"))
 
             if not is_enabled:
                 logger.info("[PosterBot Daemon] Status: DISABLED in settings (enable via Admin Panel to start auto-posting)")
@@ -433,6 +440,8 @@ async def _poster_bot_publisher_worker(arya_db):
 
         except Exception as e:
             logger.error(f"[PosterBot Daemon] Error in publisher loop: {e}", exc_info=True)
+    except Exception as fatal_err:
+        logger.error(f"❌ [PosterBot Daemon CRITICAL] Publisher worker crashed: {fatal_err}", exc_info=True)
 
 
 async def _poster_bot_cleanup_worker(arya_db):
@@ -12487,15 +12496,34 @@ async def poster_post_now(payload: dict = Body(...)):
         from bson.objectid import ObjectId
         story = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
     else:
-        # Pick a random available story
-        pipeline = [{"$match": {"visibility": "available"}}, {"$sample": {"size": 1}}]
+        # Flexible query for story selection
+        pipeline = [
+            {"$match": {
+                "$or": [
+                    {"visibility": "available"},
+                    {"visibility": {"$exists": False}},
+                    {"visibility": None},
+                    {"visibility": ""},
+                    {"status": "available"},
+                    {"status": "active"},
+                    {"status": "Completed"},
+                    {"status": "Ongoing"}
+                ]
+            }},
+            {"$sample": {"size": 1}}
+        ]
         stories = [s async for s in db.db.premium_stories.aggregate(pipeline)]
+        if not stories:
+            stories = [s async for s in db.db.premium_stories.aggregate([{"$sample": {"size": 1}}])]
         story = stories[0] if stories else None
         
     if not story:
         raise HTTPException(status_code=404, detail="No stories found to post")
         
-    from AryaPremium.poster_helper import send_story_to_channel
+    try:
+        from AryaPremium.poster_helper import send_story_to_channel
+    except Exception:
+        from poster_helper import send_story_to_channel
     
     watermark_config = {
         "watermark_enabled": bool(payload.get("watermark_enabled", cfg.get("watermark_enabled", True))),
