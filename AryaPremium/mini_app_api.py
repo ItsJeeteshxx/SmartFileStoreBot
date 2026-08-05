@@ -12478,13 +12478,21 @@ async def upload_watermark(file: UploadFile = File(...)):
     if not db:
         raise HTTPException(status_code=500, detail="Database not connected")
         
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    watermark_path = os.path.join(base_dir, "custom_watermark.png")
+    this_dir = os.path.dirname(os.path.abspath(__file__))  # AryaPremium/
+    parent_dir = os.path.dirname(this_dir)                  # project root
+    
+    # Save in both locations so poster_helper.py finds it regardless of working dir
+    save_paths = [
+        os.path.join(parent_dir, "custom_watermark.png"),
+        os.path.join(this_dir, "custom_watermark.png"),
+    ]
     
     try:
         content = await file.read()
-        with open(watermark_path, "wb") as f:
-            f.write(content)
+        for watermark_path in save_paths:
+            with open(watermark_path, "wb") as f:
+                f.write(content)
+        logger.info(f"[WatermarkUpload] Saved custom_watermark.png to {save_paths}")
             
         now_str = datetime.now(timezone.utc).isoformat()
         await db.db.mini_app_config.update_one(

@@ -104,17 +104,21 @@ def to_bold_serif(text: str) -> str:
 
 def to_monospace(text: str) -> str:
     """
-    Converts alphanumeric ASCII characters to Mathematical Monospace characters.
+    Converts alphanumeric ASCII characters to Mathematical Monospace (typewriter) characters.
+    Correct Unicode offsets:
+      A-Z → U+1D670..U+1D689  offset = 120367
+      a-z → U+1D68A..U+1D6A3  offset = 120361
+      0-9 → U+1D7F6..U+1D7FF  offset = 120774
     """
     res = []
     for char in text:
         o = ord(char)
-        if 65 <= o <= 90:  # A-Z
-            res.append(chr(o + 120205))
+        if 65 <= o <= 90:   # A-Z
+            res.append(chr(o + 120367))
         elif 97 <= o <= 122:  # a-z
-            res.append(chr(o + 120199))
+            res.append(chr(o + 120361))
         elif 48 <= o <= 57:  # 0-9
-            res.append(chr(o + 120794))
+            res.append(chr(o + 120774))
         else:
             res.append(char)
     return "".join(res)
@@ -167,15 +171,21 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
     episodes_str_esc = escape_html(episodes_str)
     price_esc = escape_html(price)
 
-    # Formatted caption as HTML: Bold labels and values, gap after episodes, price line, gap, and blockquote description
+    # Formatted caption as HTML: Bold labels and values, gap after episodes, price line (centered), gap, and blockquote description
+    # Center the price line using Unicode em-spaces for Telegram's fixed-width alignment
+    price_line = f"        🏷 ₹{price_esc}  •  Buy Now"
     caption = (
         f"♨️ <b>Story :</b> <b>{story_name_esc}</b>\n"
         f"🔰 <b>Status :</b> <b>{status_esc}</b>\n"
         f"🖥 <b>Platform :</b> <b>{platform_esc}</b>\n"
         f"🧩 <b>Genre :</b> <b>{first_genre_esc}</b>\n"
-        f"🎬 <b>Episodes :</b> <b>{episodes_str_esc}</b>\n\n"
-        f"█▓▒▒ᑭᖇIᑕE - ₹{price_esc} ▒▒▓█\n\n"
-        f"<b>Story Description :</b>\n"
+        f"🎬 <b>Episodes :</b> <b>{episodes_str_esc}</b>\n"
+        f"\n"
+        f"<b>┌─────── 💰 PRICE ───────┐</b>\n"
+        f"<b>          ₹{price_esc}</b>\n"
+        f"<b>└────────────────────────┘</b>\n"
+        f"\n"
+        f"<b>📖 Story Description :</b>\n"
         f"<blockquote>{desc_monospace}</blockquote>"
     )
 
@@ -221,23 +231,42 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
 
     # Apply watermark if enabled
     if photo_bytes and watermark_config and watermark_config.get("watermark_enabled"):
-        # Resolve path to custom_watermark.png, fallback to WatermarkIMG.png in root folder
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        watermark_path = os.path.join(base_dir, "custom_watermark.png")
-        if not os.path.exists(watermark_path):
-            watermark_path = os.path.join(base_dir, "WatermarkIMG.png")
+        # Resolve path to custom_watermark.png — check multiple candidate dirs:
+        # 1. Same dir as this file (AryaPremium/)
+        # 2. Parent dir (project root)
+        # 3. Current working directory
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(this_dir)
+        cwd = os.getcwd()
+        candidate_paths = [
+            os.path.join(this_dir, "custom_watermark.png"),
+            os.path.join(parent_dir, "custom_watermark.png"),
+            os.path.join(cwd, "custom_watermark.png"),
+            os.path.join(this_dir, "WatermarkIMG.png"),
+            os.path.join(parent_dir, "WatermarkIMG.png"),
+            os.path.join(cwd, "WatermarkIMG.png"),
+        ]
+        watermark_path = None
+        for cp in candidate_paths:
+            if os.path.exists(cp):
+                watermark_path = cp
+                break
         
-        pos = watermark_config.get("watermark_position", "bottom_right")
-        opac = float(watermark_config.get("watermark_opacity", 0.8))
-        
-        # Execute image editing task in executor thread to prevent blocking ASGI event loop
-        photo_bytes = await asyncio.to_thread(
-            overlay_watermark,
-            photo_bytes,
-            watermark_path,
-            pos,
-            opac
-        )
+        if watermark_path:
+            pos = watermark_config.get("watermark_position", "bottom_right")
+            opac = float(watermark_config.get("watermark_opacity", 0.8))
+            
+            # Execute image editing task in executor thread to prevent blocking ASGI event loop
+            photo_bytes = await asyncio.to_thread(
+                overlay_watermark,
+                photo_bytes,
+                watermark_path,
+                pos,
+                opac
+            )
+            logger.info(f"[PosterBot] Applied watermark from: {watermark_path}")
+        else:
+            logger.warning("[PosterBot] No watermark file found in any candidate path; skipping watermark overlay")
 
     # Post to Telegram
     # Parse channel_id (if starts with digits or minus, cast to int)
