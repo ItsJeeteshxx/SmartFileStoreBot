@@ -205,26 +205,95 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         ]
     }
 
-    # Resolve photo image bytes prioritizing square cover/poster keys over horizontal banners
-    photo_bytes = None
-    img_url = None
-    for attr in ["cover", "poster_url", "image_url", "image", "banner_url"]:
-        val = story_doc.get(attr)
-        if val:
-            img_url = str(val).strip()
-            break
+    # ── Image Resolution & Download ──────────────────────────────────────────
+    # Try ALL image fields in priority order; skip empty/None values.
+    # For each, attempt a HEAD first (fast check), then GET.
+    # Validate content-type is an image, enforce Telegram's 10 MB sendPhoto limit.
+    # If image is too large, auto-resize it before sending.
+    IMAGE_FIELDS = ["cover", "poster_url", "image_url", "image", "banner_url", "thumbnail"]
+    TELEGRAM_MAX_BYTES = 9 * 1024 * 1024  # 9 MB safety margin (Telegram limit is 10 MB)
 
-    if img_url:
-        if not img_url.startswith("http://") and not img_url.startswith("https://"):
-            img_url = "https://aryapremium.store/" + img_url.lstrip("/")
-        
+    def _build_absolute_url(raw: str) -> str:
+        raw = raw.strip()
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+        # Relative URL — prepend base site
+        return "https://aryapremium.store/" + raw.lstrip("/")
+
+    async def _try_download_image(url: str) -> bytes | None:
+        """Download image from URL. Returns bytes if valid image, else None."""
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(img_url)
-                if resp.status_code == 200:
-                    photo_bytes = resp.content
+            async with httpx.AsyncClient(
+                timeout=20,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 AryaPremiumBot/1.0"}
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    logger.warning(f"[PosterBot] HTTP {resp.status_code} for image URL: {url}")
+                    return None
+                content_type = resp.headers.get("content-type", "")
+                if not any(t in content_type for t in ("image/", "application/octet-stream")):
+                    logger.warning(f"[PosterBot] Non-image content-type '{content_type}' for URL: {url}")
+                    return None
+                data = resp.content
+                if not data or len(data) < 512:
+                    logger.warning(f"[PosterBot] Suspiciously small response ({len(data)} bytes) for URL: {url}")
+                    return None
+                logger.info(f"[PosterBot] Downloaded image {len(data)//1024}KB from {url}")
+                return data
         except Exception as e:
-            logger.error(f"Failed to download story image from {img_url}: {e}")
+            logger.warning(f"[PosterBot] Failed to download from {url}: {e}")
+            return None
+
+    def _resize_if_needed(img_bytes: bytes) -> bytes:
+        """If image exceeds Telegram limit, resize down proportionally."""
+        if len(img_bytes) <= TELEGRAM_MAX_BYTES:
+            return img_bytes
+        try:
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            # Scale down progressively until under limit
+            for quality in [75, 60, 45]:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=True)
+                result = buf.getvalue()
+                if len(result) <= TELEGRAM_MAX_BYTES:
+                    logger.info(f"[PosterBot] Resized image to {len(result)//1024}KB at quality={quality}")
+                    return result
+            # Last resort: halve dimensions
+            w, h = img.size
+            img = img.resize((w // 2, h // 2), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=60)
+            result = buf.getvalue()
+            logger.info(f"[PosterBot] Halved dimensions → {len(result)//1024}KB")
+            return result
+        except Exception as e:
+            logger.error(f"[PosterBot] Resize failed: {e}")
+            return img_bytes
+
+    photo_bytes = None
+    attempted_urls = []
+
+    for field in IMAGE_FIELDS:
+        raw_val = story_doc.get(field)
+        if not raw_val or not str(raw_val).strip():
+            continue
+        abs_url = _build_absolute_url(str(raw_val))
+        if abs_url in attempted_urls:
+            continue  # Skip duplicate URLs across fields
+        attempted_urls.append(abs_url)
+
+        data = await _try_download_image(abs_url)
+        if data:
+            photo_bytes = _resize_if_needed(data)
+            logger.info(f"[PosterBot] Using image from field='{field}' url={abs_url}")
+            break
+        else:
+            logger.warning(f"[PosterBot] Field '{field}' image failed, trying next field...")
+
+    if not photo_bytes:
+        logger.error(f"[PosterBot] No valid image found for story '{story_name}' — tried fields: {IMAGE_FIELDS}, URLs: {attempted_urls}. Will post text-only.")
 
     # Apply watermark if enabled
     if photo_bytes and watermark_config and watermark_config.get("watermark_enabled"):
@@ -265,51 +334,72 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         else:
             logger.warning("[PosterBot] No watermark file found in any candidate path; skipping watermark overlay")
 
-    # Post to Telegram
-    # Parse channel_id (if starts with digits or minus, cast to int)
+    # ── Post to Telegram ─────────────────────────────────────────────────────
+    import json as _json
+
+    # Telegram caption limit is 1024 characters
+    if len(caption) > 1024:
+        caption = caption[:1020] + "..."
+        logger.warning(f"[PosterBot] Caption truncated to 1024 chars for story '{story_name}'")
+
+    # Parse channel_id (if numeric/negative, cast to int)
     target_chat = channel_id
-    if str(channel_id).replace("-", "").isdigit():
+    if str(channel_id).lstrip("-").isdigit():
         target_chat = int(channel_id)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        if photo_bytes:
-            # Send sendPhoto
-            url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            files = {"photo": ("banner.jpg", photo_bytes, "image/jpeg")}
-            data = {
-                "chat_id": target_chat,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_markup": __import__("json").dumps(reply_markup)
-            }
-            try:
-                r = await client.post(url, data=data, files=files)
-                res_json = r.json()
-                if r.status_code == 200 and res_json.get("ok"):
-                    msg_id = res_json.get("result", {}).get("message_id")
-                    return {"success": True, "message_id": msg_id, "channel_id": str(target_chat)}
-                else:
-                    logger.error(f"Telegram sendPhoto failed: {res_json}")
-                    # Fallback to sendMessage
-            except Exception as e:
-                logger.error(f"Exception during Telegram sendPhoto: {e}")
-                # Fallback to sendMessage
+    reply_markup_json = _json.dumps(reply_markup)
+    photo_sent = False
 
-        # Fallback to text message if photo fails or not available
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = {
-            "chat_id": target_chat,
-            "text": caption,
-            "parse_mode": "HTML",
-            "reply_markup": __import__("json").dumps(reply_markup)
-        }
+    if photo_bytes:
+        logger.info(f"[PosterBot] Sending sendPhoto ({len(photo_bytes)//1024}KB) to {target_chat}")
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
         try:
-            r = await client.post(url, json=data)
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(
+                    url,
+                    data={
+                        "chat_id": str(target_chat),
+                        "caption": caption,
+                        "parse_mode": "HTML",
+                        "reply_markup": reply_markup_json,
+                    },
+                    files={"photo": ("cover.jpg", photo_bytes, "image/jpeg")},
+                )
             res_json = r.json()
             if r.status_code == 200 and res_json.get("ok"):
                 msg_id = res_json.get("result", {}).get("message_id")
+                logger.info(f"[PosterBot] ✅ sendPhoto success. msg_id={msg_id}")
                 return {"success": True, "message_id": msg_id, "channel_id": str(target_chat)}
             else:
-                return {"success": False, "error": f"Telegram API Error: {res_json.get('description') or res_json}"}
+                tg_err = res_json.get("description") or str(res_json)
+                logger.error(f"[PosterBot] ❌ sendPhoto failed (HTTP {r.status_code}): {tg_err}")
+                # If error is about the file/image itself, still try sendMessage fallback
         except Exception as e:
-            return {"success": False, "error": f"Exception: {str(e)}"}
+            logger.error(f"[PosterBot] Exception in sendPhoto: {e}")
+
+    # Fallback: send as text-only message (no photo)
+    logger.warning(f"[PosterBot] Falling back to sendMessage (text-only) for story '{story_name}'")
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                url,
+                json={
+                    "chat_id": target_chat,
+                    "text": caption,
+                    "parse_mode": "HTML",
+                    "reply_markup": reply_markup,
+                },
+            )
+        res_json = r.json()
+        if r.status_code == 200 and res_json.get("ok"):
+            msg_id = res_json.get("result", {}).get("message_id")
+            logger.info(f"[PosterBot] ✅ sendMessage fallback success. msg_id={msg_id}")
+            return {"success": True, "message_id": msg_id, "channel_id": str(target_chat)}
+        else:
+            err = res_json.get("description") or str(res_json)
+            logger.error(f"[PosterBot] ❌ sendMessage also failed: {err}")
+            return {"success": False, "error": f"Telegram API Error: {err}"}
+    except Exception as e:
+        logger.error(f"[PosterBot] Exception in sendMessage fallback: {e}")
+        return {"success": False, "error": f"Exception: {str(e)}"}
