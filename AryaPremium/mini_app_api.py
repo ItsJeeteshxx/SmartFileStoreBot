@@ -283,10 +283,17 @@ async def _poster_bot_publisher_worker(arya_db):
     Polls every 30s; posts when elapsed time >= configured interval.
     """
     import os
-    from AryaPremium.config import Config
-    from AryaPremium.poster_helper import send_story_to_channel
+    try:
+        from AryaPremium.config import Config
+    except ImportError:
+        from config import Config
 
-    logger.info("[PosterBot] Publisher worker daemon started")
+    try:
+        from AryaPremium.poster_helper import send_story_to_channel
+    except ImportError:
+        from poster_helper import send_story_to_channel
+
+    logger.info("🚀 [PosterBot Daemon] Publisher worker daemon STARTED & RUNNING!")
 
     while True:
         try:
@@ -429,7 +436,12 @@ async def _poster_bot_cleanup_worker(arya_db):
     Checks DB logs every 5 minutes.
     """
     import os
-    from AryaPremium.config import Config
+    try:
+        from AryaPremium.config import Config
+    except ImportError:
+        from config import Config
+
+    logger.info("🚀 [PosterBot Daemon] Cleanup worker daemon STARTED & RUNNING!")
 
     while True:
         try:
