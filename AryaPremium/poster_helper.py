@@ -102,6 +102,26 @@ def to_bold_serif(text: str) -> str:
             res.append(char)
     return "".join(res)
 
+def to_monospace(text: str) -> str:
+    """
+    Converts alphanumeric ASCII characters to Mathematical Monospace characters.
+    """
+    res = []
+    for char in text:
+        o = ord(char)
+        if 65 <= o <= 90:  # A-Z
+            res.append(chr(o + 120205))
+        elif 97 <= o <= 122:  # a-z
+            res.append(chr(o + 120199))
+        elif 48 <= o <= 57:  # 0-9
+            res.append(chr(o + 120794))
+        else:
+            res.append(char)
+    return "".join(res)
+
+def escape_html(text: str) -> str:
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict, watermark_config: dict = None) -> dict:
     """
     Downloads banner, applies watermark (if enabled), builds keyboard, and posts to Telegram channel.
@@ -130,25 +150,33 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
     else:
         episodes_str = f"{ep_count}/∞"
 
-    # Clean description to 10-15 words (combining first 6 and last 6) and translate to unicode bold serif
+    # Clean description to 10-15 words (combining first 6 and last 6) and translate to unicode monospace
     desc_clean = desc.strip()
     words = desc_clean.split()
     if len(words) > 12:
         desc_clean = " ".join(words[:6]) + " ... " + " ".join(words[-6:])
     else:
         desc_clean = " ".join(words)
-    desc_unicode = to_bold_serif(desc_clean)
+    desc_monospace = to_monospace(desc_clean)
 
-    # Formatted text as requested: Bold headings and values
+    # HTML Escaping for variables
+    story_name_esc = escape_html(story_name)
+    status_esc = escape_html(status)
+    platform_esc = escape_html(platform)
+    first_genre_esc = escape_html(first_genre)
+    episodes_str_esc = escape_html(episodes_str)
+    price_esc = escape_html(price)
+
+    # Formatted caption as HTML: Bold labels and values, gap after episodes, price line, gap, and blockquote description
     caption = (
-        f"♨️ **Story :** **{story_name}**\n"
-        f"🔰 **Status :** **{status}**\n"
-        f"🖥 **Platform :** **{platform}**\n"
-        f"🧩 **Genre :** **{first_genre}**\n"
-        f"🎬 **Episodes :** **{episodes_str}**\n"
-        f"**█▓▒▒ᑭᖇIᑕE - ₹{price} ▒▒▓█**\n"
-        f"**Story Description :**\n"
-        f"{desc_unicode}"
+        f"♨️ <b>Story :</b> <b>{story_name_esc}</b>\n"
+        f"🔰 <b>Status :</b> <b>{status_esc}</b>\n"
+        f"🖥 <b>Platform :</b> <b>{platform_esc}</b>\n"
+        f"🧩 <b>Genre :</b> <b>{first_genre_esc}</b>\n"
+        f"🎬 <b>Episodes :</b> <b>{episodes_str_esc}</b>\n\n"
+        f"█▓▒▒ᑭᖇIᑕE - ₹{price_esc} ▒▒▓█\n\n"
+        f"<b>Story Description :</b>\n"
+        f"<blockquote>{desc_monospace}</blockquote>"
     )
 
     bot_un = story_doc.get("bot_username")
@@ -170,10 +198,10 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         ]
     }
 
-    # Resolve photo image bytes with fallback and prefixing relative URLs
+    # Resolve photo image bytes prioritizing square cover/poster keys over horizontal banners
     photo_bytes = None
     img_url = None
-    for attr in ["banner_url", "poster_url", "cover", "image_url", "image"]:
+    for attr in ["cover", "poster_url", "image_url", "image", "banner_url"]:
         val = story_doc.get(attr)
         if val:
             img_url = str(val).strip()
@@ -193,9 +221,11 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
 
     # Apply watermark if enabled
     if photo_bytes and watermark_config and watermark_config.get("watermark_enabled"):
-        # Resolve path to WatermarkIMG.png in root folder
+        # Resolve path to custom_watermark.png, fallback to WatermarkIMG.png in root folder
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        watermark_path = os.path.join(base_dir, "WatermarkIMG.png")
+        watermark_path = os.path.join(base_dir, "custom_watermark.png")
+        if not os.path.exists(watermark_path):
+            watermark_path = os.path.join(base_dir, "WatermarkIMG.png")
         
         pos = watermark_config.get("watermark_position", "bottom_right")
         opac = float(watermark_config.get("watermark_opacity", 0.8))
@@ -223,7 +253,7 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
             data = {
                 "chat_id": target_chat,
                 "caption": caption,
-                "parse_mode": "Markdown",
+                "parse_mode": "HTML",
                 "reply_markup": __import__("json").dumps(reply_markup)
             }
             try:
@@ -244,7 +274,7 @@ async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict
         data = {
             "chat_id": target_chat,
             "text": caption,
-            "parse_mode": "Markdown",
+            "parse_mode": "HTML",
             "reply_markup": __import__("json").dumps(reply_markup)
         }
         try:

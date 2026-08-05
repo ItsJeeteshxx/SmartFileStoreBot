@@ -12472,6 +12472,45 @@ async def poster_delete_now(payload: dict = Body(...)):
     )
     return {"success": True, "deleted_from_telegram": success}
 
+@api_router.post("/admin/upload-watermark")
+async def upload_watermark(file: UploadFile = File(...)):
+    db = getattr(app.state, "db", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not connected")
+        
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    watermark_path = os.path.join(base_dir, "custom_watermark.png")
+    
+    try:
+        content = await file.read()
+        with open(watermark_path, "wb") as f:
+            f.write(content)
+            
+        now_str = datetime.now(timezone.utc).isoformat()
+        await db.db.mini_app_config.update_one(
+            {"_id": "poster_bot_config"},
+            {"$set": {
+                "has_custom_watermark": True,
+                "watermark_updated_at": now_str
+            }},
+            upsert=True
+        )
+        return {"success": True, "watermark_updated_at": now_str}
+    except Exception as e:
+        logger.error(f"Error saving watermark: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/admin/custom-watermark")
+async def get_custom_watermark():
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    watermark_path = os.path.join(base_dir, "custom_watermark.png")
+    if not os.path.exists(watermark_path):
+        fallback_path = os.path.join(base_dir, "WatermarkIMG.png")
+        if os.path.exists(fallback_path):
+            return FileResponse(fallback_path)
+        raise HTTPException(status_code=404, detail="No watermark uploaded yet")
+    return FileResponse(watermark_path)
+
 @api_router.post("/paage/cards")
 async def save_paage_cards(payload: dict = Body(...)):
     db = getattr(app.state, "db", None)
