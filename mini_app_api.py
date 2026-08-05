@@ -3720,12 +3720,12 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arya Premium - Secure Payment</title>
+  <title>Payment Gateway</title>
   <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      background: #090d16;
+      background: radial-gradient(circle, #0f172a 0%, #020617 100%);
       color: #f8fafc;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex;
@@ -3733,51 +3733,103 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      padding: 20px;
+      padding: 24px;
       text-align: center;
-    }}
+    }
     .card {{
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 20px;
-      padding: 36px 24px;
+      background: rgba(30, 41, 59, 0.45);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 48px 32px;
       max-width: 420px;
       width: 100%;
-      box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);
+      box-shadow: 0 30px 60px -15px rgba(0,0,0,0.8);
     }}
-    .spinner {{
-      border: 4px solid rgba(255,255,255,0.1);
-      border-left-color: #6366f1;
+    .loader-container {{
+      position: relative;
+      width: 80px;
+      height: 80px;
+      margin: 36px auto;
+    }}
+    .spinner-outer {{
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border: 3px solid transparent;
+      border-top-color: #6366f1;
+      border-right-color: #4f46e5;
       border-radius: 50%;
-      width: 42px;
-      height: 42px;
-      animation: spin 0.8s linear infinite;
-      margin: 24px auto;
+      animation: spin-clockwise 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
     }}
-    @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-    h2 {{ font-size: 1.35rem; font-weight: 700; margin-bottom: 8px; color: #f8fafc; }}
-    p {{ font-size: 0.9rem; color: #94a3b8; line-height: 1.5; }}
+    .spinner-inner {{
+      position: absolute;
+      top: 12px; left: 12px; right: 12px; bottom: 12px;
+      border: 3px solid transparent;
+      border-bottom-color: #10b981;
+      border-left-color: #059669;
+      border-radius: 50%;
+      animation: spin-counter-clockwise 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    }}
+    .glow-ring {{
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border: 3px solid rgba(99, 102, 241, 0.04);
+      border-radius: 50%;
+    }}
+    @keyframes spin-clockwise {{
+      0% {{ transform: rotate(0deg); }}
+      100% {{ transform: rotate(360deg); }}
+    }}
+    @keyframes spin-counter-clockwise {{
+      0% {{ transform: rotate(0deg); }}
+      100% {{ transform: rotate(-360deg); }}
+    }}
+    h2 {{
+      font-size: 1.45rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #f8fafc 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.01em;
+    }}
+    p {{
+      font-size: 0.92rem;
+      color: #94a3b8;
+      line-height: 1.6;
+      font-weight: 400;
+    }}
     .btn {{
       display: inline-block;
-      margin-top: 20px;
-      padding: 14px 28px;
+      margin-top: 24px;
+      padding: 12px 28px;
       background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
       color: #fff;
-      font-size: 1rem;
+      font-size: 0.95rem;
       font-weight: 600;
       border-radius: 12px;
       text-decoration: none;
       border: none;
       cursor: pointer;
-      box-shadow: 0 4px 14px rgba(99,102,241,0.4);
+      box-shadow: 0 4px 14px rgba(99,102,241,0.3);
+      transition: all 0.2s ease;
+    }}
+    .btn:hover {{
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(99,102,241,0.4);
     }}
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>🔒 Opening Cashfree Gateway...</h2>
-    <p>Please wait while we redirect you to secure checkout.</p>
-    <div class="spinner"></div>
+    <h2>Opening payment page</h2>
+    <p>Please wait a moment while we set up your secure checkout session...</p>
+    <div class="loader-container">
+      <div class="glow-ring"></div>
+      <div class="spinner-outer"></div>
+      <div class="spinner-inner"></div>
+    </div>
     <div id="fallback" style="display:none;">
       <p style="color:#ef4444; margin-top:12px;">Tap below to start payment:</p>
       <button onclick="startCheckout()" class="btn">Pay with Cashfree</button>
