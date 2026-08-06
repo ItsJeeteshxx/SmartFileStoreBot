@@ -13104,8 +13104,9 @@ DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pocket-arya
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    if full_path.startswith("api/") or full_path.startswith("ws/"):
+    if full_path.startswith("api/") or full_path.startswith("ws/") or full_path.startswith("internal/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
+
     
     # Check if target static file exists in dist
     target_file = os.path.join(DIST_DIR, full_path)
