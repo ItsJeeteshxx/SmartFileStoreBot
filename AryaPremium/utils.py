@@ -230,27 +230,58 @@ async def _deliver_purchased_story(bot_id: str, user_id: int, story: dict):
     # Show the delivery choice screen to the user (DM vs Channel as inline buttons)
     await dispatch_delivery_choice(seller_cli, user_id, story)
 
-async def _safe_send_log(client, channel_id: int, text: str, photo_path: str = None):
+async def _safe_send_log(client, channel_id, text: str, photo_path: str = None):
+    if not channel_id:
+        return
     try:
-        if photo_path:
-            await client.send_photo(channel_id, photo=photo_path, caption=text)
-        else:
-            await client.send_message(channel_id, text=text)
-    except Exception as e:
-        err_str = str(e).upper()
-        if "PEER_ID_INVALID" in err_str or "CHANNEL_INVALID" in err_str or "CHANNEL_PRIVATE" in err_str:
-            import logging; logging.getLogger(__name__).warning("Peer missing in cache, fetching dialogs to warm up...")
-            try:
-                # Fetch recent dialogs to populate Pyrogram's peer cache
-                async for _ in client.get_dialogs(limit=100): pass
-                if photo_path:
-                    await client.send_photo(channel_id, photo=photo_path, caption=text)
-                else:
-                    await client.send_message(channel_id, text=text)
-            except Exception as e2:
-                logging.getLogger(__name__).error(f"Retry failed for channel {channel_id}: {e2}")
-        else:
-            raise e
+        chat_id_val = int(str(channel_id).strip()) if str(channel_id).strip().lstrip("-").isdigit() else str(channel_id).strip()
+    except Exception:
+        chat_id_val = channel_id
+
+    # 1. Try Pyrogram client first if connected
+    if client and getattr(client, "is_connected", False):
+        try:
+            if photo_path:
+                await client.send_photo(chat_id_val, photo=photo_path, caption=text)
+            else:
+                await client.send_message(chat_id_val, text=text)
+            return
+        except Exception as e:
+            err_str = str(e).upper()
+            if "PEER_ID_INVALID" in err_str or "CHANNEL_INVALID" in err_str or "CHANNEL_PRIVATE" in err_str:
+                try:
+                    async for _ in client.get_dialogs(limit=100): pass
+                    if photo_path:
+                        await client.send_photo(chat_id_val, photo=photo_path, caption=text)
+                    else:
+                        await client.send_message(chat_id_val, text=text)
+                    return
+                except Exception:
+                    pass
+
+    # 2. HTTP Telegram Bot API Fallback (Works 100% in FastAPI & when Pyrogram is offline)
+    try:
+        from AryaPremium.config import Config
+    except ImportError:
+        from config import Config
+    import os, aiohttp
+    token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN") or os.environ.get("MGMT_BOT_TOKEN")
+    if token:
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                payload = {
+                    "chat_id": chat_id_val,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True
+                }
+                async with session.post(url, json=payload, timeout=10) as resp:
+                    res = await resp.json()
+                    if not res.get("ok"):
+                        import logging; logging.getLogger(__name__).warning(f"[LogFallback] HTTP Telegram API rejected log: {res}")
+        except Exception as e:
+            import logging; logging.getLogger(__name__).error(f"[LogFallback] HTTP send error: {e}")
 
 async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, method: str,
                       receipt_id: str = "", photo_path: str = None, username: str = "", pay_link: str = "", order_id: str = "", user_last_name: str = ""):
@@ -260,14 +291,14 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
     except ImportError:
         from config import Config
         from database import db
-    if not getattr(Config, "PAYMENT_LOGS_CHANNEL", None):
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: PAYMENT_LOGS_CHANNEL not set in config — skipping payment log.")
+
+    channel_id = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("PAYMENT_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    if not channel_id:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: PAYMENT_LOGS_CHANNEL not configured — skipping.")
         return
-    if not db.mgmt_client:
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: db.mgmt_client is None — MGMT bot not started. Payment log cannot be sent.")
-        return
+
     try:
-        if order_id:
+        if order_id and hasattr(db, "db") and db.db is not None:
             try:
                 res = await db.db.orders.find_one_and_update(
                     {"order_id": order_id},
@@ -275,10 +306,9 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
                     upsert=True
                 )
                 if res and res.get("payment_log_sent") is True:
-                    import logging; logging.getLogger(__name__).info(f"Payment log already sent or sending for order {order_id}, skipping duplicate log request.")
                     return
             except Exception as e:
-                import logging; logging.getLogger(__name__).warning(f"Error checking order de-duplication in log_payment: {e}")
+                pass
 
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
@@ -291,43 +321,25 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             "manual_upi":"🏦 Manual UPI",
         }.get(method.lower(), method.capitalize())
 
-        # Clean username helper
         def clean_username(uname: str) -> str:
-            if not uname:
+            if not uname or str(uname).strip().lower() in ("", "unknown", "none", "@unknown", "@none"):
                 return ""
-            uname_lower = uname.strip().lower()
-            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
-                return ""
-            if uname.startswith("@"):
-                return uname[1:].strip()
-            return uname.strip()
+            return uname[1:].strip() if uname.startswith("@") else uname.strip()
 
         cleaned_username = clean_username(username)
 
-        # Clean name helper
         def clean_name(first: str, last: str) -> str:
             name = f"{first or ''} {last or ''}".strip()
-            name_lower = name.lower()
-            if not name or name_lower in ("unknown", "none", "null", "undefined"):
-                return "User"
-            return name
+            return "User" if not name or name.lower() in ("unknown", "none", "null", "undefined") else name
 
         def escape_html(text: str) -> str:
-            if not isinstance(text, str):
-                return str(text) if text is not None else ""
-            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else ""
 
         full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
         tg_link = f"tg://user?id={user_id}"
+        user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
-        if cleaned_username:
-            user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})'
-        else:
-            user_display = f'<a href="{tg_link}">{full_name_esc}</a>'
-
-        link_line = ""
-        if pay_link and "razorpay" in method.lower():
-            link_line = f"\n<b>Payment Link:</b> <a href=\"{pay_link}\">View Receipt</a>"
+        link_line = f"\n<b>Payment Link:</b> <a href=\"{pay_link}\">View Receipt</a>" if pay_link and "razorpay" in method.lower() else ""
 
         caption = (
             f"<b>✅ PAYMENT CONFIRMED</b>\n"
@@ -345,10 +357,7 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Time:</b> {time_str}"
         )
-        if photo_path:
-            await _safe_send_log(db.mgmt_client, int(Config.PAYMENT_LOGS_CHANNEL), caption, photo_path=photo_path)
-        else:
-            await _safe_send_log(db.mgmt_client, int(Config.PAYMENT_LOGS_CHANNEL), caption)
+        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, caption, photo_path=photo_path)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Payment log error: {e}")
 
@@ -359,50 +368,34 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
     except ImportError:
         from config import Config
         from database import db
-    if not getattr(Config, "DELIVERY_LOGS_CHANNEL", None):
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: DELIVERY_LOGS_CHANNEL not set in config — skipping delivery log.")
+
+    channel_id = getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    if not channel_id:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: DELIVERY_LOGS_CHANNEL not configured — skipping.")
         return
-    if not db.mgmt_client:
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: db.mgmt_client is None — MGMT bot not started. Delivery log cannot be sent.")
-        return
+
     try:
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
         
-        # Clean username helper
         def clean_username(uname: str) -> str:
-            if not uname:
+            if not uname or str(uname).strip().lower() in ("", "unknown", "none", "@unknown", "@none"):
                 return ""
-            uname_lower = uname.strip().lower()
-            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
-                return ""
-            if uname.startswith("@"):
-                return uname[1:].strip()
-            return uname.strip()
+            return uname[1:].strip() if uname.startswith("@") else uname.strip()
 
         cleaned_username = clean_username(username)
 
-        # Clean name helper
         def clean_name(first: str, last: str) -> str:
             name = f"{first or ''} {last or ''}".strip()
-            name_lower = name.lower()
-            if not name or name_lower in ("unknown", "none", "null", "undefined"):
-                return "User"
-            return name
+            return "User" if not name or name.lower() in ("unknown", "none", "null", "undefined") else name
 
         def escape_html(text: str) -> str:
-            if not isinstance(text, str):
-                return str(text) if text is not None else ""
-            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else ""
 
         full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
         tg_link = f"tg://user?id={user_id}"
-
-        if cleaned_username:
-            user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})'
-        else:
-            user_display = f'<a href="{tg_link}">{full_name_esc}</a>'
+        user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
         text = (
             f"<b>📦 DELIVERY EVENT</b>\n"
@@ -416,7 +409,7 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
             f"<b>Status:</b> {status}\n"
             f"<b>Date:</b> {time_str}"
         )
-        await _safe_send_log(db.mgmt_client, int(Config.DELIVERY_LOGS_CHANNEL), text)
+        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, text)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Delivery log error: {e}")
 
@@ -427,12 +420,12 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
     except ImportError:
         from config import Config
         from database import db
-    if not getattr(Config, "ARYA_LOGS_CHANNEL", None):
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_arya_event: ARYA_LOGS_CHANNEL not set in config — skipping arya event log.")
+
+    channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL") or getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL")
+    if not channel_id:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_arya_event: ARYA_LOGS_CHANNEL not configured — skipping.")
         return
-    if not db.mgmt_client:
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_arya_event: db.mgmt_client is None — MGMT bot not started. Arya event log cannot be sent.")
-        return
+
     try:
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
@@ -442,39 +435,23 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         user_first_name = user_info.get("first_name", "")
         user_last_name = user_info.get("last_name", "")
 
-        # Clean username helper
         def clean_username(uname: str) -> str:
-            if not uname:
+            if not uname or str(uname).strip().lower() in ("", "unknown", "none", "@unknown", "@none"):
                 return ""
-            uname_lower = uname.strip().lower()
-            if uname_lower in ("", "unknown", "none", "@unknown", "@none"):
-                return ""
-            if uname.startswith("@"):
-                return uname[1:].strip()
-            return uname.strip()
+            return uname[1:].strip() if uname.startswith("@") else uname.strip()
 
         cleaned_username = clean_username(username)
 
-        # Clean name helper
         def clean_name(first: str, last: str) -> str:
             name = f"{first or ''} {last or ''}".strip()
-            name_lower = name.lower()
-            if not name or name_lower in ("unknown", "none", "null", "undefined"):
-                return "User"
-            return name
+            return "User" if not name or name.lower() in ("unknown", "none", "null", "undefined") else name
 
         def escape_html(text: str) -> str:
-            if not isinstance(text, str):
-                return str(text) if text is not None else ""
-            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else ""
 
         full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
         tg_link = f"tg://user?id={user_id}"
-
-        if cleaned_username:
-            user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})'
-        else:
-            user_display = f'<a href="{tg_link}">{full_name_esc}</a>'
+        user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
         joined = user_info.get("joined_date", time_str)
         if isinstance(joined, datetime):
@@ -493,10 +470,10 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
             f"────────────────────\n"
             f"<b>Time:</b> {time_str}"
         )
-        channel_id = int(Config.ARYA_LOGS_CHANNEL)
-        await _safe_send_log(db.mgmt_client, channel_id, text)
+        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, text)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Arya core log error: {e}")
+
 
 
 
