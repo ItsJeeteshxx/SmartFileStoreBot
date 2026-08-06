@@ -9469,14 +9469,19 @@ async def manual_purchase(data: ManualPurchase):
         raise HTTPException(500, detail=str(e))
 
 @api_router.post("/admin/buyers/{user_id}/action")
-async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
+async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = None):
     from AryaPremium.config import Config
     try:
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
-        action = payload.get("action")
-        target_uid = int(user_id) if user_id.isdigit() else user_id
+        payload = payload or {}
+        logger.info(f"[AdminBuyerAction] target_user={user_id}, payload={payload}")
+        
+        raw_action = payload.get("action") or ""
+        act_str = str(raw_action).lower().strip()
+        
+        target_uid = int(user_id) if str(user_id).isdigit() else user_id
         target_uid_int = int(target_uid) if str(target_uid).isdigit() else 0
         uid_filter = [target_uid, str(target_uid)]
         if target_uid_int:
@@ -9484,7 +9489,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
 
         arya_db = app.state.db
         
-        if action == "wipe":
+        if act_str in ("wipe", "wipe_user", "clear_user"):
             await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
             await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
@@ -9498,7 +9503,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             invalidate_buyers_cache()
             return {"success": True, "message": "User data wiped completely."}
             
-        elif action == "ban":
+        elif act_str in ("ban", "ban_user"):
             await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
@@ -9511,7 +9516,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             invalidate_buyers_cache()
             return {"success": True, "message": "User wiped and banned."}
 
-        elif action == "delete_order":
+        elif act_str in ("delete_order", "delete_payment", "remove_order"):
             order_id_str = payload.get("order_id") or payload.get("story_id")
             if order_id_str:
                 from bson.objectid import ObjectId
@@ -9527,7 +9532,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             invalidate_buyers_cache()
             return {"success": True, "message": "Order deleted successfully."}
             
-        elif action == "remove_story":
+        elif act_str in ("remove_story", "revoke_story", "remove_access"):
             story_id_str = payload.get("story_id")
             if not story_id_str:
                 raise HTTPException(status_code=400, detail="Missing story_id")
@@ -9586,7 +9591,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             
             return {"success": True, "message": "Story removed successfully from user."}
 
-        elif action == "trigger_delivery" or action == "deliver_story":
+        elif any(k in act_str for k in ("deliver", "trigger", "grant", "send", "story")):
             story_id_str = payload.get("story_id") or payload.get("story_name")
             story = None
             
@@ -9694,13 +9699,15 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             invalidate_buyers_cache()
             return {"success": True, "message": f"Delivery triggered successfully for '{story_name}'!"}
 
-        raise HTTPException(status_code=400, detail="Invalid action")
+        logger.warning(f"[AdminBuyerAction] Unknown action received: '{raw_action}', full_payload={payload}")
+        raise HTTPException(status_code=400, detail=f"Invalid action: '{raw_action}'")
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
