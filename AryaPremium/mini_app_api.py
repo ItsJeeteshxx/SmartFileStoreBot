@@ -9621,16 +9621,23 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             bot_username = getattr(Config, "BOT_USERNAME", "UseAryaBot") or "UseAryaBot"
             
             notice_text = (
-                f"<b>🎉 {story_name} — Delivery Triggered!</b>\n\n"
-                f"Yah admin ki taraf se delivery trigger ki gayi hain jisme aap ko shayd kuch issue aa raha hoga delivery lene me islye admin ki taraf se yah kar dia gaya hain yadi aapko koi sahayata chahiye to hamare support group me help ke liye message kare ya guide ke liye <a href=\"https://t.me/StoriesLinkopningguide/23\">https://t.me/StoriesLinkopningguide/23</a> dekhe."
+                f"<b>📢 Admin Notice | {story_name}</b>\n"
+                f"────────────────────\n"
+                f"This delivery has been manually triggered by the admin. If you were experiencing any issues receiving your story files, the delivery has now been initiated for you. If you need any assistance, please message our support group or check our guide.\n\n"
+                f"<b>📢 एडमिन सूचना | {story_name}</b>\n"
+                f"────────────────────\n"
+                f"यह डिलीवरी एडमिन की तरफ से ट्रिगर की गई है जिसमें आपको शायद कुछ इशू आ रहा होगा डिलीवरी लेने में, इसलिए एडमिन की तरफ से यह कर दिया गया है। यदि आपको कोई सहायता चाहिए तो हमारे सपोर्ट ग्रुप में हेल्प के लिए मैसेज करें या गाइड देखें:\n"
+                f"https://t.me/StoriesLinkopningguide/23"
             )
 
-            deep_link = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{real_story_id}"
+            library_link = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
+            guide_link = "https://t.me/StoriesLinkopningguide/23"
+
             reply_markup = {
                 "inline_keyboard": [
                     [
-                        {"text": "📖 Read Story", "url": deep_link},
-                        {"text": "📖 Help Guide", "url": "https://t.me/StoriesLinkopningguide/23"}
+                        {"text": "Library", "url": library_link},
+                        {"text": "Guide", "url": guide_link}
                     ]
                 ]
             }
@@ -9649,6 +9656,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                         }, timeout=10)
                 except Exception as e:
                     logger.warning(f"Error sending delivery notice: {e}")
+
 
             # Also trigger Pyrogram delivery if market_seller userbot is connected
             try:
