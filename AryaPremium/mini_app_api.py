@@ -332,10 +332,11 @@ def _run_poster_bot_in_thread(main_loop, arya_db):
             result = future.result(timeout=120)  # Wait up to 2 minutes for the post to complete
             first_run = False
 
-            # Dynamic sleep: use interval from config or default 15s
+            # Dynamic sleep: max 30s so thread ticks frequently and checks interval
             sleep_secs = 15
             if isinstance(result, dict):
                 sleep_secs = result.get("next_sleep_secs", 15)
+            sleep_secs = min(30, max(10, int(sleep_secs)))
             print(f"[PosterBot Thread] 💤 Sleeping {sleep_secs}s until next tick...", flush=True, file=sys.stderr)
             time.sleep(sleep_secs)
 
@@ -343,6 +344,7 @@ def _run_poster_bot_in_thread(main_loop, arya_db):
             print(f"[PosterBot Thread] ❌ Error: {e}", flush=True, file=sys.stderr)
             logger.error(f"[PosterBot Thread] Error: {e}", exc_info=True)
             time.sleep(15)
+
 
 
 async def _do_poster_bot_tick(arya_db, first_run: bool) -> dict:
@@ -380,10 +382,19 @@ async def _do_poster_bot_tick(arya_db, first_run: bool) -> dict:
         if not b_token:
             b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None) or ""
         target_channel = str(cfg.get("channel_id") or "").strip()
+        if not target_channel:
+            # Fallback: check last post in poster_bot_posts
+            try:
+                last_post_doc = await arya_db.db.poster_bot_posts.find_one({"channel_id": {"$exists": True, "$ne": ""}}, sort=[("posted_at", -1)])
+                if last_post_doc:
+                    target_channel = str(last_post_doc.get("channel_id", "")).strip()
+            except Exception:
+                pass
 
         if not b_token or not target_channel:
             logger.warning(f"[PosterBot Tick] ⚠️ Missing config — token={bool(b_token)}, channel='{target_channel}'. Configure in Admin Panel → Poster Bot.")
             return {"next_sleep_secs": 30}
+
 
         interval_mins = float(cfg.get("post_interval_mins") or 30)
         now = datetime.now(timezone.utc)
