@@ -9585,8 +9585,85 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             _stories_cache = None
             
             return {"success": True, "message": "Story removed successfully from user."}
+
+        elif action == "trigger_delivery" or action == "deliver_story":
+            story_id_str = payload.get("story_id")
+            if not story_id_str:
+                raise HTTPException(status_code=400, detail="Missing story_id")
+
+            from bson.objectid import ObjectId
+            story_filter = [story_id_str]
+            try:
+                story_filter.append(ObjectId(story_id_str))
+            except Exception:
+                pass
+
+            story = await arya_db.db.premium_stories.find_one({"$or": [{"_id": {"$in": story_filter}}, {"story_id": {"$in": story_filter}}, {"story_name_en": story_id_str}]})
+            if not story:
+                raise HTTPException(status_code=404, detail="Story not found")
+
+            real_story_id = str(story["_id"])
+            story_name = story.get("story_name_en") or story.get("story_name_hi") or "Story"
+
+            # 1. Ensure user has story in purchases array & premium_purchases
+            await arya_db.db.users.update_one(
+                {"id": {"$in": uid_filter}},
+                {"$addToSet": {"purchases": real_story_id}}
+            )
+            await arya_db.db.premium_purchases.update_one(
+                {"user_id": target_uid_int or target_uid, "story_id": story["_id"]},
+                {"$set": {"user_id": target_uid_int or target_uid, "story_id": story["_id"], "story_name": story_name, "status": "paid", "source": "admin_trigger", "updated_at": datetime.now(timezone.utc)}},
+                upsert=True
+            )
+
+            # 2. Telegram Notice & Delivery
+            bot_token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN")
+            bot_username = getattr(Config, "BOT_USERNAME", "UseAryaBot") or "UseAryaBot"
             
+            notice_text = (
+                f"<b>🎉 {story_name} — Delivery Triggered!</b>\n\n"
+                f"Yah admin ki taraf se delivery trigger ki gayi hain jisme aap ko shayd kuch issue aa raha hoga delivery lene me islye admin ki taraf se yah kar dia gaya hain yadi aapko koi sahayata chahiye to hamare support group me help ke liye message kare ya guide ke liye <a href=\"https://t.me/StoriesLinkopningguide/23\">https://t.me/StoriesLinkopningguide/23</a> dekhe."
+            )
+
+            deep_link = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{real_story_id}"
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "📖 Read Story", "url": deep_link},
+                        {"text": "📖 Help Guide", "url": "https://t.me/StoriesLinkopningguide/23"}
+                    ]
+                ]
+            }
+
+            if bot_token and target_uid_int:
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                        await session.post(url, json={
+                            "chat_id": target_uid_int,
+                            "text": notice_text,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": False,
+                            "reply_markup": reply_markup
+                        }, timeout=10)
+                except Exception as e:
+                    logger.warning(f"Error sending delivery notice: {e}")
+
+            # Also trigger Pyrogram delivery if market_seller userbot is connected
+            try:
+                from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
+                seller_cli = next(iter(market_clients.values()), None) if market_clients else None
+                if seller_cli and target_uid_int:
+                    asyncio.create_task(dispatch_delivery_choice(seller_cli, target_uid_int, story))
+            except Exception:
+                pass
+
+            invalidate_buyers_cache()
+            return {"success": True, "message": f"Delivery triggered successfully for '{story_name}'!"}
+
         raise HTTPException(status_code=400, detail="Invalid action")
+
     except Exception as e:
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
