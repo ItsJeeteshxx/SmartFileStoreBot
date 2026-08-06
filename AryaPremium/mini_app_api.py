@@ -12779,8 +12779,7 @@ async def poster_post_now(payload: dict = Body(...)):
     return {"success": True, "message_id": res.get("message_id"), "story": story.get("story_name_en")}
 
 
-@api_router.post("/internal/poster-auto-tick")
-@api_router.post("/admin/poster-auto-tick")  # kept for backward compat (will still need auth)
+@api_router.post("/admin/poster-auto-tick")
 async def poster_auto_tick(request: Request):
     """
     Called by cron job every minute.
@@ -13028,6 +13027,13 @@ app.include_router(api_router) # Handle both /api/stories and /stories for Nginx
 @app.api_route("/admin/poster-post-now", methods=["POST", "OPTIONS"])
 async def direct_poster_post_now(request: Request, payload: dict = Body(default={})):
     return await poster_post_now(payload)
+
+# ─── Cron endpoint: NO auth required, called by system cron every minute ────────
+@app.post("/internal/poster-tick")
+async def cron_poster_tick(request: Request):
+    """Called by cron job every minute. No auth needed — localhost only in practice."""
+    return await poster_auto_tick(request)
+
 
 @app.api_route("/api/admin/poster-config", methods=["GET", "POST", "OPTIONS"])
 @app.api_route("/admin/poster-config", methods=["GET", "POST", "OPTIONS"])
