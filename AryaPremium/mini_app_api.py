@@ -35,7 +35,7 @@ _inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 import uuid
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
 from purchase_dm_helper import send_purchase_success_dm
 import httpx
 try:
@@ -3916,7 +3916,7 @@ async def create_cashfree_order(payload: dict):
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
     callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
-    return_url = f"{callback_url}?order_id={order_id}"
+    return_url = f"https://isaythanks.vercel.app?order_id={order_id}"
     
     cf_payload = {
         "order_id": order_id,
@@ -4287,6 +4287,7 @@ async def cashfree_webhook(request: Request):
         res = await verify_cashfree_payment(order_id=order_id)
         if request.method == "GET":
             if res.get("success"):
+                return RedirectResponse(url=f"https://isaythanks.vercel.app?order_id={order_id}", status_code=303)
                 success_html = """<!DOCTYPE html>
 <html lang="en">
 <head>
