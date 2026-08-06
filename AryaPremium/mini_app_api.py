@@ -12779,7 +12779,8 @@ async def poster_post_now(payload: dict = Body(...)):
     return {"success": True, "message_id": res.get("message_id"), "story": story.get("story_name_en")}
 
 
-@api_router.post("/admin/poster-auto-tick")
+@api_router.post("/internal/poster-auto-tick")
+@api_router.post("/admin/poster-auto-tick")  # kept for backward compat (will still need auth)
 async def poster_auto_tick(request: Request):
     """
     Called by cron job every minute.
