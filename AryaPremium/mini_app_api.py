@@ -12844,8 +12844,10 @@ async def poster_auto_tick(request: Request):
             except Exception:
                 pass
 
+        print(f"[PosterBot Cron] 🔍 Tick run! enabled={is_enabled}, token={bool(b_token)}, channel='{target_channel}'", flush=True, file=sys.stderr)
+
         if not b_token or not target_channel:
-            logger.warning(f"[PosterBot Cron] ⚠️ missing_token_or_channel: token={bool(b_token)}, channel='{target_channel}'")
+            print(f"[PosterBot Cron] ⚠️ missing_token_or_channel: token={bool(b_token)}, channel='{target_channel}'", flush=True, file=sys.stderr)
             return {"posted": False, "reason": "missing_token_or_channel"}
 
         raw_interval = cfg.get("post_interval_mins") if cfg.get("post_interval_mins") is not None else (cfg.get("post_interval") if cfg.get("post_interval") is not None else cfg.get("interval_mins"))
@@ -12871,15 +12873,15 @@ async def poster_auto_tick(request: Request):
                 elapsed_mins = (now - last_posted).total_seconds() / 60.0
                 if elapsed_mins < interval_mins and elapsed_mins >= 0:
                     remaining = interval_mins - elapsed_mins
-                    logger.info(f"[PosterBot Cron] ⏳ Interval not elapsed: {elapsed_mins:.1f}m / {interval_mins:.1f}m (next post in ~{remaining:.1f}m)")
+                    print(f"[PosterBot Cron] ⏳ Interval not elapsed: {elapsed_mins:.1f}m / {interval_mins:.1f}m (next post in ~{remaining:.1f}m)", flush=True, file=sys.stderr)
                     return {"posted": False, "reason": f"interval_not_elapsed", "elapsed_mins": round(elapsed_mins, 1), "remaining_mins": round(remaining, 1)}
 
-        logger.info(f"[PosterBot Cron] 🚀 Interval elapsed or no last_posted! Posting story to {target_channel} (interval: {interval_mins:.1f}m)...")
-
+        print(f"[PosterBot Cron] 🚀 Interval elapsed or no last_posted! Posting story to {target_channel} (interval: {interval_mins:.1f}m)...", flush=True, file=sys.stderr)
 
         # Interval elapsed — post now
         total = await db.db.premium_stories.count_documents({})
         if total == 0:
+            print("[PosterBot Cron] ⚠️ no_stories found in DB!", flush=True, file=sys.stderr)
             return {"posted": False, "reason": "no_stories"}
 
         rot_idx = int(cfg.get("rotation_index") or 0) % total
@@ -12887,6 +12889,7 @@ async def poster_auto_tick(request: Request):
         if not story:
             story = await db.db.premium_stories.find_one({})
         if not story:
+            print("[PosterBot Cron] ⚠️ story_fetch_failed!", flush=True, file=sys.stderr)
             return {"posted": False, "reason": "story_fetch_failed"}
 
         try:
@@ -12901,7 +12904,7 @@ async def poster_auto_tick(request: Request):
             "watermark_opacity": float(cfg.get("watermark_opacity") or 0.8)
         }
 
-        logger.info(f"[PosterBot Cron] 📤 Posting story {rot_idx+1}/{total}: '{story.get('story_name_en')}' → {target_channel}")
+        print(f"[PosterBot Cron] 📤 Posting story {rot_idx+1}/{total}: '{story.get('story_name_en')}' → {target_channel}", flush=True, file=sys.stderr)
         res = await send_story_to_channel(b_token, target_channel, story, watermark_config)
 
         if res.get("success"):
@@ -12921,11 +12924,12 @@ async def poster_auto_tick(request: Request):
                 {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
                 upsert=True
             )
-            logger.info(f"[PosterBot Cron] ✅ AUTO-POST SUCCESS! '{story.get('story_name_en')}', msg_id={msg_id}")
+            print(f"[PosterBot Cron] ✅ AUTO-POST SUCCESS! '{story.get('story_name_en')}', msg_id={msg_id}", flush=True, file=sys.stderr)
             return {"posted": True, "message_id": msg_id, "story": story.get("story_name_en")}
         else:
-            logger.error(f"[PosterBot Cron] ❌ POST FAILED: {res.get('error')}")
+            print(f"[PosterBot Cron] ❌ POST FAILED: {res.get('error')}", flush=True, file=sys.stderr)
             return {"posted": False, "reason": f"post_failed: {res.get('error')}"}
+
 
     except Exception as e:
         logger.error(f"[PosterBot Cron] ❌ Exception: {e}", exc_info=True)
