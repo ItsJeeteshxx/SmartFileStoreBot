@@ -3915,8 +3915,8 @@ async def create_cashfree_order(payload: dict):
     customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
-    callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
-    return_url = f"https://isaythanks.vercel.app?order_id={order_id}"
+    callback_url = "https://aryapremium.store/api/cashfree-callback"
+    return_url = "https://isaythanks.vercel.app"
     
     cf_payload = {
         "order_id": order_id,
@@ -4284,10 +4284,10 @@ async def cashfree_webhook(request: Request):
     )
     
     if order_id:
-        res = await verify_cashfree_payment(order_id=order_id)
-        if request.method == "GET":
-            if res.get("success"):
-                return RedirectResponse(url=f"https://isaythanks.vercel.app?order_id={order_id}", status_code=303)
+        await verify_cashfree_payment(order_id=order_id)
+
+    if request.method == "GET":
+        return RedirectResponse(url="https://isaythanks.vercel.app", status_code=303)
                 success_html = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10886,7 +10886,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
                 "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
                 "cashfree_secret_key": cfg.get("cashfree_secret_key", ""),
-                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback"),
+                "cashfree_callback_url": (cfg.get("cashfree_callback_url") or "https://aryapremium.store/api/cashfree-callback").replace("sliceurl.app", "aryapremium.store"),
                 "cashfree_env": cfg.get("cashfree_env", "sandbox"),
                 "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
                 "dodopayments_api_key": cfg.get("dodopayments_api_key", ""),
