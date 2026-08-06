@@ -396,7 +396,13 @@ async def _do_poster_bot_tick(arya_db, first_run: bool) -> dict:
             return {"next_sleep_secs": 30}
 
 
-        interval_mins = float(cfg.get("post_interval_mins") or 30)
+        raw_interval = cfg.get("post_interval_mins") if cfg.get("post_interval_mins") is not None else (cfg.get("post_interval") if cfg.get("post_interval") is not None else cfg.get("interval_mins"))
+        try:
+            interval_mins = float(raw_interval) if raw_interval is not None and str(raw_interval).strip() != "" else 30.0
+            if interval_mins <= 0:
+                interval_mins = 2.0
+        except Exception:
+            interval_mins = 30.0
         now = datetime.now(timezone.utc)
         last_posted = cfg.get("last_posted_at")
 
@@ -12685,14 +12691,15 @@ async def save_poster_config(payload: dict = Body(...)):
         "api_id": str(payload.get("api_id", "")).strip(),
         "api_hash": str(payload.get("api_hash", "")).strip(),
         "session_string": str(payload.get("session_string", "")).strip(),
-        "channel_id": str(payload.get("channel_id", "")).strip(),
-        "post_interval_mins": int(payload.get("post_interval_mins") or 30),
+        "post_interval_mins": float(payload.get("post_interval_mins") if payload.get("post_interval_mins") is not None else (payload.get("post_interval") if payload.get("post_interval") is not None else 30)),
+        "post_interval": float(payload.get("post_interval_mins") if payload.get("post_interval_mins") is not None else (payload.get("post_interval") if payload.get("post_interval") is not None else 30)),
         "delete_delay_hours": int(payload.get("delete_delay_hours") or 72),
         "watermark_enabled": bool(payload.get("watermark_enabled", True)),
         "watermark_position": str(payload.get("watermark_position", "bottom_right")).strip(),
         "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else 0.8),
         "_key": "poster_bot_config",
     }
+
     
     await db.db.mini_app_config.update_one(
         {"_id": "poster_bot_config"},
@@ -12819,7 +12826,13 @@ async def poster_auto_tick(request: Request):
         if not b_token or not target_channel:
             return {"posted": False, "reason": "missing_token_or_channel"}
 
-        interval_mins = float(cfg.get("post_interval_mins") or 30)
+        raw_interval = cfg.get("post_interval_mins") if cfg.get("post_interval_mins") is not None else (cfg.get("post_interval") if cfg.get("post_interval") is not None else cfg.get("interval_mins"))
+        try:
+            interval_mins = float(raw_interval) if raw_interval is not None and str(raw_interval).strip() != "" else 30.0
+            if interval_mins <= 0:
+                interval_mins = 2.0
+        except Exception:
+            interval_mins = 30.0
         now = datetime.now(timezone.utc)
         last_posted = cfg.get("last_posted_at")
 
