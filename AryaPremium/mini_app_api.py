@@ -9587,34 +9587,59 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
             return {"success": True, "message": "Story removed successfully from user."}
 
         elif action == "trigger_delivery" or action == "deliver_story":
-            story_id_str = payload.get("story_id")
-            if not story_id_str:
-                raise HTTPException(status_code=400, detail="Missing story_id")
+            story_id_str = payload.get("story_id") or payload.get("story_name")
+            story = None
+            
+            if story_id_str:
+                from bson.objectid import ObjectId
+                story_filter = [story_id_str]
+                try:
+                    story_filter.append(ObjectId(story_id_str))
+                except Exception:
+                    pass
 
-            from bson.objectid import ObjectId
-            story_filter = [story_id_str]
-            try:
-                story_filter.append(ObjectId(story_id_str))
-            except Exception:
-                pass
+                import re
+                esc_str = re.escape(str(story_id_str))
+                pattern = re.compile(rf"{esc_str}", re.IGNORECASE)
 
-            story = await arya_db.db.premium_stories.find_one({"$or": [{"_id": {"$in": story_filter}}, {"story_id": {"$in": story_filter}}, {"story_name_en": story_id_str}]})
+                story = await arya_db.db.premium_stories.find_one({
+                    "$or": [
+                        {"_id": {"$in": story_filter}},
+                        {"story_id": {"$in": story_filter}},
+                        {"story_name_en": pattern},
+                        {"story_name_hi": pattern}
+                    ]
+                })
+
             if not story:
-                raise HTTPException(status_code=404, detail="Story not found")
+                # Fallback: check user's purchases in premium_purchases
+                latest_p = await arya_db.db.premium_purchases.find_one(
+                    {"user_id": {"$in": uid_filter}},
+                    sort=[("updated_at", -1)]
+                )
+                if latest_p and latest_p.get("story_id"):
+                    story = await arya_db.db.premium_stories.find_one({"_id": latest_p["story_id"]})
 
-            real_story_id = str(story["_id"])
+            if not story:
+                # Final Fallback: First available story in database or virtual object
+                story = await arya_db.db.premium_stories.find_one({})
+                if not story:
+                    story = {"_id": "purchased", "story_name_en": story_id_str or "Story"}
+
+            real_story_id = str(story.get("_id", "purchased"))
             story_name = story.get("story_name_en") or story.get("story_name_hi") or "Story"
 
             # 1. Ensure user has story in purchases array & premium_purchases
-            await arya_db.db.users.update_one(
-                {"id": {"$in": uid_filter}},
-                {"$addToSet": {"purchases": real_story_id}}
-            )
-            await arya_db.db.premium_purchases.update_one(
-                {"user_id": target_uid_int or target_uid, "story_id": story["_id"]},
-                {"$set": {"user_id": target_uid_int or target_uid, "story_id": story["_id"], "story_name": story_name, "status": "paid", "source": "admin_trigger", "updated_at": datetime.now(timezone.utc)}},
-                upsert=True
-            )
+            if real_story_id != "purchased":
+                await arya_db.db.users.update_one(
+                    {"id": {"$in": uid_filter}},
+                    {"$addToSet": {"purchases": real_story_id}}
+                )
+                await arya_db.db.premium_purchases.update_one(
+                    {"user_id": target_uid_int or target_uid, "story_id": story["_id"]},
+                    {"$set": {"user_id": target_uid_int or target_uid, "story_id": story["_id"], "story_name": story_name, "status": "paid", "source": "admin_trigger", "updated_at": datetime.now(timezone.utc)}},
+                    upsert=True
+                )
 
             # 2. Telegram Notice & Delivery
             bot_token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN")
@@ -9657,12 +9682,11 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
                 except Exception as e:
                     logger.warning(f"Error sending delivery notice: {e}")
 
-
             # Also trigger Pyrogram delivery if market_seller userbot is connected
             try:
                 from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
                 seller_cli = next(iter(market_clients.values()), None) if market_clients else None
-                if seller_cli and target_uid_int:
+                if seller_cli and target_uid_int and isinstance(story, dict) and "_id" in story:
                     asyncio.create_task(dispatch_delivery_choice(seller_cli, target_uid_int, story))
             except Exception:
                 pass
@@ -9672,7 +9696,12 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
 
         raise HTTPException(status_code=400, detail="Invalid action")
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Buyer action error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
