@@ -12778,7 +12778,7 @@ async def poster_post_now(payload: dict = Body(...)):
     )
     return {"success": True, "message_id": res.get("message_id"), "story": story.get("story_name_en")}
 
-
+@api_router.api_route("/internal/poster-tick", methods=["GET", "POST", "OPTIONS"])
 @api_router.post("/admin/poster-auto-tick")
 async def poster_auto_tick(request: Request):
     """
@@ -13029,9 +13029,10 @@ async def direct_poster_post_now(request: Request, payload: dict = Body(default=
     return await poster_post_now(payload)
 
 # ─── Cron endpoint: NO auth required, called by system cron every minute ────────
-@app.post("/internal/poster-tick")
+@app.api_route("/internal/poster-tick", methods=["GET", "POST", "OPTIONS"])
+@app.api_route("/api/internal/poster-tick", methods=["GET", "POST", "OPTIONS"])
 async def cron_poster_tick(request: Request):
-    """Called by cron job every minute. No auth needed — localhost only in practice."""
+    """Called by cron job every minute. No auth needed — localhost/internal only."""
     return await poster_auto_tick(request)
 
 
