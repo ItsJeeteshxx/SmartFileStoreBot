@@ -12718,27 +12718,16 @@ async def poster_post_now(payload: dict = Body(...)):
                 pass
 
     if not story:
-        # Flexible query for story selection
-        pipeline = [
-            {"$match": {
-                "$or": [
-                    {"visibility": "available"},
-                    {"visibility": {"$exists": False}},
-                    {"visibility": None},
-                    {"visibility": ""},
-                    {"status": "available"},
-                    {"status": "active"},
-                    {"status": "Completed"},
-                    {"status": "Ongoing"}
-                ]
-            }},
-            {"$sample": {"size": 1}}
-        ]
-        stories = [s async for s in db.db.premium_stories.aggregate(pipeline)]
-        if not stories:
-            stories = [s async for s in db.db.premium_stories.aggregate([{"$sample": {"size": 1}}])]
-        story = stories[0] if stories else None
-        
+        # Use count + skip instead of $sample (more reliable with motor)
+        total_stories = await db.db.premium_stories.count_documents({})
+        if total_stories == 0:
+            raise HTTPException(status_code=404, detail="No stories found in database")
+        # Use rotation_index from config for consistent rotation
+        rot_idx = int(cfg.get("rotation_index") or 0) % total_stories
+        story = await db.db.premium_stories.find_one({}, skip=rot_idx)
+        if not story:
+            story = await db.db.premium_stories.find_one({})
+
     if not story:
         raise HTTPException(status_code=404, detail="No stories found to post")
         
@@ -12759,6 +12748,7 @@ async def poster_post_now(payload: dict = Body(...)):
         
     now = datetime.now(timezone.utc)
     del_hours = int(cfg.get("delete_delay_hours") or 72)
+    next_rot = (int(cfg.get("rotation_index") or 0) + 1) % max(1, await db.db.premium_stories.count_documents({}))
     post_log = {
         "message_id": res.get("message_id"),
         "channel_id": res.get("channel_id"),
@@ -12769,7 +12759,119 @@ async def poster_post_now(payload: dict = Body(...)):
         "deleted": False
     }
     await db.db.poster_bot_posts.insert_one(post_log)
-    return {"success": True, "message_id": res.get("message_id")}
+    # Update last_posted_at and rotation_index so interval tracking works
+    await db.db.mini_app_config.update_one(
+        {"_id": "poster_bot_config"},
+        {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
+        upsert=True
+    )
+    return {"success": True, "message_id": res.get("message_id"), "story": story.get("story_name_en")}
+
+
+@api_router.post("/admin/poster-auto-tick")
+async def poster_auto_tick(request: Request):
+    """
+    Called by cron job every minute.
+    Checks if interval has elapsed; only posts if it's time.
+    Returns {"posted": true/false, "reason": "..."}
+    """
+    db = getattr(app.state, "db", None)
+    if not db:
+        return {"posted": False, "reason": "db_not_connected"}
+
+    try:
+        cfg = await _get_poster_bot_config(db)
+        if not cfg:
+            return {"posted": False, "reason": "no_config"}
+
+        if not cfg.get("enabled", True):
+            return {"posted": False, "reason": "disabled"}
+
+        b_token = str(cfg.get("bot_token") or "").strip()
+        if not b_token:
+            try:
+                from AryaPremium.config import Config
+            except Exception:
+                from config import Config
+            b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or ""
+
+        target_channel = str(cfg.get("channel_id") or "").strip()
+        if not b_token or not target_channel:
+            return {"posted": False, "reason": "missing_token_or_channel"}
+
+        interval_mins = float(cfg.get("post_interval_mins") or 30)
+        now = datetime.now(timezone.utc)
+        last_posted = cfg.get("last_posted_at")
+
+        # Check if interval has elapsed
+        if last_posted:
+            if isinstance(last_posted, str):
+                try:
+                    last_posted = datetime.fromisoformat(last_posted.replace("Z", "+00:00"))
+                except Exception:
+                    last_posted = None
+            if last_posted and isinstance(last_posted, datetime):
+                if last_posted.tzinfo is None:
+                    last_posted = last_posted.replace(tzinfo=timezone.utc)
+                elapsed_mins = (now - last_posted).total_seconds() / 60.0
+                if elapsed_mins < interval_mins and elapsed_mins >= 0:
+                    remaining = interval_mins - elapsed_mins
+                    return {"posted": False, "reason": f"interval_not_elapsed", "elapsed_mins": round(elapsed_mins, 1), "remaining_mins": round(remaining, 1)}
+
+        # Interval elapsed — post now
+        total = await db.db.premium_stories.count_documents({})
+        if total == 0:
+            return {"posted": False, "reason": "no_stories"}
+
+        rot_idx = int(cfg.get("rotation_index") or 0) % total
+        story = await db.db.premium_stories.find_one({}, skip=rot_idx)
+        if not story:
+            story = await db.db.premium_stories.find_one({})
+        if not story:
+            return {"posted": False, "reason": "story_fetch_failed"}
+
+        try:
+            from AryaPremium.poster_helper import send_story_to_channel
+        except Exception:
+            from poster_helper import send_story_to_channel
+
+        watermark_config = {
+            "poster_mode": "bot_api",
+            "watermark_enabled": cfg.get("watermark_enabled", True),
+            "watermark_position": cfg.get("watermark_position", "bottom_right"),
+            "watermark_opacity": float(cfg.get("watermark_opacity") or 0.8)
+        }
+
+        logger.info(f"[PosterBot Cron] 📤 Posting story {rot_idx+1}/{total}: '{story.get('story_name_en')}' → {target_channel}")
+        res = await send_story_to_channel(b_token, target_channel, story, watermark_config)
+
+        if res.get("success"):
+            msg_id = res.get("message_id")
+            del_hours = int(cfg.get("delete_delay_hours") or 72)
+            next_rot = (rot_idx + 1) % total
+            await db.db.poster_bot_posts.insert_one({
+                "message_id": msg_id, "channel_id": res.get("channel_id"),
+                "story_id": str(story["_id"]),
+                "story_name": story.get("story_name_en") or "Story",
+                "posted_at": now,
+                "delete_at": now + timedelta(hours=del_hours),
+                "deleted": False
+            })
+            await db.db.mini_app_config.update_one(
+                {"_id": "poster_bot_config"},
+                {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
+                upsert=True
+            )
+            logger.info(f"[PosterBot Cron] ✅ AUTO-POST SUCCESS! '{story.get('story_name_en')}', msg_id={msg_id}")
+            return {"posted": True, "message_id": msg_id, "story": story.get("story_name_en")}
+        else:
+            logger.error(f"[PosterBot Cron] ❌ POST FAILED: {res.get('error')}")
+            return {"posted": False, "reason": f"post_failed: {res.get('error')}"}
+
+    except Exception as e:
+        logger.error(f"[PosterBot Cron] ❌ Exception: {e}", exc_info=True)
+        return {"posted": False, "reason": f"exception: {str(e)}"}
+
 
 @api_router.post("/admin/poster-delete-now")
 async def poster_delete_now(payload: dict = Body(...)):
