@@ -1635,7 +1635,7 @@ async def _run_job(job_id: str, user_id: int):
                                 pass
                     await asyncio.sleep(15)
                 else:
-                    if "CHANNEL_INVALID" in err_up or "PEER_ID_INVALID" in err_up:
+                    if any(k in err_up for k in ("CHANNEL_INVALID", "PEER_ID_INVALID", "CHANNEL_PRIVATE")):
                         _live_channel_invalid_strikes += 1
                         logger.error(
                             f"[Job {job_id}] FATAL Peer error in live fetch "
@@ -1646,12 +1646,12 @@ async def _run_job(job_id: str, user_id: int):
                             err_msg = (
                                 f"⚠️ <b>Job Stopped — Source Channel Inaccessible</b>\n\n"
                                 f"The source channel could not be reached after 3 consecutive attempts.\n"
-                                f"<b>Error:</b> <code>CHANNEL_INVALID</code>\n"
+                                f"<b>Error:</b> <code>{err_fetch}</code>\n"
                                 f"<b>Channel ID:</b> <code>{from_chat}</code>\n\n"
-                                f"<i>Possible causes: bot was removed from the channel, channel was deleted, "
+                                f"<i>Possible causes: bot/user was removed from the channel, channel is private/deleted, "
                                 f"or the channel ID is wrong. Please check and reconfigure the job.</i>"
                             )
-                            await _update_job(job_id, status="error", error="CHANNEL_INVALID — source permanently inaccessible")
+                            await _update_job(job_id, status="error", error=f"{err_fetch} — source permanently inaccessible")
                             try: await BOT_INSTANCE.send_message(user_id, err_msg)
                             except Exception: pass
                             return

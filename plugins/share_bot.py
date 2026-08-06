@@ -370,46 +370,38 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
         member = None
         is_channel_invalid = False
         
-        # Try checking membership via main bot first (highly cached, admin of FSub channels)
+        # 1. Try checking membership via main bot first (highly cached, admin of FSub channels)
         if BOT_INSTANCE and getattr(BOT_INSTANCE, "me", None):
             try:
                 member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
             except UserNotParticipant:
                 pass  # member stays None → handled below in the UserNotParticipant block
-            except (PeerIdInvalid, ChannelInvalid):
+            except Exception:
                 try:
-                    resolved = await safe_resolve_peer(BOT_INSTANCE, chat_id)
-                    if resolved:
-                        try:
-                            member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
-                        except UserNotParticipant:
-                            pass  # member stays None → handled below
-                    else:
-                        is_channel_invalid = True
-                except (PeerIdInvalid, ChannelInvalid):
-                    is_channel_invalid = True
+                    if await safe_resolve_peer(BOT_INSTANCE, chat_id):
+                        member = await BOT_INSTANCE.get_chat_member(ch_id_int, user_id)
+                except UserNotParticipant:
+                    pass
                 except Exception:
                     pass
-            except Exception:
-                pass
 
-        # Fallback to delivery bot client if main bot failed or was unavailable
-        if member is None and not is_channel_invalid:
+        # 2. Fallback to delivery bot client if main bot failed or was unavailable
+        if member is None:
             try:
                 member = await client.get_chat_member(ch_id_int, user_id)
-            except (PeerIdInvalid, ChannelInvalid):
+            except UserNotParticipant:
+                pass
+            except Exception:
                 try:
                     resolved = await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
                     if resolved:
                         member = await client.get_chat_member(ch_id_int, user_id)
                     else:
                         is_channel_invalid = True
-                except (PeerIdInvalid, ChannelInvalid):
-                    is_channel_invalid = True
-                except Exception:
+                except UserNotParticipant:
                     pass
-            except Exception:
-                pass
+                except Exception:
+                    is_channel_invalid = True
 
         if is_channel_invalid:
             # Cache the invalid status for 30 seconds
@@ -417,7 +409,7 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                 'status': 'invalid',
                 'expires': now + 30
             }
-            logger.error(f"FSub check: Channel {ch_id_int} is unresolvable. Caching invalid status for 30 seconds.")
+            logger.error(f"FSub check: Channel {ch_id_int} is unresolvable by all clients. Caching invalid status for 30 seconds.")
             ch_copy = dict(ch)
             ch_copy['never_joined'] = True
             return ch_copy

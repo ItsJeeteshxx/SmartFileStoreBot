@@ -2555,7 +2555,11 @@ async def settings_query(bot, query):
                       lnk_obj = await bot.create_chat_invite_link(int(ch_id), creates_join_request=True)
                       fsub_chs[idx]['invite_link'] = lnk_obj.invite_link
                   else:
-                      fsub_chs[idx]['invite_link'] = await bot.export_chat_invite_link(int(ch_id))
+                      try:
+                          lnk_obj = await bot.create_chat_invite_link(int(ch_id))
+                          fsub_chs[idx]['invite_link'] = lnk_obj.invite_link
+                      except Exception:
+                          fsub_chs[idx]['invite_link'] = await bot.export_chat_invite_link(int(ch_id))
               except Exception as e:
                   logger.warning(f"Could not regenerate invite link: {e}")
           await db.set_bot_fsub_channels(b_id, fsub_chs)
@@ -2631,9 +2635,13 @@ async def settings_query(bot, query):
               return await ask.edit_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
           
           try:
-              invite = await bot.export_chat_invite_link(ch_obj.id)
+              lnk_obj = await bot.create_chat_invite_link(ch_obj.id)
+              invite = lnk_obj.invite_link
           except Exception:
-              invite = getattr(ch_obj, 'invite_link', '') or ''
+              try:
+                  invite = await bot.export_chat_invite_link(ch_obj.id)
+              except Exception:
+                  invite = getattr(ch_obj, 'invite_link', '') or ''
           fsub_chs = await db.get_bot_fsub_channels(b_id)
           fsub_chs.append({
               'chat_id':     str(ch_obj.id),
