@@ -1645,7 +1645,7 @@ async def create_payment_link(payload: dict):
             "description": ", ".join([s.get("story_name_en") or s.get("title") or s.get("story_name_hi") or "Arya Premium Content" for s in valid_stories])[:200] or "Arya Premium Content",
             "customer": {
                 "name": username or f"User {telegram_id}",
-                "email": f"user{telegram_id}@sliceurl.com"
+                "email": f"user{telegram_id}@aryapremium.store"
             },
             "notify": {"sms": False, "email": False},
             "reminder_enable": False,
@@ -3195,9 +3195,7 @@ async def create_paytm_order(payload: dict):
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
     website = cfg.get("paytm_website", "WEBSTAGING" if is_sandbox else "DEFAULT").strip()
     
-    callback_url = cfg.get("paytm_callback_url", "https://sliceurl.app/api/paytm-callback").strip()
-    if "aryapremium.store" in callback_url:
-        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
+    callback_url = cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback").strip()
     
     body = {
         "requestType": "Payment",
@@ -3912,11 +3910,11 @@ async def create_cashfree_order(payload: dict):
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
     raw_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
     customer_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip() or "Customer"
-    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
+    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
     callback_url = "https://aryapremium.store/api/cashfree-callback"
-    return_url = "https://isaythanks.vercel.app"
+    return_url = f"https://isaythanks.vercel.app?order_id={order_id}"
     
     cf_payload = {
         "order_id": order_id,
@@ -4512,8 +4510,7 @@ async def create_dodopayments_order(payload: dict):
     order_seq = int(time.time() * 1000) % 100000
     order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
 
-    # Return URL strictly using sliceurl.app as required by user
-    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
+    return_url = f"https://isaythanks.vercel.app?order_id={order_id}&provider=dodopayments"
 
     dodo_payload = {
         "billing": {
