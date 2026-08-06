@@ -12823,7 +12823,16 @@ async def poster_auto_tick(request: Request):
             b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or ""
 
         target_channel = str(cfg.get("channel_id") or "").strip()
+        if not target_channel:
+            try:
+                last_post_doc = await db.db.poster_bot_posts.find_one({"channel_id": {"$exists": True, "$ne": ""}}, sort=[("posted_at", -1)])
+                if last_post_doc:
+                    target_channel = str(last_post_doc.get("channel_id", "")).strip()
+            except Exception:
+                pass
+
         if not b_token or not target_channel:
+            logger.warning(f"[PosterBot Cron] ⚠️ missing_token_or_channel: token={bool(b_token)}, channel='{target_channel}'")
             return {"posted": False, "reason": "missing_token_or_channel"}
 
         raw_interval = cfg.get("post_interval_mins") if cfg.get("post_interval_mins") is not None else (cfg.get("post_interval") if cfg.get("post_interval") is not None else cfg.get("interval_mins"))
@@ -12849,7 +12858,11 @@ async def poster_auto_tick(request: Request):
                 elapsed_mins = (now - last_posted).total_seconds() / 60.0
                 if elapsed_mins < interval_mins and elapsed_mins >= 0:
                     remaining = interval_mins - elapsed_mins
+                    logger.info(f"[PosterBot Cron] ⏳ Interval not elapsed: {elapsed_mins:.1f}m / {interval_mins:.1f}m (next post in ~{remaining:.1f}m)")
                     return {"posted": False, "reason": f"interval_not_elapsed", "elapsed_mins": round(elapsed_mins, 1), "remaining_mins": round(remaining, 1)}
+
+        logger.info(f"[PosterBot Cron] 🚀 Interval elapsed or no last_posted! Posting story to {target_channel} (interval: {interval_mins:.1f}m)...")
+
 
         # Interval elapsed — post now
         total = await db.db.premium_stories.count_documents({})
