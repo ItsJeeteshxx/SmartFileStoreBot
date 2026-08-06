@@ -292,10 +292,17 @@ async def _get_poster_bot_config(db_conn) -> dict:
         cfg = await db_conn.db.mini_app_config.find_one({"_id": "poster_bot_config"})
         if not cfg:
             cfg = await db_conn.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+        if not cfg:
+            cfg = await db_conn.db.mini_app_config.find_one({"channel_id": {"$exists": True, "$ne": ""}})
+        if not cfg:
+            cfg = await db_conn.db.mini_app_config.find_one({"poster_mode": {"$exists": True}})
+        if not cfg:
+            cfg = {"enabled": True, "post_interval_mins": 2.0}
         return cfg or {}
     except Exception as e:
         logger.warning(f"Error fetching poster_bot_config: {e}")
-        return {}
+        return {"enabled": True, "post_interval_mins": 2.0}
+
 
 def _handle_background_task_result(task: asyncio.Task):
     """Callback to log any uncaught exceptions in background tasks."""
@@ -12808,10 +12815,15 @@ async def poster_auto_tick(request: Request):
 
     try:
         cfg = await _get_poster_bot_config(db)
+        logger.info(f"[PosterBot Cron] 🔍 Tick run! cfg={bool(cfg)}, enabled={cfg.get('enabled') if cfg else None}, bot_token={bool(cfg.get('bot_token')) if cfg else False}, channel='{cfg.get('channel_id') if cfg else ''}'")
         if not cfg:
+            logger.warning("[PosterBot Cron] ⚠️ No config found in DB!")
             return {"posted": False, "reason": "no_config"}
 
-        if not cfg.get("enabled", True):
+        # If enabled is not explicitly False, default to True
+        is_enabled = cfg.get("enabled")
+        if is_enabled is False or str(is_enabled).lower() == "false":
+            logger.info("[PosterBot Cron] ⏸️ Poster Bot is disabled in config.")
             return {"posted": False, "reason": "disabled"}
 
         b_token = str(cfg.get("bot_token") or "").strip()
@@ -12823,6 +12835,7 @@ async def poster_auto_tick(request: Request):
             b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or ""
 
         target_channel = str(cfg.get("channel_id") or "").strip()
+
         if not target_channel:
             try:
                 last_post_doc = await db.db.poster_bot_posts.find_one({"channel_id": {"$exists": True, "$ne": ""}}, sort=[("posted_at", -1)])
