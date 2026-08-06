@@ -12333,6 +12333,16 @@ async def admin_auth_middleware(request: Request, call_next):
     is_watermark_endpoint = "custom-watermark" in path
     
     if is_admin_path and not is_auth_endpoint and not is_watermark_endpoint:
+        # Allow cron/internal calls: localhost OR poster-auto-tick endpoint
+        client_host = request.client.host if request.client else ""
+        is_localhost = client_host in ("127.0.0.1", "::1", "localhost")
+        is_cron_endpoint = "poster-auto-tick" in path
+
+        if is_localhost or is_cron_endpoint:
+            # Internal/cron call — skip auth
+            response = await call_next(request)
+            return response
+
         session_token = request.headers.get("X-Admin-Session")
         db = getattr(app.state, "db", None)
         
@@ -12353,6 +12363,7 @@ async def admin_auth_middleware(request: Request, call_next):
                 status_code=401,
                 media_type="application/json"
             )
+
             
     response = await call_next(request)
     return response
