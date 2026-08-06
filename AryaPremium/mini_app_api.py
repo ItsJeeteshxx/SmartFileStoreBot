@@ -313,52 +313,13 @@ def _handle_background_task_result(task: asyncio.Task):
         logger.error(f"Error checking background task result: {e}")
 
 def _run_poster_bot_in_thread(main_loop, arya_db):
-    """
-    PosterBot thread: uses time.sleep() for scheduling (no event loop needed),
-    and asyncio.run_coroutine_threadsafe() to run DB/HTTP work on the MAIN event loop.
-    This is the ONLY correct way to do background scheduling with motor (async MongoDB).
-    """
-    import time
-    import sys
-    print("[PosterBot Thread] ✅ Thread STARTED! Will tick every 15s.", flush=True, file=sys.stderr)
-    logger.info("[PosterBot Thread] ✅ Background publisher thread started!")
-
-    time.sleep(5)  # Give service time to fully start up
-
-    first_run = True
-    while True:
-        try:
-            print(f"[PosterBot Thread] ⏰ Tick! Submitting job to main event loop...", flush=True, file=sys.stderr)
-            logger.info("[PosterBot Thread] ⏰ Tick — submitting poster job to main event loop")
-
-            # Submit async work to the MAIN event loop (where motor/DB is correctly attached)
-            future = asyncio.run_coroutine_threadsafe(
-                _do_poster_bot_tick(arya_db, first_run),
-                main_loop
-            )
-            result = future.result(timeout=120)  # Wait up to 2 minutes for the post to complete
-            first_run = False
-
-            # Dynamic sleep: max 30s so thread ticks frequently and checks interval
-            sleep_secs = 15
-            if isinstance(result, dict):
-                sleep_secs = result.get("next_sleep_secs", 15)
-            sleep_secs = min(30, max(10, int(sleep_secs)))
-            print(f"[PosterBot Thread] 💤 Sleeping {sleep_secs}s until next tick...", flush=True, file=sys.stderr)
-            time.sleep(sleep_secs)
-
-        except Exception as e:
-            print(f"[PosterBot Thread] ❌ Error: {e}", flush=True, file=sys.stderr)
-            logger.error(f"[PosterBot Thread] Error: {e}", exc_info=True)
-            time.sleep(15)
-
-
+    """PosterBot disabled per admin request."""
+    return
 
 async def _do_poster_bot_tick(arya_db, first_run: bool) -> dict:
-    """
-    Single poster bot tick — runs on the MAIN event loop.
-    Returns dict with next_sleep_secs so the thread knows when to tick again.
-    """
+    """PosterBot disabled per admin request."""
+    return {"next_sleep_secs": 3600}
+
     try:
         # Import helper
         try:
@@ -714,6 +675,8 @@ async def lifespan(app: FastAPI):
                         logger.info(f"[OrderCounter] Counter already at {current_seq}, no update needed")
                 else:
                     logger.info("[OrderCounter] No existing orders found, counter starts at 1")
+                # Poster Bot background thread disabled per admin request
+                logger.info("ℹ️ Poster Bot background workers disabled")
             except Exception as counter_err:
                 logger.warning(f"Failed to initialize order counter: {counter_err}")
 
