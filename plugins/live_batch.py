@@ -319,7 +319,7 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             tutorial_link = "https://t.me/StoriesLinkopningguide/21" if job.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
             keyboard.append([
                 InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
-                InlineKeyboardButton(_sc("support"), url="https://t.me/+gFudInzITpo1Yjg1")
+                InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl")
             ])
             
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.

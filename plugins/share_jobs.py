@@ -1549,7 +1549,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     keyboard.append(row)
                 keyboard.append([
                     InlineKeyboardButton(_sc("tutorial"), url=("https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5")),
-                    InlineKeyboardButton(_sc("support"), url="https://t.me/+gFudInzITpo1Yjg1")
+                    InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl")
                 ])
                 for attempt in range(6):
                     try:

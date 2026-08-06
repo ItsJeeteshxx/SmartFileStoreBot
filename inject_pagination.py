@@ -30,7 +30,7 @@ old = """        kb = [
 new = """        kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund"),
-             InlineKeyboardButton("Support", url="https://t.me/+gFudInzITpo1Yjg1")],
+             InlineKeyboardButton("Support", url="https://t.me/+KPVtaAm9k-RmMjdl")],
             [InlineKeyboardButton(f"\ud83d\udcac {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
             [InlineKeyboardButton(f"\u0939\u093f\u0902\u0926\u0940 (NEXT) \u276d", callback_data="mb#help_page_1")],
             [InlineKeyboardButton(f"\u00ab \u276e {_sc('MAIN MENU')}", callback_data="mb#main_back")]
@@ -53,7 +53,7 @@ old = """        kb = [
 new = """        kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund"),
-             InlineKeyboardButton("Support", url="https://t.me/+gFudInzITpo1Yjg1")],
+             InlineKeyboardButton("Support", url="https://t.me/+KPVtaAm9k-RmMjdl")],
             [InlineKeyboardButton(f"\ud83d\udcac {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
             [InlineKeyboardButton(f"\u276c PREV (English)", callback_data="mb#help_page_0")],
             [InlineKeyboardButton(f"\u00ab \u276e {_sc('MAIN MENU')}", callback_data="mb#main_back")]

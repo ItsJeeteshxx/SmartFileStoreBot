@@ -4863,7 +4863,7 @@ async def _show_help_menu(client, query):
 
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
 
-            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
+            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+KPVtaAm9k-RmMjdl")],
 
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
 
@@ -4917,7 +4917,7 @@ async def _show_help_menu(client, query):
 
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
 
-            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
+            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+KPVtaAm9k-RmMjdl")],
 
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
 
@@ -9023,7 +9023,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
             [InlineKeyboardButton(f"⟳ {_sc('Regenerate Files')}", callback_data=f"mb#deliver_dm#{story_id_str}")],
 
-            [InlineKeyboardButton("🆘 Arya Premium Chat [ Help ]", url="https://t.me/+gFudInzITpo1Yjg1")],
+            [InlineKeyboardButton("🆘 Arya Premium Chat [ Help ]", url="https://t.me/+KPVtaAm9k-RmMjdl")],
 
         ]
 

@@ -163,7 +163,7 @@ async def _check_and_record_rapid_request(client, message, user_id: int, bot_id:
 # 
 ARYA_VERSION = "V1.0"
 UPDATE_LINK   = "https://t.me/AryaBotUpdatesTG"
-SUPPORT_LINK  = "https://t.me/+gFudInzITpo1Yjg1"
+SUPPORT_LINK  = "https://t.me/+KPVtaAm9k-RmMjdl"
 
 DEFAULT_PREMIUM_AD_TEXT = (
     "◎ सूचना: समय और मेहनत दोनों बचाइए!\n\n"
