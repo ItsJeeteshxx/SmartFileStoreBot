@@ -6464,6 +6464,12 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
                 "pdf": "application/pdf", "zip": "application/zip", "doc": "application/msword", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             }
             content_type = mime_types.get(ext, getattr(file, "content_type", None) or "application/octet-stream")
+            from decouple import config
+            r2_account_id = config("R2_ACCOUNT_ID", default="") or os.environ.get("R2_ACCOUNT_ID", "")
+            r2_access_key = config("R2_ACCESS_KEY_ID", default="") or config("R2_ACCESS_KEY", default="") or os.environ.get("R2_ACCESS_KEY_ID", "")
+            r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="") or config("R2_SECRET_KEY", default="") or os.environ.get("R2_SECRET_ACCESS_KEY", "")
+            r2_bucket = config("R2_BUCKET_NAME", default="") or config("R2_BUCKET", default="arya-images") or os.environ.get("R2_BUCKET_NAME", "arya-images")
+            r2_domain = config("R2_CUSTOM_DOMAIN", default="") or config("R2_DOMAIN", default="") or os.environ.get("R2_CUSTOM_DOMAIN", "")
 
             url = ""
             if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
