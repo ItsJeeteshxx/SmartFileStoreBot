@@ -1084,11 +1084,12 @@ class Database:
 
     async def set_bypass_bot(self, user_id: int, bot_username: str):
         bot_username = bot_username.strip().lstrip('@')
-        await self.users.update_one(
+        await self.col.update_one(
             {'id': int(user_id)},
             {'$set': {'configs.bypass_bot': bot_username}},
             upsert=True
         )
+        self._invalidate_user_cache(user_id)
               
     async def add_frwd(self, user_id):
        return await self.nfy.insert_one({'user_id': int(user_id)})

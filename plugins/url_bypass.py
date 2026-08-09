@@ -64,7 +64,7 @@ def _is_undo(t):   return "↩️" in t or "undo" in t.lower()
 
 
 # ── Input router ──────────────────────────────────────────────────────────────
-@Client.on_message(filters.private, group=-15)
+@Client.on_message(filters.private, group=-50)
 async def _ub_bypass_router(bot, message):
     uid = message.from_user.id if message.from_user else None
     if uid and uid in _waiting:
@@ -446,12 +446,15 @@ async def bypass_set_bot_custom_cb(bot, query):
     if _is_cancel(res.text):
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
-    custom_uname = res.text.strip().lstrip('@')
+    raw_text = res.text.strip()
+    m = re.search(r'(?:t\.me/|@)?([a-zA-Z0-9_]{3,})', raw_text)
+    custom_uname = m.group(1).strip() if m else raw_text.lstrip('@').strip()
+    
     if not custom_uname:
-        return await bot.send_message(chat_id, "<b>Invalid username.</b>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+        return await bot.send_message(chat_id, "<b>Invalid username. Please send a valid @bot_username.</b>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
     await db.set_bypass_bot(uid, custom_uname)
-    await bot.send_message(chat_id, f"✅ <b>Bypass Bot updated to @{custom_uname}!</b>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+    await bot.send_message(chat_id, f"✅ <b>Bypass Bot successfully updated and saved as @{custom_uname}!</b>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
     await _send_bypass_menu(bot, uid, chat_id)
 
 @Client.on_callback_query(filters.regex(r'^ub_(pause|resume|stop|reset|del):(.+)$'))
