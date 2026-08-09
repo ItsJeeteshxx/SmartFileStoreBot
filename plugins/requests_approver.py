@@ -15,7 +15,8 @@ from pyrogram.types import (
 )
 from pyrogram.errors import (
     FloodWait, UserChannelsTooMuch, UsersTooMuch,
-    UserDeleted, UserIdInvalid, HideRequesterMissing, UserAlreadyParticipant
+    UserDeleted, UserIdInvalid, HideRequesterMissing, UserAlreadyParticipant,
+    ChannelInvalid, PeerIdInvalid, ChannelPrivate, ChatAdminRequired, UserNotParticipant
 )
 from database import db
 from plugins.owner_utils import require_feature
@@ -539,6 +540,16 @@ async def _requests_run_job(job_id: str):
 
         # ── PHASE 1: Process Existing / Old Pending Join Requests ─────────────────────
         if mode in ("both", "old_only"):
+            # Prime userbot peer cache for channel_id so Pyrogram doesn't throw ChannelInvalid
+            try:
+                await asyncio.wait_for(ub.get_chat(channel_id), timeout=15)
+            except Exception:
+                try:
+                    await asyncio.wait_for(ub.join_chat(channel_id), timeout=15)
+                    await asyncio.sleep(1)
+                    await ub.get_chat(channel_id)
+                except Exception: pass
+
             try:
                 async for req in ub.get_chat_join_requests(channel_id):
                     # Check pause / stop state
@@ -633,6 +644,15 @@ async def _requests_run_job(job_id: str):
 
                     await asyncio.sleep(0.3) # Fast pacing
 
+            except (ChannelInvalid, PeerIdInvalid, ChannelPrivate, ChatAdminRequired, UserNotParticipant) as pe:
+                logger.error(f"[Requests] Userbot permission/channel error for {channel_id}: {pe}")
+                await _update_requests_job(job_id, {"status": "failed", "error": str(pe)})
+                return await _upd_req(BOT_INSTANCE, job_id, chat_id,
+                    f"❌ <b>Requests Job Failed!</b>\n\n"
+                    f"<b>Error:</b> <code>{pe}</code>\n\n"
+                    f"<i>Ensure Userbot <b>{job['ub_name']}</b> is an Admin with 'Invite Users / Approve Requests' permission in {channel_title}!</i>",
+                    force=True
+                )
             except Exception as e:
                 logger.error(f"[Requests] Scan join requests error: {e}", exc_info=True)
 
