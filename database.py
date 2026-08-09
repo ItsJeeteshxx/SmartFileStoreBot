@@ -1077,12 +1077,12 @@ class Database:
             filters.append(str(k))
        return filters
 
-     async def get_bypass_bot(self, user_id: int) -> str:
+    async def get_bypass_bot(self, user_id: int) -> str:
         configs = await self.get_configs(user_id)
         bot_uname = configs.get('bypass_bot') or 'Nick_Bypass_Bot'
         return bot_uname.strip().lstrip('@')
 
-     async def set_bypass_bot(self, user_id: int, bot_username: str):
+    async def set_bypass_bot(self, user_id: int, bot_username: str):
         bot_username = bot_username.strip().lstrip('@')
         await self.users.update_one(
             {'id': int(user_id)},
