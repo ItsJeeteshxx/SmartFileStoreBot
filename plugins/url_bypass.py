@@ -328,7 +328,7 @@ async def _send_bypass_menu(bot, uid, chat_id, mid=None):
             "Use the buttons below to start a job or configure your bypass bot."
         )
         kb = [
-            [InlineKeyboardButton("⚙️ Bypass Bot Settings", callback_data="ub_bot_settings")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="ub_settings")],
             [InlineKeyboardButton("➕ Start New Bypass Job", callback_data="ub#new")],
             [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
         ]
@@ -375,7 +375,7 @@ async def _send_bypass_menu(bot, uid, chat_id, mid=None):
         kb.append(row)
         
     kb.append([
-        InlineKeyboardButton("⚙️ Bypass Bot Settings", callback_data="ub_bot_settings"),
+        InlineKeyboardButton("⚙️ Settings", callback_data="ub_settings"),
         InlineKeyboardButton("🔄 Refresh", callback_data="ub_menu_refresh")
     ])
     kb.append([
@@ -399,20 +399,20 @@ async def bypass_menu_refresh_cb(bot, query):
     await query.answer()
     await _send_bypass_menu(bot, query.from_user.id, query.message.chat.id, query.message.id)
 
-@Client.on_callback_query(filters.regex(r'^ub_bot_settings$'))
+@Client.on_callback_query(filters.regex(r'^ub_(?:bot_)?settings$'))
 async def bypass_bot_settings_cb(bot, query):
     await query.answer()
     uid = query.from_user.id
     active_bot = await db.get_bypass_bot(uid)
     txt = (
-        "<b>⚙️ URL Bypass Bot Settings</b>\n\n"
-        f"Current Active Bypass Bot: <b>@{active_bot}</b>\n\n"
+        "<b>⚙️ URL Bypass Settings</b>\n\n"
+        f"Active Bypass Bot: <b>@{active_bot}</b>\n\n"
         "<i>Select a preset bypass bot or enter a custom bot username. "
         "Your Userbot will send shortener URLs to this bot for bypassing.</i>"
     )
     kb = [
         [InlineKeyboardButton("🤖 Default (@Nick_Bypass_Bot)", callback_data="ub_set_bot:Nick_Bypass_Bot")],
-        [InlineKeyboardButton("✏️ Set Custom Bot Username", callback_data="ub_set_bot_custom")],
+        [InlineKeyboardButton("✏️ Custom Bypass Bot", callback_data="ub_set_bot_custom")],
         [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="ub_menu_refresh")]
     ]
     try:
