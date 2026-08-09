@@ -101,7 +101,7 @@ _S["HELP_TXT"] = {
         "<b>»  Features:</b>\n"
         "<b>➲ </b> Public channel se forward — no admin required\n"
         "<b>➲ </b> Private channel se forward — bot/userbot admin zaruri h\n"
-        "<b>➲ </b> Multi-Account: 2 Bots + 2 Userbots add kar sakte ho\n"
+        "<b>➲ </b> Multi-Account: Bots + 8 Userbots add kar sakte ho\n"
         "<b>➲ </b> Live Jobs — peeche background me chalte rahenge\n"
         "<b>➲ </b> New→Old aur Old→New dono support\n"
         "<b>➲ </b> Filters — audio/video/photo/sticker/text skip karo\n"

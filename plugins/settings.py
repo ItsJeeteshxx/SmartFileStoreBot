@@ -592,7 +592,7 @@ async def settings_query(bot, query):
      for b in userbots:
          active_mark = "✔️ " if b.get('active') else ""
          buttons.append([InlineKeyboardButton(f"{active_mark}{b['name']}", callback_data=f"settings#editbot_{b['id']}")])
-     if len(userbots) < 4:
+     if len(userbots) < 8:
          buttons.append([InlineKeyboardButton('Aᴅᴅ Usᴇʀʙᴏᴛ', callback_data="settings#adduserbot")])
          
      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#main")])
@@ -600,7 +600,7 @@ async def settings_query(bot, query):
      text = (
          "<b><u>👥 My Accounts</u></b>\n\n"
          f"<b>🤖 Bots:</b> {len(normal_bots)}/10\n"
-         f"<b>👤 Userbots:</b> {len(userbots)}/4\n\n"
+         f"<b>👤 Userbots:</b> {len(userbots)}/8\n\n"
          "<b>Tap an account to view details or set it active.\n"
          "✔️ = Currently active for that type.</b>"
      )
@@ -704,7 +704,7 @@ async def settings_query(bot, query):
   elif type=="adduserbot":
      await query.message.delete()
      res = await CLIENT.add_session(bot, query)
-     if res == "LIMIT_REACHED": return await bot.send_message(user_id, "<b>Limit reached: You can only add up to 2 Userbots.</b>")
+     if res == "LIMIT_REACHED": return await bot.send_message(user_id, "<b>Limit reached: You can only add up to 8 Userbots.</b>")
      if res == "EXISTS": return await bot.send_message(user_id, "<b>This session has already been added.</b>")
      if res != True: return
      await bot.send_message(user_id, "<b>Session successfully added to db</b>\nGo back to /settings to configure.")
@@ -749,7 +749,7 @@ async def settings_query(bot, query):
      
      try:
          await query.message.edit_text(
-           f"<b><u>Mʏ Cʜᴀɴɴᴇʟs</u></b>  (<code>{ch_count}/200</code>)\n\n"
+           f"<b><u>Mʏ Cʜᴀɴɴᴇʟs</u></b>  (<code>{ch_count}/250</code>)\n\n"
            "<b>Manage your source / destination chats here.</b>\n"
            "<i>Tip: Use Sync Names to refresh channel titles from Telegram.</i>\n\n"
            f"<b>Page:</b> {page + 1}/{(max(0, ch_count - 1) // PER_PAGE) + 1}",
