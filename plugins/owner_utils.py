@@ -71,6 +71,7 @@ FEATURE_LABELS = {
     "cleaner":     "Cʟᴇᴀɴᴇʀ",
     "batch_links": "Bᴀᴛᴄʜ Lɪɴᴋs",
     "url_bypass":  "Uʀʟ Bʏᴘᴀss",
+    "join_requests": "Jᴏɪɴ Rᴇǫᴜᴇsᴛs",
     "normal_fwd":  "Nᴏʀᴍᴀʟ Fᴏʀᴡᴀʀᴅ",
 }
 

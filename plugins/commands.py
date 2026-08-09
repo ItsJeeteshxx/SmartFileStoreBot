@@ -47,6 +47,9 @@ async def _main_buttons(user_id: int):
         ],
         [
             InlineKeyboardButton('• Url Bypass •',   callback_data='ub#bypass'),
+            InlineKeyboardButton('• Requests •',     callback_data='req#main'),
+        ],
+        [
             InlineKeyboardButton('• About •',          callback_data='about'),
         ],
     ]
