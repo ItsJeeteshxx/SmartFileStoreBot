@@ -3784,7 +3784,13 @@ async def create_cashfree_order(payload: dict):
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
     callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
-    return_url = f"{callback_url}?order_id={order_id}"
+    return_url_base = cfg.get("cashfree_return_url", "https://isaythanks.vercel.app").strip()
+    if "order_id=" in return_url_base:
+        return_url = return_url_base
+    elif "?" in return_url_base:
+        return_url = f"{return_url_base}&order_id={order_id}"
+    else:
+        return_url = f"{return_url_base}?order_id={order_id}"
     
     cf_payload = {
         "order_id": order_id,
@@ -4154,158 +4160,21 @@ async def cashfree_webhook(request: Request):
     if order_id:
         res = await verify_cashfree_payment(order_id=order_id)
         if request.method == "GET":
-            if res.get("success"):
-                success_html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Successful</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    body {
-      background: #090d16;
-      color: #f8fafc;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      padding: 20px;
-      text-align: center;
-    }
-    .card {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 20px;
-      padding: 40px 24px;
-      max-width: 440px;
-      width: 100%;
-      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
-    }
-    .icon {
-      font-size: 52px;
-      margin-bottom: 20px;
-    }
-    h2 {
-      font-size: 1.5rem;
-      font-weight: 700;
-      margin-bottom: 12px;
-      color: #10b981;
-    }
-    p {
-      font-size: 0.95rem;
-      color: #9ca3af;
-      line-height: 1.6;
-      margin-bottom: 28px;
-    }
-    .btn {
-      display: inline-block;
-      padding: 12px 30px;
-      background: #10b981;
-      color: #fff;
-      font-size: 0.95rem;
-      font-weight: 600;
-      border-radius: 10px;
-      text-decoration: none;
-      border: none;
-      cursor: pointer;
-      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
-      transition: all 0.2s ease;
-    }
-    .btn:hover {
-      background: #059669;
-      transform: translateY(-1px);
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="icon">✅</div>
-    <h2>Payment Successful!</h2>
-    <p>Your payment has been successful. Now please check your purchase on the store.</p>
-    <button onclick="window.Telegram?.WebApp?.close() || window.close()" class="btn">Return to App</button>
-  </div>
-</body>
-</html>"""
-                return Response(content=success_html, media_type="text/html")
+            from fastapi.responses import RedirectResponse
+            target_return_base = "https://isaythanks.vercel.app"
+            arya_db = getattr(app.state, "db", None)
+            if arya_db:
+                cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+                target_return_base = cfg.get("cashfree_return_url", "https://isaythanks.vercel.app").strip()
+            
+            if "order_id=" in target_return_base:
+                target_redirect = target_return_base
+            elif "?" in target_return_base:
+                target_redirect = f"{target_return_base}&order_id={order_id}"
             else:
-                pending_html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Pending</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    body {
-      background: #090d16;
-      color: #f8fafc;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      padding: 20px;
-      text-align: center;
-    }
-    .card {
-      background: #111827;
-      border: 1px solid #1f2937;
-      border-radius: 20px;
-      padding: 40px 24px;
-      max-width: 440px;
-      width: 100%;
-      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
-    }
-    .icon {
-      font-size: 52px;
-      margin-bottom: 20px;
-    }
-    h2 {
-      font-size: 1.5rem;
-      font-weight: 700;
-      margin-bottom: 12px;
-      color: #f59e0b;
-    }
-    p {
-      font-size: 0.95rem;
-      color: #9ca3af;
-      line-height: 1.6;
-      margin-bottom: 28px;
-    }
-    .btn {
-      display: inline-block;
-      padding: 12px 30px;
-      background: #4b5563;
-      color: #fff;
-      font-size: 0.95rem;
-      font-weight: 600;
-      border-radius: 10px;
-      text-decoration: none;
-      border: none;
-      cursor: pointer;
-      box-shadow: 0 4px 12px rgba(75, 85, 99, 0.3);
-      transition: all 0.2s ease;
-    }
-    .btn:hover {
-      background: #374151;
-      transform: translateY(-1px);
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="icon">⚠️</div>
-    <h2>Payment Pending</h2>
-    <p>Payment verification is in progress. Please check your purchase on the store in a few moments.</p>
-    <button onclick="window.Telegram?.WebApp?.close() || window.close()" class="btn">Return to App</button>
-  </div>
-</body>
-</html>"""
-                return Response(content=pending_html, media_type="text/html")
+                target_redirect = f"{target_return_base}?order_id={order_id}"
+                
+            return RedirectResponse(url=target_redirect, status_code=307)
                 
     return {"status": "OK"}
 
@@ -10721,6 +10590,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
                 "cashfree_secret_key": cfg.get("cashfree_secret_key", ""),
                 "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback"),
+                "cashfree_return_url": cfg.get("cashfree_return_url", "https://isaythanks.vercel.app"),
                 "cashfree_env": cfg.get("cashfree_env", "sandbox"),
                 "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
                 "dodopayments_api_key": cfg.get("dodopayments_api_key", ""),
@@ -10840,6 +10710,8 @@ async def update_admin_settings(payload: dict):
             update_fields["cashfree_secret_key"] = str(payload["cashfree_secret_key"]).strip()
         if "cashfree_callback_url" in payload:
             update_fields["cashfree_callback_url"] = str(payload["cashfree_callback_url"]).strip()
+        if "cashfree_return_url" in payload:
+            update_fields["cashfree_return_url"] = str(payload["cashfree_return_url"]).strip()
         if "cashfree_env" in payload:
             update_fields["cashfree_env"] = str(payload["cashfree_env"]).strip()
 
