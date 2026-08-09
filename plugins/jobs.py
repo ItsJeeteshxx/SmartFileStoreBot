@@ -1687,9 +1687,7 @@ async def _run_job(job_id: str, user_id: int):
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
 
-                # ── ALWAYS-ON: filename-based duplicate guard ─────────────────
-                # Block forwarding if a file with the exact same name was already
-                # forwarded in this live session, regardless of skip_duplicates.
+                # Extract filename for duplicate check
                 _fn_key = None
                 if getattr(msg, 'media', None):
                     _media_attr = getattr(msg.media, 'value', str(msg.media))
@@ -1700,27 +1698,20 @@ async def _run_job(job_id: str, user_id: int):
                             _fn_raw = getattr(_media_obj[-1], 'file_name', None)
                         if _fn_raw:
                             _fn_key = _fn_raw.strip().lower()
-                
-                # Use DB state to survive server restarts!
-                seen_names_db = fresh.get("seen_file_names") or []
-                if _fn_key and (_fn_key in _live_fn_seen or _fn_key in seen_names_db):
-                    logger.info(
-                        f"[Job {job_id}] Blocking duplicate filename '{_fn_key}' "
-                        f"(msg {msg.id}) — already forwarded in this session."
-                    )
-                    last_seen = max(last_seen, msg.id)
-                    await _update_job(job_id, last_seen_id=last_seen)
-                    continue
 
-                # ── Optional: file_unique_id-based dedup (exact binary match) ─
-                uniq_id = _get_unique_id(msg) if skip_dupes else None
-                _ep_nums_l = _extract_ep_nums_from_msg(msg)
+                # Deduplication Guard (Only active when skip_dupes is True or in current live session batch)
                 if skip_dupes:
-                    seen_names = fresh.get("seen_file_names") or []
-                    seen_ids = fresh.get("seen_file_ids") or []
+                    seen_names_db = fresh.get("seen_file_names") or []
+                    seen_ids_db = fresh.get("seen_file_ids") or []
+                    uniq_id = _get_unique_id(msg)
+                    _ep_nums_l = _extract_ep_nums_from_msg(msg)
                     _ep_hit_l = bool(_ep_nums_l and _ep_nums_l & _dest_ep_cache.get(job_id, set()))
-                    if _ep_hit_l or (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
-                        logger.debug(f"[Job {job_id}] Live: skip dup ep={_ep_nums_l} id={uniq_id} fn={_fn_key}")
+                    
+                    if _ep_hit_l or (uniq_id and uniq_id in seen_ids_db) or (_fn_key and (_fn_key in _live_fn_seen or _fn_key in seen_names_db)):
+                        logger.info(
+                            f"[Job {job_id}] Skipping duplicate file '{_fn_key or uniq_id}' "
+                            f"(msg {msg.id}) — already forwarded."
+                        )
                         last_seen = max(last_seen, msg.id)
                         await _update_job(job_id, last_seen_id=last_seen)
                         continue

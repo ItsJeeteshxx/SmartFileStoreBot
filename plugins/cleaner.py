@@ -854,8 +854,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             raise FileNotFoundError("Downloaded path does not exist")
 
                     except FloodWait as fw:
-                        logger.warning(f"[Cleaner {job_id}] FloodWait during download (attempt {attempt}): sleeping for {fw.value + 5}s...")
-                        await asyncio.sleep(fw.value + 5)
+                        fw_sleep = min(fw.value + 5, 180)  # Max 3-min sleep per attempt to prevent 45-min deadlock
+                        logger.warning(f"[Cleaner {job_id}] FloodWait {fw.value}s during download (attempt {attempt}): sleeping for {fw_sleep}s (capped)...")
+                        # Try rotating client from worker pool if available
+                        try:
+                            alt = _CLIENT.get_idle_client()
+                            if alt and alt != client and getattr(alt, 'is_connected', False):
+                                client = alt
+                                logger.info(f"[Cleaner {job_id}] Switched to idle worker client for mid={m.id}")
+                        except Exception: pass
+                        await asyncio.sleep(fw_sleep)
+                        attempt += 1
                         continue
 
                     except (asyncio.TimeoutError, Exception) as e:

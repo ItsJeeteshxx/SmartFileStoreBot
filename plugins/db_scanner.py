@@ -482,30 +482,36 @@ async def _batch_indexer_task():
             _index_buffer.clear()
             
         for chat_id, entries_dict in to_process.items():
-            try:
-                # 1. Fetch full index once
-                existing = await db.get_channel_index(chat_id)
-                if not existing:
-                    continue
+            for retry_attempt in range(1, 4):
+                try:
+                    # 1. Fetch full index once
+                    existing = await db.get_channel_index(chat_id)
+                    if not existing:
+                        break
 
-                current_entries = existing.get('entries', [])
-                
-                # 2. Merge existing with new (overwriting dupes)
-                current_dict = {e['msg_id']: e for e in current_entries}
-                current_dict.update(entries_dict)
-                
-                # 3. Sort chronologically
-                new_entries = sorted(list(current_dict.values()), key=lambda x: x['msg_id'])
-                
-                # 4. Save bulk update
-                await db.save_channel_index(
-                    chat_id, 
-                    new_entries, 
-                    meta=existing.get('meta', {})
-                )
-                logger.info(f"[scanner] Batch updated {len(entries_dict)} msgs for DB chat {chat_id}")
-            except Exception as e:
-                logger.error(f"[scanner] Batch auto-index failed for {chat_id}: {e}")
+                    current_entries = existing.get('entries', [])
+                    
+                    # 2. Merge existing with new (overwriting dupes)
+                    current_dict = {e['msg_id']: e for e in current_entries}
+                    current_dict.update(entries_dict)
+                    
+                    # 3. Sort chronologically
+                    new_entries = sorted(list(current_dict.values()), key=lambda x: x['msg_id'])
+                    
+                    # 4. Save bulk update
+                    await db.save_channel_index(
+                        chat_id, 
+                        new_entries, 
+                        meta=existing.get('meta', {})
+                    )
+                    logger.info(f"[scanner] Batch updated {len(entries_dict)} msgs for DB chat {chat_id}")
+                    break
+                except Exception as e:
+                    if retry_attempt < 3:
+                        logger.warning(f"[scanner] Batch auto-index attempt {retry_attempt} failed for {chat_id} ({e}): retrying in 2s...")
+                        await asyncio.sleep(2)
+                    else:
+                        logger.error(f"[scanner] Batch auto-index failed for {chat_id} after 3 attempts: {e}")
 
 async def _try_auto_index(client, message):
     """Called for every new message. Batched in memory to prevent event-loop choking."""
