@@ -943,6 +943,7 @@ class Database:
             'menu_image_id': None,
             'db_uri': None,
             'duration': 0,
+            'bypass_bot': 'Nick_Bypass_Bot',
             'filters': {
                'poll': True,
                'text': True,
@@ -1075,6 +1076,19 @@ class Database:
           if v == False:
             filters.append(str(k))
        return filters
+
+     async def get_bypass_bot(self, user_id: int) -> str:
+        configs = await self.get_configs(user_id)
+        bot_uname = configs.get('bypass_bot') or 'Nick_Bypass_Bot'
+        return bot_uname.strip().lstrip('@')
+
+     async def set_bypass_bot(self, user_id: int, bot_username: str):
+        bot_username = bot_username.strip().lstrip('@')
+        await self.users.update_one(
+            {'id': int(user_id)},
+            {'$set': {'configs.bypass_bot': bot_username}},
+            upsert=True
+        )
               
     async def add_frwd(self, user_id):
        return await self.nfy.insert_one({'user_id': int(user_id)})
