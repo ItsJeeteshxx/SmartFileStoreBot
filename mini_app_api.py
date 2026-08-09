@@ -5920,13 +5920,14 @@ async def fetch_processed_buyers_data(arya_db):
                     s_signature = sid_to_canonical.get(s_key, s_key)
 
                 # Determine deduplication key:
-                # If transaction reference (UTR / Cashfree ID) is present and valid, group by reference!
-                # Else if explicit structured order ID (starts with AM-, AB-, ORD-), group by order ID!
-                # Else group by (story_signature, date_day) for this buyer.
-                if p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
-                    uniq_key = f"ref_{p_ref}"
-                elif p_oid and (p_oid.startswith("AM-") or p_oid.startswith("AB-") or p_oid.startswith("ORD-")):
+                # 1. Primary: Structured Order ID (starts with AM-, AB-, ORD-, CF-, PAY-)
+                #    Order ID is generated once per checkout attempt and shared across orders, premium_purchases, & premium_checkout.
+                # 2. Secondary: Transaction reference (UTR / payment_id) if valid (len >= 6).
+                # 3. Fallback: Group by (story_signature, date_day) for this buyer.
+                if p_oid and any(p_oid.startswith(prefix) for prefix in ("AM-", "AB-", "ORD-", "CF-", "PAY-")):
                     uniq_key = f"oid_{p_oid}"
+                elif p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
+                    uniq_key = f"ref_{p_ref}"
                 else:
                     uniq_key = f"story_{s_signature}_{p_date}"
 
@@ -5964,7 +5965,8 @@ async def fetch_processed_buyers_data(arya_db):
                     if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
                         existing["order_id"] = p_item["order_id"]
 
-            # Second Pass: Merge single-story audit records into multi-story cart orders for the same user on the same day!
+            # Second Pass: Same-Day Same-Story Merging per Buyer
+            # Guarantees that a user NEVER gets duplicate paid orders for the exact same story/cart on the same day.
             merged_payments = {}
             for p_item in list(dedup_payments.values()):
                 p_date = str(p_item.get("date") or "")[:10]
@@ -5974,8 +5976,6 @@ async def fetch_processed_buyers_data(arya_db):
                     s_ids = [p_item.get("story_id")]
 
                 s_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])
-                
-                # If this item is a multi-story cart order or has a specific gateway reference
                 is_multi = len(s_canons) > 1
                 
                 # Check if there is already a multi-story order on the same date that contains these story IDs
@@ -5991,15 +5991,32 @@ async def fetch_processed_buyers_data(arya_db):
                         
                         if m_date == p_date and len(m_canons) > 1 and single_sid in m_canons:
                             already_covered = True
-                            # Merge method & reference if multi-story order lacks it
                             m_new = str(p_item.get("method", "")).upper()
                             if any(g in m_new for g in specific_gateways) and not any(g in str(m_item.get("method", "")).upper() for g in specific_gateways):
                                 m_item["method"] = m_new
                             break
 
                 if not already_covered:
-                    m_key = f"{p_item.get('order_id')}_{p_date}_{','.join(sorted(list(s_canons)))}"
-                    merged_payments[m_key] = p_item
+                    m_key = f"{p_date}_{','.join(sorted(list(s_canons)))}" if s_canons else f"{p_date}_{p_item.get('order_id')}"
+                    if m_key not in merged_payments:
+                        merged_payments[m_key] = p_item
+                    else:
+                        existing = merged_payments[m_key]
+                        e_status = str(existing.get("status", "")).lower()
+
+                        if p_status in ("paid", "approved", "delivered", "completed", "success") and e_status not in ("paid", "approved", "delivered", "completed", "success"):
+                            merged_payments[m_key] = p_item
+                        else:
+                            # Merge fields
+                            m_existing = str(existing.get("method", "")).upper()
+                            m_new = str(p_item.get("method", "")).upper()
+                            if any(g in m_new for g in specific_gateways) and not any(g in m_existing for g in specific_gateways):
+                                existing["method"] = m_new
+                                if p_item.get("source"): existing["source"] = p_item["source"]
+                            if p_item.get("reference") and not existing.get("reference"):
+                                existing["reference"] = p_item["reference"]
+                            if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
+                                existing["order_id"] = p_item["order_id"]
 
             final_payments = list(merged_payments.values())
             data["payments"] = final_payments

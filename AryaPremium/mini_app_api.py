@@ -7,13 +7,8 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 
 # ── CRITICAL: Load .env into os.environ BEFORE importing Config ───
 # This must use __file__ (absolute script path), NOT the current working dir.
-import sys
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
-if _SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPT_DIR)
-if _PARENT_DIR not in sys.path:
-    sys.path.insert(0, _PARENT_DIR)
 
 def _inject_env(filepath):
     """Read a .env file and inject values into os.environ (only if key not already set)."""
@@ -35,7 +30,7 @@ _inject_env(os.path.join(_SCRIPT_DIR, ".env"))
 
 import uuid
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from purchase_dm_helper import send_purchase_success_dm
 import httpx
 try:
@@ -249,19 +244,8 @@ def is_admin(telegram_id: str = "") -> bool:
     return False
 
 
-logger = logging.getLogger("mini_app_api")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    _ch = logging.StreamHandler(sys.stdout)
-    _ch.setLevel(logging.INFO)
-    _ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-    logger.addHandler(_ch)
-
-try:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)
-except Exception:
-    pass
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Use AryaPremium's own database module (already tested, working)
@@ -286,190 +270,103 @@ CLEANUP_INTERVAL_SECS = 3600  # Check every 1 hour
 
 
 async def _get_poster_bot_config(db_conn) -> dict:
-    if not db_conn or getattr(db_conn, "db", None) is None:
+    if not db_conn:
         return {}
-    try:
-        cfg = await db_conn.db.mini_app_config.find_one({"_id": "poster_bot_config"})
-        if not cfg:
-            cfg = await db_conn.db.mini_app_config.find_one({"_key": "poster_bot_config"})
-        if not cfg:
-            cfg = await db_conn.db.mini_app_config.find_one({"channel_id": {"$exists": True, "$ne": ""}})
-        if not cfg:
-            cfg = await db_conn.db.mini_app_config.find_one({"poster_mode": {"$exists": True}})
-        if not cfg:
-            cfg = {"enabled": True, "post_interval_mins": 2.0}
-        return cfg or {}
-    except Exception as e:
-        logger.warning(f"Error fetching poster_bot_config: {e}")
-        return {"enabled": True, "post_interval_mins": 2.0}
+    cfg = await db_conn.db.mini_app_config.find_one({"_id": "poster_bot_config"})
+    if not cfg:
+        cfg = await db_conn.db.mini_app_config.find_one({"_key": "poster_bot_config"})
+    return cfg or {}
 
+async def _poster_bot_publisher_worker(arya_db):
+    """
+    Background daemon: publishes stories to target channel sequentially on rotation.
+    Checks config every 60s.
+    """
+    import os
+    from AryaPremium.config import Config
+    from AryaPremium.poster_helper import send_story_to_channel
 
-def _handle_background_task_result(task: asyncio.Task):
-    """Callback to log any uncaught exceptions in background tasks."""
-    try:
-        if not task.cancelled() and task.exception():
-            logger.error(f"❌ [PosterBot Background Task CRASHED]: {task.exception()}", exc_info=task.exception())
-    except Exception as e:
-        logger.error(f"Error checking background task result: {e}")
-
-def _run_poster_bot_in_thread(main_loop, arya_db):
-    """PosterBot disabled per admin request."""
-    return
-
-async def _do_poster_bot_tick(arya_db, first_run: bool) -> dict:
-    """PosterBot disabled per admin request."""
-    return {"next_sleep_secs": 3600}
-
-    try:
-        # Import helper
+    while True:
         try:
-            from AryaPremium.poster_helper import send_story_to_channel
-        except Exception:
-            from poster_helper import send_story_to_channel
+            await asyncio.sleep(60)
+            cfg = await _get_poster_bot_config(arya_db)
+            if not cfg or not cfg.get("enabled"):
+                continue
 
-        try:
-            from AryaPremium.config import Config
-        except Exception:
-            from config import Config
+            last_posted = cfg.get("last_posted_at")
+            interval_mins = int(cfg.get("post_interval_mins") or 30)
 
-        if not arya_db or getattr(arya_db, "db", None) is None:
-            logger.warning("[PosterBot Tick] ⏳ DB not ready yet, skipping tick")
-            return {"next_sleep_secs": 10}
-
-        cfg = await _get_poster_bot_config(arya_db)
-        if not cfg:
-            logger.info("[PosterBot Tick] ⚠️ No poster_bot_config in MongoDB. Configure in Admin Panel → Poster Bot.")
-            return {"next_sleep_secs": 15}
-
-        is_enabled = bool(cfg.get("enabled", True))
-        if not is_enabled:
-            logger.info("[PosterBot Tick] ⏸️ DISABLED — enable in Admin Panel → Poster Bot")
-            return {"next_sleep_secs": 30}
-
-        b_token = str(cfg.get("bot_token") or "").strip()
-        if not b_token:
-            b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None) or ""
-        target_channel = str(cfg.get("channel_id") or "").strip()
-        if not target_channel:
-            # Fallback: check last post in poster_bot_posts
-            try:
-                last_post_doc = await arya_db.db.poster_bot_posts.find_one({"channel_id": {"$exists": True, "$ne": ""}}, sort=[("posted_at", -1)])
-                if last_post_doc:
-                    target_channel = str(last_post_doc.get("channel_id", "")).strip()
-            except Exception:
-                pass
-
-        if not b_token or not target_channel:
-            logger.warning(f"[PosterBot Tick] ⚠️ Missing config — token={bool(b_token)}, channel='{target_channel}'. Configure in Admin Panel → Poster Bot.")
-            return {"next_sleep_secs": 30}
-
-
-        raw_interval = cfg.get("post_interval_mins") if cfg.get("post_interval_mins") is not None else (cfg.get("post_interval") if cfg.get("post_interval") is not None else cfg.get("interval_mins"))
-        try:
-            interval_mins = float(raw_interval) if raw_interval is not None and str(raw_interval).strip() != "" else 30.0
-            if interval_mins <= 0:
-                interval_mins = 2.0
-        except Exception:
-            interval_mins = 30.0
-        now = datetime.now(timezone.utc)
-        last_posted = cfg.get("last_posted_at")
-
-        # Decide if we should post now
-        should_post = False
-        if first_run or not last_posted:
-            logger.info(f"[PosterBot Tick] 🚀 First-run trigger! interval={interval_mins:.1f}m → channel={target_channel}")
-            should_post = True
-        else:
-            if isinstance(last_posted, str):
-                try:
-                    last_posted = datetime.fromisoformat(last_posted.replace("Z", "+00:00"))
-                except Exception:
-                    last_posted = None
-            if last_posted and isinstance(last_posted, datetime):
+            now = datetime.now(timezone.utc)
+            if last_posted:
+                if isinstance(last_posted, str):
+                    last_posted = datetime.fromisoformat(last_posted)
                 if last_posted.tzinfo is None:
                     last_posted = last_posted.replace(tzinfo=timezone.utc)
                 elapsed_mins = (now - last_posted).total_seconds() / 60.0
-                remaining_mins = interval_mins - elapsed_mins
-                if elapsed_mins >= interval_mins or elapsed_mins < 0:
-                    logger.info(f"[PosterBot Tick] 🚀 Interval elapsed! {elapsed_mins:.1f}m >= {interval_mins:.1f}m → POSTING NOW")
-                    should_post = True
-                else:
-                    logger.info(f"[PosterBot Tick] ⏳ Not yet. {elapsed_mins:.1f}/{interval_mins:.1f}m elapsed. Next post in ~{remaining_mins:.1f}m")
-                    # Sleep until next post time (max 60s ticks for responsiveness)
-                    return {"next_sleep_secs": min(60, max(15, int(remaining_mins * 60)))}
-            else:
-                logger.info("[PosterBot Tick] 🚀 No valid last_posted_at → POSTING NOW")
-                should_post = True
+                if elapsed_mins < interval_mins:
+                    continue
 
-        if not should_post:
-            return {"next_sleep_secs": 15}
+            # Sequential rotation:
+            stories_cursor = arya_db.db.premium_stories.find({"visibility": "available"}).sort("_id", 1)
+            stories = [s async for s in stories_cursor]
+            if not stories:
+                continue
 
-        # Fetch story by rotation index
-        total = await arya_db.db.premium_stories.count_documents({})
-        if total == 0:
-            logger.warning("[PosterBot Tick] ⚠️ No stories in DB!")
-            return {"next_sleep_secs": 60}
+            rot_idx = int(cfg.get("rotation_index") or 0)
+            if rot_idx >= len(stories):
+                rot_idx = 0
 
-        rot_idx = int(cfg.get("rotation_index") or 0) % total
-        story = await arya_db.db.premium_stories.find_one({}, skip=rot_idx)
-        if not story:
-            # fallback: get first story
-            story = await arya_db.db.premium_stories.find_one({})
+            target_story = stories[rot_idx]
 
-        if not story:
-            logger.warning("[PosterBot Tick] ⚠️ Could not fetch story!")
-            return {"next_sleep_secs": 30}
+            # Resolve bot token
+            b_token = str(cfg.get("bot_token") or "").strip()
+            if not b_token:
+                b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", None)
 
-        logger.info(f"[PosterBot Tick] 📤 Posting story {rot_idx+1}/{total}: '{story.get('story_name_en')}' → {target_channel}")
+            target_channel = str(cfg.get("channel_id") or "").strip()
+            if not b_token or not target_channel:
+                continue
 
-        res = await send_story_to_channel(
-            b_token, target_channel, story,
-            {
-                "poster_mode": "bot_api",
-                "watermark_enabled": cfg.get("watermark_enabled", True),
-                "watermark_position": cfg.get("watermark_position", "bottom_right"),
-                "watermark_opacity": float(cfg.get("watermark_opacity") or 0.8)
-            }
-        )
-
-        if res.get("success"):
-            msg_id = res.get("message_id")
-            chn_id = res.get("channel_id")
-            del_hours = int(cfg.get("delete_delay_hours") or 72)
-            next_rot = (rot_idx + 1) % total
-
-            await arya_db.db.poster_bot_posts.insert_one({
-                "message_id": msg_id, "channel_id": chn_id,
-                "story_id": str(story["_id"]),
-                "story_name": story.get("story_name_en") or "Story",
-                "posted_at": now,
-                "delete_at": now + timedelta(hours=del_hours),
-                "deleted": False
-            })
-            await arya_db.db.mini_app_config.update_one(
-                {"_id": "poster_bot_config"},
-                {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
-                upsert=True
+            res = await send_story_to_channel(
+                b_token,
+                target_channel,
+                target_story,
+                {
+                    "watermark_enabled": cfg.get("watermark_enabled", True),
+                    "watermark_position": cfg.get("watermark_position", "bottom_right"),
+                    "watermark_opacity": cfg.get("watermark_opacity", 0.8)
+                }
             )
-            logger.info(f"[PosterBot Tick] ✅ AUTO-POST SUCCESS! '{story.get('story_name_en')}', msg_id={msg_id}, next_idx={next_rot}/{total}")
-            return {"next_sleep_secs": max(15, int(interval_mins * 60))}
-        else:
-            logger.error(f"[PosterBot Tick] ❌ POST FAILED: {res.get('error')}")
-            return {"next_sleep_secs": 30}
 
-    except Exception as e:
-        logger.error(f"[PosterBot Tick] ❌ Exception in tick: {e}", exc_info=True)
-        return {"next_sleep_secs": 15}
+            if res.get("success"):
+                msg_id = res.get("message_id")
+                chn_id = res.get("channel_id")
 
+                del_hours = int(cfg.get("delete_delay_hours") or 72)
+                post_log = {
+                    "message_id": msg_id,
+                    "channel_id": chn_id,
+                    "story_id": str(target_story["_id"]),
+                    "story_name": target_story.get("story_name_en") or target_story.get("title") or "Story",
+                    "posted_at": now,
+                    "delete_at": now + timedelta(hours=del_hours),
+                    "deleted": False
+                }
+                await arya_db.db.poster_bot_posts.insert_one(post_log)
 
-# Legacy wrapper (kept for any remaining create_task calls)
-async def _poster_bot_publisher_worker(arya_db):
-    """Legacy no-op wrapper. Publisher now runs via _run_poster_bot_in_thread."""
-    logger.info("[PosterBot] Legacy _poster_bot_publisher_worker called (no-op, thread handles this)")
-    await asyncio.sleep(99999)
-
-
-
+                next_rot = (rot_idx + 1) % len(stories)
+                await arya_db.db.mini_app_config.update_one(
+                    {"_id": "poster_bot_config"},
+                    {"$set": {
+                        "_key": "poster_bot_config",
+                        "last_posted_at": now,
+                        "rotation_index": next_rot
+                    }},
+                    upsert=True
+                )
+                logger.info(f"[PosterBot] Auto posted story: name={target_story.get('story_name_en')}, msg_id={msg_id}")
+        except Exception as e:
+            logger.error(f"[PosterBot] Publisher error: {e}")
 
 async def _poster_bot_cleanup_worker(arya_db):
     """
@@ -477,12 +374,7 @@ async def _poster_bot_cleanup_worker(arya_db):
     Checks DB logs every 5 minutes.
     """
     import os
-    try:
-        from AryaPremium.config import Config
-    except ImportError:
-        from config import Config
-
-    logger.info("🚀 [PosterBot Daemon] Cleanup worker daemon STARTED & RUNNING!")
+    from AryaPremium.config import Config
 
     while True:
         try:
@@ -675,8 +567,6 @@ async def lifespan(app: FastAPI):
                         logger.info(f"[OrderCounter] Counter already at {current_seq}, no update needed")
                 else:
                     logger.info("[OrderCounter] No existing orders found, counter starts at 1")
-                # Poster Bot background thread disabled per admin request
-                logger.info("ℹ️ Poster Bot background workers disabled")
             except Exception as counter_err:
                 logger.warning(f"Failed to initialize order counter: {counter_err}")
 
@@ -698,35 +588,13 @@ async def lifespan(app: FastAPI):
         except Exception as worker_err:
             logger.warning(f"Failed to launch stale orders cleanup worker: {worker_err}")
 
-        # Launch Poster Bot publisher in a DEDICATED THREAD
-        # Thread uses time.sleep() + asyncio.run_coroutine_threadsafe() to submit
-        # DB/HTTP work back to the MAIN event loop where motor is correctly attached.
+        # Launch Poster Bot background workers
         try:
-            import threading as _threading
-            if not hasattr(app.state, "background_tasks"):
-                app.state.background_tasks = set()
-
-            # CRITICAL: capture the running event loop NOW (inside async context)
-            _main_loop = asyncio.get_running_loop()
-
-            poster_thread = _threading.Thread(
-                target=_run_poster_bot_in_thread,
-                args=(_main_loop, arya_db),   # Pass main_loop so thread can submit work back
-                name="PosterBotPublisher",
-                daemon=True  # Dies with main process
-            )
-            poster_thread.start()
-            app.state.poster_bot_thread = poster_thread
-
-            # Cleanup worker as asyncio task (lightweight, infrequent)
-            t_cln = asyncio.create_task(_poster_bot_cleanup_worker(arya_db))
-            app.state.background_tasks.add(t_cln)
-            t_cln.add_done_callback(_handle_background_task_result)
-            t_cln.add_done_callback(lambda t: app.state.background_tasks.discard(t))
-
-            logger.info("✅ Poster Bot: publisher THREAD started + cleanup asyncio task launched")
+            asyncio.create_task(_poster_bot_publisher_worker(arya_db))
+            asyncio.create_task(_poster_bot_cleanup_worker(arya_db))
+            logger.info("✅ Poster Bot background publisher and cleanup workers started")
         except Exception as worker_err:
-            logger.warning(f"Failed to launch Poster Bot workers: {worker_err}")
+            logger.warning(f"Failed to launch Poster Bot background workers: {worker_err}")
             
     except Exception as e:
         logger.error(f"DB connect failed: {e}")
@@ -1645,7 +1513,7 @@ async def create_payment_link(payload: dict):
             "description": ", ".join([s.get("story_name_en") or s.get("title") or s.get("story_name_hi") or "Arya Premium Content" for s in valid_stories])[:200] or "Arya Premium Content",
             "customer": {
                 "name": username or f"User {telegram_id}",
-                "email": f"user{telegram_id}@aryapremium.store"
+                "email": f"user{telegram_id}@sliceurl.com"
             },
             "notify": {"sms": False, "email": False},
             "reminder_enable": False,
@@ -3195,7 +3063,9 @@ async def create_paytm_order(payload: dict):
     domain = "securegw-stage.paytm.in" if is_sandbox else "securegw.paytm.in"
     website = cfg.get("paytm_website", "WEBSTAGING" if is_sandbox else "DEFAULT").strip()
     
-    callback_url = cfg.get("paytm_callback_url", "https://aryapremium.store/api/paytm-callback").strip()
+    callback_url = cfg.get("paytm_callback_url", "https://sliceurl.app/api/paytm-callback").strip()
+    if "aryapremium.store" in callback_url:
+        callback_url = callback_url.replace("aryapremium.store", "sliceurl.app")
     
     body = {
         "requestType": "Payment",
@@ -3910,11 +3780,11 @@ async def create_cashfree_order(payload: dict):
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
     raw_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
     customer_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip() or "Customer"
-    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
+    customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
     customer_phone = payload.get("phone", "").strip() or "9999999999"
     
-    callback_url = "https://aryapremium.store/api/cashfree-callback"
-    return_url = "https://isaythanks.vercel.app"
+    callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
+    return_url = f"{callback_url}?order_id={order_id}"
     
     cf_payload = {
         "order_id": order_id,
@@ -4282,11 +4152,161 @@ async def cashfree_webhook(request: Request):
     )
     
     if order_id:
-        await verify_cashfree_payment(order_id=order_id)
-
-    if request.method == "GET":
-        return RedirectResponse(url="https://isaythanks.vercel.app", status_code=303)
-        
+        res = await verify_cashfree_payment(order_id=order_id)
+        if request.method == "GET":
+            if res.get("success"):
+                success_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Successful</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      background: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 40px 24px;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    .icon {
+      font-size: 52px;
+      margin-bottom: 20px;
+    }
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #10b981;
+    }
+    p {
+      font-size: 0.95rem;
+      color: #9ca3af;
+      line-height: 1.6;
+      margin-bottom: 28px;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 30px;
+      background: #10b981;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      background: #059669;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h2>Payment Successful!</h2>
+    <p>Your payment has been successful. Now please check your purchase on the store.</p>
+    <button onclick="window.Telegram?.WebApp?.close() || window.close()" class="btn">Return to App</button>
+  </div>
+</body>
+</html>"""
+                return Response(content=success_html, media_type="text/html")
+            else:
+                pending_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Pending</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      background: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      padding: 40px 24px;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    .icon {
+      font-size: 52px;
+      margin-bottom: 20px;
+    }
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #f59e0b;
+    }
+    p {
+      font-size: 0.95rem;
+      color: #9ca3af;
+      line-height: 1.6;
+      margin-bottom: 28px;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 30px;
+      background: #4b5563;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(75, 85, 99, 0.3);
+      transition: all 0.2s ease;
+    }
+    .btn:hover {
+      background: #374151;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">⚠️</div>
+    <h2>Payment Pending</h2>
+    <p>Payment verification is in progress. Please check your purchase on the store in a few moments.</p>
+    <button onclick="window.Telegram?.WebApp?.close() || window.close()" class="btn">Return to App</button>
+  </div>
+</body>
+</html>"""
+                return Response(content=pending_html, media_type="text/html")
+                
     return {"status": "OK"}
 
 
@@ -4359,7 +4379,8 @@ async def create_dodopayments_order(payload: dict):
     order_seq = int(time.time() * 1000) % 100000
     order_id = f"AM-{tg_id}-{datetime.now().strftime('%d%m')}-{order_seq}"
 
-    return_url = f"https://isaythanks.vercel.app?order_id={order_id}&provider=dodopayments"
+    # Return URL strictly using sliceurl.app as required by user
+    return_url = f"https://sliceurl.app/AryaPremium/#/payment-processing?order_id={order_id}&cf_order_id={order_id}&provider=dodopayments"
 
     dodo_payload = {
         "billing": {
@@ -5875,20 +5896,40 @@ async def fetch_processed_buyers_data(arya_db):
                 final_payments.append(g)
 
             # ── Smart Payment Deduplication Pass ──
-            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI').
-            # Groups payments by (canonical_story_key, date_day) per user and keeps 1 clean canonical payment record!
+            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI' or multi-story cart duplicates).
+            # Groups payments by (canonical_story_signature, date_day) per user and keeps 1 clean canonical payment record!
             dedup_payments = {}
             specific_gateways = ("CASHFREE", "CASHFREE_UPI", "UPI_MANUAL", "UPI_MANUAL_MINIAPP", "RAZORPAY", "OXAPAY", "DODO_PAYMENTS", "PAYU", "PAYTM")
 
             for p_item in final_payments:
-                s_key = str(p_item.get("story_id") or p_item.get("story_name") or "").strip()
-                s_canon = sid_to_canonical.get(s_key, s_key)
                 p_date = str(p_item.get("date") or "")[:10]  # YYYY-MM-DD
                 p_status = str(p_item.get("status", "")).lower()
+                p_ref = str(p_item.get("reference") or "").strip().upper()
+                p_oid = str(p_item.get("order_id") or "").strip().upper()
 
-                p_oid = str(p_item.get("order_id") or p_item.get("reference") or "").strip()
-                # Build unique transaction deduplication key per user: (story + order_id + date_day)
-                uniq_key = f"{s_canon}_{p_oid}_{p_date}" if (s_canon and p_oid) else (p_oid or f"{s_canon}_{p_date}")
+                # Calculate canonical story signature for single & multi-story cart orders
+                s_ids = p_item.get("story_ids", [])
+                if not s_ids and p_item.get("story_id"):
+                    s_ids = [p_item.get("story_id")]
+                
+                s_canons = sorted(list(set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])))
+                if s_canons:
+                    s_signature = "-".join(s_canons)
+                else:
+                    s_key = str(p_item.get("story_name") or "story").strip().lower()
+                    s_signature = sid_to_canonical.get(s_key, s_key)
+
+                # Determine deduplication key:
+                # 1. Primary: Structured Order ID (starts with AM-, AB-, ORD-, CF-, PAY-)
+                #    Order ID is generated once per checkout attempt and shared across orders, premium_purchases, & premium_checkout.
+                # 2. Secondary: Transaction reference (UTR / payment_id) if valid (len >= 6).
+                # 3. Fallback: Group by (story_signature, date_day) for this buyer.
+                if p_oid and any(p_oid.startswith(prefix) for prefix in ("AM-", "AB-", "ORD-", "CF-", "PAY-")):
+                    uniq_key = f"oid_{p_oid}"
+                elif p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
+                    uniq_key = f"ref_{p_ref}"
+                else:
+                    uniq_key = f"story_{s_signature}_{p_date}"
 
                 if uniq_key not in dedup_payments:
                     dedup_payments[uniq_key] = p_item
@@ -5901,7 +5942,16 @@ async def fetch_processed_buyers_data(arya_db):
                         dedup_payments[uniq_key] = p_item
                         continue
 
-                    # 2. If both are paid (or same status), prefer the specific gateway method!
+                    # 2. If both are paid (or same status):
+                    #    - Prefer multi-story aggregated order ("His Secret Fortune, Divine Flame Burst") over single-story fragments!
+                    e_story_count = len(existing.get("story_ids", []))
+                    p_story_count = len(p_item.get("story_ids", []))
+
+                    if p_story_count > e_story_count:
+                        dedup_payments[uniq_key] = p_item
+                        continue
+
+                    #    - Prefer specific gateway method ("CASHFREE", "UPI_MANUAL") over generic "UPI"
                     m_existing = str(existing.get("method", "")).upper()
                     m_new = str(p_item.get("method", "")).upper()
 
@@ -5915,7 +5965,60 @@ async def fetch_processed_buyers_data(arya_db):
                     if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
                         existing["order_id"] = p_item["order_id"]
 
-            final_payments = list(dedup_payments.values())
+            # Second Pass: Same-Day Same-Story Merging per Buyer
+            # Guarantees that a user NEVER gets duplicate paid orders for the exact same story/cart on the same day.
+            merged_payments = {}
+            for p_item in list(dedup_payments.values()):
+                p_date = str(p_item.get("date") or "")[:10]
+                p_status = str(p_item.get("status", "")).lower()
+                s_ids = p_item.get("story_ids", [])
+                if not s_ids and p_item.get("story_id"):
+                    s_ids = [p_item.get("story_id")]
+
+                s_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])
+                is_multi = len(s_canons) > 1
+                
+                # Check if there is already a multi-story order on the same date that contains these story IDs
+                already_covered = False
+                if not is_multi and s_canons:
+                    single_sid = next(iter(s_canons))
+                    for m_key, m_item in merged_payments.items():
+                        m_date = str(m_item.get("date") or "")[:10]
+                        m_ids = m_item.get("story_ids", [])
+                        if not m_ids and m_item.get("story_id"):
+                            m_ids = [m_item.get("story_id")]
+                        m_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in m_ids if sid])
+                        
+                        if m_date == p_date and len(m_canons) > 1 and single_sid in m_canons:
+                            already_covered = True
+                            m_new = str(p_item.get("method", "")).upper()
+                            if any(g in m_new for g in specific_gateways) and not any(g in str(m_item.get("method", "")).upper() for g in specific_gateways):
+                                m_item["method"] = m_new
+                            break
+
+                if not already_covered:
+                    m_key = f"{p_date}_{','.join(sorted(list(s_canons)))}" if s_canons else f"{p_date}_{p_item.get('order_id')}"
+                    if m_key not in merged_payments:
+                        merged_payments[m_key] = p_item
+                    else:
+                        existing = merged_payments[m_key]
+                        e_status = str(existing.get("status", "")).lower()
+
+                        if p_status in ("paid", "approved", "delivered", "completed", "success") and e_status not in ("paid", "approved", "delivered", "completed", "success"):
+                            merged_payments[m_key] = p_item
+                        else:
+                            # Merge fields
+                            m_existing = str(existing.get("method", "")).upper()
+                            m_new = str(p_item.get("method", "")).upper()
+                            if any(g in m_new for g in specific_gateways) and not any(g in m_existing for g in specific_gateways):
+                                existing["method"] = m_new
+                                if p_item.get("source"): existing["source"] = p_item["source"]
+                            if p_item.get("reference") and not existing.get("reference"):
+                                existing["reference"] = p_item["reference"]
+                            if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
+                                existing["order_id"] = p_item["order_id"]
+
+            final_payments = list(merged_payments.values())
             data["payments"] = final_payments
             payments = final_payments
 
@@ -9285,19 +9388,14 @@ async def manual_purchase(data: ManualPurchase):
         raise HTTPException(500, detail=str(e))
 
 @api_router.post("/admin/buyers/{user_id}/action")
-async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = None):
+async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict):
     from AryaPremium.config import Config
     try:
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
             
-        payload = payload or {}
-        logger.info(f"[AdminBuyerAction] target_user={user_id}, payload={payload}")
-        
-        raw_action = payload.get("action") or ""
-        act_str = str(raw_action).lower().strip()
-        
-        target_uid = int(user_id) if str(user_id).isdigit() else user_id
+        action = payload.get("action")
+        target_uid = int(user_id) if user_id.isdigit() else user_id
         target_uid_int = int(target_uid) if str(target_uid).isdigit() else 0
         uid_filter = [target_uid, str(target_uid)]
         if target_uid_int:
@@ -9305,7 +9403,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = Non
 
         arya_db = app.state.db
         
-        if act_str in ("wipe", "wipe_user", "clear_user"):
+        if action == "wipe":
             await arya_db.db.users.delete_many({"id": {"$in": uid_filter}})
             await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
@@ -9319,7 +9417,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = Non
             invalidate_buyers_cache()
             return {"success": True, "message": "User data wiped completely."}
             
-        elif act_str in ("ban", "ban_user"):
+        elif action == "ban":
             await arya_db.db.orders.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_checkout.delete_many({"user_id": {"$in": uid_filter}})
             await arya_db.db.premium_purchases.delete_many({"user_id": {"$in": uid_filter}})
@@ -9332,7 +9430,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = Non
             invalidate_buyers_cache()
             return {"success": True, "message": "User wiped and banned."}
 
-        elif act_str in ("delete_order", "delete_payment", "remove_order"):
+        elif action == "delete_order":
             order_id_str = payload.get("order_id") or payload.get("story_id")
             if order_id_str:
                 from bson.objectid import ObjectId
@@ -9348,7 +9446,7 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = Non
             invalidate_buyers_cache()
             return {"success": True, "message": "Order deleted successfully."}
             
-        elif act_str in ("remove_story", "revoke_story", "remove_access"):
+        elif action == "remove_story":
             story_id_str = payload.get("story_id")
             if not story_id_str:
                 raise HTTPException(status_code=400, detail="Missing story_id")
@@ -9406,125 +9504,9 @@ async def admin_buyer_action(telegram_id: str, user_id: str, payload: dict = Non
             _stories_cache = None
             
             return {"success": True, "message": "Story removed successfully from user."}
-
-        elif any(k in act_str for k in ("deliver", "trigger", "grant", "send", "story")):
-            story_id_str = payload.get("story_id") or payload.get("story_name")
-            story = None
             
-            if story_id_str:
-                from bson.objectid import ObjectId
-                story_filter = [story_id_str]
-                try:
-                    story_filter.append(ObjectId(story_id_str))
-                except Exception:
-                    pass
-
-                import re
-                esc_str = re.escape(str(story_id_str))
-                pattern = re.compile(rf"{esc_str}", re.IGNORECASE)
-
-                story = await arya_db.db.premium_stories.find_one({
-                    "$or": [
-                        {"_id": {"$in": story_filter}},
-                        {"story_id": {"$in": story_filter}},
-                        {"story_name_en": pattern},
-                        {"story_name_hi": pattern}
-                    ]
-                })
-
-            if not story:
-                # Fallback: check user's purchases in premium_purchases
-                latest_p = await arya_db.db.premium_purchases.find_one(
-                    {"user_id": {"$in": uid_filter}},
-                    sort=[("updated_at", -1)]
-                )
-                if latest_p and latest_p.get("story_id"):
-                    story = await arya_db.db.premium_stories.find_one({"_id": latest_p["story_id"]})
-
-            if not story:
-                # Final Fallback: First available story in database or virtual object
-                story = await arya_db.db.premium_stories.find_one({})
-                if not story:
-                    story = {"_id": "purchased", "story_name_en": story_id_str or "Story"}
-
-            real_story_id = str(story.get("_id", "purchased"))
-            story_name = story.get("story_name_en") or story.get("story_name_hi") or "Story"
-
-            # 1. Ensure user has story in purchases array & premium_purchases
-            if real_story_id != "purchased":
-                await arya_db.db.users.update_one(
-                    {"id": {"$in": uid_filter}},
-                    {"$addToSet": {"purchases": real_story_id}}
-                )
-                await arya_db.db.premium_purchases.update_one(
-                    {"user_id": target_uid_int or target_uid, "story_id": story["_id"]},
-                    {"$set": {"user_id": target_uid_int or target_uid, "story_id": story["_id"], "story_name": story_name, "status": "paid", "source": "admin_trigger", "updated_at": datetime.now(timezone.utc)}},
-                    upsert=True
-                )
-
-            # 2. Telegram Notice & Delivery
-            bot_token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN")
-            bot_username = getattr(Config, "BOT_USERNAME", "UseAryaBot") or "UseAryaBot"
-            
-            notice_text = (
-                f"<b>📢 Admin Notice | {story_name}</b>\n"
-                f"────────────────────\n"
-                f"This delivery has been manually triggered by the admin. If you were experiencing any issues receiving your story files, the delivery has now been initiated for you. If you need any assistance, please message our support group or check our guide.\n\n"
-                f"<b>📢 एडमिन सूचना | {story_name}</b>\n"
-                f"────────────────────\n"
-                f"यह डिलीवरी एडमिन की तरफ से ट्रिगर की गई है जिसमें आपको शायद कुछ इशू आ रहा होगा डिलीवरी लेने में, इसलिए एडमिन की तरफ से यह कर दिया गया है। यदि आपको कोई सहायता चाहिए तो हमारे सपोर्ट ग्रुप में हेल्प के लिए मैसेज करें या गाइड देखें:\n"
-                f"https://t.me/StoriesLinkopningguide/23"
-            )
-
-            library_link = f"https://t.me/{bot_username}/apminibyarya?startapp=purchased"
-            guide_link = "https://t.me/StoriesLinkopningguide/23"
-
-            reply_markup = {
-                "inline_keyboard": [
-                    [
-                        {"text": "Library", "url": library_link},
-                        {"text": "Guide", "url": guide_link}
-                    ]
-                ]
-            }
-
-            if bot_token and target_uid_int:
-                try:
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                        await session.post(url, json={
-                            "chat_id": target_uid_int,
-                            "text": notice_text,
-                            "parse_mode": "HTML",
-                            "disable_web_page_preview": False,
-                            "reply_markup": reply_markup
-                        }, timeout=10)
-                except Exception as e:
-                    logger.warning(f"Error sending delivery notice: {e}")
-
-            # Also trigger Pyrogram delivery if market_seller userbot is connected
-            try:
-                from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
-                seller_cli = next(iter(market_clients.values()), None) if market_clients else None
-                if seller_cli and target_uid_int and isinstance(story, dict) and "_id" in story:
-                    asyncio.create_task(dispatch_delivery_choice(seller_cli, target_uid_int, story))
-            except Exception:
-                pass
-
-            invalidate_buyers_cache()
-            return {"success": True, "message": f"Delivery triggered successfully for '{story_name}'!"}
-
-        logger.warning(f"[AdminBuyerAction] Unknown action received: '{raw_action}', full_payload={payload}")
-        raise HTTPException(status_code=400, detail=f"Invalid action: '{raw_action}'")
-
-    except HTTPException:
-        raise
+        raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
-        logger.error(f"Buyer action error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
         logger.error(f"Buyer action error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -10738,7 +10720,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "cashfree_app_id": cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", ""),
                 "cashfree_api_id": cfg.get("cashfree_api_id", "") or cfg.get("cashfree_app_id", ""),
                 "cashfree_secret_key": cfg.get("cashfree_secret_key", ""),
-                "cashfree_callback_url": (cfg.get("cashfree_callback_url") or "https://aryapremium.store/api/cashfree-callback").replace("sliceurl.app", "aryapremium.store"),
+                "cashfree_callback_url": cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback"),
                 "cashfree_env": cfg.get("cashfree_env", "sandbox"),
                 "dodopayments_status": cfg.get("dodopayments_status", "hidden"),
                 "dodopayments_api_key": cfg.get("dodopayments_api_key", ""),
@@ -11272,18 +11254,23 @@ async def send_smtp_email(to_email: str, subject: str, text_content: str) -> boo
 
 async def log_to_telegram(text: str):
     """Sends active security log updates to the Telegram channels (ARYA_LOGS_CHANNEL)."""
-    try:
-        from AryaPremium.config import Config
-    except ImportError:
-        from config import Config
-    token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
-    channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL") or os.environ.get("DELIVERY_LOGS_CHANNEL") or os.environ.get("PUBLIC_LOG_CHANNEL_ID")
-    if not token or not channel_id:
-        logger.warning(f"[AryaLog] log_to_telegram: missing token ({bool(token)}) or channel_id ({bool(channel_id)}) — skipping.")
+    from AryaPremium.config import Config
+    token = getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN")
+    channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    if not token:
+        logger.warning("[AryaLog] log_to_telegram: MGMT_BOT_TOKEN is not set — cannot send log.")
+        return
+    if not channel_id:
+        logger.warning("[AryaLog] log_to_telegram: ARYA_LOGS_CHANNEL is not set — cannot send log.")
         return
     try:
         import aiohttp
-        chat_id_val = int(str(channel_id).strip()) if str(channel_id).strip().lstrip("-").isdigit() else str(channel_id).strip()
+        # Ensure channel_id is an integer if it looks like one
+        chat_id_val = channel_id
+        try:
+            chat_id_val = int(str(channel_id).strip())
+        except (ValueError, TypeError):
+            pass  # Keep as string (username like @mychannel)
 
         async with aiohttp.ClientSession() as session:
             resp = await session.post(
@@ -11293,21 +11280,21 @@ async def log_to_telegram(text: str):
                     "text": text,
                     "parse_mode": "HTML",
                     "disable_web_page_preview": True,
-                },
-                timeout=10
+                }
             )
             resp_data = await resp.json()
             if not resp_data.get("ok"):
                 err_desc = resp_data.get("description", "Unknown error")
                 err_code = resp_data.get("error_code", "?")
                 logger.error(
-                    f"[AryaLog] Telegram API rejected log to channel '{chat_id_val}': [{err_code}] {err_desc}."
+                    f"[AryaLog] Telegram API rejected log to channel '{chat_id_val}': "
+                    f"[{err_code}] {err_desc}. "
+                    f"Ensure MGMT bot is an ADMIN of ARYA_LOGS_CHANNEL with 'Post Messages' permission."
                 )
             else:
                 logger.debug(f"[AryaLog] log_to_telegram: message sent to channel {chat_id_val}")
     except Exception as e:
-        logger.error(f"[AryaLog] Failed to send Telegram log: {e}")
-
+        logger.error(f"[AryaLog] Failed to send Telegram log (network/config error): {e}")
 
 def escape_html(text: str) -> str:
     """Escapes HTML special characters for safe inclusion in Telegram messages."""
@@ -11582,6 +11569,13 @@ async def record_purchased_stories(order: dict):
         except Exception as e:
             logger.error(f"Failed to query default bot_id: {e}")
             
+        total_order_amt = float(order.get("total", 0) or order.get("amount", 0) or 0)
+        num_stories = max(1, len(story_ids))
+        per_story_amt = round(total_order_amt / num_stories, 2) if num_stories > 1 else total_order_amt
+        pay_method = str(order.get("payment_method") or order.get("method") or order.get("gateway") or "UPI").upper()
+        ref_id = str(order.get("reference") or order.get("utr") or order.get("razorpay_payment_id") or order.get("payment_id") or order.get("cf_order_id") or order.get("track_id") or "").strip()
+        ord_id = str(order.get("order_id") or order.get("cf_order_id") or "").strip()
+
         for sid in story_ids:
             try:
                 story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
@@ -11605,10 +11599,10 @@ async def record_purchased_stories(order: dict):
                         "bot_id": bot_id,
                         "purchased_at": datetime.now(timezone.utc),
                         "source": order.get("source", "miniapp"),
-                        "method": order.get("method") or order.get("payment_method") or "UPI",
-                        "amount": order.get("total", 0),
-                        "reference": order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or "",
-                        "order_id": order.get("order_id") or ""
+                        "method": pay_method,
+                        "amount": per_story_amt,
+                        "reference": ref_id,
+                        "order_id": ord_id
                     })
             except Exception as e:
                 logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
@@ -12286,19 +12280,8 @@ async def admin_auth_middleware(request: Request, call_next):
     path = request.url.path
     is_admin_path = ("/admin/" in path) or ("/analytics/" in path)
     is_auth_endpoint = "/admin/auth/" in path
-    is_watermark_endpoint = "custom-watermark" in path
     
-    if is_admin_path and not is_auth_endpoint and not is_watermark_endpoint:
-        # Allow cron/internal calls: localhost OR poster-auto-tick endpoint
-        client_host = request.client.host if request.client else ""
-        is_localhost = client_host in ("127.0.0.1", "::1", "localhost")
-        is_cron_endpoint = "poster-auto-tick" in path
-
-        if is_localhost or is_cron_endpoint:
-            # Internal/cron call — skip auth
-            response = await call_next(request)
-            return response
-
+    if is_admin_path and not is_auth_endpoint:
         session_token = request.headers.get("X-Admin-Session")
         db = getattr(app.state, "db", None)
         
@@ -12319,7 +12302,6 @@ async def admin_auth_middleware(request: Request, call_next):
                 status_code=401,
                 media_type="application/json"
             )
-
             
     response = await call_next(request)
     return response
@@ -12457,163 +12439,7 @@ async def get_poster_config():
             l["deleted_at"] = l["deleted_at"].isoformat()
         logs.append(l)
         
-# ─────────────────────────────────────────────────────────────────
-# Userbot Mobile Number OTP Authentication Endpoints
-# ─────────────────────────────────────────────────────────────────
-USERBOT_AUTH_SESSIONS = {}
-
-@api_router.api_route("/admin/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
-@api_router.api_route("/userbot/send-otp", methods=["GET", "POST", "OPTIONS"])
-async def userbot_send_otp(request: Request, payload: dict = Body(default={})):
-    if request.method == "OPTIONS":
-        return Response(status_code=200)
-    if request.method == "GET":
-        return {"message": "Use POST with phone_number to send OTP"}
-
-    phone = str(payload.get("phone_number") or "").strip().replace(" ", "").replace("-", "")
-    if not phone:
-        raise HTTPException(status_code=400, detail="Phone number is required")
-    if not phone.startswith("+"):
-        phone = "+" + phone
-
-    try:
-        from telethon import TelegramClient
-        from telethon.sessions import StringSession
-        
-        api_id = int(payload.get("api_id") or 6)
-        api_hash = str(payload.get("api_hash") or "eb06630096e540092c71336c1380cd08").strip()
-
-        client = TelegramClient(StringSession(), api_id, api_hash)
-        await client.connect()
-
-        code_res = await client.send_code_request(phone)
-
-        USERBOT_AUTH_SESSIONS[phone] = {
-            "client": client,
-            "phone_code_hash": code_res.phone_code_hash,
-            "api_id": api_id,
-            "api_hash": api_hash,
-            "created_at": datetime.now(timezone.utc)
-        }
-
-        logger.info(f"[Userbot Auth] Sent login OTP code to {phone}")
-        return {
-            "success": True,
-            "phone_code_hash": code_res.phone_code_hash,
-            "message": f"OTP code successfully sent to your Telegram account for {phone}!"
-        }
-    except Exception as e:
-        logger.error(f"[Userbot Auth Error] send-otp failed for {phone}: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Failed to send OTP code: {str(e)}")
-
-@api_router.api_route("/admin/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
-@api_router.api_route("/userbot/verify-otp", methods=["GET", "POST", "OPTIONS"])
-async def userbot_verify_otp(request: Request, payload: dict = Body(default={})):
-    if request.method == "OPTIONS":
-        return Response(status_code=200)
-    if request.method == "GET":
-        return {"message": "Use POST with phone_number and code to verify OTP"}
-
-    phone = str(payload.get("phone_number") or "").strip().replace(" ", "").replace("-", "")
-    if not phone.startswith("+"):
-        phone = "+" + phone
-
-    code = str(payload.get("code") or "").strip()
-    password = str(payload.get("password") or "").strip()
-    phone_code_hash_req = str(payload.get("phone_code_hash") or "").strip()
-
-    if not phone or not code:
-        raise HTTPException(status_code=400, detail="Phone number and OTP code are required")
-
-    session_data = USERBOT_AUTH_SESSIONS.get(phone)
-    client = session_data.get("client") if session_data else None
-    phone_code_hash = session_data.get("phone_code_hash") if session_data else phone_code_hash_req
-
-    try:
-        from telethon import TelegramClient
-        from telethon.sessions import StringSession
-        from telethon.errors import SessionPasswordNeededError
-
-        api_id = session_data.get("api_id") if session_data else int(payload.get("api_id") or 6)
-        api_hash = session_data.get("api_hash") if session_data else str(payload.get("api_hash") or "eb06630096e540092c71336c1380cd08").strip()
-
-        if not client or not client.is_connected():
-            client = TelegramClient(StringSession(), api_id, api_hash)
-            await client.connect()
-
-        try:
-            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
-        except SessionPasswordNeededError:
-            if not password:
-                return {
-                    "success": False,
-                    "requires_2fa": True,
-                    "message": "Two-Factor Authentication (2FA) Password required for this account."
-                }
-            await client.sign_in(password=password)
-
-        me = await client.get_me()
-        string_session = client.session.save()
-
-        db = getattr(app.state, "db", None)
-        if db:
-            await db.db.mini_app_config.update_one(
-                {"_id": "poster_bot_config"},
-                {
-                    "$set": {
-                        "poster_mode": "userbot",
-                        "userbot_phone": phone,
-                        "userbot_user_id": getattr(me, "id", None),
-                        "userbot_username": getattr(me, "username", "") or "",
-                        "userbot_first_name": getattr(me, "first_name", "") or "",
-                        "session_string": string_session,
-                        "api_id": str(api_id),
-                        "api_hash": api_hash,
-                        "last_updated_at": datetime.now(timezone.utc)
-                    }
-                },
-                upsert=True
-            )
-
-        USERBOT_AUTH_SESSIONS.pop(phone, None)
-        await client.disconnect()
-
-        logger.info(f"[Userbot Auth] ✅ Authenticated successfully for phone {phone} (@{getattr(me, 'username', '')})")
-        return {
-            "success": True,
-            "message": f"Userbot connected successfully as @{getattr(me, 'username', getattr(me, 'first_name', 'User'))}!",
-            "session_string": string_session,
-            "user": {
-                "id": getattr(me, "id", None),
-                "username": getattr(me, "username", ""),
-                "first_name": getattr(me, "first_name", ""),
-                "phone": phone
-            }
-        }
-    except Exception as e:
-        logger.error(f"[Userbot Auth Error] verify-otp failed for {phone}: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
-
-@api_router.api_route("/admin/userbot/logout", methods=["GET", "POST", "OPTIONS"])
-@api_router.api_route("/userbot/logout", methods=["GET", "POST", "OPTIONS"])
-async def userbot_logout(request: Request):
-    if request.method == "OPTIONS":
-        return Response(status_code=200)
-    db = getattr(app.state, "db", None)
-    if db:
-        await db.db.mini_app_config.update_one(
-            {"_id": "poster_bot_config"},
-            {
-                "$set": {
-                    "poster_mode": "bot_api",
-                    "session_string": "",
-                    "userbot_phone": "",
-                    "userbot_username": "",
-                    "userbot_first_name": ""
-                }
-            }
-        )
-    return {"success": True, "message": "Userbot session logged out"}
+    return {"config": cfg, "logs": logs}
 
 @api_router.post("/admin/poster-config")
 async def save_poster_config(payload: dict = Body(...)):
@@ -12621,36 +12447,23 @@ async def save_poster_config(payload: dict = Body(...)):
     if not db:
         raise HTTPException(status_code=500, detail="Database not connected")
         
-    # Only update the config fields — DO NOT touch watermark file fields
-    # (has_custom_watermark, watermark_updated_at) which are managed by /upload-watermark
-    update_fields = {
+    update_doc = {
         "enabled": bool(payload.get("enabled", False)),
-        "poster_mode": str(payload.get("poster_mode") or "bot_api").strip(),
         "bot_token": str(payload.get("bot_token", "")).strip(),
-        "api_id": str(payload.get("api_id", "")).strip(),
-        "api_hash": str(payload.get("api_hash", "")).strip(),
-        "session_string": str(payload.get("session_string", "")).strip(),
-        "post_interval_mins": float(payload.get("post_interval_mins") if payload.get("post_interval_mins") is not None else (payload.get("post_interval") if payload.get("post_interval") is not None else 30)),
-        "post_interval": float(payload.get("post_interval_mins") if payload.get("post_interval_mins") is not None else (payload.get("post_interval") if payload.get("post_interval") is not None else 30)),
+        "channel_id": str(payload.get("channel_id", "")).strip(),
+        "post_interval_mins": int(payload.get("post_interval_mins") or 30),
         "delete_delay_hours": int(payload.get("delete_delay_hours") or 72),
         "watermark_enabled": bool(payload.get("watermark_enabled", True)),
         "watermark_position": str(payload.get("watermark_position", "bottom_right")).strip(),
-        "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else 0.8),
-        "_key": "poster_bot_config",
+        "watermark_opacity": float(payload.get("watermark_opacity") if payload.get("watermark_opacity") is not None else 0.8)
     }
-
     
     await db.db.mini_app_config.update_one(
         {"_id": "poster_bot_config"},
-        {
-            "$set": update_fields,
-            # Only set these fields when creating the doc for the first time
-            "$setOnInsert": {
-                "has_custom_watermark": False,
-                "watermark_updated_at": "",
-                "rotation_index": 0,
-            }
-        },
+        {"$set": {
+            "_key": "poster_bot_config",
+            **update_doc
+        }},
         upsert=True
     )
     return {"success": True}
@@ -12675,34 +12488,19 @@ async def poster_post_now(payload: dict = Body(...)):
         
     # Select story
     story_id = payload.get("story_id")
-    story = None
-    if story_id and str(story_id).strip().lower() not in ("random", "", "none", "null"):
-        story = await db.db.premium_stories.find_one({"_id": str(story_id)})
-        if not story:
-            try:
-                from bson.objectid import ObjectId
-                story = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
-            except Exception:
-                pass
-
-    if not story:
-        # Use count + skip instead of $sample (more reliable with motor)
-        total_stories = await db.db.premium_stories.count_documents({})
-        if total_stories == 0:
-            raise HTTPException(status_code=404, detail="No stories found in database")
-        # Use rotation_index from config for consistent rotation
-        rot_idx = int(cfg.get("rotation_index") or 0) % total_stories
-        story = await db.db.premium_stories.find_one({}, skip=rot_idx)
-        if not story:
-            story = await db.db.premium_stories.find_one({})
-
+    if story_id:
+        from bson.objectid import ObjectId
+        story = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+    else:
+        # Pick a random available story
+        pipeline = [{"$match": {"visibility": "available"}}, {"$sample": {"size": 1}}]
+        stories = [s async for s in db.db.premium_stories.aggregate(pipeline)]
+        story = stories[0] if stories else None
+        
     if not story:
         raise HTTPException(status_code=404, detail="No stories found to post")
         
-    try:
-        from AryaPremium.poster_helper import send_story_to_channel
-    except Exception:
-        from poster_helper import send_story_to_channel
+    from AryaPremium.poster_helper import send_story_to_channel
     
     watermark_config = {
         "watermark_enabled": bool(payload.get("watermark_enabled", cfg.get("watermark_enabled", True))),
@@ -12716,7 +12514,6 @@ async def poster_post_now(payload: dict = Body(...)):
         
     now = datetime.now(timezone.utc)
     del_hours = int(cfg.get("delete_delay_hours") or 72)
-    next_rot = (int(cfg.get("rotation_index") or 0) + 1) % max(1, await db.db.premium_stories.count_documents({}))
     post_log = {
         "message_id": res.get("message_id"),
         "channel_id": res.get("channel_id"),
@@ -12727,146 +12524,7 @@ async def poster_post_now(payload: dict = Body(...)):
         "deleted": False
     }
     await db.db.poster_bot_posts.insert_one(post_log)
-    # Update last_posted_at and rotation_index so interval tracking works
-    await db.db.mini_app_config.update_one(
-        {"_id": "poster_bot_config"},
-        {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
-        upsert=True
-    )
-    return {"success": True, "message_id": res.get("message_id"), "story": story.get("story_name_en")}
-
-async def poster_auto_tick(request: Request):
-    """
-    Called by cron job every minute.
-    Checks if interval has elapsed; only posts if it's time.
-    Returns {"posted": true/false, "reason": "..."}
-    """
-    db = getattr(app.state, "db", None)
-    if not db:
-        return {"posted": False, "reason": "db_not_connected"}
-
-    try:
-        cfg = await _get_poster_bot_config(db)
-        logger.info(f"[PosterBot Cron] 🔍 Tick run! cfg={bool(cfg)}, enabled={cfg.get('enabled') if cfg else None}, bot_token={bool(cfg.get('bot_token')) if cfg else False}, channel='{cfg.get('channel_id') if cfg else ''}'")
-        if not cfg:
-            logger.warning("[PosterBot Cron] ⚠️ No config found in DB!")
-            return {"posted": False, "reason": "no_config"}
-
-        # If enabled is not explicitly False, default to True
-        is_enabled = cfg.get("enabled")
-        if is_enabled is False or str(is_enabled).lower() == "false":
-            logger.info("[PosterBot Cron] ⏸️ Poster Bot is disabled in config.")
-            return {"posted": False, "reason": "disabled"}
-
-        b_token = str(cfg.get("bot_token") or "").strip()
-        if not b_token:
-            try:
-                from AryaPremium.config import Config
-            except Exception:
-                from config import Config
-            b_token = getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "") or ""
-
-        target_channel = str(cfg.get("channel_id") or "").strip()
-
-        if not target_channel:
-            try:
-                last_post_doc = await db.db.poster_bot_posts.find_one({"channel_id": {"$exists": True, "$ne": ""}}, sort=[("posted_at", -1)])
-                if last_post_doc:
-                    target_channel = str(last_post_doc.get("channel_id", "")).strip()
-            except Exception:
-                pass
-
-        print(f"[PosterBot Cron] 🔍 Tick run! enabled={is_enabled}, token={bool(b_token)}, channel='{target_channel}'", flush=True, file=sys.stderr)
-
-        if not b_token or not target_channel:
-            print(f"[PosterBot Cron] ⚠️ missing_token_or_channel: token={bool(b_token)}, channel='{target_channel}'", flush=True, file=sys.stderr)
-            return {"posted": False, "reason": "missing_token_or_channel"}
-
-        raw_interval = cfg.get("post_interval_mins") if cfg.get("post_interval_mins") is not None else (cfg.get("post_interval") if cfg.get("post_interval") is not None else cfg.get("interval_mins"))
-        try:
-            interval_mins = float(raw_interval) if raw_interval is not None and str(raw_interval).strip() != "" else 30.0
-            if interval_mins <= 0:
-                interval_mins = 2.0
-        except Exception:
-            interval_mins = 30.0
-        now = datetime.now(timezone.utc)
-        last_posted = cfg.get("last_posted_at")
-
-        # Check if interval has elapsed
-        if last_posted:
-            if isinstance(last_posted, str):
-                try:
-                    last_posted = datetime.fromisoformat(last_posted.replace("Z", "+00:00"))
-                except Exception:
-                    last_posted = None
-            if last_posted and isinstance(last_posted, datetime):
-                if last_posted.tzinfo is None:
-                    last_posted = last_posted.replace(tzinfo=timezone.utc)
-                elapsed_mins = (now - last_posted).total_seconds() / 60.0
-                if elapsed_mins < interval_mins and elapsed_mins >= 0:
-                    remaining = interval_mins - elapsed_mins
-                    print(f"[PosterBot Cron] ⏳ Interval not elapsed: {elapsed_mins:.1f}m / {interval_mins:.1f}m (next post in ~{remaining:.1f}m)", flush=True, file=sys.stderr)
-                    return {"posted": False, "reason": f"interval_not_elapsed", "elapsed_mins": round(elapsed_mins, 1), "remaining_mins": round(remaining, 1)}
-
-        print(f"[PosterBot Cron] 🚀 Interval elapsed or no last_posted! Posting story to {target_channel} (interval: {interval_mins:.1f}m)...", flush=True, file=sys.stderr)
-
-        # Interval elapsed — post now
-        total = await db.db.premium_stories.count_documents({})
-        if total == 0:
-            print("[PosterBot Cron] ⚠️ no_stories found in DB!", flush=True, file=sys.stderr)
-            return {"posted": False, "reason": "no_stories"}
-
-        rot_idx = int(cfg.get("rotation_index") or 0) % total
-        story = await db.db.premium_stories.find_one({}, skip=rot_idx)
-        if not story:
-            story = await db.db.premium_stories.find_one({})
-        if not story:
-            print("[PosterBot Cron] ⚠️ story_fetch_failed!", flush=True, file=sys.stderr)
-            return {"posted": False, "reason": "story_fetch_failed"}
-
-        try:
-            from AryaPremium.poster_helper import send_story_to_channel
-        except Exception:
-            from poster_helper import send_story_to_channel
-
-        watermark_config = {
-            "poster_mode": "bot_api",
-            "watermark_enabled": cfg.get("watermark_enabled", True),
-            "watermark_position": cfg.get("watermark_position", "bottom_right"),
-            "watermark_opacity": float(cfg.get("watermark_opacity") or 0.8)
-        }
-
-        print(f"[PosterBot Cron] 📤 Posting story {rot_idx+1}/{total}: '{story.get('story_name_en')}' → {target_channel}", flush=True, file=sys.stderr)
-        res = await send_story_to_channel(b_token, target_channel, story, watermark_config)
-
-        if res.get("success"):
-            msg_id = res.get("message_id")
-            del_hours = int(cfg.get("delete_delay_hours") or 72)
-            next_rot = (rot_idx + 1) % total
-            await db.db.poster_bot_posts.insert_one({
-                "message_id": msg_id, "channel_id": res.get("channel_id"),
-                "story_id": str(story["_id"]),
-                "story_name": story.get("story_name_en") or "Story",
-                "posted_at": now,
-                "delete_at": now + timedelta(hours=del_hours),
-                "deleted": False
-            })
-            await db.db.mini_app_config.update_one(
-                {"_id": "poster_bot_config"},
-                {"$set": {"last_posted_at": now, "rotation_index": next_rot, "poster_mode": "bot_api"}},
-                upsert=True
-            )
-            print(f"[PosterBot Cron] ✅ AUTO-POST SUCCESS! '{story.get('story_name_en')}', msg_id={msg_id}", flush=True, file=sys.stderr)
-            return {"posted": True, "message_id": msg_id, "story": story.get("story_name_en")}
-        else:
-            print(f"[PosterBot Cron] ❌ POST FAILED: {res.get('error')}", flush=True, file=sys.stderr)
-            return {"posted": False, "reason": f"post_failed: {res.get('error')}"}
-
-
-    except Exception as e:
-        logger.error(f"[PosterBot Cron] ❌ Exception: {e}", exc_info=True)
-        return {"posted": False, "reason": f"exception: {str(e)}"}
-
+    return {"success": True, "message_id": res.get("message_id")}
 
 @api_router.post("/admin/poster-delete-now")
 async def poster_delete_now(payload: dict = Body(...)):
@@ -12915,21 +12573,13 @@ async def upload_watermark(file: UploadFile = File(...)):
     if not db:
         raise HTTPException(status_code=500, detail="Database not connected")
         
-    this_dir = os.path.dirname(os.path.abspath(__file__))  # AryaPremium/
-    parent_dir = os.path.dirname(this_dir)                  # project root
-    
-    # Save in both locations so poster_helper.py finds it regardless of working dir
-    save_paths = [
-        os.path.join(parent_dir, "custom_watermark.png"),
-        os.path.join(this_dir, "custom_watermark.png"),
-    ]
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    watermark_path = os.path.join(base_dir, "custom_watermark.png")
     
     try:
         content = await file.read()
-        for watermark_path in save_paths:
-            with open(watermark_path, "wb") as f:
-                f.write(content)
-        logger.info(f"[WatermarkUpload] Saved custom_watermark.png to {save_paths}")
+        with open(watermark_path, "wb") as f:
+            f.write(content)
             
         now_str = datetime.now(timezone.utc).isoformat()
         await db.db.mini_app_config.update_one(
@@ -12945,47 +12595,16 @@ async def upload_watermark(file: UploadFile = File(...)):
         logger.error(f"Error saving watermark: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/custom-watermark")
 @api_router.get("/admin/custom-watermark")
 async def get_custom_watermark():
-    # Check multiple candidate paths so it works regardless of where API process runs from
-    this_dir = os.path.dirname(os.path.abspath(__file__))  # AryaPremium/
-    parent_dir = os.path.dirname(this_dir)                  # project root
-    cwd = os.getcwd()
-    candidate_paths = [
-        os.path.join(this_dir, "custom_watermark.png"),
-        os.path.join(parent_dir, "custom_watermark.png"),
-        os.path.join(cwd, "custom_watermark.png"),
-    ]
-    fallback_paths = [
-        os.path.join(this_dir, "WatermarkIMG.png"),
-        os.path.join(parent_dir, "WatermarkIMG.png"),
-        os.path.join(cwd, "WatermarkIMG.png"),
-    ]
-    from fastapi.responses import FileResponse as FR
-    from starlette.responses import Response
-    no_cache_headers = {
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
-    }
-    for cp in candidate_paths:
-        if os.path.exists(cp):
-            logger.info(f"[WatermarkServe] Serving custom watermark from: {cp}")
-            return FR(cp, media_type="image/png", headers=no_cache_headers)
-    for fp in fallback_paths:
-        if os.path.exists(fp):
-            logger.info(f"[WatermarkServe] Serving fallback watermark from: {fp}")
-            return FR(fp, media_type="image/png", headers=no_cache_headers)
-    # Generate 1x1 transparent PNG fallback if no file exists yet on disk
-    try:
-        from PIL import Image
-        img = Image.new("RGBA", (100, 30), (0, 0, 0, 0))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return Response(content=buf.getvalue(), media_type="image/png", headers=no_cache_headers)
-    except Exception:
-        raise HTTPException(status_code=404, detail="No watermark file found")
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    watermark_path = os.path.join(base_dir, "custom_watermark.png")
+    if not os.path.exists(watermark_path):
+        fallback_path = os.path.join(base_dir, "WatermarkIMG.png")
+        if os.path.exists(fallback_path):
+            return FileResponse(fallback_path)
+        raise HTTPException(status_code=404, detail="No watermark uploaded yet")
+    return FileResponse(watermark_path)
 
 @api_router.post("/paage/cards")
 async def save_paage_cards(payload: dict = Body(...)):
@@ -13005,37 +12624,6 @@ async def save_paage_cards(payload: dict = Body(...)):
 
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router) # Handle both /api/stories and /stories for Nginx proxy compatibility
-
-# ─── Direct App Routes for Poster Bot (Guarantees 0% 404/405 routing errors) ───
-@app.api_route("/api/admin/poster-post-now", methods=["POST", "OPTIONS"])
-@app.api_route("/admin/poster-post-now", methods=["POST", "OPTIONS"])
-async def direct_poster_post_now(request: Request, payload: dict = Body(default={})):
-    return await poster_post_now(payload)
-
-# ─── Cron endpoint: NO auth required, called by system cron every minute ────────
-@app.api_route("/internal/poster-tick", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/api/internal/poster-tick", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/admin/poster-auto-tick", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/api/admin/poster-auto-tick", methods=["GET", "POST", "OPTIONS"])
-async def cron_poster_tick(request: Request):
-    """Called by cron job every minute. No auth needed — localhost/internal only."""
-    res = await poster_auto_tick(request)
-    if isinstance(res, dict):
-        return JSONResponse(content=res, status_code=200)
-    return res
-
-
-@app.api_route("/api/admin/poster-config", methods=["GET", "POST", "OPTIONS"])
-@app.api_route("/admin/poster-config", methods=["GET", "POST", "OPTIONS"])
-async def direct_poster_config(request: Request, payload: dict = Body(default={}), telegram_id: int = Query(0)):
-    if request.method == "GET":
-        return await get_poster_config(telegram_id)
-    return await update_poster_config(payload)
-
-@app.api_route("/api/admin/poster-delete-now", methods=["POST", "OPTIONS"])
-@app.api_route("/admin/poster-delete-now", methods=["POST", "OPTIONS"])
-async def direct_poster_delete_now(request: Request, payload: dict = Body(default={})):
-    return await poster_delete_now(payload)
 
 
 
@@ -13090,9 +12678,8 @@ DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pocket-arya
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    if full_path.startswith("api/") or full_path.startswith("ws/") or full_path.startswith("internal/"):
+    if full_path.startswith("api/") or full_path.startswith("ws/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
-
     
     # Check if target static file exists in dist
     target_file = os.path.join(DIST_DIR, full_path)
