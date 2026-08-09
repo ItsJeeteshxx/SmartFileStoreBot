@@ -164,25 +164,68 @@ def _msg_in_topic(msg, from_thread_id: int) -> bool:
     return False
 
 
+def _is_audio_msg(msg) -> bool:
+    if getattr(msg, 'audio', None):
+        return True
+    doc = getattr(msg, 'document', None)
+    if doc:
+        fn = (getattr(doc, 'file_name', '') or '').lower()
+        mime = (getattr(doc, 'mime_type', '') or '').lower()
+        if mime.startswith('audio/') or fn.endswith(('.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.opus', '.wma')):
+            return True
+    return False
+
+def _is_video_msg(msg) -> bool:
+    if getattr(msg, 'video', None) or getattr(msg, 'video_note', None):
+        return True
+    doc = getattr(msg, 'document', None)
+    if doc:
+        fn = (getattr(doc, 'file_name', '') or '').lower()
+        mime = (getattr(doc, 'mime_type', '') or '').lower()
+        if mime.startswith('video/') or fn.endswith(('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.3gp', '.m4v')):
+            return True
+    return False
+
+def _is_photo_msg(msg) -> bool:
+    if getattr(msg, 'photo', None):
+        return True
+    doc = getattr(msg, 'document', None)
+    if doc:
+        fn = (getattr(doc, 'file_name', '') or '').lower()
+        mime = (getattr(doc, 'mime_type', '') or '').lower()
+        if mime.startswith('image/') or fn.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp')):
+            return True
+    return False
+
 def _passes_filters(msg, disabled_types: list) -> bool:
-    if msg.empty or msg.service:
+    if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
         return False
 
+    if not disabled_types:
+        return True
 
-    checks = [
-        ('text',      lambda m: bool(m.text and (not m.media or getattr(m.media, 'value', str(m.media)) == 'web_page'))),
-        ('audio',     lambda m: m.audio),
-        ('voice',     lambda m: m.voice),
-        ('video',     lambda m: m.video),
-        ('photo',     lambda m: m.photo),
-        ('document',  lambda m: m.document),
-        ('animation', lambda m: m.animation),
-        ('sticker',   lambda m: m.sticker),
-        ('poll',      lambda m: m.poll),
-    ]
-    for typ, check in checks:
-        if typ in disabled_types and check(msg):
-            return False
+    is_text = bool(getattr(msg, 'text', None) and (not getattr(msg, 'media', None) or getattr(getattr(msg, 'media', None), 'value', str(getattr(msg, 'media', None))) == 'web_page'))
+    if 'text' in disabled_types and is_text:
+        return False
+
+    if _is_audio_msg(msg):
+        if 'audio' in disabled_types: return False
+        return True
+
+    if _is_video_msg(msg):
+        if 'video' in disabled_types: return False
+        return True
+
+    if _is_photo_msg(msg):
+        if 'photo' in disabled_types: return False
+        return True
+
+    if 'voice' in disabled_types and getattr(msg, 'voice', None): return False
+    if 'animation' in disabled_types and getattr(msg, 'animation', None): return False
+    if 'sticker' in disabled_types and getattr(msg, 'sticker', None): return False
+    if 'poll' in disabled_types and getattr(msg, 'poll', None): return False
+    if 'document' in disabled_types and getattr(msg, 'document', None): return False
+
     return True
 
 

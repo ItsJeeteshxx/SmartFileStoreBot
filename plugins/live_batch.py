@@ -22,6 +22,7 @@ from database import db
 from bot import BOT_INSTANCE
 from plugins.test import CLIENT
 from plugins.utils import extract_ep_label_robust, format_tg_error
+from plugins.jobs import _passes_filters
 _CLIENT = CLIENT()
 COLL = "live_batch_jobs"
 
@@ -592,8 +593,14 @@ async def _lb_run_job(job_id: str):
                     target_ch_int = int(job["target"])
                     story_name = job["story"]
 
+                    disabled_types = await db.get_filters(user_id)
                     for m in valid:
                         if m.id in existing_buf:
+                            continue
+
+                        if not _passes_filters(m, disabled_types):
+                            logger.info(f"[LiveBatch {job_id}] Skipping msg {m.id} — filtered out by user content settings")
+                            last_seen = max(last_seen, m.id)
                             continue
 
                         if use_dup_check:
