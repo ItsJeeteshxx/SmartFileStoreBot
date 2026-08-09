@@ -5896,20 +5896,39 @@ async def fetch_processed_buyers_data(arya_db):
                 final_payments.append(g)
 
             # ── Smart Payment Deduplication Pass ──
-            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI').
-            # Groups payments by (canonical_story_key, date_day) per user and keeps 1 clean canonical payment record!
+            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI' or multi-story cart duplicates).
+            # Groups payments by (canonical_story_signature, date_day) per user and keeps 1 clean canonical payment record!
             dedup_payments = {}
             specific_gateways = ("CASHFREE", "CASHFREE_UPI", "UPI_MANUAL", "UPI_MANUAL_MINIAPP", "RAZORPAY", "OXAPAY", "DODO_PAYMENTS", "PAYU", "PAYTM")
 
             for p_item in final_payments:
-                s_key = str(p_item.get("story_id") or p_item.get("story_name") or "").strip()
-                s_canon = sid_to_canonical.get(s_key, s_key)
                 p_date = str(p_item.get("date") or "")[:10]  # YYYY-MM-DD
                 p_status = str(p_item.get("status", "")).lower()
+                p_ref = str(p_item.get("reference") or "").strip().upper()
+                p_oid = str(p_item.get("order_id") or "").strip().upper()
 
-                p_oid = str(p_item.get("order_id") or p_item.get("reference") or "").strip()
-                # Build unique transaction deduplication key per user: (story + order_id + date_day)
-                uniq_key = f"{s_canon}_{p_oid}_{p_date}" if (s_canon and p_oid) else (p_oid or f"{s_canon}_{p_date}")
+                # Calculate canonical story signature for single & multi-story cart orders
+                s_ids = p_item.get("story_ids", [])
+                if not s_ids and p_item.get("story_id"):
+                    s_ids = [p_item.get("story_id")]
+                
+                s_canons = sorted(list(set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])))
+                if s_canons:
+                    s_signature = "-".join(s_canons)
+                else:
+                    s_key = str(p_item.get("story_name") or "story").strip().lower()
+                    s_signature = sid_to_canonical.get(s_key, s_key)
+
+                # Determine deduplication key:
+                # If transaction reference (UTR / Cashfree ID) is present and valid, group by reference!
+                # Else if explicit structured order ID (starts with AM-, AB-, ORD-), group by order ID!
+                # Else group by (story_signature, date_day) for this buyer.
+                if p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
+                    uniq_key = f"ref_{p_ref}"
+                elif p_oid and (p_oid.startswith("AM-") or p_oid.startswith("AB-") or p_oid.startswith("ORD-")):
+                    uniq_key = f"oid_{p_oid}"
+                else:
+                    uniq_key = f"story_{s_signature}_{p_date}"
 
                 if uniq_key not in dedup_payments:
                     dedup_payments[uniq_key] = p_item
@@ -5922,7 +5941,16 @@ async def fetch_processed_buyers_data(arya_db):
                         dedup_payments[uniq_key] = p_item
                         continue
 
-                    # 2. If both are paid (or same status), prefer the specific gateway method!
+                    # 2. If both are paid (or same status):
+                    #    - Prefer multi-story aggregated order ("His Secret Fortune, Divine Flame Burst") over single-story fragments!
+                    e_story_count = len(existing.get("story_ids", []))
+                    p_story_count = len(p_item.get("story_ids", []))
+
+                    if p_story_count > e_story_count:
+                        dedup_payments[uniq_key] = p_item
+                        continue
+
+                    #    - Prefer specific gateway method ("CASHFREE", "UPI_MANUAL") over generic "UPI"
                     m_existing = str(existing.get("method", "")).upper()
                     m_new = str(p_item.get("method", "")).upper()
 
@@ -5936,7 +5964,44 @@ async def fetch_processed_buyers_data(arya_db):
                     if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
                         existing["order_id"] = p_item["order_id"]
 
-            final_payments = list(dedup_payments.values())
+            # Second Pass: Merge single-story audit records into multi-story cart orders for the same user on the same day!
+            merged_payments = {}
+            for p_item in list(dedup_payments.values()):
+                p_date = str(p_item.get("date") or "")[:10]
+                p_status = str(p_item.get("status", "")).lower()
+                s_ids = p_item.get("story_ids", [])
+                if not s_ids and p_item.get("story_id"):
+                    s_ids = [p_item.get("story_id")]
+
+                s_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])
+                
+                # If this item is a multi-story cart order or has a specific gateway reference
+                is_multi = len(s_canons) > 1
+                
+                # Check if there is already a multi-story order on the same date that contains these story IDs
+                already_covered = False
+                if not is_multi and s_canons:
+                    single_sid = next(iter(s_canons))
+                    for m_key, m_item in merged_payments.items():
+                        m_date = str(m_item.get("date") or "")[:10]
+                        m_ids = m_item.get("story_ids", [])
+                        if not m_ids and m_item.get("story_id"):
+                            m_ids = [m_item.get("story_id")]
+                        m_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in m_ids if sid])
+                        
+                        if m_date == p_date and len(m_canons) > 1 and single_sid in m_canons:
+                            already_covered = True
+                            # Merge method & reference if multi-story order lacks it
+                            m_new = str(p_item.get("method", "")).upper()
+                            if any(g in m_new for g in specific_gateways) and not any(g in str(m_item.get("method", "")).upper() for g in specific_gateways):
+                                m_item["method"] = m_new
+                            break
+
+                if not already_covered:
+                    m_key = f"{p_item.get('order_id')}_{p_date}_{','.join(sorted(list(s_canons)))}"
+                    merged_payments[m_key] = p_item
+
+            final_payments = list(merged_payments.values())
             data["payments"] = final_payments
             payments = final_payments
 
@@ -11487,6 +11552,13 @@ async def record_purchased_stories(order: dict):
         except Exception as e:
             logger.error(f"Failed to query default bot_id: {e}")
             
+        total_order_amt = float(order.get("total", 0) or order.get("amount", 0) or 0)
+        num_stories = max(1, len(story_ids))
+        per_story_amt = round(total_order_amt / num_stories, 2) if num_stories > 1 else total_order_amt
+        pay_method = str(order.get("payment_method") or order.get("method") or order.get("gateway") or "UPI").upper()
+        ref_id = str(order.get("reference") or order.get("utr") or order.get("razorpay_payment_id") or order.get("payment_id") or order.get("cf_order_id") or order.get("track_id") or "").strip()
+        ord_id = str(order.get("order_id") or order.get("cf_order_id") or "").strip()
+
         for sid in story_ids:
             try:
                 story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
@@ -11510,10 +11582,10 @@ async def record_purchased_stories(order: dict):
                         "bot_id": bot_id,
                         "purchased_at": datetime.now(timezone.utc),
                         "source": order.get("source", "miniapp"),
-                        "method": order.get("method") or order.get("payment_method") or "UPI",
-                        "amount": order.get("total", 0),
-                        "reference": order.get("razorpay_payment_id") or order.get("payment_id") or order.get("track_id") or "",
-                        "order_id": order.get("order_id") or ""
+                        "method": pay_method,
+                        "amount": per_story_amt,
+                        "reference": ref_id,
+                        "order_id": ord_id
                     })
             except Exception as e:
                 logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
