@@ -20,6 +20,20 @@ class PremiumDatabase:
         self.users = None
         self.settings = None
 
+        try:
+            mongo_uri = getattr(Config, "MONGO_URI", None) or getattr(Config, "DATABASE_URI", None) or getattr(Config, "DATABASE", None)
+            db_name = getattr(Config, "DATABASE_NAME", "arya_premium")
+            if mongo_uri:
+                self.client = AsyncIOMotorClient(mongo_uri)
+                self.db = self.client[db_name]
+                self.users = self.db.users
+                self.stories = self.db.premium_stories
+                self.bots = self.db.premium_bots
+                self.purchases = self.db.premium_purchases
+                self.settings = self.db.premium_settings
+        except Exception as ex:
+            logger.warning(f"PremiumDatabase synchronous pre-init warning: {ex}")
+
     async def connect(self):
         mongo_uri = getattr(Config, "MONGO_URI", None) or getattr(Config, "DATABASE_URI", None) or getattr(Config, "DATABASE", None)
         if not mongo_uri:

@@ -799,10 +799,24 @@ async def _get_rotated_upi(bt_cfg):
     except ImportError:
         from database import db
         
-    cfg_feat = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    cfg_feat = {}
+    try:
+        db_obj = getattr(db, "db", None)
+        if db_obj is not None:
+            cfg_feat = await db_obj.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    except Exception as ex:
+        logger.warning(f"[_get_rotated_upi] Warning loading feature_toggles: {ex}")
+        cfg_feat = {}
+
     upi_options = []
     
-    u1 = cfg_feat.get("upi_id", "").strip() or (await db.get_config("upi_id") or "").strip()
+    u1 = cfg_feat.get("upi_id", "").strip()
+    if not u1 and hasattr(db, "get_config"):
+        try:
+            u1 = (await db.get_config("upi_id") or "").strip()
+        except Exception:
+            u1 = ""
+            
     pn1 = cfg_feat.get("upi_payee_name", "").strip() or (bt_cfg.get("upi_name") or "Merchant").strip()
     if u1:
         upi_options.append((u1, pn1))
@@ -6776,11 +6790,11 @@ async def _process_callback(client, query):
 
 
         elif method == "upi":
-
-            bt = await db.db.premium_bots.find_one({"id": client.me.id})
-
+            if getattr(db, "db", None) is None and hasattr(db, "connect"):
+                await db.connect()
+            db_obj = getattr(db, "db", None)
+            bt = (await db_obj.premium_bots.find_one({"id": client.me.id})) if db_obj is not None else None
             bt_cfg = bt.get("config", {}) if bt else {}
-
             upi_id, p_name = await _get_rotated_upi(bt_cfg)
 
             s_price = str(story["price"])
@@ -7078,7 +7092,10 @@ async def _process_callback(client, query):
             # Direct UPI Transfer Screen
             logger.info(f"[PAY2] User {user_id} clicked Direct UPI option for story {s_id}")
             try:
-                bt = await db.db.premium_bots.find_one({"id": client.me.id})
+                if getattr(db, "db", None) is None and hasattr(db, "connect"):
+                    await db.connect()
+                db_obj = getattr(db, "db", None)
+                bt = (await db_obj.premium_bots.find_one({"id": client.me.id})) if db_obj is not None else None
                 logger.info(f"[PAY2] Loaded bot config: {bool(bt)}")
                 bt_cfg = bt.get("config", {}) if bt else {}
                 upi_id, p_name = await _get_rotated_upi(bt_cfg)
