@@ -665,7 +665,7 @@ async def track_client_telemetry(request: Request):
         return {"status": "error", "message": str(e)}
 
 @api_router.get("/image")
-async def optimize_image(url: str, w: int = 400, h: int = 400):
+async def optimize_image(request: Request, url: str, w: int = 400, h: int = 400):
     """
     Acts as an Image Proxy: Fetches external image (like Catbox / R2), converts to WebP,
     compresses to maintain visual quality without large file size, and caches it persistently.
@@ -675,9 +675,16 @@ async def optimize_image(url: str, w: int = 400, h: int = 400):
 
     # Check cache (RAM -> Disk)
     cache_key = hashlib.md5(f"{url}_{w}_{h}".encode()).hexdigest()
+    etag = f'"{cache_key}"'
+
+    # Check HTTP 304 Not Modified
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and etag in if_none_match:
+        return Response(status_code=304, headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": etag})
+
     cached_bytes = get_cached_image(cache_key)
     if cached_bytes:
-        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
+        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": etag})
 
     try:
         async with aiohttp.ClientSession() as session:
