@@ -4428,6 +4428,9 @@ async def verify_dodopayments_payment(payload: dict = None, order_id: str = None
                 if p_status in ("succeeded", "paid", "completed", "success"):
                     user_id = order.get("user_id") if order else None
                     story_ids = order.get("story_ids", []) if order else []
+                    story_names = order.get("story_names", []) if order else []
+                    # Preserve auto_deliver from the original order doc
+                    auto_deliver_val = order.get("auto_deliver", False) if order else False
 
                     if order:
                         await arya_db.db.orders.update_one(
@@ -4449,16 +4452,19 @@ async def verify_dodopayments_payment(payload: dict = None, order_id: str = None
                         "order_id": oid,
                         "user_id": user_id,
                         "story_ids": story_ids,
+                        "story_names": story_names,
                         "total": float(order.get("total", 0.0)) if order else 0.0,
                         "status": "paid",
                         "payment_id": str(dodo_pid),
-                        "source": "dodopayments"
+                        "source": "dodopayments",
+                        "auto_deliver": auto_deliver_val,
                     }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
-                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
+                    asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Dodo Payments", verified_by="Auto Verified By System"))
 
                     return {"success": True, "status": "paid", "order_id": oid}
+
                 else:
                     return {"success": False, "status": p_status, "order_id": oid}
             else:
