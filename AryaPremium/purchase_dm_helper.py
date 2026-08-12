@@ -414,9 +414,9 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
         if not tg_id_int:
             return
 
-        # Check auto_deliver flag (defaults to True unless explicitly set to False)
-        if order_doc.get("auto_deliver") is False:
-            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver=False, skipping auto delivery.")
+        # Check auto_deliver flag (must be explicitly True, defaults to False if off/missing)
+        if not order_doc.get("auto_deliver"):
+            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver={order_doc.get('auto_deliver')}, skipping auto delivery.")
             return
 
         story_ids = order_doc.get("story_ids", [])
