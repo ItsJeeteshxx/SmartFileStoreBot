@@ -234,6 +234,15 @@ async def main():
         except Exception as e:
             logger.warning(f"Could not start Premium Live Monitor: {e}")
 
+    # Start Auto Instant Delivery Queue Worker (runs DM delivery via store bots)
+    try:
+        from purchase_dm_helper import start_auto_delivery_queue_worker
+        mb_inst = mgmt_bot if 'mgmt_bot' in locals() else None
+        asyncio.create_task(start_auto_delivery_queue_worker(market_clients, mb_inst, db))
+        logger.info("✅ Auto Instant Delivery Queue Worker started in main.py")
+    except Exception as e:
+        logger.warning(f"Could not start Auto Delivery Queue Worker: {e}")
+
     # Keep bots running
     await idle()
 

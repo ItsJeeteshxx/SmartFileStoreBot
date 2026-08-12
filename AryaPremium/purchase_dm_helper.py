@@ -100,20 +100,18 @@ def build_purchase_complete_message(
     # "Your purchased story is available anytime:" in a Quote Block
     access_header_quote = "<blockquote>Your purchased story is available anytime:</blockquote>"
 
-    # Below it, NOT in quote block, with direct links for Purchased and My Stories
+    # Below it, NOT in quote block, with direct link ONLY to Mini App Purchased section
     clean_bot = bot_username.replace("@", "") if bot_username else "UseAryaBot"
     purchased_link = f"https://t.me/{clean_bot}/apminibyarya?startapp=purchased"
-    mystories_link = f"https://t.me/{clean_bot}?start=mystories"
 
     access_items = (
-        f"• <b>Mini App</b> → <b>Library</b> → <b><a href=\"{purchased_link}\">Purchased</a></b>\n"
-        f"• <b>Bot</b> → <b><a href=\"{mystories_link}\">My Stories</a></b>"
+        f"• <b>Mini App</b> → <b>Library</b> → <b><a href=\"{purchased_link}\">Purchased Stories</a></b>"
     )
 
-    # 6. Bottom 3 Quoteblocks (NO 1-line gap between them)
+    # 6. Bottom Quoteblocks (NO 1-line gap between them)
     channel_link = "https://t.me/AryaPremiumTG"
     bottom_quotes = (
-        "<blockquote>Need it again later ? Just request delivery from there.</blockquote>\n"
+        "<blockquote>Need it again later ? Just open Arya Premium Mini App anytime to access your stories.</blockquote>\n"
         '<blockquote>The guide below will answer almost everything before you ask. <a href="https://t.me/StoriesLinkopningguide"><b>Guide</b></a></blockquote>\n'
         '<blockquote>Thank you for supporting Arya Premium. Every purchase helps us bring you more stories.\n\n'
         f'📢 <b>If you want to receive new updates related to Arya Premium in the future:</b>\n'
@@ -315,72 +313,98 @@ async def send_purchase_success_dm(
         logger.error(f"send_purchase_success_dm exception: {e}", exc_info=True)
 
 
-_api_pyrogram_delivery_client = None
-
-async def _get_delivery_client_and_func(db=None):
-    global _api_pyrogram_delivery_client
-
-    _do_dm_delivery = None
-    market_clients = {}
-
-    try:
-        from plugins.userbot.market_seller import _do_dm_delivery, market_clients
-    except ImportError:
+async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, db=None):
+    """
+    Background worker running inside main.py (arya-premium.service).
+    Polls pending_auto_deliveries collection in MongoDB and executes DM delivery
+    using active Pyrogram store clients which are members of channel resources.
+    """
+    logger.info("[AutoDeliveryQueue] Worker loop started in main bot process...")
+    if not db:
         try:
-            from AryaPremium.plugins.userbot.market_seller import _do_dm_delivery, market_clients
+            from AryaPremium.database import db as global_db
+            db = global_db
         except ImportError:
-            pass
-
-    selected_client = None
-    if market_clients:
-        selected_client = next(iter(market_clients.values()), None)
-
-    if not selected_client and db and hasattr(db, "mgmt_client") and db.mgmt_client:
-        selected_client = db.mgmt_client
-
-    # If running under Uvicorn (FastAPI) where Pyrogram process isn't running in same memory,
-    # start/reuse a lightweight in-memory Pyrogram bot client using MGMT_BOT_TOKEN / BOT_TOKEN
-    if not selected_client:
-        if _api_pyrogram_delivery_client is not None:
             try:
-                if getattr(_api_pyrogram_delivery_client, "is_connected", False):
-                    selected_client = _api_pyrogram_delivery_client
-            except Exception:
+                from database import db as global_db
+                db = global_db
+            except ImportError:
                 pass
 
-        if not selected_client:
+    while True:
+        try:
+            await asyncio.sleep(2)
+            if not db or not hasattr(db, "db") or db.db is None:
+                continue
+
+            job = await db.db.pending_auto_deliveries.find_one_and_update(
+                {"status": "pending"},
+                {"$set": {"status": "processing", "processed_at": datetime.now(timezone.utc)}},
+                sort=[("created_at", 1)]
+            )
+            if not job:
+                continue
+
+            user_id = job.get("user_id")
+            story_ids = job.get("story_ids", [])
+            logger.info(f"[AutoDeliveryQueue] Picked auto delivery job for user {user_id}, story_ids: {story_ids}")
+
+            _do_dm_delivery = None
             try:
-                from pyrogram import Client
+                from plugins.userbot.market_seller import _do_dm_delivery
+            except ImportError:
                 try:
-                    from AryaPremium.config import Config
+                    from AryaPremium.plugins.userbot.market_seller import _do_dm_delivery
                 except ImportError:
-                    from config import Config
+                    pass
 
-                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN")
-                api_id = getattr(Config, "API_ID", None) or os.environ.get("API_ID")
-                api_hash = getattr(Config, "API_HASH", None) or os.environ.get("API_HASH")
+            if not _do_dm_delivery:
+                logger.warning("[AutoDeliveryQueue] _do_dm_delivery not importable. Re-queueing job...")
+                await db.db.pending_auto_deliveries.update_one({"_id": job["_id"]}, {"$set": {"status": "pending"}})
+                await asyncio.sleep(5)
+                continue
 
-                if token and api_id and api_hash:
-                    logger.info("[AutoDelivery] Starting dedicated Pyrogram client for API auto delivery...")
-                    _api_pyrogram_delivery_client = Client(
-                        name="api_auto_delivery_bot",
-                        api_id=int(api_id),
-                        api_hash=str(api_hash),
-                        bot_token=str(token),
-                        in_memory=True
-                    )
-                    await _api_pyrogram_delivery_client.start()
-                    selected_client = _api_pyrogram_delivery_client
-            except Exception as err:
-                logger.error(f"[AutoDelivery] Failed to start dedicated Pyrogram client: {err}")
+            # Pick an active store bot client that has channel permissions
+            selected_client = None
+            if market_clients:
+                selected_client = next(iter(market_clients.values()), None)
+            if not selected_client:
+                selected_client = mgmt_bot
 
-    return selected_client, _do_dm_delivery
+            if not selected_client:
+                logger.warning(f"[AutoDeliveryQueue] No active Pyrogram store client found. Re-queueing job {job['_id']}...")
+                await db.db.pending_auto_deliveries.update_one({"_id": job["_id"]}, {"$set": {"status": "pending"}})
+                await asyncio.sleep(5)
+                continue
+
+            for sid in story_ids:
+                try:
+                    from bson.objectid import ObjectId
+                    s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
+                    s_doc = await db.db.premium_stories.find_one({"_id": s_obj_id})
+                    if not s_doc:
+                        s_doc = await db.db.premium_stories.find_one({"story_id": sid})
+
+                    if s_doc:
+                        logger.info(f"[AutoDeliveryQueue] Delivering story '{s_doc.get('story_name_en')}' to user {user_id}...")
+                        await _do_dm_delivery(selected_client, user_id, s_doc)
+                except Exception as sid_err:
+                    logger.error(f"[AutoDeliveryQueue] Delivery error for story {sid}: {sid_err}", exc_info=True)
+
+            await db.db.pending_auto_deliveries.update_one({"_id": job["_id"]}, {"$set": {"status": "completed"}})
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[AutoDeliveryQueue] Exception in worker loop: {e}", exc_info=True)
+            await asyncio.sleep(5)
 
 
 async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_doc: Optional[Dict[str, Any]] = None):
     """
-    Automatically triggers full DM delivery of purchased stories upon order completion
-    if auto_deliver flag is True (default: True).
+    Pushes auto-delivery task to pending_auto_deliveries queue in MongoDB.
+    The main.py process (arya-premium.service) will pick it up and deliver story files
+    using store bots that have permission to read/copy from source channel.
     """
     try:
         if not order_doc or not user_id:
@@ -413,35 +437,21 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     upsert=True
                 )
                 if claim is not None:
-                    logger.info(f"[AutoDelivery] Delivery already triggered for claim_key={delivery_claim_key}, skipping.")
+                    logger.info(f"[AutoDelivery] Delivery already queued for claim_key={delivery_claim_key}, skipping.")
                     return
+
+                # Push task to MongoDB pending_auto_deliveries queue
+                await db.db.pending_auto_deliveries.insert_one({
+                    "claim_key": delivery_claim_key,
+                    "user_id": tg_id_int,
+                    "story_ids": story_ids,
+                    "order_id": rec_oid,
+                    "status": "pending",
+                    "created_at": datetime.now(timezone.utc)
+                })
+                logger.info(f"[AutoDelivery] Queued auto delivery task for order {rec_oid} to user {tg_id_int}")
             except Exception as c_err:
-                logger.warning(f"[AutoDelivery] Claim check exception: {c_err}")
-
-        # Resolve Pyrogram bot client & delivery function
-        selected_client, _do_dm_delivery = await _get_delivery_client_and_func(db)
-
-        if not _do_dm_delivery:
-            logger.warning("[AutoDelivery] _do_dm_delivery not importable.")
-            return
-
-        if not selected_client:
-            logger.warning("[AutoDelivery] No active Pyrogram bot client found for auto delivery.")
-            return
-
-        for sid in story_ids:
-            try:
-                from bson.objectid import ObjectId
-                s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
-                s_doc = await db.db.premium_stories.find_one({"_id": s_obj_id})
-                if not s_doc:
-                    s_doc = await db.db.premium_stories.find_one({"story_id": sid})
-
-                if s_doc:
-                    logger.info(f"[AutoDelivery] Launching auto DM delivery for story '{s_doc.get('story_name_en')}' to user {tg_id_int}...")
-                    asyncio.create_task(_do_dm_delivery(selected_client, tg_id_int, s_doc))
-            except Exception as sid_err:
-                logger.error(f"[AutoDelivery] Error launching delivery for story {sid}: {sid_err}")
+                logger.warning(f"[AutoDelivery] Claim/queue check exception: {c_err}")
 
     except Exception as e:
         logger.error(f"[AutoDelivery] Top-level exception in trigger_auto_delivery_for_order: {e}", exc_info=True)
