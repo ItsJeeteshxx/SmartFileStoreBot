@@ -315,6 +315,68 @@ async def send_purchase_success_dm(
         logger.error(f"send_purchase_success_dm exception: {e}", exc_info=True)
 
 
+_api_pyrogram_delivery_client = None
+
+async def _get_delivery_client_and_func(db=None):
+    global _api_pyrogram_delivery_client
+
+    _do_dm_delivery = None
+    market_clients = {}
+
+    try:
+        from plugins.userbot.market_seller import _do_dm_delivery, market_clients
+    except ImportError:
+        try:
+            from AryaPremium.plugins.userbot.market_seller import _do_dm_delivery, market_clients
+        except ImportError:
+            pass
+
+    selected_client = None
+    if market_clients:
+        selected_client = next(iter(market_clients.values()), None)
+
+    if not selected_client and db and hasattr(db, "mgmt_client") and db.mgmt_client:
+        selected_client = db.mgmt_client
+
+    # If running under Uvicorn (FastAPI) where Pyrogram process isn't running in same memory,
+    # start/reuse a lightweight in-memory Pyrogram bot client using MGMT_BOT_TOKEN / BOT_TOKEN
+    if not selected_client:
+        if _api_pyrogram_delivery_client is not None:
+            try:
+                if getattr(_api_pyrogram_delivery_client, "is_connected", False):
+                    selected_client = _api_pyrogram_delivery_client
+            except Exception:
+                pass
+
+        if not selected_client:
+            try:
+                from pyrogram import Client
+                try:
+                    from AryaPremium.config import Config
+                except ImportError:
+                    from config import Config
+
+                token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN")
+                api_id = getattr(Config, "API_ID", None) or os.environ.get("API_ID")
+                api_hash = getattr(Config, "API_HASH", None) or os.environ.get("API_HASH")
+
+                if token and api_id and api_hash:
+                    logger.info("[AutoDelivery] Starting dedicated Pyrogram client for API auto delivery...")
+                    _api_pyrogram_delivery_client = Client(
+                        name="api_auto_delivery_bot",
+                        api_id=int(api_id),
+                        api_hash=str(api_hash),
+                        bot_token=str(token),
+                        in_memory=True
+                    )
+                    await _api_pyrogram_delivery_client.start()
+                    selected_client = _api_pyrogram_delivery_client
+            except Exception as err:
+                logger.error(f"[AutoDelivery] Failed to start dedicated Pyrogram client: {err}")
+
+    return selected_client, _do_dm_delivery
+
+
 async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_doc: Optional[Dict[str, Any]] = None):
     """
     Automatically triggers full DM delivery of purchased stories upon order completion
@@ -357,27 +419,11 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                 logger.warning(f"[AutoDelivery] Claim check exception: {c_err}")
 
         # Resolve Pyrogram bot client & delivery function
-        try:
-            from plugins.userbot.market_seller import _do_dm_delivery
-            from main import market_clients, mgmt_bot
-        except ImportError:
-            try:
-                from AryaPremium.plugins.userbot.market_seller import _do_dm_delivery
-                from AryaPremium.main import market_clients, mgmt_bot
-            except ImportError:
-                _do_dm_delivery = None
-                market_clients = {}
-                mgmt_bot = None
+        selected_client, _do_dm_delivery = await _get_delivery_client_and_func(db)
 
         if not _do_dm_delivery:
             logger.warning("[AutoDelivery] _do_dm_delivery not importable.")
             return
-
-        selected_client = None
-        if market_clients:
-            selected_client = next(iter(market_clients.values()), None)
-        if not selected_client:
-            selected_client = mgmt_bot
 
         if not selected_client:
             logger.warning("[AutoDelivery] No active Pyrogram bot client found for auto delivery.")

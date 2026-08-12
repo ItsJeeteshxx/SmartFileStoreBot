@@ -3853,6 +3853,7 @@ async def create_cashfree_order(payload: dict):
                 "total": total,
                 "gateway": "cashfree",
                 "status": "pending",
+                "auto_deliver": bool(payload.get("auto_deliver", True)),
                 "created_at": datetime.now(timezone.utc)
             }
             try:
