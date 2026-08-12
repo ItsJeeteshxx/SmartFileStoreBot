@@ -308,5 +308,94 @@ async def send_purchase_success_dm(
                 else:
                     logger.warning(f"send_purchase_success_dm Telegram API response: {res}")
 
+        # ── Trigger Automatic Instant Delivery if enabled ──
+        asyncio.create_task(trigger_auto_delivery_for_order(db, tg_id_int, order_doc))
+
     except Exception as e:
         logger.error(f"send_purchase_success_dm exception: {e}", exc_info=True)
+
+
+async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_doc: Optional[Dict[str, Any]] = None):
+    """
+    Automatically triggers full DM delivery of purchased stories upon order completion
+    if auto_deliver flag is True (default: True).
+    """
+    try:
+        if not order_doc or not user_id:
+            return
+
+        tg_id_int = int(user_id) if str(user_id).isdigit() else 0
+        if not tg_id_int:
+            return
+
+        # Check auto_deliver flag (defaults to True unless explicitly set to False)
+        if order_doc.get("auto_deliver") is False:
+            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver=False, skipping auto delivery.")
+            return
+
+        story_ids = order_doc.get("story_ids", [])
+        if not story_ids and order_doc.get("story_id"):
+            story_ids = [order_doc.get("story_id")]
+
+        if not story_ids:
+            return
+
+        # Idempotency claim check
+        rec_oid = order_doc.get("order_id") or order_doc.get("payment_id") or "_".join(str(s) for s in story_ids)
+        delivery_claim_key = f"auto_deliv_{tg_id_int}_{rec_oid}"
+        if db and hasattr(db, "db"):
+            try:
+                claim = await db.db.sent_receipts.find_one_and_update(
+                    {"_id": delivery_claim_key},
+                    {"$setOnInsert": {"user_id": tg_id_int, "delivered_at": datetime.now(timezone.utc)}},
+                    upsert=True
+                )
+                if claim is not None:
+                    logger.info(f"[AutoDelivery] Delivery already triggered for claim_key={delivery_claim_key}, skipping.")
+                    return
+            except Exception as c_err:
+                logger.warning(f"[AutoDelivery] Claim check exception: {c_err}")
+
+        # Resolve Pyrogram bot client & delivery function
+        try:
+            from plugins.userbot.market_seller import _do_dm_delivery
+            from main import market_clients, mgmt_bot
+        except ImportError:
+            try:
+                from AryaPremium.plugins.userbot.market_seller import _do_dm_delivery
+                from AryaPremium.main import market_clients, mgmt_bot
+            except ImportError:
+                _do_dm_delivery = None
+                market_clients = {}
+                mgmt_bot = None
+
+        if not _do_dm_delivery:
+            logger.warning("[AutoDelivery] _do_dm_delivery not importable.")
+            return
+
+        selected_client = None
+        if market_clients:
+            selected_client = next(iter(market_clients.values()), None)
+        if not selected_client:
+            selected_client = mgmt_bot
+
+        if not selected_client:
+            logger.warning("[AutoDelivery] No active Pyrogram bot client found for auto delivery.")
+            return
+
+        for sid in story_ids:
+            try:
+                from bson.objectid import ObjectId
+                s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
+                s_doc = await db.db.premium_stories.find_one({"_id": s_obj_id})
+                if not s_doc:
+                    s_doc = await db.db.premium_stories.find_one({"story_id": sid})
+
+                if s_doc:
+                    logger.info(f"[AutoDelivery] Launching auto DM delivery for story '{s_doc.get('story_name_en')}' to user {tg_id_int}...")
+                    asyncio.create_task(_do_dm_delivery(selected_client, tg_id_int, s_doc))
+            except Exception as sid_err:
+                logger.error(f"[AutoDelivery] Error launching delivery for story {sid}: {sid_err}")
+
+    except Exception as e:
+        logger.error(f"[AutoDelivery] Top-level exception in trigger_auto_delivery_for_order: {e}", exc_info=True)
