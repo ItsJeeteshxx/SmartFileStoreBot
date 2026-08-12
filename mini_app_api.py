@@ -6257,8 +6257,11 @@ async def save_admin_story(request: Request):
             try:
                 logger.info(f"Auto-outpainting banner for story: {save_doc.get('story_name_en') or save_doc.get('story_id')}")
                 import aiohttp
+                fetch_url = poster_url
+                if fetch_url.startswith("/"):
+                    fetch_url = f"http://127.0.0.1:8000{fetch_url}"
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(poster_url) as resp:
+                    async with session.get(fetch_url) as resp:
                         if resp.status == 200:
                             poster_bytes = await resp.read()
                             
