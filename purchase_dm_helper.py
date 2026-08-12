@@ -377,7 +377,24 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                 await asyncio.sleep(5)
                 continue
 
-            for sid in story_ids:
+            total_stories = len(story_ids)
+
+            # If multiple stories: notify user upfront, then deliver one by one with gap
+            if total_stories > 1:
+                try:
+                    await selected_client.send_message(
+                        user_id,
+                        f"📦 <b>Auto Instant Delivery Starting</b>\n\n"
+                        f"You have <b>{total_stories} stories</b> in your order.\n"
+                        f"They will be delivered <b>one by one</b> automatically.\n\n"
+                        f"⏳ Please wait — your first story is being sent now...",
+                        parse_mode="html"
+                    )
+                    await asyncio.sleep(2)
+                except Exception:
+                    pass
+
+            for i, sid in enumerate(story_ids, start=1):
                 try:
                     from bson.objectid import ObjectId
                     s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
@@ -386,10 +403,47 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                         s_doc = await db.db.premium_stories.find_one({"story_id": sid})
 
                     if s_doc:
-                        logger.info(f"[AutoDeliveryQueue] Delivering story '{s_doc.get('story_name_en')}' to user {user_id}...")
+                        story_name = s_doc.get("story_name_en") or s_doc.get("story_name") or f"Story {i}"
+                        logger.info(
+                            f"[AutoDeliveryQueue] Delivering story {i}/{total_stories} "
+                            f"'{story_name}' to user {user_id}..."
+                        )
+
+                        # Notify user which story is being delivered (only for multi-story orders)
+                        if total_stories > 1:
+                            try:
+                                await selected_client.send_message(
+                                    user_id,
+                                    f"📖 <b>Delivering Story {i} of {total_stories}</b>\n"
+                                    f"<i>{story_name}</i>\n\n"
+                                    f"⏳ Sending files now...",
+                                    parse_mode="html"
+                                )
+                                await asyncio.sleep(1)
+                            except Exception:
+                                pass
+
+                        # Deliver the story
                         await _do_dm_delivery(selected_client, user_id, s_doc)
+
+                        # Wait between stories so delivery is clearly sequential (not all at once)
+                        if total_stories > 1 and i < total_stories:
+                            await asyncio.sleep(8)
+
                 except Exception as sid_err:
                     logger.error(f"[AutoDeliveryQueue] Delivery error for story {sid}: {sid_err}", exc_info=True)
+
+            # Final completion message for multi-story orders
+            if total_stories > 1:
+                try:
+                    await selected_client.send_message(
+                        user_id,
+                        f"✅ <b>All {total_stories} stories delivered successfully!</b>\n\n"
+                        f"Enjoy your stories 🎉",
+                        parse_mode="html"
+                    )
+                except Exception:
+                    pass
 
             await db.db.pending_auto_deliveries.update_one({"_id": job["_id"]}, {"$set": {"status": "completed"}})
 
