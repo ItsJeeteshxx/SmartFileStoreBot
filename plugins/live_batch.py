@@ -593,7 +593,7 @@ async def _lb_run_job(job_id: str):
                     target_ch_int = int(job["target"])
                     story_name = job["story"]
 
-                    disabled_types = await db.get_filters(user_id)
+                    disabled_types = await db.get_filters(job["user_id"])
                     for m in valid:
                         if m.id in existing_buf:
                             continue
