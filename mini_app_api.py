@@ -4091,6 +4091,8 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                     cust_id_str = str(cust_details.get("customer_id", ""))
                     user_id = order.get("user_id") if order else (int(cust_id_str.replace("cust_", "")) if "cust_" in cust_id_str and cust_id_str.replace("cust_", "").isdigit() else None)
                     story_ids = order.get("story_ids", []) if order else []
+                    # Preserve auto_deliver from the original order doc saved during create-cashfree-order
+                    auto_deliver_val = order.get("auto_deliver", False) if order else False
 
                     if order:
                         await arya_db.db.orders.update_one(
@@ -4110,6 +4112,7 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                             "gateway": "cashfree",
                             "status": "paid",
                             "payment_id": str(payment_id),
+                            "auto_deliver": auto_deliver_val,
                             "paid_at": datetime.now(timezone.utc),
                             "created_at": datetime.now(timezone.utc)
                         }
@@ -4132,14 +4135,16 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                         "status": "paid",
                         "payment_id": str(payment_id),
                         "payment_method": "Cashfree",
-                        "source": "Cashfree"
+                        "source": "Cashfree",
+                        "auto_deliver": auto_deliver_val,
                     }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
-                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
+                    asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Cashfree", verified_by="Auto Verified By System"))
 
                     
                     return {"success": True, "status": "paid", "order_id": oid, "payment_id": str(payment_id)}
+
                 else:
                     return {"success": False, "status": cf_status, "order_id": oid}
             else:
