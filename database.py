@@ -777,7 +777,11 @@ class Database:
                 logger.info("auto_unblock_paid_users: DB object not initialized yet, skipping.")
                 return
 
-            users_col = getattr(self, 'users', None) or getattr(self, 'col', None) or getattr(db_obj, 'users', None)
+            users_col = getattr(self, 'users', None)
+            if users_col is None:
+                users_col = getattr(self, 'col', None)
+            if users_col is None and db_obj is not None:
+                users_col = getattr(db_obj, 'users', None)
 
             # 1. Collect from users.purchases
             if users_col is not None:
@@ -798,7 +802,10 @@ class Database:
                         except: pass
 
             # 3. Collect from premium_purchases
-            if hasattr(db_obj, 'premium_purchases') and db_obj.premium_purchases is not None:
+            purchases_col = getattr(self, 'purchases', None)
+            if purchases_col is None and db_obj is not None:
+                purchases_col = getattr(db_obj, 'premium_purchases', None)
+            if purchases_col is not None:
                 async for doc in db_obj.premium_purchases.find({}, {"user_id": 1}):
                     uid = doc.get("user_id")
                     if uid is not None:

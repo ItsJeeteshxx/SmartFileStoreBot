@@ -331,7 +331,11 @@ class PremiumDatabase:
                 logger.info("auto_unblock_paid_users: DB object not initialized yet, skipping.")
                 return
 
-            users_col = getattr(self, 'users', None) or getattr(self, 'col', None) or getattr(db_obj, 'users', None)
+            users_col = getattr(self, 'users', None)
+            if users_col is None:
+                users_col = getattr(self, 'col', None)
+            if users_col is None and db_obj is not None:
+                users_col = getattr(db_obj, 'users', None)
 
             if users_col is not None:
                 async for doc in users_col.find({"purchases.0": {"$exists": True}}, {"id": 1}):
@@ -349,7 +353,9 @@ class PremiumDatabase:
                         try: paid_uids.add(int(uid))
                         except: pass
 
-            purchases_col = getattr(self, 'purchases', None) or getattr(db_obj, 'premium_purchases', None)
+            purchases_col = getattr(self, 'purchases', None)
+            if purchases_col is None and db_obj is not None:
+                purchases_col = getattr(db_obj, 'premium_purchases', None)
             if purchases_col is not None:
                 async for doc in purchases_col.find({}, {"user_id": 1}):
                     uid = doc.get("user_id")
