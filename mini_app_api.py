@@ -2166,6 +2166,7 @@ async def verify_upi_utr(payload: dict):
     utr = str(payload.get("utr", "")).strip()
     promo_code = payload.get("promo_code", "")
     is_int = payload.get("is_international", False)
+    auto_deliver = bool(payload.get("auto_deliver", False))
 
     if not telegram_id or not story_ids or not utr:
         raise HTTPException(status_code=400, detail="Missing required validation parameters.")
@@ -2419,6 +2420,7 @@ async def verify_upi_utr(payload: dict):
         "status":              "paid",
         "source":              "upi_manual_miniapp",
         "utr":                 utr,
+        "auto_deliver":        auto_deliver,
         "paid_at":             datetime.now(timezone.utc),
     }
 
@@ -2497,6 +2499,7 @@ async def create_pending_order(payload: dict):
     username      = str(payload.get("username", "")).strip()
     first_name    = str(payload.get("first_name", "")).strip()
     last_name     = str(payload.get("last_name", "")).strip()
+    auto_deliver  = bool(payload.get("auto_deliver", False))
 
     if not telegram_id:
         logger.warning("create_pending_order: missing telegram_id — skipping")
@@ -2553,6 +2556,7 @@ async def create_pending_order(payload: dict):
             "status":         "pending",
             "source":         "upi_manual_miniapp",
             "upi_id_shown":   upi_id_shown,
+            "auto_deliver":   auto_deliver,
             "created_at":     datetime.now(timezone.utc),
         }
         await db.db.orders.insert_one(pending_doc)
