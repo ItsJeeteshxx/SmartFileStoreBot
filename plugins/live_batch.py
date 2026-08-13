@@ -571,9 +571,49 @@ async def _lb_run_job(job_id: str):
                 valid = []
                 for m in msgs:
                     if m and not getattr(m, 'empty', True) and not getattr(m, 'service', False):
-                        has_media = bool(getattr(m, 'audio', None) or getattr(m, 'document', None) or getattr(m, 'video', None) or getattr(m, 'voice', None) or getattr(m, 'photo', None))
-                        if has_media:
-                            valid.append(m)
+                        # ── Live Batch content policy ──────────────────────────────────────
+                        # Only audio / document / video / voice qualify for batch link generation.
+                        # Photos are SKIPPED (they are not part of episode media).
+                        # Pure text messages with links or @usernames are SKIPPED.
+                        # Pure text > 30 chars: also delete from source to keep channel clean.
+                        has_file_media = bool(
+                            getattr(m, 'audio', None)
+                            or getattr(m, 'document', None)
+                            or getattr(m, 'video', None)
+                            or getattr(m, 'voice', None)
+                        )
+                        if not has_file_media:
+                            # It might be a photo or pure text — handle both
+                            is_photo = bool(getattr(m, 'photo', None))
+                            if is_photo:
+                                logger.info(f"[LiveBatch {job_id}] Skipping photo msg {m.id} — images not included in batch links")
+                                last_seen = max(last_seen, m.id)
+                                continue
+                            # Pure text message
+                            raw_text = str(getattr(m, 'text', '') or '')
+                            if len(raw_text) > 30:
+                                # Delete noisy long text messages from source to keep channel clean
+                                try:
+                                    await src_client.delete_messages(source, m.id)
+                                    logger.info(f"[LiveBatch {job_id}] Deleted long text msg {m.id} from source (len={len(raw_text)})")
+                                except Exception as _del_e:
+                                    logger.debug(f"[LiveBatch {job_id}] Could not delete text msg {m.id}: {_del_e}")
+                            else:
+                                logger.info(f"[LiveBatch {job_id}] Skipping short text msg {m.id} — no media")
+                            last_seen = max(last_seen, m.id)
+                            continue
+
+                        # Check caption for URLs or @username mentions — skip such messages
+                        import re as _re
+                        cap_text = str(getattr(m, 'caption', '') or '')
+                        _has_url = bool(_re.search(r'https?://', cap_text, _re.IGNORECASE))
+                        _has_mention = bool(_re.search(r'@[a-zA-Z0-9_]{3,}', cap_text))
+                        if _has_url or _has_mention:
+                            logger.info(f"[LiveBatch {job_id}] Skipping msg {m.id} — caption has link/username")
+                            last_seen = max(last_seen, m.id)
+                            continue
+
+                        valid.append(m)
                 valid.sort(key=lambda m: m.id)
                 
                 raw_exists = [m for m in msgs if m and not getattr(m, 'empty', True)]

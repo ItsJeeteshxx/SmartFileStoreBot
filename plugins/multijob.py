@@ -119,49 +119,61 @@ async def _mj_inc(job_id: str, n: int = 1):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _msg_in_topic(msg, from_thread_id: int) -> bool:
-    """Return True if msg belongs to the given source topic."""
-    tid = getattr(msg, "message_thread_id", None)
-    if tid is not None and int(tid) == from_thread_id:
-        return True
+    """Return True if msg belongs to the given source topic.
     
-    rttm = getattr(msg, "reply_to_story_message_id", None) or getattr(msg, "reply_to_message_id", None)
-    if rttm is not None and int(rttm) == from_thread_id:
-        return True
-        
+    Pyrogram sets `message_thread_id` on ALL messages inside a topic — this is
+    the definitive check. The reply_to chain is kept as a secondary fallback for
+    clients/versions that may omit the field.
+    """
+    # ── Primary: message_thread_id is always set by Telegram on topic messages ──
+    tid = getattr(msg, "message_thread_id", None)
+    if tid is not None:
+        return int(tid) == from_thread_id
+
+    # ── Secondary: message IS the topic header itself (id == thread_id) ──
     m_id = getattr(msg, "id", None)
     if m_id is not None and int(m_id) == from_thread_id:
         return True
 
-    # Fallbacks for reply chain lookup
+    # ── Tertiary: reply_to fields ─────────────────────────────────────────────
+    # reply_to_message_id points to the parent — either the topic header OR
+    # any message inside the topic.  We accept it if it equals the thread_id
+    # (classic case) OR if we can walk one level up and find thread_id.
+    rttm = (
+        getattr(msg, "reply_to_story_message_id", None)
+        or getattr(msg, "reply_to_message_id", None)
+    )
+    if rttm is not None and int(rttm) == from_thread_id:
+        return True
+
     reply_to = getattr(msg, "reply_to_message", None)
     if reply_to is not None:
+        # Check thread_id on the reply_to object itself
+        rt_tid = getattr(reply_to, "message_thread_id", None)
+        if rt_tid is not None and int(rt_tid) == from_thread_id:
+            return True
         rt_top = getattr(reply_to, "topic_message", None)
         if rt_top is not None and rt_top == from_thread_id:
             return True
+        # reply_to's own reply_to_message_id
         rt_msg = getattr(reply_to, "reply_to_message_id", None)
-        if rt_msg is not None and rt_msg == from_thread_id:
+        if rt_msg is not None and int(rt_msg) == from_thread_id:
             return True
-        rt_tid = getattr(reply_to, "message_thread_id", None)
-        if rt_tid is not None and rt_tid == from_thread_id:
-            return True
-        rt_rttm = getattr(reply_to, "reply_to_story_message_id", None) or getattr(reply_to, "reply_to_message_id", None)
-        if rt_rttm is not None and rt_rttm == from_thread_id:
-            return True
-            
+        # Two levels deep: message replies to A, A replies to topic header
         rtrt = getattr(reply_to, "reply_to_message", None)
         if rtrt is not None:
+            rtrt_tid = getattr(rtrt, "message_thread_id", None)
+            if rtrt_tid is not None and int(rtrt_tid) == from_thread_id:
+                return True
             rtrt_top = getattr(rtrt, "topic_message", None)
             if rtrt_top is not None and rtrt_top == from_thread_id:
                 return True
             rtrt_msg = getattr(rtrt, "reply_to_message_id", None)
-            if rtrt_msg is not None and rtrt_msg == from_thread_id:
+            if rtrt_msg is not None and int(rtrt_msg) == from_thread_id:
                 return True
 
-    rtm_id = getattr(reply_to, "id", None) if reply_to is not None else None
-    if rtm_id is not None and rtm_id == from_thread_id:
-        return True
-
     return False
+
 
 
 def _is_audio_msg(msg) -> bool:
