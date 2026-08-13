@@ -474,7 +474,7 @@ def _get_verify_lock(chat_id):
 async def _batch_indexer_task():
     """Background task to batch-commit auto-indexed files to DB to prevent bot hanging."""
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(15)
         async with _index_lock:
             if not _index_buffer:
                 continue

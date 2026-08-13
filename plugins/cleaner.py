@@ -715,17 +715,28 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         except Exception as _re:
                             logger.warning(f"[Cleaner {job_id}] reconnect attempt {attempt+1}: {_re}")
 
-                    # 1. Try robust get_chat_history first (does not return fake empty messages under rate limit)
+                    # 1. Userbot accounts can use get_chat_history; bot accounts must use get_messages
+                    _is_userbot = True
                     try:
-                        limit_val = end_id - start + 1
-                        async for m in client.get_chat_history(from_ch, limit=limit_val, offset_id=end_id + 1):
-                            if m.id < start:
-                                break
-                            if m and not m.empty:
-                                _msg_cache[m.id] = m
-                        return
-                    except Exception as hist_err:
-                        logger.warning(f"[Cleaner {job_id}] get_chat_history failed: {hist_err}. Falling back to get_messages.")
+                        _me = getattr(client, "me", None)
+                        if _me and getattr(_me, "is_bot", False):
+                            _is_userbot = False
+                        elif getattr(client, "is_bot", False):
+                            _is_userbot = False
+                    except Exception:
+                        pass
+
+                    if _is_userbot:
+                        try:
+                            limit_val = end_id - start + 1
+                            async for m in client.get_chat_history(from_ch, limit=limit_val, offset_id=end_id + 1):
+                                if m.id < start:
+                                    break
+                                if m and not m.empty:
+                                    _msg_cache[m.id] = m
+                            return
+                        except Exception as hist_err:
+                            logger.warning(f"[Cleaner {job_id}] get_chat_history failed: {hist_err}. Falling back to get_messages.")
 
                     # 2. Fallback to get_messages
                     if not hasattr(client, '_network_lock'):
