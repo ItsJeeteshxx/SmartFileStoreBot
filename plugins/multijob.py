@@ -368,14 +368,22 @@ async def _mj_forward(
                             os.makedirs("downloads", exist_ok=True)
                             safe_name = f"downloads/{msg.id}_{original_name}" if original_name else f"downloads/{msg.id}"
                             fp = None
-                            for _dl_try in range(30):
+                            for _dl_try in range(3):
                                 try:
-                                    # We don't need client._network_lock for download_media since it's a read-only transport call.
+                                    if os.path.exists(safe_name):
+                                        try: os.remove(safe_name)
+                                        except: pass
                                     fp = await client.download_media(msg, file_name=safe_name)
-                                    if fp: 
-                                        import os
+                                    if fp and os.path.exists(str(fp)) and os.path.getsize(str(fp)) > 0: 
                                         await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                                         break
+                                    else:
+                                        if fp and os.path.exists(str(fp)):
+                                            try: os.remove(str(fp))
+                                            except: pass
+                                        fp = None
+                                        logger.warning(f"[MultiJob _send_one] Download attempt {_dl_try + 1}/3 produced 0 B for msg {msg.id}. Retrying...")
+                                        await asyncio.sleep(2)
                                 except FloodWait as fw:
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as dl_e:
@@ -384,19 +392,22 @@ async def _mj_forward(
                                         logger.warning(f"[MultiJob _send_one] Permanent download error for msg {msg.id}: {dl_e}")
                                         return False, str(dl_e), True
                                     
-                                    # Retry on any other transient error (timeout, socket, connection resets, etc.)
-                                    logger.warning(f"[MultiJob _send_one] Transient download error for msg {msg.id} (attempt {_dl_try + 1}/30): {dl_e}. Retrying in 5s...")
-                                    await asyncio.sleep(5)
+                                    logger.warning(f"[MultiJob _send_one] Transient download error for msg {msg.id} (attempt {_dl_try + 1}/3): {dl_e}. Retrying in 2s...")
+                                    await asyncio.sleep(2)
                                     continue
-                            if not fp:
-                                logger.warning(f"[MultiJob _send_one] Msg {msg.id}: download_media returned None (media expired/deleted)")
-                                return False, "MediaExpiredOrDeleted", True
+
+                            if not fp or not os.path.exists(str(fp)) or os.path.getsize(str(fp)) == 0:
+                                if fp and os.path.exists(str(fp)):
+                                    try: os.remove(str(fp))
+                                    except: pass
+                                logger.warning(f"[MultiJob _send_one] Msg {msg.id}: download failed (media expired, deleted, or 0 B) — skipping.")
+                                return False, "MediaExpiredOrEmpty", True
                             
                             up_kw = {"chat_id": chat, "caption": kw.get("caption", msg.caption or "")}
                             if thread: up_kw["message_thread_id"] = thread
                             
                             uploaded = False
-                            for _ul_try in range(30):
+                            for _ul_try in range(3):
                                 try:
                                     if msg.photo:      await client.send_photo(photo=fp, **up_kw)
                                     elif msg.video:    await client.send_video(video=fp, file_name=original_name, **up_kw)
@@ -411,13 +422,12 @@ async def _mj_forward(
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as ul_e:
                                     err_ul = str(ul_e).upper()
-                                    if any(x in err_ul for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                                    if any(x in err_ul for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY", "FILE SIZE EQUALS TO 0")):
                                         logger.warning(f"[MultiJob _send_one] Permanent upload error for msg {msg.id}: {ul_e}")
                                         return False, str(ul_e), True
                                     
-                                    # Retry on any other transient error (timeout, socket, connection resets, etc.)
-                                    logger.warning(f"[MultiJob _send_one] Transient upload error for msg {msg.id} (attempt {_ul_try + 1}/30): {ul_e}. Retrying in 5s...")
-                                    await asyncio.sleep(5)
+                                    logger.warning(f"[MultiJob _send_one] Transient upload error for msg {msg.id} (attempt {_ul_try + 1}/3): {ul_e}. Retrying in 2s...")
+                                    await asyncio.sleep(2)
                                     continue
                                     
                             if not uploaded:
