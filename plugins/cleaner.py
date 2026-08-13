@@ -366,13 +366,26 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
     return cmd
 
 
+def _is_connected(client) -> bool:
+    """Safely check if a Pyrogram Client is currently connected."""
+    if not client:
+        return False
+    try:
+        is_conn = getattr(client, "is_connected", None)
+        if is_conn is None:
+            return False
+        return is_conn() if callable(is_conn) else bool(is_conn)
+    except Exception:
+        return False
+
+
 # ─── Client health ────────────────────────────────────────────────────────────
 async def _ensure_alive(client):
     try:
         if not getattr(client, "is_initialized", False):
             await client.start()
             return client
-        if not getattr(client, "is_connected", True):
+        if not _is_connected(client):
             await client.connect()
     except Exception as e:
         if "already" not in str(e).lower():
@@ -695,7 +708,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             for attempt in range(3):
                 try:
                     # Heal connection before every batch fetch
-                    if attempt > 0 or not getattr(client, 'is_connected', True):
+                    if attempt > 0 or not _is_connected(client):
                         try:
                             client = await _ensure_alive(client)
                             await asyncio.sleep(2)
@@ -821,7 +834,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 while attempt <= 3:
                     try:
                         # Heal/ensure client is alive before downloading
-                        if attempt > 1 or not getattr(client, 'is_connected', True):
+                        if attempt > 1 or not _is_connected(client):
                             try:
                                 client = await _ensure_alive(client)
                                 await asyncio.sleep(2)
@@ -859,7 +872,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         # Try rotating client from worker pool if available
                         try:
                             alt = _CLIENT.get_idle_client()
-                            if alt and alt != client and getattr(alt, 'is_connected', False):
+                            if alt and alt != client and _is_connected(alt):
                                 client = alt
                                 logger.info(f"[Cleaner {job_id}] Switched to idle worker client for mid={m.id}")
                         except Exception: pass
@@ -944,41 +957,40 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
             msg, dl_path, m_obj, active_mid, ep_label, orig_ext = p_res
 
-            # Wait for previous upload to finish (Strict Ordering) before handling skipped files
-            if _upload_task:
-                try:
-                    up_ok, up_err, up_mid = await _upload_task
-                except asyncio.CancelledError:
-                    _upload_task = None
-                    break
-                except Exception as _up_fatal:
-                    up_ok, up_err, up_mid = False, str(_up_fatal), msg_id
-                _upload_task = None
-                if not up_ok:
-                    err_msg = up_err[:200]
-                    # Broken pipe / connection error → save exact position and pause cleanly
-                    _save_mid = up_mid if up_mid else msg_id
-                    await _cl_update_job(job_id, {"status": "paused", "error": err_msg, "current_msg_id": _save_mid})
-                    if _bot:
-                        try:
-                            fail_kb = InlineKeyboardMarkup([[
-                                InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#resume#{job_id}"),
-                                InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
-                            ]])
-                            await _bot.send_message(uid,
-                                f"<b>⏸ Cleaner Job Paused!</b>\n\n"
-                                f"<i>Upload failed — connection dropped mid-transfer. Job paused at last safe position. Resume to continue.</i>\n\n"
-                                f"<b>🧹 Name:</b> {base_name}\n"
-                                f"<b>📁 Done:</b> {done} files\n"
-                                f"<b>❌ Error:</b> <code>{err_msg}</code>",
-                                reply_markup=fail_kb)
-                        except: pass
-                    if _next_task: _next_task.cancel()
-                    job_failed = True
-                    break
-
             # Handled skipped files in Ad Inject Only mode
             if not dl_path:
+                # Wait for any previous upload to complete before skipping/advancing
+                if _upload_task:
+                    try:
+                        up_ok, up_err, up_mid = await _upload_task
+                    except asyncio.CancelledError:
+                        _upload_task = None
+                        break
+                    except Exception as _up_fatal:
+                        up_ok, up_err, up_mid = False, str(_up_fatal), msg_id
+                    _upload_task = None
+                    if not up_ok:
+                        err_msg = up_err[:200]
+                        _save_mid = up_mid if up_mid else msg_id
+                        await _cl_update_job(job_id, {"status": "paused", "error": err_msg, "current_msg_id": _save_mid})
+                        if _bot:
+                            try:
+                                fail_kb = InlineKeyboardMarkup([[
+                                    InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#resume#{job_id}"),
+                                    InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
+                                ]])
+                                await _bot.send_message(uid,
+                                    f"<b>⏸ Cleaner Job Paused!</b>\n\n"
+                                    f"<i>Upload failed — connection dropped mid-transfer. Job paused at last safe position. Resume to continue.</i>\n\n"
+                                    f"<b>🧹 Name:</b> {base_name}\n"
+                                    f"<b>📁 Done:</b> {done} files\n"
+                                    f"<b>❌ Error:</b> <code>{err_msg}</code>",
+                                    reply_markup=fail_kb)
+                            except: pass
+                        if _next_task: _next_task.cancel()
+                        job_failed = True
+                        break
+
                 if ep_label and not smart_rename: _seen.add(str(ep_label))
                 done += 1
                 curr_num += 1

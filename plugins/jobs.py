@@ -1553,13 +1553,22 @@ async def _run_job(job_id: str, user_id: int):
         _live_fn_seen = _live_seen_names[job_id]  # local alias for speed
         _live_channel_invalid_strikes = 0  # abort after 3 consecutive CHANNEL_INVALID in live phase
 
+        _last_job_check   = 0.0
+        fresh = await _get_job(job_id)
+
         while True:
-            fresh = await _get_job(job_id)
+            _now = time.time()
+            # Check DB status every 30s instead of every 5s to reduce MongoDB pressure
+            if (_now - _last_job_check) >= 30:
+                _last_job_check = _now
+                try:
+                    fresh = await _get_job(job_id)
+                except Exception:
+                    pass
             if not fresh or fresh.get("status") != "running":
                 break
 
             # Refresh configs every 60s so settings changes take effect
-            _now = time.time()
             if (_now - _cfg_last_refresh) >= 60:
                 try:
                     disabled_types = await db.get_filters(user_id)
@@ -1907,7 +1916,12 @@ async def _run_job(job_id: str, user_id: int):
                     pass
 
             sleep_secs = configs.get("duration", 5) or 5
-            await asyncio.sleep(max(5, sleep_secs))
+            if not new_msgs:
+                # Idle backoff: sleep at least 15s to keep CPU, network, and MongoDB load low across 30+ jobs
+                await asyncio.sleep(max(15, sleep_secs))
+            else:
+                # Active: sleep shorter to quickly catch up with new messages
+                await asyncio.sleep(max(3, sleep_secs))
 
     except asyncio.CancelledError:
         logger.info(f"[Job {job_id}] Cancelled")

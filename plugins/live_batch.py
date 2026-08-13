@@ -30,6 +30,18 @@ _lb_tasks: dict[str, asyncio.Task] = {}
 _lb_paused: dict[str, asyncio.Event] = {}
 _lb_waiter: dict[int, asyncio.Future] = {}
 
+def _is_connected(client) -> bool:
+    """Safely check if a Pyrogram Client is currently connected."""
+    if not client:
+        return False
+    try:
+        is_conn = getattr(client, "is_connected", None)
+        if is_conn is None:
+            return False
+        return is_conn() if callable(is_conn) else bool(is_conn)
+    except Exception:
+        return False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DB & Router Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -480,7 +492,7 @@ async def _lb_run_job(job_id: str):
                     await asyncio.sleep(30)
                     continue
                 
-                if not src_client or not getattr(src_client, "is_connected", False):
+                if not src_client or not _is_connected(src_client):
                     acc_id = job.get("account_id", "bot")
                     if not acc_id or acc_id == "bot":
                         src_client = BOT_INSTANCE

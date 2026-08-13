@@ -42,10 +42,26 @@ _mj_paused: dict[str, asyncio.Event] = {}   # set=running, clear=paused
 _mj_waiting: dict[int, asyncio.Future] = {}
 
 
+def _is_connected(client) -> bool:
+    """Safely check if a Pyrogram Client is currently connected."""
+    if not client:
+        return False
+    try:
+        is_conn = getattr(client, "is_connected", None)
+        if is_conn is None:
+            return False
+        return is_conn() if callable(is_conn) else bool(is_conn)
+    except Exception:
+        return False
+
+
 # ─── Client health-check / reconnect ────────────────────────────────────
 async def _mj_ensure_client_alive(client):
     try:
-        if not getattr(client, "is_connected", True):
+        if not getattr(client, "is_initialized", False):
+            await client.start()
+            return client
+        if not _is_connected(client):
             await client.connect()
     except Exception as e:
         pass
@@ -348,6 +364,8 @@ async def _mj_forward(
                         media_obj = getattr(msg, msg.media.value, None) if msg.media else None
                         original_name = getattr(media_obj, 'file_name', None) if media_obj else None
                         if msg.media:
+                            import os
+                            os.makedirs("downloads", exist_ok=True)
                             safe_name = f"downloads/{msg.id}_{original_name}" if original_name else f"downloads/{msg.id}"
                             fp = None
                             for _dl_try in range(30):
