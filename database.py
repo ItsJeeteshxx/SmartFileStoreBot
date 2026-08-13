@@ -355,22 +355,25 @@ class Database:
         """Remove the index for a channel."""
         await self.share_config.delete_one({'_id': f'ch_index_{chat_id}'})
 
-    async def update_channel_index_entry(self, chat_id: int, entry: dict):
-        """Append or update a single entry (indexed by msg_id) in the channel index."""
+    async def bulk_update_channel_index_entries(self, chat_id: int, entries: list):
+        """Append or update a batch of entries atomically without loading the entire huge document."""
+        if not entries:
+            return
         import time
+        msg_ids = [e['msg_id'] for e in entries]
+        # 1. Pull existing duplicate msg_ids to avoid duplicates
         await self.share_config.update_one(
             {'_id': f'ch_index_{chat_id}'},
-            {
-                '$pull': {'entries': {'msg_id': entry['msg_id']}},
-            },
-            upsert=True
+            {'$pull': {'entries': {'msg_id': {'$in': msg_ids}}}},
+            upsert=False
         )
+        # 2. Push new entries directly to the array in MongoDB
         await self.share_config.update_one(
             {'_id': f'ch_index_{chat_id}'},
             {
-                '$push': {'entries': entry},
+                '$push': {'entries': {'$each': entries}},
                 '$set': {'scanned_at': time.time()},
-                '$inc': {'count': 1},
+                '$inc': {'count': len(entries)},
             },
             upsert=True
         )
