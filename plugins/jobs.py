@@ -64,6 +64,19 @@ _LJ_ME_CACHE_TTL = 300         # Reuse cached me for 5 min — avoids repeated G
 # Others wait, then see is_connected=True and return immediately.
 _lj_heal_locks: dict[str, asyncio.Lock] = {}
 
+# ─── Global heal semaphore ────────────────────────────────────────────────────
+# On mass connection drops (12+ jobs losing connection simultaneously), ALL jobs
+# try to heal at once — this saturates the event loop and makes the main bot
+# unresponsive to commands. This semaphore allows at most 3 heals at a time.
+# Other jobs wait with jitter, letting the event loop breathe.
+_lj_global_heal_sem: asyncio.Semaphore | None = None
+
+def _get_global_heal_sem() -> asyncio.Semaphore:
+    global _lj_global_heal_sem
+    if _lj_global_heal_sem is None:
+        _lj_global_heal_sem = asyncio.Semaphore(3)  # max 3 concurrent heals
+    return _lj_global_heal_sem
+
 def _get_client_heal_lock(sname: str) -> asyncio.Lock:
     """Get or create the per-client heal lock for session 'sname'."""
     if sname not in _lj_heal_locks:
@@ -150,88 +163,104 @@ async def _lj_ensure_client_alive(client, acc: dict = None):
     if _is_conn():
         return client   # alive ✔️ — skip all pings
 
-    # ── Step 2: Per-client heal lock — prevents multiple concurrent jobs from
-    #    all trying to heal the same client at once ("already connected" spam).
+    # ── Step 2: Jitter before acquiring heal resources ────────────────────────
+    # On mass connection drops, all jobs lose connection at the same moment.
+    # Without jitter they would all pile onto the heal path simultaneously.
+    # A small random delay spreads the heal attempts over time, keeping the
+    # event loop free to handle incoming Telegram updates / user commands.
+    import random
+    await asyncio.sleep(random.uniform(0.1, 3.0))
+
+    # Re-check after jitter — Pyrogram may have self-healed in the meantime.
+    if _is_conn():
+        logger.info(f"[LiveJob] Client {sname} self-healed during jitter sleep — returning alive")
+        return client
+
+    # ── Step 3: Global semaphore — cap simultaneous heals at 3 ───────────────
+    # This prevents 12+ jobs from all invoking Ping/start() at the same moment
+    # and starving the event loop. Other jobs wait here until a slot opens.
+    global_sem = _get_global_heal_sem()
     heal_lock = _get_client_heal_lock(sname)
 
-    async with heal_lock:
-        # Re-check after acquiring lock: another job may have already healed it.
-        if _is_conn():
-            return client   # healed by another job ✔️
+    async with global_sem:
+     async with heal_lock:
+         # Re-check after acquiring lock: another job may have already healed it.
+         if _is_conn():
+             return client   # healed by another job ✔️
 
-        # ── Step 3: Attempt ping + restart up to 5 times ─────────────────────
-        BACKOFFS = [2, 5, 15, 30, 60]
-        for attempt in range(5):
-            is_alive = False
-            try:
-                is_alive = await _lj_ping_client(client)
-            except Exception as ping_err:
-                logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
+         # ── Step 4: Attempt ping + restart up to 5 times ──────────────────
+         BACKOFFS = [2, 5, 15, 30, 60]
+         for attempt in range(5):
+             is_alive = False
+             try:
+                 is_alive = await _lj_ping_client(client)
+             except Exception as ping_err:
+                 logger.warning(f"[LiveJob] Ping raised {ping_err} on attempt {attempt+1}")
 
-            if is_alive:
-                logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
-                return client   # alive ✔️
+             if is_alive:
+                 logger.info(f"[LiveJob] Ping OK on attempt {attempt+1} — client alive")
+                 return client   # alive ✔️
 
-            # Re-check is_connected before declaring dead (Pyrogram may have
-            # internally reconnected between ping start and now)
-            if _is_conn():
-                logger.info(f"[LiveJob] is_connected=True after ping fail — trusting Pyrogram, returning alive")
-                return client
+             # Re-check is_connected before declaring dead (Pyrogram may have
+             # internally reconnected between ping start and now)
+             if _is_conn():
+                 logger.info(f"[LiveJob] is_connected=True after ping fail — trusting Pyrogram, returning alive")
+                 return client
 
-            backoff = BACKOFFS[attempt]
-            logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
-            _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
-            _lj_me_cache.pop(sname, None)
+             backoff = BACKOFFS[attempt]
+             logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}/5) — reconnecting in {backoff}s…")
+             _lj_last_reconnect[sname] = asyncio.get_event_loop().time()
+             _lj_me_cache.pop(sname, None)
 
-            await asyncio.sleep(backoff)
+             await asyncio.sleep(backoff)
 
-            # Re-check after sleep — Pyrogram's own reconnect may have run
-            if _is_conn():
-                logger.info(f"[LiveJob] is_connected=True after backoff sleep — client self-healed")
-                return client
+             # Re-check after sleep — Pyrogram's own reconnect may have run
+             if _is_conn():
+                 logger.info(f"[LiveJob] is_connected=True after backoff sleep — client self-healed")
+                 return client
 
-            # Try to bring the session back up in-place
-            try:
-                from plugins.test import _get_cache_lock
-                inner_lock = _get_cache_lock()
-                async with inner_lock:
-                    if _is_conn():
-                        logger.info(f"[LiveJob] Client {sname} alive after inner lock acquire.")
-                        return client
+             # Try to bring the session back up in-place
+             try:
+                 from plugins.test import _get_cache_lock
+                 inner_lock = _get_cache_lock()
+                 async with inner_lock:
+                     if _is_conn():
+                         logger.info(f"[LiveJob] Client {sname} alive after inner lock acquire.")
+                         return client
 
-                    logger.info(f"[LiveJob] Healing client {sname} in-place...")
+                     logger.info(f"[LiveJob] Healing client {sname} in-place...")
 
-                    try:
-                        await client.stop()
-                        await asyncio.sleep(1)
-                    except Exception:
-                        pass
+                     try:
+                         await client.stop()
+                         await asyncio.sleep(1)
+                     except Exception:
+                         pass
 
-                    # If still connected after stop(), stop() was a no-op.
-                    # DO NOT call start() — it will raise "Client is already connected".
-                    if _is_conn():
-                        logger.info(f"[LiveJob] Client {sname} still connected after stop() — treating as alive")
-                        return client
+                     # If still connected after stop(), stop() was a no-op.
+                     # DO NOT call start() — it will raise "Client is already connected".
+                     if _is_conn():
+                         logger.info(f"[LiveJob] Client {sname} still connected after stop() — treating as alive")
+                         return client
 
-                    await client.start()
+                     await client.start()
 
-                # Confirm alive after restart
-                if _is_conn() or await _lj_ping_client(client):
-                    logger.info(f"[LiveJob] Client reconnected on attempt {attempt+1}")
-                    return client
+                 # Confirm alive after restart
+                 if _is_conn() or await _lj_ping_client(client):
+                     logger.info(f"[LiveJob] Client reconnected on attempt {attempt+1}")
+                     return client
 
-            except FloodWait as fw:
-                logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
-                await asyncio.sleep(min(fw.value + 2, 60))
-            except Exception as re_err:
-                err_str = str(re_err).lower()
-                if "already connected" in err_str:
-                    # "already connected" = client IS alive. Return immediately.
-                    logger.info(f"[LiveJob] 'already connected' — client {sname} is alive, returning.")
-                    return client
-                logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
+             except FloodWait as fw:
+                 logger.warning(f"[LiveJob] FloodWait {fw.value}s during reconnect attempt {attempt+1}")
+                 await asyncio.sleep(min(fw.value + 2, 60))
+             except Exception as re_err:
+                 err_str = str(re_err).lower()
+                 if "already connected" in err_str:
+                     # "already connected" = client IS alive. Return immediately.
+                     logger.info(f"[LiveJob] 'already connected' — client {sname} is alive, returning.")
+                     return client
+                 logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
 
-        raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
+         raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 5 attempts")
 
 
 
