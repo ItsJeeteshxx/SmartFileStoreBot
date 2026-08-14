@@ -1241,18 +1241,22 @@ async def calculate_promo_discount(
                 if (now - joined_date).days < 7:
                     return 0.0, "This promo code is a welcome back gift for users registered 7+ days ago."
 
-    # Check user-specific limit
+    # Check user-specific limit (one-time valid per user or N-time per user)
     user_limit = promo.get("user_limit")
-    if user_limit is not None and isinstance(user_limit, int) and telegram_id is not None:
+    if user_limit is not None and isinstance(user_limit, int) and user_limit > 0 and telegram_id is not None:
         tg_id_str = str(telegram_id).strip()
         if tg_id_str:
             tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
             query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
             
+            import re
             used_count = await db.db.orders.count_documents({
-                "user_id": {"$in": query_user},
-                "status": "paid",
-                "promo_code": pcode_clean
+                "$or": [
+                    {"user_id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}}
+                ],
+                "status": {"$in": ["paid", "completed", "success"]},
+                "promo_code": {"$regex": f"^{re.escape(pcode_clean)}$", "$options": "i"}
             })
             
             if used_count >= user_limit:
@@ -1261,18 +1265,31 @@ async def calculate_promo_discount(
                 else:
                     return 0.0, f"You can only use this promo code up to {user_limit} times"
         
-    # Check expiration
+    # Check expiration (proper timezone and end-of-day handling)
     expires_at = promo.get("expires_at")
     if expires_at:
+        exp_dt = None
         if isinstance(expires_at, str):
+            s = expires_at.strip()
             try:
-                # Parse ISO string safely
-                expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            except ValueError:
-                pass
-        if isinstance(expires_at, datetime):
-            if datetime.now(timezone.utc) > expires_at:
-                return 0.0, "Promo code has expired"
+                if len(s) == 10 and s.count("-") == 2:
+                    exp_dt = datetime.strptime(s, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+                else:
+                    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                        dt = dt.replace(hour=23, minute=59, second=59)
+                    exp_dt = dt
+            except Exception as parse_err:
+                logger.warning(f"Could not parse promo expires_at '{s}': {parse_err}")
+        elif isinstance(expires_at, datetime):
+            exp_dt = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+            if exp_dt.hour == 0 and exp_dt.minute == 0 and exp_dt.second == 0:
+                exp_dt = exp_dt.replace(hour=23, minute=59, second=59)
+                
+        if exp_dt and datetime.now(timezone.utc) > exp_dt:
+            return 0.0, "Promo code has expired"
                 
     # Check usage limit
     usage_limit = promo.get("usage_limit")
@@ -1281,32 +1298,48 @@ async def calculate_promo_discount(
         if usage_count >= usage_limit:
             return 0.0, "Promo code usage limit reached"
             
-    # Check story applicability (handle both story_id and target_story_ids for backward compatibility)
+    # Check story applicability (handle target_story_ids and legacy story_id)
     target_story_ids = promo.get("target_story_ids", [])
     legacy_story_id = promo.get("story_id")
     if legacy_story_id and legacy_story_id != "global" and legacy_story_id not in target_story_ids:
-        target_story_ids.append(legacy_story_id)
+        target_story_ids = list(target_story_ids) + [legacy_story_id]
         
     if target_story_ids:
+        target_ids_str = [str(x).strip() for x in target_story_ids if str(x).strip()]
+        
         from bson.objectid import ObjectId
         applicable_story_price = 0.0
         applicable_in_cart = False
         
         for sid in story_ids:
+            sid_str = str(sid).strip()
             s = None
             try:
-                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
+                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid_str) if len(sid_str) == 24 else None})
             except Exception:
                 pass
             if not s:
-                s = await db.db.premium_stories.find_one({"story_id": sid})
+                try:
+                    s = await db.db.premium_stories.find_one({"story_id": sid_str})
+                except Exception:
+                    pass
+            if not s:
+                try:
+                    s = await db.db.premium_stories.find_one({"id": sid_str})
+                except Exception:
+                    pass
                 
             if s:
-                s_custom_id = s.get("story_id")
-                s_db_id = str(s.get("_id"))
-                if s_custom_id in target_story_ids or s_db_id in target_story_ids:
+                s_custom_id = str(s.get("story_id", "")).strip()
+                s_db_id = str(s.get("_id", "")).strip()
+                s_id = str(s.get("id", "")).strip()
+                
+                if (sid_str in target_ids_str) or (s_custom_id and s_custom_id in target_ids_str) or (s_db_id and s_db_id in target_ids_str) or (s_id and s_id in target_ids_str):
                     applicable_in_cart = True
                     applicable_story_price += float(s.get("price", 0) or 0)
+            else:
+                if sid_str in target_ids_str:
+                    applicable_in_cart = True
                     
         if not applicable_in_cart:
             return 0.0, "Promo code is not applicable to any stories in your cart"
@@ -1338,7 +1371,6 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
             raise HTTPException(status_code=500, detail="Database not available")
             
         pcode = data.promo_code.strip().upper()
-        # Find all stories to calculate subtotal
         from bson.objectid import ObjectId
         valid_stories = []
         for sid in data.story_ids:
@@ -1350,6 +1382,11 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
             if not s:
                 try:
                     s = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                except Exception:
+                    pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": sid})
                 except Exception:
                     pass
             if s:
@@ -1406,6 +1443,11 @@ async def get_available_promos(data: AvailablePromosRequest):
                     s = await arya_db.db.premium_stories.find_one({"story_id": sid})
                 except Exception:
                     pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": sid})
+                except Exception:
+                    pass
             if s:
                 valid_stories.append(s)
                 
@@ -1413,30 +1455,60 @@ async def get_available_promos(data: AvailablePromosRequest):
         
         available = []
         for promo in promos:
-            if not data.story_ids:
-                # If requested for homepage banner (empty cart), return all active promos
-                available.append({
-                    "code": promo.get("code"),
-                    "type": promo.get("type"),
-                    "value": promo.get("value"),
-                    "description": promo.get("description", ""),
-                    "discount_amount": 0,
-                    "auto_apply": promo.get("auto_apply", False)
-                })
+            discount, err = await calculate_promo_discount(
+                arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
+            )
+            
+            # Fetch target story titles for clarity if promo is specific to certain stories
+            target_ids = promo.get("target_story_ids", [])
+            target_titles = []
+            if target_ids:
+                for tid in target_ids:
+                    t_doc = None
+                    try:
+                        t_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(tid) if len(tid) == 24 else None})
+                    except Exception:
+                        pass
+                    if not t_doc:
+                        try:
+                            t_doc = await arya_db.db.premium_stories.find_one({"story_id": tid})
+                        except Exception:
+                            pass
+                    if not t_doc:
+                        try:
+                            t_doc = await arya_db.db.premium_stories.find_one({"id": tid})
+                        except Exception:
+                            pass
+                    if t_doc:
+                        name = t_doc.get("story_name_en") or t_doc.get("title")
+                        if name:
+                            target_titles.append(name)
+            
+            promo_info = {
+                "code": promo.get("code"),
+                "type": promo.get("type", "percentage"),
+                "value": promo.get("value", 0),
+                "description": promo.get("description", ""),
+                "discount_amount": discount if not err else 0,
+                "auto_apply": bool(promo.get("auto_apply", False)) if not err else False,
+                "applicable": not bool(err) and discount > 0,
+                "error_reason": err,
+                "min_cart_items": promo.get("min_cart_items"),
+                "user_limit": promo.get("user_limit"),
+                "user_target": promo.get("user_target", "all"),
+                "expires_at": promo.get("expires_at"),
+                "target_story_ids": target_ids,
+                "target_story_titles": target_titles,
+            }
+            
+            # If story_ids is provided (e.g. for a specific story detail page or cart),
+            # only return promos that actually apply to this selection!
+            if data.story_ids:
+                if promo_info["applicable"]:
+                    available.append(promo_info)
             else:
-                discount, err = await calculate_promo_discount(
-                    arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
-                )
-                # Include the promo even if there's an error so the user can see the offer in "View Offers".
-                # If they try to apply it and their cart doesn't qualify, they will see the specific error.
-                available.append({
-                    "code": promo.get("code"),
-                    "type": promo.get("type"),
-                    "value": promo.get("value"),
-                    "description": promo.get("description", ""),
-                    "discount_amount": discount if not err else 0,
-                    "auto_apply": promo.get("auto_apply", False) if not err else False
-                })
+                available.append(promo_info)
+                
         available.sort(key=lambda x: x["discount_amount"], reverse=True)
         return {"success": True, "promos": available}
     except Exception as e:
