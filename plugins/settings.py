@@ -894,9 +894,9 @@ async def settings_query(bot, query):
              pass
              
          existing_chs = await db.get_user_channels(user_id)
-         if len(existing_chs) >= 200:
+         if len(existing_chs) >= 250:
              await chat_ids.delete()
-             return await text.edit_text('<b>Maximum 200 channels reached.</b> Remove some first.',
+             return await text.edit_text('<b>Maximum 250 channels reached.</b> Remove some first.',
                                          reply_markup=InlineKeyboardMarkup(buttons))
          chat = await db.add_channel(user_id, chat_id, title, username)
          await chat_ids.delete()
