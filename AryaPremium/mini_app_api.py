@@ -1480,18 +1480,18 @@ async def calculate_promo_discount(
             discount = round((applicable_story_price * pval) / 100.0, 2)
         elif ptype == "flat":
             discount = min(pval, applicable_story_price)
-    else:
-        # Global or status-filtered subtotal
-        eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else effective_subtotal
-        if eligible_subtotal <= 0:
-            return 0.0, "Promo code is not applicable to any eligible stories in your cart"
-        ptype = promo.get("type", "percentage")
-        pval = float(promo.get("value", 0))
-        if ptype == "percentage":
-            discount = round((eligible_subtotal * pval) / 100.0, 2)
-        elif ptype == "flat":
-            discount = min(pval, eligible_subtotal)
-            
+    # Global or status-filtered subtotal
+    eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else effective_subtotal
+    if eligible_subtotal <= 0:
+        return 0.0, "Promo code is not applicable to any eligible stories in your cart"
+    ptype = promo.get("type", "percentage")
+    pval = float(promo.get("value", 0))
+    if ptype == "percentage":
+        discount = round((eligible_subtotal * pval) / 100.0, 2)
+    elif ptype == "flat":
+        discount = min(pval, eligible_subtotal)
+        
+    logger.info(f"[calculate_promo_discount] Result for '{code}' -> Discount: {discount}, Error: '{err if 'err' in locals() else ''}'")
     return discount, ""
 
 @api_router.post("/promo-codes/validate")
@@ -1503,34 +1503,45 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
             raise HTTPException(status_code=500, detail="Database not available")
             
         pcode = data.promo_code.strip().upper()
+        logger.info(f"=== [validate_promo_endpoint] Validating code '{pcode}' for stories: {data.story_ids}, user: {data.telegram_id}, method: {data.payment_method} ===")
         from bson.objectid import ObjectId
         valid_stories = []
         for sid in data.story_ids:
+            sid_str = str(sid).strip()
             s = None
-            try:
-                s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
-            except Exception:
-                pass
-            if not s:
+            if len(sid_str) == 24:
                 try:
-                    s = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                    s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid_str)})
                 except Exception:
                     pass
             if not s:
                 try:
-                    s = await arya_db.db.premium_stories.find_one({"id": sid})
+                    s = await arya_db.db.premium_stories.find_one({"story_id": sid_str})
+                except Exception:
+                    pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": sid_str})
+                except Exception:
+                    pass
+            if not s and sid_str.isdigit():
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"story_id": int(sid_str)})
                 except Exception:
                     pass
             if s:
                 valid_stories.append(s)
                 
         subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+        logger.info(f"[validate_promo_endpoint] Found {len(valid_stories)} stories in DB. Calculated Subtotal: ₹{subtotal}")
         
         discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal, data.telegram_id, data.payment_method)
         if err:
+            logger.info(f"[validate_promo_endpoint] Validation failed for '{pcode}': {err}")
             return {"valid": False, "discount": 0.0, "message": err}
             
         promo = await arya_db.db.premium_promo_codes.find_one({"code": pcode})
+        logger.info(f"[validate_promo_endpoint] Validation success for '{pcode}'! Discount: ₹{discount}")
         return {
             "valid": True,
             "discount": discount,
@@ -1539,10 +1550,12 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
                 "code": promo.get("code"),
                 "type": promo.get("type"),
                 "value": promo.get("value"),
+                "min_order_amount": promo.get("min_order_amount") or promo.get("min_order_value") or 0,
+                "min_cart_items": promo.get("min_cart_items") or 0,
                 "story_id": promo.get("story_id", "global"),
                 "description": promo.get("description", ""),
-                "story_status_target": promo.get("story_status_target", "all"),
-                "payment_method_target": promo.get("payment_method_target", "all")
+                "story_status_target": str(promo.get("story_status_target", "all")).lower(),
+                "payment_method_target": str(promo.get("payment_method_target", "all")).lower()
             }
         }
     except Exception as e:
