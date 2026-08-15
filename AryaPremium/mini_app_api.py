@@ -1205,30 +1205,70 @@ async def calculate_promo_discount(
             
     # Check target audience
     user_target = promo.get("user_target", "all")
-    if user_target != "all" and telegram_id is not None:
-        tg_id_str = str(telegram_id).strip()
-        if tg_id_str:
-            tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
+    if user_target and user_target != "all":
+        tg_id_str = str(telegram_id).strip() if telegram_id is not None else ""
+        if tg_id_str.lower() in ["undefined", "null", "none", "0"]:
+            tg_id_str = ""
             
-            # Retrieve user doc to count purchased stories and check registration date
-            user_doc = await db.db.users.find_one({"id": tg_id_int}) if tg_id_int else None
-            orders_count = len(user_doc.get("purchases", [])) if user_doc else 0
+        tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
+        
+        # If user target requires existing purchases or history, unauthenticated user cannot claim it
+        if not tg_id_str:
+            if user_target in ["existing_only", "1_purchase", "2_purchases", "3_plus_purchases"]:
+                return 0.0, "This promo code is only valid for existing buyers with past purchases."
+            elif user_target == "inactive_only":
+                return 0.0, "This promo code is for older registered users."
+        else:
+            query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
+            
+            # 1. Retrieve user doc from users collection
+            user_doc = await db.db.users.find_one({
+                "$or": [
+                    {"id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}},
+                    {"user_id": {"$in": query_user}}
+                ]
+            })
+            
+            user_purchases_len = 0
+            if user_doc:
+                user_purchases_len = max(
+                    len(user_doc.get("purchases", []) or []),
+                    len(user_doc.get("purchased_stories", []) or []),
+                    len(user_doc.get("bought_stories", []) or [])
+                )
+                
+            # 2. Count from premium_purchases collection
+            prem_purchases_count = await db.db.premium_purchases.count_documents({
+                "$or": [
+                    {"user_id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}}
+                ]
+            })
+            
+            # 3. Count from orders collection with paid/completed/delivered status
+            paid_orders_count = await db.db.orders.count_documents({
+                "$or": [
+                    {"user_id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}}
+                ],
+                "status": {"$in": ["paid", "completed", "success", "delivered"]}
+            })
+            
+            orders_count = max(user_purchases_len, prem_purchases_count, paid_orders_count)
             
             if user_target == "new_only":
                 if orders_count > 0:
                     return 0.0, "This promo code is exclusively for new users who haven't made a purchase yet."
-            elif user_target == "existing_only":
-                if orders_count == 0:
-                    return 0.0, "This promo code rewards our existing buyers. You need at least 1 past purchase to use it."
-            elif user_target == "1_purchase":
+            elif user_target in ["existing_only", "1_purchase"]:
                 if orders_count < 1:
-                    return 0.0, "This promo code requires at least 1 purchased story. You currently have 0."
+                    return 0.0, "This promo code is exclusively for existing buyers with at least 1 previous purchase."
             elif user_target == "2_purchases":
                 if orders_count < 2:
-                    return 0.0, f"This promo code requires at least 2 purchased stories. You currently have {orders_count}."
+                    return 0.0, f"This promo code requires at least 2 previous purchases. You currently have {orders_count}."
             elif user_target == "3_plus_purchases":
                 if orders_count < 3:
-                    return 0.0, f"This special promo code unlocks after your 3rd purchase! You currently have {orders_count} purchased stories."
+                    return 0.0, f"This special promo code unlocks after 3+ purchases. You currently have {orders_count}."
             elif user_target == "inactive_only":
                 if orders_count > 0:
                     return 0.0, "This promo code is only valid for non-buyers."
@@ -1242,7 +1282,7 @@ async def calculate_promo_discount(
                             joined_date = doc_id.generation_time
                 
                 if not joined_date:
-                    return 0.0, "This promo code is for older users. Please try another code."
+                    return 0.0, "This promo code is for older users registered 7+ days ago."
                     
                 now = datetime.now(timezone.utc)
                 if joined_date.tzinfo is None:
