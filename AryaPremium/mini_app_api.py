@@ -1388,10 +1388,11 @@ async def calculate_promo_discount(
     for sid in story_ids:
         sid_str = str(sid).strip()
         s = None
-        try:
-            s = await db.db.premium_stories.find_one({"_id": ObjectId(sid_str) if len(sid_str) == 24 else None})
-        except Exception:
-            pass
+        if len(sid_str) == 24:
+            try:
+                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid_str)})
+            except Exception:
+                pass
         if not s:
             try:
                 s = await db.db.premium_stories.find_one({"story_id": sid_str})
@@ -1402,16 +1403,40 @@ async def calculate_promo_discount(
                 s = await db.db.premium_stories.find_one({"id": sid_str})
             except Exception:
                 pass
+        if not s and sid_str.isdigit():
+            try:
+                s = await db.db.premium_stories.find_one({"story_id": int(sid_str)})
+            except Exception:
+                pass
         if s:
             cart_story_docs.append(s)
 
+    # Compute actual cart subtotal from database if subtotal was 0
+    actual_cart_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else subtotal
+    effective_subtotal = max(subtotal, actual_cart_subtotal)
+
+    # Check minimum cart order value (INR)
+    min_order_amount = promo.get("min_order_amount") or promo.get("min_order_value")
+    if min_order_amount is not None:
+        try:
+            min_val = float(min_order_amount)
+            if min_val > 0 and effective_subtotal < min_val:
+                return 0.0, f"Minimum cart amount of ₹{int(min_val)} required to use this promo code (current total: ₹{int(effective_subtotal)})"
+        except Exception:
+            pass
+
     # Check story status applicability (completed, ongoing, all)
-    story_status_target = promo.get("story_status_target", "all")
+    story_status_target = str(promo.get("story_status_target", "all")).strip().lower()
     if story_status_target and story_status_target != "all":
         status_filtered = []
         for s in cart_story_docs:
             s_stat = str(s.get("status", "")).strip().lower()
-            is_comp = bool(s.get("is_completed", False) or s.get("completed", False) or s_stat == "completed")
+            is_comp = bool(
+                s.get("is_completed") is True
+                or s.get("completed") is True
+                or s.get("isCompleted") is True
+                or s_stat == "completed"
+            )
             if story_status_target == "completed" and is_comp:
                 status_filtered.append(s)
             elif story_status_target == "ongoing" and not is_comp:
@@ -1457,7 +1482,9 @@ async def calculate_promo_discount(
             discount = min(pval, applicable_story_price)
     else:
         # Global or status-filtered subtotal
-        eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else subtotal
+        eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else effective_subtotal
+        if eligible_subtotal <= 0:
+            return 0.0, "Promo code is not applicable to any eligible stories in your cart"
         ptype = promo.get("type", "percentage")
         pval = float(promo.get("value", 0))
         if ptype == "percentage":
