@@ -1552,15 +1552,10 @@ async def get_available_promos(data: AvailablePromosRequest):
                 "target_story_titles": target_titles,
             }
             
-            # If story_ids is provided (e.g. for a specific story detail page or cart),
-            # only return promos that actually apply to this selection!
-            if data.story_ids:
-                if promo_info["applicable"]:
-                    available.append(promo_info)
-            else:
-                available.append(promo_info)
+            # Append all active promos so users can see available offers, but applicable flag indicates if valid for this story
+            available.append(promo_info)
                 
-        available.sort(key=lambda x: x["discount_amount"], reverse=True)
+        available.sort(key=lambda x: (1 if x["applicable"] else 0, x["discount_amount"]), reverse=True)
         return {"success": True, "promos": available}
     except Exception as e:
         logger.error(f"Error fetching available promos: {e}")
