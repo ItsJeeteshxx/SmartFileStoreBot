@@ -1192,6 +1192,16 @@ async def calculate_promo_discount(
     if min_cart_items is not None and isinstance(min_cart_items, int) and min_cart_items > 0:
         if len(story_ids) < min_cart_items:
             return 0.0, f"You need at least {min_cart_items} items in your cart to use this promo code"
+
+    # Check minimum cart order value (INR)
+    min_order_amount = promo.get("min_order_amount") or promo.get("min_order_value")
+    if min_order_amount is not None:
+        try:
+            min_val = float(min_order_amount)
+            if min_val > 0 and subtotal < min_val:
+                return 0.0, f"Minimum cart amount of ₹{int(min_val)} required to use this promo code (current total: ₹{int(subtotal)})"
+        except Exception:
+            pass
             
     # Check target audience
     user_target = promo.get("user_target", "all")
@@ -1494,6 +1504,7 @@ async def get_available_promos(data: AvailablePromosRequest):
                 "applicable": not bool(err) and discount > 0,
                 "error_reason": err,
                 "min_cart_items": promo.get("min_cart_items"),
+                "min_order_amount": promo.get("min_order_amount") or promo.get("min_order_value"),
                 "user_limit": promo.get("user_limit"),
                 "user_target": promo.get("user_target", "all"),
                 "expires_at": promo.get("expires_at"),
@@ -10618,6 +10629,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "description": p.get("description", ""),
                 "auto_apply": bool(p.get("auto_apply", False)),
                 "min_cart_items": p.get("min_cart_items"),
+                "min_order_amount": p.get("min_order_amount"),
                 "user_target": p.get("user_target", "all"),
                 "user_limit": p.get("user_limit"),
                 "target_story_ids": p.get("target_story_ids", [])
@@ -10824,6 +10836,7 @@ async def update_admin_settings(payload: dict):
                             "description": str(pc.get("description", "")).strip(),
                             "auto_apply": bool(pc.get("auto_apply", False)),
                             "min_cart_items": int(pc["min_cart_items"]) if pc.get("min_cart_items") is not None and str(pc["min_cart_items"]).isdigit() else None,
+                            "min_order_amount": float(pc["min_order_amount"]) if pc.get("min_order_amount") is not None and str(pc["min_order_amount"]).replace(".", "", 1).isdigit() and float(pc["min_order_amount"]) > 0 else None,
                             "user_target": str(pc.get("user_target", "all")),
                             "user_limit": int(pc["user_limit"]) if pc.get("user_limit") is not None and str(pc["user_limit"]).isdigit() else None,
                             "target_story_ids": pc.get("target_story_ids", []) if isinstance(pc.get("target_story_ids"), list) else []
@@ -10856,6 +10869,7 @@ async def update_admin_settings(payload: dict):
                             "description": p["description"],
                             "auto_apply": p["auto_apply"],
                             "min_cart_items": p["min_cart_items"],
+                            "min_order_amount": p.get("min_order_amount"),
                             "user_target": p["user_target"],
                             "user_limit": p["user_limit"],
                             "target_story_ids": p["target_story_ids"]
