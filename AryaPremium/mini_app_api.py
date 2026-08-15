@@ -1169,9 +1169,15 @@ class PromoValidateRequest(BaseModel):
     promo_code: str
     story_ids: list[str]
     telegram_id: Optional[Union[str, int]] = None
+    payment_method: Optional[str] = None
+
+class AvailablePromosRequest(BaseModel):
+    telegram_id: Optional[Union[str, int]] = None
+    story_ids: list[str] = []
+    payment_method: Optional[str] = None
 
 async def calculate_promo_discount(
-    db, pcode: str, story_ids: list, subtotal: float, telegram_id: Optional[Union[str, int]] = None
+    db, pcode: str, story_ids: list, subtotal: float, telegram_id: Optional[Union[str, int]] = None, payment_method: Optional[str] = None
 ) -> tuple[float, str]:
     """Validates the promo code and returns (discount_amount, error_message).
     If valid, error_message is "". If invalid, discount_amount is 0.0 and error_message describes the issue.
@@ -1186,6 +1192,34 @@ async def calculate_promo_discount(
         
     if not promo.get("active", True):
         return 0.0, "Promo code is inactive"
+
+    # Check payment method target
+    payment_method_target = promo.get("payment_method_target", "all")
+    if payment_method_target and payment_method_target != "all" and payment_method:
+        def _norm_pm(pm):
+            if not pm:
+                return ""
+            p = str(pm).strip().lower()
+            if "upi" in p:
+                return "upi"
+            if "razorpay" in p:
+                return "razorpay"
+            if "paytm" in p:
+                return "paytm"
+            if "payu" in p:
+                return "payu"
+            if "cashfree" in p:
+                return "cashfree"
+            if "dodo" in p:
+                return "dodopayments"
+            if "crypto" in p:
+                return "crypto"
+            return p
+
+        norm_selected = _norm_pm(payment_method)
+        norm_target = _norm_pm(payment_method_target)
+        if norm_selected and norm_target and norm_selected != norm_target:
+            return 0.0, f"This promo code is only valid for {payment_method_target.upper()} payment method"
         
     # Check minimum cart items
     min_cart_items = promo.get("min_cart_items")
@@ -1348,7 +1382,49 @@ async def calculate_promo_discount(
         if usage_count >= usage_limit:
             return 0.0, "Promo code usage limit reached"
             
-    # Check story applicability (handle target_story_ids and legacy story_id)
+    # Load cart story documents to evaluate story status and target story restrictions
+    from bson.objectid import ObjectId
+    cart_story_docs = []
+    for sid in story_ids:
+        sid_str = str(sid).strip()
+        s = None
+        try:
+            s = await db.db.premium_stories.find_one({"_id": ObjectId(sid_str) if len(sid_str) == 24 else None})
+        except Exception:
+            pass
+        if not s:
+            try:
+                s = await db.db.premium_stories.find_one({"story_id": sid_str})
+            except Exception:
+                pass
+        if not s:
+            try:
+                s = await db.db.premium_stories.find_one({"id": sid_str})
+            except Exception:
+                pass
+        if s:
+            cart_story_docs.append(s)
+
+    # Check story status applicability (completed, ongoing, all)
+    story_status_target = promo.get("story_status_target", "all")
+    if story_status_target and story_status_target != "all":
+        status_filtered = []
+        for s in cart_story_docs:
+            s_stat = str(s.get("status", "")).strip().lower()
+            is_comp = bool(s.get("is_completed", False) or s.get("completed", False) or s_stat == "completed")
+            if story_status_target == "completed" and is_comp:
+                status_filtered.append(s)
+            elif story_status_target == "ongoing" and not is_comp:
+                status_filtered.append(s)
+                
+        if not status_filtered:
+            if story_status_target == "completed":
+                return 0.0, "This promo code is only valid for completed stories"
+            else:
+                return 0.0, "This promo code is only valid for ongoing stories"
+        cart_story_docs = status_filtered
+
+    # Check specific story applicability (target_story_ids and legacy story_id)
     target_story_ids = promo.get("target_story_ids", [])
     legacy_story_id = promo.get("story_id")
     if legacy_story_id and legacy_story_id != "global" and legacy_story_id not in target_story_ids:
@@ -1356,41 +1432,19 @@ async def calculate_promo_discount(
         
     if target_story_ids:
         target_ids_str = [str(x).strip() for x in target_story_ids if str(x).strip()]
-        
-        from bson.objectid import ObjectId
         applicable_story_price = 0.0
         applicable_in_cart = False
         
-        for sid in story_ids:
-            sid_str = str(sid).strip()
-            s = None
-            try:
-                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid_str) if len(sid_str) == 24 else None})
-            except Exception:
-                pass
-            if not s:
-                try:
-                    s = await db.db.premium_stories.find_one({"story_id": sid_str})
-                except Exception:
-                    pass
-            if not s:
-                try:
-                    s = await db.db.premium_stories.find_one({"id": sid_str})
-                except Exception:
-                    pass
+        for s in cart_story_docs:
+            sid_str = str(s.get("id") or s.get("story_id") or s.get("_id")).strip()
+            s_custom_id = str(s.get("story_id", "")).strip()
+            s_db_id = str(s.get("_id", "")).strip()
+            s_id = str(s.get("id", "")).strip()
+            
+            if (sid_str in target_ids_str) or (s_custom_id and s_custom_id in target_ids_str) or (s_db_id and s_db_id in target_ids_str) or (s_id and s_id in target_ids_str):
+                applicable_in_cart = True
+                applicable_story_price += float(s.get("price", 0) or 0)
                 
-            if s:
-                s_custom_id = str(s.get("story_id", "")).strip()
-                s_db_id = str(s.get("_id", "")).strip()
-                s_id = str(s.get("id", "")).strip()
-                
-                if (sid_str in target_ids_str) or (s_custom_id and s_custom_id in target_ids_str) or (s_db_id and s_db_id in target_ids_str) or (s_id and s_id in target_ids_str):
-                    applicable_in_cart = True
-                    applicable_story_price += float(s.get("price", 0) or 0)
-            else:
-                if sid_str in target_ids_str:
-                    applicable_in_cart = True
-                    
         if not applicable_in_cart:
             return 0.0, "Promo code is not applicable to any stories in your cart"
             
@@ -1402,13 +1456,14 @@ async def calculate_promo_discount(
         elif ptype == "flat":
             discount = min(pval, applicable_story_price)
     else:
-        # Global promo, applied to the entire subtotal
+        # Global or status-filtered subtotal
+        eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else subtotal
         ptype = promo.get("type", "percentage")
         pval = float(promo.get("value", 0))
         if ptype == "percentage":
-            discount = round((subtotal * pval) / 100.0, 2)
+            discount = round((eligible_subtotal * pval) / 100.0, 2)
         elif ptype == "flat":
-            discount = min(pval, subtotal)
+            discount = min(pval, eligible_subtotal)
             
     return discount, ""
 
@@ -1444,7 +1499,7 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
                 
         subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
         
-        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal, data.telegram_id)
+        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal, data.telegram_id, data.payment_method)
         if err:
             return {"valid": False, "discount": 0.0, "message": err}
             
@@ -1458,17 +1513,14 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
                 "type": promo.get("type"),
                 "value": promo.get("value"),
                 "story_id": promo.get("story_id", "global"),
-                "description": promo.get("description", "")
+                "description": promo.get("description", ""),
+                "story_status_target": promo.get("story_status_target", "all"),
+                "payment_method_target": promo.get("payment_method_target", "all")
             }
         }
     except Exception as e:
         logger.error(f"Error validating promo code: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-class AvailablePromosRequest(BaseModel):
-    telegram_id: Optional[Union[str, int]] = None
-    story_ids: list[str] = []
 
 @api_router.post("/promo-codes/available")
 async def get_available_promos(data: AvailablePromosRequest):
@@ -1506,7 +1558,7 @@ async def get_available_promos(data: AvailablePromosRequest):
         available = []
         for promo in promos:
             discount, err = await calculate_promo_discount(
-                arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
+                arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id, data.payment_method
             )
             
             # Fetch target story titles for clarity if promo is specific to certain stories
@@ -1547,6 +1599,8 @@ async def get_available_promos(data: AvailablePromosRequest):
                 "min_order_amount": promo.get("min_order_amount") or promo.get("min_order_value"),
                 "user_limit": promo.get("user_limit"),
                 "user_target": promo.get("user_target", "all"),
+                "story_status_target": promo.get("story_status_target", "all"),
+                "payment_method_target": promo.get("payment_method_target", "all"),
                 "expires_at": promo.get("expires_at"),
                 "target_story_ids": target_ids,
                 "target_story_titles": target_titles,
@@ -10667,6 +10721,8 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "min_order_amount": p.get("min_order_amount"),
                 "user_target": p.get("user_target", "all"),
                 "user_limit": p.get("user_limit"),
+                "story_status_target": p.get("story_status_target", "all"),
+                "payment_method_target": p.get("payment_method_target", "all"),
                 "target_story_ids": p.get("target_story_ids", [])
             })
             
@@ -10874,6 +10930,8 @@ async def update_admin_settings(payload: dict):
                             "min_order_amount": float(pc["min_order_amount"]) if pc.get("min_order_amount") is not None and str(pc["min_order_amount"]).replace(".", "", 1).isdigit() and float(pc["min_order_amount"]) > 0 else None,
                             "user_target": str(pc.get("user_target", "all")),
                             "user_limit": int(pc["user_limit"]) if pc.get("user_limit") is not None and str(pc["user_limit"]).isdigit() else None,
+                            "story_status_target": str(pc.get("story_status_target", "all")).strip().lower() if pc.get("story_status_target") else "all",
+                            "payment_method_target": str(pc.get("payment_method_target", "all")).strip().lower() if pc.get("payment_method_target") else "all",
                             "target_story_ids": pc.get("target_story_ids", []) if isinstance(pc.get("target_story_ids"), list) else []
                         })
             
@@ -10907,6 +10965,8 @@ async def update_admin_settings(payload: dict):
                             "min_order_amount": p.get("min_order_amount"),
                             "user_target": p["user_target"],
                             "user_limit": p["user_limit"],
+                            "story_status_target": p["story_status_target"],
+                            "payment_method_target": p["payment_method_target"],
                             "target_story_ids": p["target_story_ids"]
                         }}
                     )
@@ -11081,8 +11141,11 @@ async def get_public_settings():
                 "description": p.get("description", ""),
                 "auto_apply": bool(p.get("auto_apply", False)),
                 "min_cart_items": p.get("min_cart_items"),
+                "min_order_amount": p.get("min_order_amount"),
                 "user_target": p.get("user_target", "all"),
                 "user_limit": p.get("user_limit"),
+                "story_status_target": p.get("story_status_target", "all"),
+                "payment_method_target": p.get("payment_method_target", "all"),
                 "target_story_ids": p.get("target_story_ids", [])
             })
             
