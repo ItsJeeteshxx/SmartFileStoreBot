@@ -896,7 +896,7 @@ def _format_story(s: dict) -> dict | None:
         status_val = "Completed" if is_comp else "Ongoing"
 
     raw_ep = s.get("enable_parts")
-    raw_parts = s.get("parts")
+    raw_parts = s.get("parts") or s.get("story_parts") or s.get("episode_parts") or []
     parts_list = raw_parts if isinstance(raw_parts, list) else []
     
     if isinstance(raw_ep, bool):
@@ -906,8 +906,21 @@ def _format_story(s: dict) -> dict | None:
     else:
         enable_parts_bool = bool(raw_ep)
 
+    cleaned_parts = []
+    for idx, p in enumerate(parts_list):
+        if isinstance(p, dict):
+            cleaned_parts.append({
+                "id": str(p.get("id") or f"part_{idx+1}"),
+                "name": str(p.get("name") or f"Part {idx+1}"),
+                "name_hi": p.get("name_hi"),
+                "start_id": int(p.get("start_id") or 0),
+                "end_id": int(p.get("end_id") or 0),
+                "episodes": str(p.get("episodes") or ""),
+                "price": float(p.get("price") or 0),
+            })
+
     # If parts list has items, ensure enable_parts is True
-    if len(parts_list) > 0 and raw_ep is not False and str(raw_ep).lower() != "false":
+    if len(cleaned_parts) > 0 and raw_ep is not False and str(raw_ep).lower() != "false":
         enable_parts_bool = True
 
     return {
@@ -935,7 +948,7 @@ def _format_story(s: dict) -> dict | None:
         "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "enable_parts": enable_parts_bool,
-        "parts":        parts_list,
+        "parts":        cleaned_parts,
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
@@ -1047,7 +1060,8 @@ async def get_stories():
                 item["trending_score"] = float(item["purchase_count"] * 100.0 + item["view_count"] * 1.0)
                 formatted.append(item)
 
-        logger.info(f"Returning {len(formatted)} stories with dynamic engagement metrics")
+        parts_enabled_count = sum(1 for item in formatted if item.get("enable_parts") or (item.get("parts") and len(item.get("parts")) > 0))
+        logger.info(f"Returning {len(formatted)} stories ({parts_enabled_count} with parts enabled) with dynamic engagement metrics")
         res = {"success": True, "data": formatted}
         _stories_cache = res
         _stories_cache_time = time.time()
@@ -12821,38 +12835,55 @@ except Exception as e:
     logger.warning(f"Failed to load paage_backend router: {e}")
 
 # ─── Serve Front-End SPA Static Files & Catch-All Routes ──────────────────────
-DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pocket-arya-store-new", "dist")
+def get_dist_dir():
+    _cur_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(_cur_dir, "static_dist"),
+        os.path.join(_cur_dir, "..", "AryaPremium", "static_dist"),
+        os.path.join(_cur_dir, "..", "pocket-arya-store-new", "dist"),
+        os.path.join(_cur_dir, "pocket-arya-store-new", "dist"),
+        os.path.join(_cur_dir, "dist"),
+    ]
+    for c in candidates:
+        if os.path.exists(c) and (os.path.exists(os.path.join(c, "index.html")) or os.path.exists(os.path.join(c, "app.html"))):
+            return os.path.abspath(c)
+    return os.path.join(_cur_dir, "static_dist")
+
+DIST_DIR = get_dist_dir()
+logger.info(f"Serving SPA static assets from DIST_DIR: {DIST_DIR}")
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("ws/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
     
+    curr_dist = get_dist_dir()
+
     # Check if target static file exists in dist
-    target_file = os.path.join(DIST_DIR, full_path)
+    target_file = os.path.join(curr_dist, full_path)
     if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
-        return FileResponse(target_file)
+        headers = {}
+        if full_path.startswith("assets/"):
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return FileResponse(target_file, headers=headers)
     
-    # Check index.html in dist
-    index_file = os.path.join(DIST_DIR, "index.html")
-    if os.path.exists(index_file):
-        return FileResponse(index_file)
-    
-    # Check app.html or landing.html in dist
-    for alt in ["app.html", "landing.html"]:
-        alt_file = os.path.join(DIST_DIR, alt)
+    # Check index.html, app.html or landing.html in dist
+    for alt in ["index.html", "app.html", "landing.html"]:
+        alt_file = os.path.join(curr_dist, alt)
         if os.path.exists(alt_file):
-            return FileResponse(alt_file)
+            return FileResponse(alt_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
         content="""<!DOCTYPE html>
 <html>
-<head><title>Paage — Bento Link-in-Bio Platform</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<head><title>Arya Premium</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="background:#070709;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
 <div style="text-align:center;padding:20px;">
-<h1 style="font-size:2rem;margin-bottom:0.5rem;color:#818cf8;">Paage App</h1>
-<p style="color:#a1a1aa;font-size:0.9rem;">Building production SPA assets... Please run <code>npm run build</code> in <code>pocket-arya-store-new</code>.</p>
+<h1 style="font-size:2rem;margin-bottom:0.5rem;color:#FFD232;">Arya Premium</h1>
+<p style="color:#a1a1aa;font-size:0.9rem;">Loading store assets...</p>
 </div>
 </body>
 </html>""",
