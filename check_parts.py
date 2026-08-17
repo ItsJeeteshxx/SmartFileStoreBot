@@ -1,6 +1,10 @@
 import asyncio, sys, os
-sys.path.insert(0, '/root/bot/TryAryaForwardBot')
-os.chdir('/root/bot/TryAryaForwardBot')
+
+# Fix path for ubuntu user
+BASE = os.path.expanduser("~/bot/TryAryaForwardBot")
+sys.path.insert(0, BASE)
+os.chdir(BASE)
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from AryaPremium.config import Config
 
@@ -11,10 +15,8 @@ async def check():
     # Find story by partial name match
     story = await db.premium_stories.find_one({"story_name_en": {"$regex": "Super Yoddha", "$options": "i"}})
     if not story:
-        # Try Hindi name
         story = await db.premium_stories.find_one({"story_name_hi": {"$regex": "Super Yoddha", "$options": "i"}})
     if not story:
-        # Try any story with parts enabled
         story = await db.premium_stories.find_one({"enable_parts": True})
         print("NOTE: Super Yoddha not found, showing first parts-enabled story instead")
 
@@ -38,7 +40,6 @@ async def check():
     else:
         print("No story found at all!")
 
-    # Also count all stories with enable_parts=True
     count = await db.premium_stories.count_documents({"enable_parts": True})
     print(f"\nTotal stories with enable_parts=True: {count}")
 
