@@ -919,6 +919,8 @@ def _format_story(s: dict) -> dict | None:
         "size":         s.get("total_size") or s.get("size") or None,
         "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
+        "enable_parts": bool(s.get("enable_parts", False)),
+        "parts":        s.get("parts") or [],
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
@@ -1662,36 +1664,23 @@ async def get_available_promos(data: AvailablePromosRequest):
 async def create_payment_link(payload: dict):
     """Creates a Razorpay Payment Link linked to an order."""
     telegram_id = payload.get("telegram_id")
-    story_ids   = payload.get("story_ids", [])
     username    = payload.get("username", "")
     promo_code  = payload.get("promo_code", "")
     is_int      = payload.get("is_international", False)
 
-    if not telegram_id or not story_ids:
-        raise HTTPException(status_code=400, detail="Missing telegram_id or story_ids")
+    if not telegram_id:
+        raise HTTPException(status_code=400, detail="Missing telegram_id")
 
     arya_db = app.state.db
 
-    # Validate stories exist
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="Invalid stories requested")
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     if cfg.get("razorpay_disabled") or cfg.get("razorpay_status") in ["disabled", "hidden"]:
         raise HTTPException(status_code=400, detail="Razorpay payment gateway is currently disabled by Admin")
-    
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     # 1. Promo Code Discount
     discount = 0.0
@@ -1729,7 +1718,7 @@ async def create_payment_link(payload: dict):
             "amount": int(total_price * 100), # in paise
             "currency": "INR",
             "accept_partial": False,
-            "description": ", ".join([s.get("story_name_en") or s.get("title") or s.get("story_name_hi") or "Arya Premium Content" for s in valid_stories])[:200] or "Arya Premium Content",
+            "description": ", ".join(story_names)[:200] or "Arya Premium Content",
             "customer": {
                 "name": username or f"User {telegram_id}",
                 "email": f"user{telegram_id}@sliceurl.com"
@@ -1750,7 +1739,8 @@ async def create_payment_link(payload: dict):
             "user_id":     tg_id_int,
             "username":    username or "Unknown",
             "story_ids":   story_ids,
-            "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "items":       resolved_items,
+            "story_names": story_names,
             "subtotal":    subtotal,
             "discount":    discount,
             "promo_code":  pcode_clean if discount > 0 else None,
@@ -1759,9 +1749,20 @@ async def create_payment_link(payload: dict):
             "total":       total_price,
             "status":      "pending",
             "source":      "razorpay_link",
+            "auto_deliver": bool(payload.get("auto_deliver", True)),
             "created_at":  datetime.now(timezone.utc),
         }
         await arya_db.db.orders.insert_one(order_doc)
+        logger.info(f"Payment Link created: {link_data['id']} for user {telegram_id}")
+
+        return {
+            "success": True,
+            "payment_link_id": link_data["id"],
+            "payment_link_url": link_data["short_url"]
+        }
+    except Exception as e:
+        logger.error(f"Razorpay link creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
         logger.info(f"Payment Link created: {link_data['id']} for user {telegram_id}")
 
         return {
@@ -1895,38 +1896,129 @@ async def _make_arya_order_id(
         return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
 
 
-# â”€â”€ Razorpay: Create Order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async def _resolve_order_items(arya_db, payload: dict) -> tuple:
+    """
+    Parses items from payload (either `items` list with part info or legacy `story_ids` list).
+    Returns (resolved_items, subtotal, story_ids_list, story_names_list)
+    """
+    from bson.objectid import ObjectId
+    from bson.errors import InvalidId
+
+    raw_items = payload.get("items")
+    story_ids = payload.get("story_ids", [])
+    
+    resolved_items = []
+    
+    if raw_items and isinstance(raw_items, list):
+        for itm in raw_items:
+            sid = str(itm.get("story_id") or itm.get("id") or "").strip()
+            if not sid:
+                continue
+            
+            story_doc = None
+            try:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            except (InvalidId, Exception):
+                pass
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": sid})
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                
+            if not story_doc:
+                continue
+                
+            part_id = itm.get("part_id")
+            selected_part = None
+            if part_id and story_doc.get("enable_parts"):
+                for p in story_doc.get("parts", []):
+                    if str(p.get("id")) == str(part_id):
+                        selected_part = p
+                        break
+            
+            if selected_part:
+                p_start = int(selected_part.get("start_id") or story_doc.get("start_id") or 0)
+                p_end = int(selected_part.get("end_id") or story_doc.get("end_id") or 0)
+                p_price = float(selected_part.get("price") or 0)
+                p_name = selected_part.get("name") or "Part"
+                resolved_items.append({
+                    "story_id": str(story_doc.get("_id")),
+                    "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
+                    "part_id": str(selected_part.get("id")),
+                    "part_name": p_name,
+                    "start_id": p_start,
+                    "end_id": p_end,
+                    "price": p_price,
+                    "is_full": False,
+                })
+            else:
+                s_start = int(story_doc.get("start_id") or 0)
+                s_end = int(story_doc.get("end_id") or 0)
+                s_price = float(story_doc.get("price") or 0)
+                resolved_items.append({
+                    "story_id": str(story_doc.get("_id")),
+                    "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
+                    "part_id": None,
+                    "part_name": None,
+                    "start_id": s_start,
+                    "end_id": s_end,
+                    "price": s_price,
+                    "is_full": True,
+                })
+    elif story_ids:
+        for sid in story_ids:
+            sid_clean = str(sid).strip()
+            if not sid_clean:
+                continue
+            story_doc = None
+            try:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid_clean)})
+            except (InvalidId, Exception):
+                pass
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": sid_clean})
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"story_id": sid_clean})
+                
+            if not story_doc:
+                continue
+                
+            resolved_items.append({
+                "story_id": str(story_doc.get("_id")),
+                "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
+                "part_id": None,
+                "part_name": None,
+                "start_id": int(story_doc.get("start_id") or 0),
+                "end_id": int(story_doc.get("end_id") or 0),
+                "price": float(story_doc.get("price") or 0),
+                "is_full": True,
+            })
+            
+    subtotal = sum(i["price"] for i in resolved_items)
+    unique_story_ids = list(dict.fromkeys([i["story_id"] for i in resolved_items]))
+    story_names = [i["story_title"] + (f" ({i['part_name']})" if i.get("part_name") else "") for i in resolved_items]
+    return resolved_items, subtotal, unique_story_ids, story_names
+
+
+# ── Razorpay: Create Order ──────────────────────────────────────────────
 @api_router.post("/create-order")
 async def create_razorpay_order(payload: dict):
     """Create Razorpay order. Returns order_id + key for frontend SDK modal."""
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     is_int     = payload.get("is_international", False)
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(400, "Cart is empty")
     if not RZP_KEY_ID or not RZP_KEY_SECRET:
         raise HTTPException(500, "Razorpay not configured on server")
 
     arya_db = app.state.db
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
 
-    if not valid_stories:
-        raise HTTPException(400, "No valid stories")
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
+        raise HTTPException(400, "Cart is empty or no valid stories found")
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     # 1. Promo Code Discount
     discount = 0.0
@@ -1983,8 +2075,13 @@ async def create_razorpay_order(payload: dict):
             "currency":          "INR",
             "key":               RZP_KEY_ID,
             "receipt":           receipt,
-            "story_names":       [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "story_names":       story_names,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create-order error: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -2024,20 +2121,10 @@ async def verify_payment(payload: dict):
 
     # Signature OK — store order + unlock content
     arya_db = app.state.db
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     # 1. Promo Code Discount
     discount = 0.0
@@ -2069,7 +2156,8 @@ async def verify_payment(payload: dict):
         "user_id":             tg_id_int if tg_id_int else tg_id,
         "username":            username,
         "story_ids":           story_ids,
-        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "items":               resolved_items,
+        "story_names":         story_names,
         "subtotal":            subtotal,
         "discount":            discount,
         "promo_code":          pcode_clean if discount > 0 else None,
@@ -2080,6 +2168,7 @@ async def verify_payment(payload: dict):
         "source":              "razorpay_miniapp",
         "razorpay_order_id":   rzp_order_id,
         "razorpay_payment_id": rzp_payment_id,
+        "auto_deliver":        bool(payload.get("auto_deliver", True)),
         "created_at":          datetime.now(timezone.utc),
     }
     await arya_db.db.orders.insert_one(order_doc)
@@ -2091,6 +2180,7 @@ async def verify_payment(payload: dict):
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(trigger_auto_delivery_for_order(arya_db, tg_id, order_doc=order_doc))
     asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
     return {"success": True, "message": "Payment verified successfully"}
@@ -2397,17 +2487,8 @@ async def verify_upi_utr(payload: dict):
         raise HTTPException(status_code=400, detail="This UTR/RRN has already been claimed for another purchase. Reuse is blocked.")
 
     # 3. Calculate expected amount
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories in cart.")
 
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
@@ -2621,7 +2702,8 @@ async def verify_upi_utr(payload: dict):
         "payer_name":          payer_name if payer_name else username,
         "invoice_number":      invoice_number,
         "story_ids":           story_ids,
-        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "items":               resolved_items,
+        "story_names":         story_names,
         "subtotal":            subtotal,
         "discount":            discount,
         "promo_code":          pcode_clean if discount > 0 else None,
@@ -2631,6 +2713,7 @@ async def verify_upi_utr(payload: dict):
         "status":              "paid",
         "source":              "upi_manual_miniapp",
         "utr":                 utr,
+        "auto_deliver":        bool(payload.get("auto_deliver", True)),
         "paid_at":             datetime.now(timezone.utc),
     }
 
@@ -2740,17 +2823,9 @@ async def create_pending_order(payload: dict):
 
         tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
 
-        # Resolve story names from DB for richer admin view
-        story_names = []
-        if story_ids:
-            from bson.objectid import ObjectId
-            for sid in story_ids:
-                try:
-                    doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-                    if doc:
-                        story_names.append(doc.get("story_name_en", doc.get("title", sid)))
-                except Exception:
-                    story_names.append(sid)
+        resolved_items, subtotal_calc, story_ids_res, story_names = await _resolve_order_items(db, payload)
+        if not story_names:
+            story_names = story_ids
 
         pending_doc = {
             "order_id":       order_id,
@@ -2758,13 +2833,15 @@ async def create_pending_order(payload: dict):
             "username":       username,
             "first_name":     first_name,
             "last_name":      last_name,
-            "story_ids":      story_ids,
+            "story_ids":      story_ids_res or story_ids,
+            "items":          resolved_items,
             "story_names":    story_names,
             "total":          amount,
             "promo_code":     promo_code if promo_code else None,
             "status":         "pending",
             "source":         "upi_manual_miniapp",
             "upi_id_shown":   upi_id_shown,
+            "auto_deliver":   bool(payload.get("auto_deliver", True)),
             "created_at":     datetime.now(timezone.utc),
         }
         await db.db.orders.insert_one(pending_doc)
@@ -2985,20 +3062,10 @@ async def create_oxapay_order(payload: dict):
         raise HTTPException(status_code=400, detail="Cart is empty")
 
     arya_db = app.state.db
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, total_inr, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
 
-    total_inr = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     promo_code = payload.get("promo_code", "")
 
     # Fetch settings for promo codes
@@ -3223,13 +3290,9 @@ async def create_paytm_order(payload: dict):
     if not PAYTM_LIBS_AVAILABLE:
         raise HTTPException(status_code=500, detail="paytmchecksum library is not installed. Please run: pip install paytmchecksum")
         
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(400, "Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -3244,22 +3307,9 @@ async def create_paytm_order(payload: dict):
     if not mid or not merchant_key:
         raise HTTPException(status_code=400, detail="Paytm credentials are not configured.")
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(400, "No valid stories")
-
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
@@ -3334,11 +3384,13 @@ async def create_paytm_order(payload: dict):
         order_doc = {
             "order_id": orderId,
             "user_id": str(tg_id),
-            "story_ids": [ObjectId(sid) for sid in story_ids],
+            "story_ids": story_ids,
+            "items": resolved_items,
             "story_names": story_names,
             "total": total,
             "source": "paytm",
             "status": "pending",
+            "auto_deliver": bool(payload.get("auto_deliver", True)),
             "created_at": datetime.now(timezone.utc),
             "payment_id": None,
             "promo_code": pcode_clean if pcode_clean else None,
@@ -3569,15 +3621,11 @@ async def paytm_callback(request: Request):
 # ===== PayU Payment Gateway: Create Order =====
 @api_router.post("/create-payu-order")
 async def create_payu_order(payload: dict):
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
     first_name = payload.get("first_name", "") or ""
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -3603,22 +3651,9 @@ async def create_payu_order(payload: dict):
         if not merchant_key or not merchant_salt:
             raise HTTPException(status_code=400, detail="PayU live credentials (Merchant Key & Merchant Salt) are not configured in Admin Panel.")
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
-
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
@@ -3661,11 +3696,14 @@ async def create_payu_order(payload: dict):
     order_doc = {
         "order_id": txnid,
         "user_id": str(tg_id),
-        "story_ids": [ObjectId(sid) for sid in story_ids],
+        "username": username,
+        "story_ids": story_ids,
+        "items": resolved_items,
         "story_names": story_names,
         "total": total,
         "source": "payu",
         "status": "pending",
+        "auto_deliver": bool(payload.get("auto_deliver", True)),
         "created_at": datetime.now(timezone.utc),
         "payment_id": None,
         "promo_code": pcode_clean if pcode_clean else None,
@@ -3933,15 +3971,11 @@ async def payu_callback_get(request: Request):
 @api_router.post("/create-cashfree-order")
 async def create_cashfree_order(payload: dict):
     """Create Cashfree PG order and generate payment session for frontend checkout."""
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
     first_name = payload.get("first_name", "") or ""
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -3960,22 +3994,9 @@ async def create_cashfree_order(payload: dict):
 
     is_sandbox = (cf_env in ("sandbox", "staging", "test") or "TEST" in app_id.upper() or "SANDBOX" in app_id.upper())
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
-
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
@@ -4057,6 +4078,7 @@ async def create_cashfree_order(payload: dict):
                 "user_id": tg_id_int,
                 "username": username or "Unknown",
                 "story_ids": story_ids,
+                "items": resolved_items,
                 "story_names": story_names,
                 "subtotal": subtotal,
                 "discount": discount,
@@ -4065,6 +4087,7 @@ async def create_cashfree_order(payload: dict):
                 "total": total,
                 "gateway": "cashfree",
                 "status": "pending",
+                "auto_deliver": bool(payload.get("auto_deliver", True)),
                 "created_at": datetime.now(timezone.utc)
             }
             try:
@@ -4401,15 +4424,11 @@ async def cashfree_webhook(request: Request):
 @api_router.post("/create-dodopayments-order")
 async def create_dodopayments_order(payload: dict):
     """Create Dodo Payments checkout session for Arya Premium Mini App."""
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
     first_name = payload.get("first_name", "") or ""
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -4429,22 +4448,9 @@ async def create_dodopayments_order(payload: dict):
     is_sandbox = (dodo_env in ("test", "sandbox") or "test" in api_key.lower())
     base_url = "https://test.dodopayments.com" if is_sandbox else "https://live.dodopayments.com"
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=404, detail="Selected stories not found")
-
-    subtotal = sum(float(s.get("price", 0)) for s in valid_stories)
     promo_discount = 0.0
     if promo_code:
         p_doc = await arya_db.db.premium_promo_codes.find_one({"code": promo_code.upper().strip(), "active": True})
@@ -4565,6 +4571,7 @@ async def create_dodopayments_order(payload: dict):
         "username": username,
         "first_name": first_name,
         "story_ids": story_ids,
+        "items": resolved_items,
         "story_names": story_names,
         "subtotal": subtotal,
         "promo_code": promo_code,
@@ -4574,6 +4581,7 @@ async def create_dodopayments_order(payload: dict):
         "provider": "dodopayments",
         "payment_link": checkout_url,
         "status": "pending",
+        "auto_deliver": bool(payload.get("auto_deliver", True)),
         "created_at": datetime.now(timezone.utc),
         "is_sandbox": is_sandbox
     }
@@ -5496,12 +5504,33 @@ async def get_my_purchases(telegram_id: str):
                         formatted["story_id"] = formatted["id"]
                         order = orders_by_story.get(story_id)
                         if order:
+                            purchased_part = None
+                            if order.get("items"):
+                                for itm in order["items"]:
+                                    if (itm.get("story_id") == story_id or itm.get("story_id") == str(story["_id"])) and itm.get("part_id"):
+                                        purchased_part = {
+                                            "id": itm.get("part_id"),
+                                            "name": itm.get("part_name"),
+                                            "start_id": itm.get("start_id"),
+                                            "end_id": itm.get("end_id"),
+                                            "price": itm.get("price")
+                                        }
+                                        break
+                            if purchased_part:
+                                formatted["purchased_part"] = purchased_part
+                                formatted["selected_part"] = purchased_part
+                                if purchased_part.get("start_id"):
+                                    formatted["start_id"] = purchased_part["start_id"]
+                                if purchased_part.get("end_id"):
+                                    formatted["end_id"] = purchased_part["end_id"]
+
                             formatted["order_details"] = {
                                 "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
                                 "source": order.get("source", "miniapp"),
                                 "status": order.get("status"),
                                 "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
-                                "resolved_by": order.get("resolved_by")
+                                "resolved_by": order.get("resolved_by"),
+                                "purchased_part": purchased_part,
                             }
                         else:
                             purchase_rec = pp_by_story.get(story_id)

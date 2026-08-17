@@ -377,25 +377,33 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                 await asyncio.sleep(5)
                 continue
 
-            total_stories = len(story_ids)
+            items = job.get("items") or [{"story_id": sid} for sid in story_ids]
+            total_items = len(items)
 
-            # If multiple stories: notify user upfront, then deliver one by one with gap
-            if total_stories > 1:
+            # If multiple items: notify user upfront, then deliver one by one with gap
+            if total_items > 1:
                 try:
                     await selected_client.send_message(
                         user_id,
                         f"📦 <b>Auto Instant Delivery Starting</b>\n\n"
-                        f"You have <b>{total_stories} stories</b> in your order.\n"
+                        f"You have <b>{total_items} items/parts</b> in your order.\n"
                         f"They will be delivered <b>one by one</b> automatically.\n\n"
-                        f"⏳ Please wait — your first story is being sent now...",
+                        f"⏳ Please wait — your first item is being sent now...",
                         parse_mode="html"
                     )
                     await asyncio.sleep(2)
                 except Exception:
                     pass
 
-            for i, sid in enumerate(story_ids, start=1):
+            for i, itm in enumerate(items, start=1):
                 try:
+                    sid = itm.get("story_id") or itm.get("id")
+                    if not sid:
+                        continue
+                    part_start = itm.get("start_id")
+                    part_end = itm.get("end_id")
+                    part_name = itm.get("part_name")
+
                     from bson.objectid import ObjectId
                     s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
                     s_doc = await db.db.premium_stories.find_one({"_id": s_obj_id})
@@ -404,18 +412,19 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
 
                     if s_doc:
                         story_name = s_doc.get("story_name_en") or s_doc.get("story_name") or f"Story {i}"
+                        display_name = f"{story_name} ({part_name})" if part_name else story_name
                         logger.info(
-                            f"[AutoDeliveryQueue] Delivering story {i}/{total_stories} "
-                            f"'{story_name}' to user {user_id}..."
+                            f"[AutoDeliveryQueue] Delivering item {i}/{total_items} "
+                            f"'{display_name}' (range: {part_start} to {part_end}) to user {user_id}..."
                         )
 
-                        # Notify user which story is being delivered (only for multi-story orders)
-                        if total_stories > 1:
+                        # Notify user which story/part is being delivered (only for multi-item orders)
+                        if total_items > 1:
                             try:
                                 await selected_client.send_message(
                                     user_id,
-                                    f"📖 <b>Delivering Story {i} of {total_stories}</b>\n"
-                                    f"<i>{story_name}</i>\n\n"
+                                    f"📖 <b>Delivering Item {i} of {total_items}</b>\n"
+                                    f"<i>{display_name}</i>\n\n"
                                     f"⏳ Sending files now...",
                                     parse_mode="html"
                                 )
@@ -423,22 +432,28 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                             except Exception:
                                 pass
 
-                        # Deliver the story
-                        await _do_dm_delivery(selected_client, user_id, s_doc)
+                        # Deliver the exact story/part range
+                        await _do_dm_delivery(
+                            selected_client,
+                            user_id,
+                            s_doc,
+                            part_start=part_start,
+                            part_end=part_end
+                        )
 
-                        # Wait between stories so delivery is clearly sequential (not all at once)
-                        if total_stories > 1 and i < total_stories:
+                        # Wait between items so delivery is clearly sequential
+                        if total_items > 1 and i < total_items:
                             await asyncio.sleep(8)
 
                 except Exception as sid_err:
-                    logger.error(f"[AutoDeliveryQueue] Delivery error for story {sid}: {sid_err}", exc_info=True)
+                    logger.error(f"[AutoDeliveryQueue] Delivery error for item {itm}: {sid_err}", exc_info=True)
 
-            # Final completion message for multi-story orders
-            if total_stories > 1:
+            # Final completion message for multi-item orders
+            if total_items > 1:
                 try:
                     await selected_client.send_message(
                         user_id,
-                        f"✅ <b>All {total_stories} stories delivered successfully!</b>\n\n"
+                        f"✅ <b>All {total_items} items delivered successfully!</b>\n\n"
                         f"Enjoy your stories 🎉",
                         parse_mode="html"
                     )
@@ -499,6 +514,7 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     "claim_key": delivery_claim_key,
                     "user_id": tg_id_int,
                     "story_ids": story_ids,
+                    "items": order_doc.get("items", []),
                     "order_id": rec_oid,
                     "status": "pending",
                     "created_at": datetime.now(timezone.utc)

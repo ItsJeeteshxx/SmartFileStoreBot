@@ -2945,8 +2945,25 @@ async def _process_start(client, message):
             )
 
         # ── FAST PATH: directly trigger DM episode selection (no "Access Granted" screen) ──
-        start_id = story.get('start_id')
-        end_id   = story.get('end_id')
+        # Check if user purchased a specific part
+        part_info = None
+        user_order = await db.db.orders.find_one({
+            "user_id": {"$in": [user_id, str(user_id)]},
+            "story_ids": {"$in": [story_id, str(story.get('_id', ''))]},
+            "status": {"$in": ["paid", "delivered"]}
+        }, sort=[("created_at", -1)])
+        if user_order and user_order.get("items"):
+            for itm in user_order["items"]:
+                if (itm.get("story_id") == story_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
+                    part_info = itm
+                    break
+
+        if part_info and part_info.get("start_id") and part_info.get("end_id"):
+            start_id = int(part_info["start_id"])
+            end_id   = int(part_info["end_id"])
+        else:
+            start_id = story.get('start_id')
+            end_id   = story.get('end_id')
         total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
         s_id_str = str(story['_id'])
 
