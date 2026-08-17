@@ -895,6 +895,21 @@ def _format_story(s: dict) -> dict | None:
         is_comp = bool(s.get("is_completed") or s.get("completed"))
         status_val = "Completed" if is_comp else "Ongoing"
 
+    raw_ep = s.get("enable_parts")
+    raw_parts = s.get("parts")
+    parts_list = raw_parts if isinstance(raw_parts, list) else []
+    
+    if isinstance(raw_ep, bool):
+        enable_parts_bool = raw_ep
+    elif isinstance(raw_ep, str):
+        enable_parts_bool = raw_ep.strip().lower() in ("true", "1", "yes", "on")
+    else:
+        enable_parts_bool = bool(raw_ep)
+
+    # If parts list has items, ensure enable_parts is True
+    if len(parts_list) > 0 and raw_ep is not False and str(raw_ep).lower() != "false":
+        enable_parts_bool = True
+
     return {
         "id":           story_id,
         "title":        title,
@@ -919,8 +934,8 @@ def _format_story(s: dict) -> dict | None:
         "size":         s.get("total_size") or s.get("size") or None,
         "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
-        "enable_parts": bool(s.get("enable_parts", False)),
-        "parts":        s.get("parts") or [],
+        "enable_parts": enable_parts_bool,
+        "parts":        parts_list,
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
