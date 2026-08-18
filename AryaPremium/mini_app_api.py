@@ -4047,10 +4047,21 @@ async def create_cashfree_order(payload: dict):
     
     import uuid, re
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
-    raw_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
-    customer_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip() or "Customer"
+    
+    # Extract customer contact details passed from frontend
+    raw_name = str(payload.get("customer_name") or payload.get("name") or first_name or username or "").strip()
+    clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip()
+    customer_name = clean_name[:50] if clean_name else "Customer"
+
+    # Extract 10-digit phone number
+    raw_phone = str(payload.get("phone") or payload.get("customer_phone") or "").strip()
+    phone_digits = re.sub(r'\D', '', raw_phone)
+    if len(phone_digits) >= 10:
+        customer_phone = phone_digits[-10:]
+    else:
+        customer_phone = phone_digits if phone_digits else "9999999999"
+
     customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
-    customer_phone = payload.get("phone", "").strip() or "9999999999"
     
     callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
     return_url_base = cfg.get("cashfree_return_url", "https://isaythanks.vercel.app").strip()
@@ -4106,6 +4117,9 @@ async def create_cashfree_order(payload: dict):
                 "payment_session_id": payment_session_id,
                 "user_id": tg_id_int,
                 "username": username or "Unknown",
+                "customer_name": customer_name,
+                "customer_phone": customer_phone,
+                "phone": customer_phone,
                 "story_ids": story_ids,
                 "items": resolved_items,
                 "story_names": story_names,
