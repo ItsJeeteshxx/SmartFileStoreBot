@@ -661,11 +661,19 @@ async def track_client_telemetry(request: Request):
     """Logs frontend events, errors, and deep-link lifecycle metrics to backend logs."""
     try:
         data = await request.json()
-        event_type = data.get("event_type", "unknown")
-        event_data = data.get("event_data", {})
-        telegram_id = data.get("telegram_id", "0")
-        logger.info(f"📱 [MINIAPP LOG] tg={telegram_id} event={event_type} payload={event_data}")
-        return {"status": "ok"}
+        if "batch" in data and isinstance(data["batch"], list):
+            for item in data["batch"]:
+                event_type = item.get("event_type", "unknown")
+                event_data = item.get("event_data", {})
+                telegram_id = item.get("telegram_id", "0")
+                logger.info(f"📱 [MINIAPP LOG BATCH] tg={telegram_id} event={event_type} payload={event_data}")
+            return {"status": "ok", "count": len(data["batch"])}
+        else:
+            event_type = data.get("event_type", "unknown")
+            event_data = data.get("event_data", {})
+            telegram_id = data.get("telegram_id", "0")
+            logger.info(f"📱 [MINIAPP LOG] tg={telegram_id} event={event_type} payload={event_data}")
+            return {"status": "ok"}
     except Exception as e:
         logger.warning(f"Error in /track endpoint: {e}")
         return {"status": "error", "message": str(e)}
