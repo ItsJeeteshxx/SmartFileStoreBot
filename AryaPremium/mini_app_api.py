@@ -896,7 +896,7 @@ def _format_story(s: dict) -> dict | None:
         status_val = "Completed" if is_comp else "Ongoing"
 
     raw_ep = s.get("enable_parts")
-    raw_parts = s.get("parts") or s.get("story_parts") or s.get("episode_parts") or []
+    raw_parts = s.get("parts") or s.get("story_parts") or s.get("episode_parts") or s.get("episodes_parts") or s.get("part_list") or s.get("episode_ranges") or s.get("sub_parts") or []
     parts_list = raw_parts if isinstance(raw_parts, list) else []
     
     if isinstance(raw_ep, bool):
