@@ -9,6 +9,20 @@ if PARENT not in sys.path:
     sys.path.insert(0, PARENT)
 os.chdir(BASE)
 
+def _inject_env(filepath):
+    try:
+        with open(filepath, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("'").strip('"'))
+    except Exception:
+        pass
+
+_inject_env(os.path.join(PARENT, ".env"))
+_inject_env(os.path.join(BASE, ".env"))
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 from mini_app_api import _format_story
