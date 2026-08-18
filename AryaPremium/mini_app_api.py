@@ -12942,10 +12942,15 @@ async def serve_spa(full_path: str):
         return FileResponse(target_file, headers=headers)
     
     # Check index.html, app.html or landing.html in dist
+    no_cache_hdrs = {
+        "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
     for alt in ["index.html", "app.html", "landing.html"]:
         alt_file = os.path.join(curr_dist, alt)
         if os.path.exists(alt_file):
-            return FileResponse(alt_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+            return FileResponse(alt_file, headers=no_cache_hdrs)
     
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
