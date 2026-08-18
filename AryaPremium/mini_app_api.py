@@ -1072,6 +1072,55 @@ async def get_stories():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@api_router.get("/debug-parts")
+async def debug_parts(id: str = None):
+    """Debug endpoint to inspect stories with parts in MongoDB vs formatted output"""
+    try:
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+        
+        query = {}
+        if id:
+            try:
+                query = {"$or": [{"_id": ObjectId(id)}, {"_id": id}, {"story_id": id}]}
+            except Exception:
+                query = {"$or": [{"_id": id}, {"story_id": id}]}
+        else:
+            query = {
+                "$or": [
+                    {"enable_parts": {"$in": [True, "true", "True", "1", 1]}},
+                    {"parts": {"$exists": True, "$ne": []}},
+                    {"story_parts": {"$exists": True, "$ne": []}},
+                    {"episode_parts": {"$exists": True, "$ne": []}}
+                ]
+            }
+
+        docs = await arya_db.db.premium_stories.find(query).to_list(length=50)
+        results = []
+        for d in docs:
+            raw_id = str(d.get("_id"))
+            formatted = _format_story(d)
+            results.append({
+                "_id": raw_id,
+                "story_name_en": d.get("story_name_en"),
+                "story_name_hi": d.get("story_name_hi"),
+                "raw_enable_parts": d.get("enable_parts"),
+                "raw_parts_count": len(d.get("parts") or d.get("story_parts") or d.get("episode_parts") or []),
+                "raw_parts": d.get("parts") or d.get("story_parts") or d.get("episode_parts") or [],
+                "formatted_enable_parts": formatted.get("enable_parts") if formatted else None,
+                "formatted_parts_count": len(formatted.get("parts", [])) if formatted else 0,
+                "formatted_parts": formatted.get("parts") if formatted else [],
+            })
+            
+        return {
+            "success": True,
+            "total_matches": len(results),
+            "stories": results
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @api_router.get("/trending")
 async def get_trending(limit: int = 10):
     """
