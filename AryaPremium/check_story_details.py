@@ -2,32 +2,22 @@ import asyncio, sys, os
 from bson.objectid import ObjectId
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-PARENT = os.path.dirname(BASE)
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
-if PARENT not in sys.path:
-    sys.path.insert(0, PARENT)
 os.chdir(BASE)
 
-def _inject_env(filepath):
-    try:
-        with open(filepath, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip().strip("'").strip('"'))
-    except Exception:
-        pass
-
-from database import db as arya_db
+from config import Config
+from motor.motor_asyncio import AsyncIOMotorClient
 from mini_app_api import _format_story
 
-async def main():
-    if not arya_db.db:
-        await arya_db.connect()
-    db = arya_db.db
+mongo_uri = Config.MONGO_URI or Config.DATABASE_URI or getattr(Config, "DATABASE", "")
+print("Using Mongo URI:", mongo_uri[:25] + "..." if len(mongo_uri) > 25 else mongo_uri)
+print("Using Database Name:", Config.DATABASE_NAME)
 
+client = AsyncIOMotorClient(mongo_uri)
+db = client[Config.DATABASE_NAME]
+
+async def main():
     print("=" * 60)
     print("ALL STORIES WITH PARTS ENABLED OR PARTS LIST IN MONGO:")
     print("=" * 60)
