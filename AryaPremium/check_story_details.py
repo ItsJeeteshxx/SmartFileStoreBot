@@ -72,6 +72,19 @@ async def main():
     except Exception as e:
         print("  Error looking up 69f77ad44f650e13783ff9e6:", e)
 
+    # Check user 1071421266 purchases
+    print("\n" + "=" * 60)
+    print("CHECKING USER 1071421266 PURCHASES IN DB:")
+    print("=" * 60)
+    u = await db.users.find_one({"$or": [{"id": 1071421266}, {"telegram_id": 1071421266}, {"id": "1071421266"}]})
+    if u:
+        purchased_ids = [str(x) for x in (u.get("purchases") or [])]
+        print("  User found:", u.get("name") or u.get("username") or u.get("id"))
+        print("  Purchased story IDs count:", len(purchased_ids))
+        print("  Is Super Yoddha (69f77ad44f650e13783ff9e6) purchased by user?:", "69f77ad44f650e13783ff9e6" in purchased_ids)
+    else:
+        print("  User 1071421266 not found in users collection.")
+
     print("\n" + "=" * 60)
 
 if __name__ == "__main__":
