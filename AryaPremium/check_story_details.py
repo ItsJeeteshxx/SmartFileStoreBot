@@ -20,17 +20,13 @@ def _inject_env(filepath):
     except Exception:
         pass
 
-_inject_env(os.path.join(PARENT, ".env"))
-_inject_env(os.path.join(BASE, ".env"))
-
-from motor.motor_asyncio import AsyncIOMotorClient
-from config import Config
+from database import db as arya_db
 from mini_app_api import _format_story
 
 async def main():
-    mongo_uri = getattr(Config, "MONGO_URI", None) or getattr(Config, "DATABASE_URI", None) or getattr(Config, "DATABASE", None)
-    client = AsyncIOMotorClient(mongo_uri)
-    db = client[Config.DATABASE_NAME]
+    if not arya_db.db:
+        await arya_db.connect()
+    db = arya_db.db
 
     print("=" * 60)
     print("ALL STORIES WITH PARTS ENABLED OR PARTS LIST IN MONGO:")
