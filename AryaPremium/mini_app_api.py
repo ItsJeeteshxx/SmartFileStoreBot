@@ -10,6 +10,12 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
 
+import sys
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
+
 def _inject_env(filepath):
     """Read a .env file and inject values into os.environ (only if key not already set)."""
     try:
@@ -1229,7 +1235,10 @@ async def get_trending(limit: int = 10):
 
 
 
-from AryaPremium.config import Config
+try:
+    from AryaPremium.config import Config
+except ImportError:
+    from config import Config
 
 import razorpay
 

@@ -2,7 +2,11 @@ import asyncio, sys, os
 from bson.objectid import ObjectId
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BASE)
+PARENT = os.path.dirname(BASE)
+if BASE not in sys.path:
+    sys.path.insert(0, BASE)
+if PARENT not in sys.path:
+    sys.path.insert(0, PARENT)
 os.chdir(BASE)
 
 from motor.motor_asyncio import AsyncIOMotorClient
