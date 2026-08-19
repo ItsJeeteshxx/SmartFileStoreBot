@@ -10,6 +10,12 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
 
+import sys
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+if _PARENT_DIR not in sys.path:
+    sys.path.insert(0, _PARENT_DIR)
+
 def _inject_env(filepath):
     """Read a .env file and inject values into os.environ (only if key not already set)."""
     try:
@@ -655,14 +661,209 @@ async def track_client_telemetry(request: Request):
     """Logs frontend events, errors, and deep-link lifecycle metrics to backend logs."""
     try:
         data = await request.json()
-        event_type = data.get("event_type", "unknown")
-        event_data = data.get("event_data", {})
-        telegram_id = data.get("telegram_id", "0")
-        logger.info(f"📱 [MINIAPP LOG] tg={telegram_id} event={event_type} payload={event_data}")
-        return {"status": "ok"}
+        if "batch" in data and isinstance(data["batch"], list):
+            for item in data["batch"]:
+                event_type = item.get("event_type", "unknown")
+                event_data = item.get("event_data", {})
+                telegram_id = item.get("telegram_id", "0")
+                logger.info(f"📱 [MINIAPP LOG BATCH] tg={telegram_id} event={event_type} payload={event_data}")
+            return {"status": "ok", "count": len(data["batch"])}
+        else:
+            event_type = data.get("event_type", "unknown")
+            event_data = data.get("event_data", {})
+            telegram_id = data.get("telegram_id", "0")
+            logger.info(f"📱 [MINIAPP LOG] tg={telegram_id} event={event_type} payload={event_data}")
+            return {"status": "ok"}
     except Exception as e:
         logger.warning(f"Error in /track endpoint: {e}")
         return {"status": "error", "message": str(e)}
+
+# ─────────────────────────────────────────────────────────────
+# CRASHLYTICS & ERROR TRACKING SYSTEM
+# ─────────────────────────────────────────────────────────────
+@api_router.post("/crash-report")
+async def report_client_crash(request: Request):
+    """
+    Collects real-time frontend crash reports, component stack traces,
+    and user breadcrumbs, deduplicating and indexing them in MongoDB.
+    """
+    try:
+        payload = await request.json()
+        error_msg = str(payload.get("message") or payload.get("error_message") or "Unknown Error").strip()
+        stack = str(payload.get("stack") or "").strip()
+        component_stack = str(payload.get("componentStack") or payload.get("component_stack") or "").strip()
+        view_name = str(payload.get("view") or payload.get("view_name") or "unknown").strip()
+        url = str(payload.get("url") or payload.get("href") or "").strip()
+        
+        # User details
+        tg_id = str(payload.get("telegram_id") or payload.get("tg_id") or "0").strip()
+        username = str(payload.get("username") or "").strip()
+        first_name = str(payload.get("first_name") or "").strip()
+        
+        # Device details
+        device = payload.get("device") or {}
+        platform = str(payload.get("platform") or device.get("platform") or "unknown").strip()
+        user_agent = str(payload.get("user_agent") or device.get("userAgent") or "").strip()
+        breadcrumbs = payload.get("breadcrumbs") or []
+        
+        # Unique hash for grouping identical errors
+        first_stack_line = stack.split("\n")[0] if stack else ""
+        error_hash = hashlib.md5(f"{error_msg}::{first_stack_line}::{view_name}".encode()).hexdigest()
+        
+        arya_db = app.state.db
+        now_dt = datetime.now(timezone.utc)
+        now_str = now_dt.isoformat()
+        
+        # Upsert crash document in MongoDB
+        await arya_db.db.frontend_crashes.update_one(
+            {"error_hash": error_hash},
+            {
+                "$set": {
+                    "error_message": error_msg,
+                    "stack": stack,
+                    "component_stack": component_stack,
+                    "view_name": view_name,
+                    "url": url,
+                    "platform": platform,
+                    "user_agent": user_agent,
+                    "breadcrumbs": breadcrumbs[-10:],
+                    "last_seen": now_str,
+                    "last_seen_dt": now_dt,
+                    "last_user": {
+                        "telegram_id": tg_id,
+                        "username": username,
+                        "first_name": first_name,
+                    },
+                    "status": "open"
+                },
+                "$setOnInsert": {
+                    "error_hash": error_hash,
+                    "first_seen": now_str,
+                    "first_seen_dt": now_dt,
+                    "created_at": now_dt
+                },
+                "$inc": {"occurrences_count": 1},
+                "$addToSet": {"affected_users": tg_id if tg_id != "0" else "guest"}
+            },
+            upsert=True
+        )
+        
+        logger.info(f"🚨 [CRASHLYTICS REPORT] Hash={error_hash[:8]} Msg='{error_msg[:60]}' View={view_name} User={tg_id}")
+        return {"success": True, "error_hash": error_hash}
+    except Exception as e:
+        logger.warning(f"Failed to record crash report: {e}")
+        return {"success": False, "error": str(e)}
+
+@api_router.get("/admin/crashes")
+async def get_admin_crashes(telegram_id: str = Query(""), status: str = Query("all")):
+    """Fetch aggregated crash reports and statistics for the Admin Panel Crashlytics dashboard."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        query = {}
+        if status in ("open", "resolved"):
+            query["status"] = status
+            
+        cursor = arya_db.db.frontend_crashes.find(query).sort("last_seen_dt", -1).limit(100)
+        crashes = []
+        total_occurrences = 0
+        all_affected_users = set()
+        open_count = 0
+        resolved_count = 0
+        
+        async for doc in cursor:
+            occ = doc.get("occurrences_count", 1)
+            total_occurrences += occ
+            users_list = doc.get("affected_users", [])
+            for u in users_list:
+                all_affected_users.add(u)
+            if doc.get("status") == "resolved":
+                resolved_count += 1
+            else:
+                open_count += 1
+                
+            crashes.append({
+                "id": str(doc["_id"]),
+                "error_hash": doc.get("error_hash", ""),
+                "error_message": doc.get("error_message", "Unknown Error"),
+                "stack": doc.get("stack", ""),
+                "component_stack": doc.get("component_stack", ""),
+                "view_name": doc.get("view_name", "unknown"),
+                "url": doc.get("url", ""),
+                "platform": doc.get("platform", "unknown"),
+                "user_agent": doc.get("user_agent", ""),
+                "breadcrumbs": doc.get("breadcrumbs", []),
+                "occurrences_count": occ,
+                "affected_users_count": len(users_list),
+                "affected_users": users_list[:10],
+                "last_user": doc.get("last_user", {}),
+                "first_seen": doc.get("first_seen", ""),
+                "last_seen": doc.get("last_seen", ""),
+                "status": doc.get("status", "open")
+            })
+            
+        return {
+            "success": True,
+            "data": {
+                "summary": {
+                    "total_unique_crashes": len(crashes),
+                    "open_count": open_count,
+                    "resolved_count": resolved_count,
+                    "total_events": total_occurrences,
+                    "total_affected_users": len(all_affected_users)
+                },
+                "crashes": crashes
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching admin crashes: {e}")
+        return {"success": False, "data": {"summary": {}, "crashes": []}}
+
+@api_router.post("/admin/crashes/{crash_id}/status")
+async def toggle_crash_status(crash_id: str, payload: dict = Body(...), telegram_id: str = Query("")):
+    """Toggle or update crash resolution status."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        new_status = payload.get("status", "resolved")
+        await arya_db.db.frontend_crashes.update_one(
+            {"_id": ObjectId(crash_id)},
+            {"$set": {"status": new_status, "updated_at": datetime.now(timezone.utc)}}
+        )
+        return {"success": True, "status": new_status}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@api_router.delete("/admin/crashes/{crash_id}")
+async def delete_single_crash(crash_id: str, telegram_id: str = Query("")):
+    """Delete a single crash report."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        await arya_db.db.frontend_crashes.delete_one({"_id": ObjectId(crash_id)})
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@api_router.delete("/admin/crashes/clear-all")
+async def clear_all_crashes(telegram_id: str = Query(""), filter_type: str = Query("resolved")):
+    """Clear crashes (all or only resolved)."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        q = {"status": "resolved"} if filter_type == "resolved" else {}
+        res = await arya_db.db.frontend_crashes.delete_many(q)
+        return {"success": True, "deleted_count": res.deleted_count}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @api_router.get("/image")
 async def optimize_image(request: Request, url: str, w: int = 400, h: int = 400):
@@ -895,8 +1096,37 @@ def _format_story(s: dict) -> dict | None:
         is_comp = bool(s.get("is_completed") or s.get("completed"))
         status_val = "Completed" if is_comp else "Ongoing"
 
+    raw_ep = s.get("enable_parts")
+    raw_parts = s.get("parts") or s.get("story_parts") or s.get("episode_parts") or s.get("episodes_parts") or s.get("part_list") or s.get("episode_ranges") or s.get("sub_parts") or []
+    parts_list = raw_parts if isinstance(raw_parts, list) else []
+    
+    if isinstance(raw_ep, bool):
+        enable_parts_bool = raw_ep
+    elif isinstance(raw_ep, str):
+        enable_parts_bool = raw_ep.strip().lower() in ("true", "1", "yes", "on")
+    else:
+        enable_parts_bool = bool(raw_ep)
+
+    cleaned_parts = []
+    for idx, p in enumerate(parts_list):
+        if isinstance(p, dict):
+            cleaned_parts.append({
+                "id": str(p.get("id") or f"part_{idx+1}"),
+                "name": str(p.get("name") or f"Part {idx+1}"),
+                "name_hi": p.get("name_hi"),
+                "start_id": int(p.get("start_id") or 0),
+                "end_id": int(p.get("end_id") or 0),
+                "episodes": str(p.get("episodes") or ""),
+                "price": float(p.get("price") or 0),
+            })
+
+    # If parts list has items, ensure enable_parts is True
+    if len(cleaned_parts) > 0 and raw_ep is not False and str(raw_ep).lower() != "false":
+        enable_parts_bool = True
+
     return {
         "id":           story_id,
+        "story_id":     s.get("story_id") or story_id,
         "title":        title,
         "titleHi":      (s.get("story_name_hi") or "").strip() or None,
         "titleHin":     (s.get("story_name_hin") or "").strip() or None,
@@ -919,6 +1149,8 @@ def _format_story(s: dict) -> dict | None:
         "size":         s.get("total_size") or s.get("size") or None,
         "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
+        "enable_parts": enable_parts_bool,
+        "parts":        cleaned_parts,
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
@@ -1030,7 +1262,8 @@ async def get_stories():
                 item["trending_score"] = float(item["purchase_count"] * 100.0 + item["view_count"] * 1.0)
                 formatted.append(item)
 
-        logger.info(f"Returning {len(formatted)} stories with dynamic engagement metrics")
+        parts_enabled_count = sum(1 for item in formatted if item.get("enable_parts") or (item.get("parts") and len(item.get("parts")) > 0))
+        logger.info(f"Returning {len(formatted)} stories ({parts_enabled_count} with parts enabled) with dynamic engagement metrics")
         res = {"success": True, "data": formatted}
         _stories_cache = res
         _stories_cache_time = time.time()
@@ -1039,6 +1272,55 @@ async def get_stories():
     except Exception as e:
         logger.error(f"Error in /stories: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/debug-parts")
+async def debug_parts(id: str = None):
+    """Debug endpoint to inspect stories with parts in MongoDB vs formatted output"""
+    try:
+        arya_db = app.state.db
+        from bson.objectid import ObjectId
+        
+        query = {}
+        if id:
+            try:
+                query = {"$or": [{"_id": ObjectId(id)}, {"_id": id}, {"story_id": id}]}
+            except Exception:
+                query = {"$or": [{"_id": id}, {"story_id": id}]}
+        else:
+            query = {
+                "$or": [
+                    {"enable_parts": {"$in": [True, "true", "True", "1", 1]}},
+                    {"parts": {"$exists": True, "$ne": []}},
+                    {"story_parts": {"$exists": True, "$ne": []}},
+                    {"episode_parts": {"$exists": True, "$ne": []}}
+                ]
+            }
+
+        docs = await arya_db.db.premium_stories.find(query).to_list(length=50)
+        results = []
+        for d in docs:
+            raw_id = str(d.get("_id"))
+            formatted = _format_story(d)
+            results.append({
+                "_id": raw_id,
+                "story_name_en": d.get("story_name_en"),
+                "story_name_hi": d.get("story_name_hi"),
+                "raw_enable_parts": d.get("enable_parts"),
+                "raw_parts_count": len(d.get("parts") or d.get("story_parts") or d.get("episode_parts") or []),
+                "raw_parts": d.get("parts") or d.get("story_parts") or d.get("episode_parts") or [],
+                "formatted_enable_parts": formatted.get("enable_parts") if formatted else None,
+                "formatted_parts_count": len(formatted.get("parts", [])) if formatted else 0,
+                "formatted_parts": formatted.get("parts") if formatted else [],
+            })
+            
+        return {
+            "success": True,
+            "total_matches": len(results),
+            "stories": results
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @api_router.get("/trending")
@@ -1149,7 +1431,10 @@ async def get_trending(limit: int = 10):
 
 
 
-from AryaPremium.config import Config
+try:
+    from AryaPremium.config import Config
+except ImportError:
+    from config import Config
 
 import razorpay
 
@@ -1169,9 +1454,15 @@ class PromoValidateRequest(BaseModel):
     promo_code: str
     story_ids: list[str]
     telegram_id: Optional[Union[str, int]] = None
+    payment_method: Optional[str] = None
+
+class AvailablePromosRequest(BaseModel):
+    telegram_id: Optional[Union[str, int]] = None
+    story_ids: list[str] = []
+    payment_method: Optional[str] = None
 
 async def calculate_promo_discount(
-    db, pcode: str, story_ids: list, subtotal: float, telegram_id: Optional[Union[str, int]] = None
+    db, pcode: str, story_ids: list, subtotal: float, telegram_id: Optional[Union[str, int]] = None, payment_method: Optional[str] = None
 ) -> tuple[float, str]:
     """Validates the promo code and returns (discount_amount, error_message).
     If valid, error_message is "". If invalid, discount_amount is 0.0 and error_message describes the issue.
@@ -1186,39 +1477,117 @@ async def calculate_promo_discount(
         
     if not promo.get("active", True):
         return 0.0, "Promo code is inactive"
+
+    # Check payment method target
+    payment_method_target = promo.get("payment_method_target", "all")
+    if payment_method_target and payment_method_target != "all" and payment_method:
+        def _norm_pm(pm):
+            if not pm:
+                return ""
+            p = str(pm).strip().lower()
+            if "upi" in p:
+                return "upi"
+            if "razorpay" in p:
+                return "razorpay"
+            if "paytm" in p:
+                return "paytm"
+            if "payu" in p:
+                return "payu"
+            if "cashfree" in p:
+                return "cashfree"
+            if "dodo" in p:
+                return "dodopayments"
+            if "crypto" in p:
+                return "crypto"
+            return p
+
+        norm_selected = _norm_pm(payment_method)
+        norm_target = _norm_pm(payment_method_target)
+        if norm_selected and norm_target and norm_selected != norm_target:
+            return 0.0, f"This promo code is only valid for {payment_method_target.upper()} payment method"
         
     # Check minimum cart items
     min_cart_items = promo.get("min_cart_items")
     if min_cart_items is not None and isinstance(min_cart_items, int) and min_cart_items > 0:
         if len(story_ids) < min_cart_items:
             return 0.0, f"You need at least {min_cart_items} items in your cart to use this promo code"
+
+    # Check minimum cart order value (INR)
+    min_order_amount = promo.get("min_order_amount") or promo.get("min_order_value")
+    if min_order_amount is not None:
+        try:
+            min_val = float(min_order_amount)
+            if min_val > 0 and subtotal < min_val:
+                return 0.0, f"Minimum cart amount of ₹{int(min_val)} required to use this promo code (current total: ₹{int(subtotal)})"
+        except Exception:
+            pass
             
     # Check target audience
     user_target = promo.get("user_target", "all")
-    if user_target != "all" and telegram_id is not None:
-        tg_id_str = str(telegram_id).strip()
-        if tg_id_str:
-            tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
+    if user_target and user_target != "all":
+        tg_id_str = str(telegram_id).strip() if telegram_id is not None else ""
+        if tg_id_str.lower() in ["undefined", "null", "none", "0"]:
+            tg_id_str = ""
             
-            # Retrieve user doc to count purchased stories and check registration date
-            user_doc = await db.db.users.find_one({"id": tg_id_int}) if tg_id_int else None
-            orders_count = len(user_doc.get("purchases", [])) if user_doc else 0
+        tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
+        
+        # If user target requires existing purchases or history, unauthenticated user cannot claim it
+        if not tg_id_str:
+            if user_target in ["existing_only", "1_purchase", "2_purchases", "3_plus_purchases"]:
+                return 0.0, "This promo code is only valid for existing buyers with past purchases."
+            elif user_target == "inactive_only":
+                return 0.0, "This promo code is for older registered users."
+        else:
+            query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
+            
+            # 1. Retrieve user doc from users collection
+            user_doc = await db.db.users.find_one({
+                "$or": [
+                    {"id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}},
+                    {"user_id": {"$in": query_user}}
+                ]
+            })
+            
+            user_purchases_len = 0
+            if user_doc:
+                user_purchases_len = max(
+                    len(user_doc.get("purchases", []) or []),
+                    len(user_doc.get("purchased_stories", []) or []),
+                    len(user_doc.get("bought_stories", []) or [])
+                )
+                
+            # 2. Count from premium_purchases collection
+            prem_purchases_count = await db.db.premium_purchases.count_documents({
+                "$or": [
+                    {"user_id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}}
+                ]
+            })
+            
+            # 3. Count from orders collection with paid/completed/delivered status
+            paid_orders_count = await db.db.orders.count_documents({
+                "$or": [
+                    {"user_id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}}
+                ],
+                "status": {"$in": ["paid", "completed", "success", "delivered"]}
+            })
+            
+            orders_count = max(user_purchases_len, prem_purchases_count, paid_orders_count)
             
             if user_target == "new_only":
                 if orders_count > 0:
                     return 0.0, "This promo code is exclusively for new users who haven't made a purchase yet."
-            elif user_target == "existing_only":
-                if orders_count == 0:
-                    return 0.0, "This promo code rewards our existing buyers. You need at least 1 past purchase to use it."
-            elif user_target == "1_purchase":
+            elif user_target in ["existing_only", "1_purchase"]:
                 if orders_count < 1:
-                    return 0.0, "This promo code requires at least 1 purchased story. You currently have 0."
+                    return 0.0, "This promo code is exclusively for existing buyers with at least 1 previous purchase."
             elif user_target == "2_purchases":
                 if orders_count < 2:
-                    return 0.0, f"This promo code requires at least 2 purchased stories. You currently have {orders_count}."
+                    return 0.0, f"This promo code requires at least 2 previous purchases. You currently have {orders_count}."
             elif user_target == "3_plus_purchases":
                 if orders_count < 3:
-                    return 0.0, f"This special promo code unlocks after your 3rd purchase! You currently have {orders_count} purchased stories."
+                    return 0.0, f"This special promo code unlocks after 3+ purchases. You currently have {orders_count}."
             elif user_target == "inactive_only":
                 if orders_count > 0:
                     return 0.0, "This promo code is only valid for non-buyers."
@@ -1232,7 +1601,7 @@ async def calculate_promo_discount(
                             joined_date = doc_id.generation_time
                 
                 if not joined_date:
-                    return 0.0, "This promo code is for older users. Please try another code."
+                    return 0.0, "This promo code is for older users registered 7+ days ago."
                     
                 now = datetime.now(timezone.utc)
                 if joined_date.tzinfo is None:
@@ -1241,18 +1610,22 @@ async def calculate_promo_discount(
                 if (now - joined_date).days < 7:
                     return 0.0, "This promo code is a welcome back gift for users registered 7+ days ago."
 
-    # Check user-specific limit
+    # Check user-specific limit (one-time valid per user or N-time per user)
     user_limit = promo.get("user_limit")
-    if user_limit is not None and isinstance(user_limit, int) and telegram_id is not None:
+    if user_limit is not None and isinstance(user_limit, int) and user_limit > 0 and telegram_id is not None:
         tg_id_str = str(telegram_id).strip()
         if tg_id_str:
             tg_id_int = int(tg_id_str) if tg_id_str.isdigit() else 0
             query_user = [tg_id_int, tg_id_str] if tg_id_int else [tg_id_str]
             
+            import re
             used_count = await db.db.orders.count_documents({
-                "user_id": {"$in": query_user},
-                "status": "paid",
-                "promo_code": pcode_clean
+                "$or": [
+                    {"user_id": {"$in": query_user}},
+                    {"telegram_id": {"$in": query_user}}
+                ],
+                "status": {"$in": ["paid", "completed", "success"]},
+                "promo_code": {"$regex": f"^{re.escape(pcode_clean)}$", "$options": "i"}
             })
             
             if used_count >= user_limit:
@@ -1261,18 +1634,31 @@ async def calculate_promo_discount(
                 else:
                     return 0.0, f"You can only use this promo code up to {user_limit} times"
         
-    # Check expiration
+    # Check expiration (proper timezone and end-of-day handling)
     expires_at = promo.get("expires_at")
     if expires_at:
+        exp_dt = None
         if isinstance(expires_at, str):
+            s = expires_at.strip()
             try:
-                # Parse ISO string safely
-                expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            except ValueError:
-                pass
-        if isinstance(expires_at, datetime):
-            if datetime.now(timezone.utc) > expires_at:
-                return 0.0, "Promo code has expired"
+                if len(s) == 10 and s.count("-") == 2:
+                    exp_dt = datetime.strptime(s, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+                else:
+                    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                        dt = dt.replace(hour=23, minute=59, second=59)
+                    exp_dt = dt
+            except Exception as parse_err:
+                logger.warning(f"Could not parse promo expires_at '{s}': {parse_err}")
+        elif isinstance(expires_at, datetime):
+            exp_dt = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+            if exp_dt.hour == 0 and exp_dt.minute == 0 and exp_dt.second == 0:
+                exp_dt = exp_dt.replace(hour=23, minute=59, second=59)
+                
+        if exp_dt and datetime.now(timezone.utc) > exp_dt:
+            return 0.0, "Promo code has expired"
                 
     # Check usage limit
     usage_limit = promo.get("usage_limit")
@@ -1281,33 +1667,94 @@ async def calculate_promo_discount(
         if usage_count >= usage_limit:
             return 0.0, "Promo code usage limit reached"
             
-    # Check story applicability (handle both story_id and target_story_ids for backward compatibility)
+    # Load cart story documents to evaluate story status and target story restrictions
+    from bson.objectid import ObjectId
+    cart_story_docs = []
+    for sid in story_ids:
+        sid_str = str(sid).strip()
+        s = None
+        if len(sid_str) == 24:
+            try:
+                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid_str)})
+            except Exception:
+                pass
+        if not s:
+            try:
+                s = await db.db.premium_stories.find_one({"story_id": sid_str})
+            except Exception:
+                pass
+        if not s:
+            try:
+                s = await db.db.premium_stories.find_one({"id": sid_str})
+            except Exception:
+                pass
+        if not s and sid_str.isdigit():
+            try:
+                s = await db.db.premium_stories.find_one({"story_id": int(sid_str)})
+            except Exception:
+                pass
+        if s:
+            cart_story_docs.append(s)
+
+    # Compute actual cart subtotal from database if subtotal was 0
+    actual_cart_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else subtotal
+    effective_subtotal = max(subtotal, actual_cart_subtotal)
+
+    # Check minimum cart order value (INR)
+    min_order_amount = promo.get("min_order_amount") or promo.get("min_order_value")
+    if min_order_amount is not None:
+        try:
+            min_val = float(min_order_amount)
+            if min_val > 0 and effective_subtotal < min_val:
+                return 0.0, f"Minimum cart amount of ₹{int(min_val)} required to use this promo code (current total: ₹{int(effective_subtotal)})"
+        except Exception:
+            pass
+
+    # Check story status applicability (completed, ongoing, all)
+    story_status_target = str(promo.get("story_status_target", "all")).strip().lower()
+    if story_status_target and story_status_target != "all":
+        status_filtered = []
+        for s in cart_story_docs:
+            s_stat = str(s.get("status", "")).strip().lower()
+            is_comp = bool(
+                s.get("is_completed") is True
+                or s.get("completed") is True
+                or s.get("isCompleted") is True
+                or s_stat == "completed"
+            )
+            if story_status_target == "completed" and is_comp:
+                status_filtered.append(s)
+            elif story_status_target == "ongoing" and not is_comp:
+                status_filtered.append(s)
+                
+        if not status_filtered:
+            if story_status_target == "completed":
+                return 0.0, "This promo code is only valid for completed stories"
+            else:
+                return 0.0, "This promo code is only valid for ongoing stories"
+        cart_story_docs = status_filtered
+
+    # Check specific story applicability (target_story_ids and legacy story_id)
     target_story_ids = promo.get("target_story_ids", [])
     legacy_story_id = promo.get("story_id")
     if legacy_story_id and legacy_story_id != "global" and legacy_story_id not in target_story_ids:
-        target_story_ids.append(legacy_story_id)
+        target_story_ids = list(target_story_ids) + [legacy_story_id]
         
     if target_story_ids:
-        from bson.objectid import ObjectId
+        target_ids_str = [str(x).strip() for x in target_story_ids if str(x).strip()]
         applicable_story_price = 0.0
         applicable_in_cart = False
         
-        for sid in story_ids:
-            s = None
-            try:
-                s = await db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
-            except Exception:
-                pass
-            if not s:
-                s = await db.db.premium_stories.find_one({"story_id": sid})
+        for s in cart_story_docs:
+            sid_str = str(s.get("id") or s.get("story_id") or s.get("_id")).strip()
+            s_custom_id = str(s.get("story_id", "")).strip()
+            s_db_id = str(s.get("_id", "")).strip()
+            s_id = str(s.get("id", "")).strip()
+            
+            if (sid_str in target_ids_str) or (s_custom_id and s_custom_id in target_ids_str) or (s_db_id and s_db_id in target_ids_str) or (s_id and s_id in target_ids_str):
+                applicable_in_cart = True
+                applicable_story_price += float(s.get("price", 0) or 0)
                 
-            if s:
-                s_custom_id = s.get("story_id")
-                s_db_id = str(s.get("_id"))
-                if s_custom_id in target_story_ids or s_db_id in target_story_ids:
-                    applicable_in_cart = True
-                    applicable_story_price += float(s.get("price", 0) or 0)
-                    
         if not applicable_in_cart:
             return 0.0, "Promo code is not applicable to any stories in your cart"
             
@@ -1318,15 +1765,18 @@ async def calculate_promo_discount(
             discount = round((applicable_story_price * pval) / 100.0, 2)
         elif ptype == "flat":
             discount = min(pval, applicable_story_price)
-    else:
-        # Global promo, applied to the entire subtotal
-        ptype = promo.get("type", "percentage")
-        pval = float(promo.get("value", 0))
-        if ptype == "percentage":
-            discount = round((subtotal * pval) / 100.0, 2)
-        elif ptype == "flat":
-            discount = min(pval, subtotal)
-            
+    # Global or status-filtered subtotal
+    eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else effective_subtotal
+    if eligible_subtotal <= 0:
+        return 0.0, "Promo code is not applicable to any eligible stories in your cart"
+    ptype = promo.get("type", "percentage")
+    pval = float(promo.get("value", 0))
+    if ptype == "percentage":
+        discount = round((eligible_subtotal * pval) / 100.0, 2)
+    elif ptype == "flat":
+        discount = min(pval, eligible_subtotal)
+        
+    logger.info(f"[calculate_promo_discount] Result for '{code}' -> Discount: {discount}, Error: '{err if 'err' in locals() else ''}'")
     return discount, ""
 
 @api_router.post("/promo-codes/validate")
@@ -1338,30 +1788,45 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
             raise HTTPException(status_code=500, detail="Database not available")
             
         pcode = data.promo_code.strip().upper()
-        # Find all stories to calculate subtotal
+        logger.info(f"=== [validate_promo_endpoint] Validating code '{pcode}' for stories: {data.story_ids}, user: {data.telegram_id}, method: {data.payment_method} ===")
         from bson.objectid import ObjectId
         valid_stories = []
         for sid in data.story_ids:
+            sid_str = str(sid).strip()
             s = None
-            try:
-                s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
-            except Exception:
-                pass
+            if len(sid_str) == 24:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid_str)})
+                except Exception:
+                    pass
             if not s:
                 try:
-                    s = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                    s = await arya_db.db.premium_stories.find_one({"story_id": sid_str})
+                except Exception:
+                    pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": sid_str})
+                except Exception:
+                    pass
+            if not s and sid_str.isdigit():
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"story_id": int(sid_str)})
                 except Exception:
                     pass
             if s:
                 valid_stories.append(s)
                 
         subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
+        logger.info(f"[validate_promo_endpoint] Found {len(valid_stories)} stories in DB. Calculated Subtotal: ₹{subtotal}")
         
-        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal, data.telegram_id)
+        discount, err = await calculate_promo_discount(arya_db, pcode, data.story_ids, subtotal, data.telegram_id, data.payment_method)
         if err:
+            logger.info(f"[validate_promo_endpoint] Validation failed for '{pcode}': {err}")
             return {"valid": False, "discount": 0.0, "message": err}
             
         promo = await arya_db.db.premium_promo_codes.find_one({"code": pcode})
+        logger.info(f"[validate_promo_endpoint] Validation success for '{pcode}'! Discount: ₹{discount}")
         return {
             "valid": True,
             "discount": discount,
@@ -1370,18 +1835,17 @@ async def validate_promo_endpoint(data: PromoValidateRequest):
                 "code": promo.get("code"),
                 "type": promo.get("type"),
                 "value": promo.get("value"),
+                "min_order_amount": promo.get("min_order_amount") or promo.get("min_order_value") or 0,
+                "min_cart_items": promo.get("min_cart_items") or 0,
                 "story_id": promo.get("story_id", "global"),
-                "description": promo.get("description", "")
+                "description": promo.get("description", ""),
+                "story_status_target": str(promo.get("story_status_target", "all")).lower(),
+                "payment_method_target": str(promo.get("payment_method_target", "all")).lower()
             }
         }
     except Exception as e:
         logger.error(f"Error validating promo code: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-class AvailablePromosRequest(BaseModel):
-    telegram_id: Optional[Union[str, int]] = None
-    story_ids: list[str] = []
 
 @api_router.post("/promo-codes/available")
 async def get_available_promos(data: AvailablePromosRequest):
@@ -1406,6 +1870,11 @@ async def get_available_promos(data: AvailablePromosRequest):
                     s = await arya_db.db.premium_stories.find_one({"story_id": sid})
                 except Exception:
                     pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": sid})
+                except Exception:
+                    pass
             if s:
                 valid_stories.append(s)
                 
@@ -1413,31 +1882,59 @@ async def get_available_promos(data: AvailablePromosRequest):
         
         available = []
         for promo in promos:
-            if not data.story_ids:
-                # If requested for homepage banner (empty cart), return all active promos
-                available.append({
-                    "code": promo.get("code"),
-                    "type": promo.get("type"),
-                    "value": promo.get("value"),
-                    "description": promo.get("description", ""),
-                    "discount_amount": 0,
-                    "auto_apply": promo.get("auto_apply", False)
-                })
-            else:
-                discount, err = await calculate_promo_discount(
-                    arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id
-                )
-                # Include the promo even if there's an error so the user can see the offer in "View Offers".
-                # If they try to apply it and their cart doesn't qualify, they will see the specific error.
-                available.append({
-                    "code": promo.get("code"),
-                    "type": promo.get("type"),
-                    "value": promo.get("value"),
-                    "description": promo.get("description", ""),
-                    "discount_amount": discount if not err else 0,
-                    "auto_apply": promo.get("auto_apply", False) if not err else False
-                })
-        available.sort(key=lambda x: x["discount_amount"], reverse=True)
+            discount, err = await calculate_promo_discount(
+                arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id, data.payment_method
+            )
+            
+            # Fetch target story titles for clarity if promo is specific to certain stories
+            target_ids = promo.get("target_story_ids", [])
+            target_titles = []
+            if target_ids:
+                for tid in target_ids:
+                    t_doc = None
+                    try:
+                        t_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(tid) if len(tid) == 24 else None})
+                    except Exception:
+                        pass
+                    if not t_doc:
+                        try:
+                            t_doc = await arya_db.db.premium_stories.find_one({"story_id": tid})
+                        except Exception:
+                            pass
+                    if not t_doc:
+                        try:
+                            t_doc = await arya_db.db.premium_stories.find_one({"id": tid})
+                        except Exception:
+                            pass
+                    if t_doc:
+                        name = t_doc.get("story_name_en") or t_doc.get("title")
+                        if name:
+                            target_titles.append(name)
+            
+            promo_info = {
+                "code": promo.get("code"),
+                "type": promo.get("type", "percentage"),
+                "value": promo.get("value", 0),
+                "description": promo.get("description", ""),
+                "discount_amount": discount if not err else 0,
+                "auto_apply": bool(promo.get("auto_apply", False)) if not err else False,
+                "applicable": not bool(err) and discount > 0,
+                "error_reason": err,
+                "min_cart_items": promo.get("min_cart_items"),
+                "min_order_amount": promo.get("min_order_amount") or promo.get("min_order_value"),
+                "user_limit": promo.get("user_limit"),
+                "user_target": promo.get("user_target", "all"),
+                "story_status_target": promo.get("story_status_target", "all"),
+                "payment_method_target": promo.get("payment_method_target", "all"),
+                "expires_at": promo.get("expires_at"),
+                "target_story_ids": target_ids,
+                "target_story_titles": target_titles,
+            }
+            
+            # Append all active promos so users can see available offers, but applicable flag indicates if valid for this story
+            available.append(promo_info)
+                
+        available.sort(key=lambda x: (1 if x["applicable"] else 0, x["discount_amount"]), reverse=True)
         return {"success": True, "promos": available}
     except Exception as e:
         logger.error(f"Error fetching available promos: {e}")
@@ -1450,36 +1947,23 @@ async def get_available_promos(data: AvailablePromosRequest):
 async def create_payment_link(payload: dict):
     """Creates a Razorpay Payment Link linked to an order."""
     telegram_id = payload.get("telegram_id")
-    story_ids   = payload.get("story_ids", [])
     username    = payload.get("username", "")
     promo_code  = payload.get("promo_code", "")
     is_int      = payload.get("is_international", False)
 
-    if not telegram_id or not story_ids:
-        raise HTTPException(status_code=400, detail="Missing telegram_id or story_ids")
+    if not telegram_id:
+        raise HTTPException(status_code=400, detail="Missing telegram_id")
 
     arya_db = app.state.db
 
-    # Validate stories exist
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="Invalid stories requested")
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     if cfg.get("razorpay_disabled") or cfg.get("razorpay_status") in ["disabled", "hidden"]:
         raise HTTPException(status_code=400, detail="Razorpay payment gateway is currently disabled by Admin")
-    
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     # 1. Promo Code Discount
     discount = 0.0
@@ -1517,7 +2001,7 @@ async def create_payment_link(payload: dict):
             "amount": int(total_price * 100), # in paise
             "currency": "INR",
             "accept_partial": False,
-            "description": ", ".join([s.get("story_name_en") or s.get("title") or s.get("story_name_hi") or "Arya Premium Content" for s in valid_stories])[:200] or "Arya Premium Content",
+            "description": ", ".join(story_names)[:200] or "Arya Premium Content",
             "customer": {
                 "name": username or f"User {telegram_id}",
                 "email": f"user{telegram_id}@sliceurl.com"
@@ -1538,7 +2022,8 @@ async def create_payment_link(payload: dict):
             "user_id":     tg_id_int,
             "username":    username or "Unknown",
             "story_ids":   story_ids,
-            "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "items":       resolved_items,
+            "story_names": story_names,
             "subtotal":    subtotal,
             "discount":    discount,
             "promo_code":  pcode_clean if discount > 0 else None,
@@ -1547,9 +2032,20 @@ async def create_payment_link(payload: dict):
             "total":       total_price,
             "status":      "pending",
             "source":      "razorpay_link",
+            "auto_deliver": bool(payload.get("auto_deliver", True)),
             "created_at":  datetime.now(timezone.utc),
         }
         await arya_db.db.orders.insert_one(order_doc)
+        logger.info(f"Payment Link created: {link_data['id']} for user {telegram_id}")
+
+        return {
+            "success": True,
+            "payment_link_id": link_data["id"],
+            "payment_link_url": link_data["short_url"]
+        }
+    except Exception as e:
+        logger.error(f"Razorpay link creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
         logger.info(f"Payment Link created: {link_data['id']} for user {telegram_id}")
 
         return {
@@ -1683,38 +2179,137 @@ async def _make_arya_order_id(
         return f"OD_{tg_id}_{uuid.uuid4().hex[:8].upper()}"
 
 
-# â”€â”€ Razorpay: Create Order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async def _resolve_order_items(arya_db, payload: dict) -> tuple:
+    """
+    Parses items from payload (either `items` list with part info or legacy `story_ids` list).
+    Returns (resolved_items, subtotal, story_ids_list, story_names_list)
+    """
+    from bson.objectid import ObjectId
+    from bson.errors import InvalidId
+
+    raw_items = payload.get("items")
+    story_ids = payload.get("story_ids", [])
+    
+    resolved_items = []
+    
+    if raw_items and isinstance(raw_items, list):
+        for itm in raw_items:
+            sid = str(itm.get("story_id") or itm.get("id") or "").strip()
+            if not sid:
+                continue
+            
+            story_doc = None
+            try:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+            except (InvalidId, Exception):
+                pass
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": sid})
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                
+            if not story_doc:
+                continue
+                
+            part_id = itm.get("part_id")
+            selected_part = None
+            parts_in_doc = (
+                story_doc.get("parts")
+                or story_doc.get("story_parts")
+                or story_doc.get("episode_parts")
+                or story_doc.get("episodes_parts")
+                or story_doc.get("part_list")
+                or []
+            )
+            if part_id and isinstance(parts_in_doc, list):
+                for p in parts_in_doc:
+                    if isinstance(p, dict) and str(p.get("id")) == str(part_id):
+                        selected_part = p
+                        break
+            
+            if selected_part:
+                p_start = int(selected_part.get("start_id") or story_doc.get("start_id") or 0)
+                p_end = int(selected_part.get("end_id") or story_doc.get("end_id") or 0)
+                p_price = float(selected_part.get("price") or 0)
+                p_name = selected_part.get("name") or "Part"
+                resolved_items.append({
+                    "story_id": str(story_doc.get("_id")),
+                    "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
+                    "part_id": str(selected_part.get("id")),
+                    "part_name": p_name,
+                    "start_id": p_start,
+                    "end_id": p_end,
+                    "price": p_price,
+                    "is_full": False,
+                })
+            else:
+                s_start = int(story_doc.get("start_id") or 0)
+                s_end = int(story_doc.get("end_id") or 0)
+                s_price = float(story_doc.get("price") or 0)
+                resolved_items.append({
+                    "story_id": str(story_doc.get("_id")),
+                    "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
+                    "part_id": None,
+                    "part_name": None,
+                    "start_id": s_start,
+                    "end_id": s_end,
+                    "price": s_price,
+                    "is_full": True,
+                })
+    elif story_ids:
+        for sid in story_ids:
+            sid_clean = str(sid).strip()
+            if not sid_clean:
+                continue
+            story_doc = None
+            try:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid_clean)})
+            except (InvalidId, Exception):
+                pass
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"_id": sid_clean})
+            if not story_doc:
+                story_doc = await arya_db.db.premium_stories.find_one({"story_id": sid_clean})
+                
+            if not story_doc:
+                continue
+                
+            resolved_items.append({
+                "story_id": str(story_doc.get("_id")),
+                "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
+                "part_id": None,
+                "part_name": None,
+                "start_id": int(story_doc.get("start_id") or 0),
+                "end_id": int(story_doc.get("end_id") or 0),
+                "price": float(story_doc.get("price") or 0),
+                "is_full": True,
+            })
+            
+    subtotal = sum(i["price"] for i in resolved_items)
+    unique_story_ids = list(dict.fromkeys([i["story_id"] for i in resolved_items]))
+    story_names = [i["story_title"] + (f" ({i['part_name']})" if i.get("part_name") else "") for i in resolved_items]
+    return resolved_items, subtotal, unique_story_ids, story_names
+
+
+# ── Razorpay: Create Order ──────────────────────────────────────────────
 @api_router.post("/create-order")
 async def create_razorpay_order(payload: dict):
     """Create Razorpay order. Returns order_id + key for frontend SDK modal."""
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     is_int     = payload.get("is_international", False)
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(400, "Cart is empty")
     if not RZP_KEY_ID or not RZP_KEY_SECRET:
         raise HTTPException(500, "Razorpay not configured on server")
 
     arya_db = app.state.db
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
 
-    if not valid_stories:
-        raise HTTPException(400, "No valid stories")
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
+        raise HTTPException(400, "Cart is empty or no valid stories found")
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     # 1. Promo Code Discount
     discount = 0.0
@@ -1771,8 +2366,13 @@ async def create_razorpay_order(payload: dict):
             "currency":          "INR",
             "key":               RZP_KEY_ID,
             "receipt":           receipt,
-            "story_names":       [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "story_names":       story_names,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create-order error: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -1812,20 +2412,10 @@ async def verify_payment(payload: dict):
 
     # Signature OK — store order + unlock content
     arya_db = app.state.db
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
 
     # Fetch settings
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     # 1. Promo Code Discount
     discount = 0.0
@@ -1857,7 +2447,8 @@ async def verify_payment(payload: dict):
         "user_id":             tg_id_int if tg_id_int else tg_id,
         "username":            username,
         "story_ids":           story_ids,
-        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "items":               resolved_items,
+        "story_names":         story_names,
         "subtotal":            subtotal,
         "discount":            discount,
         "promo_code":          pcode_clean if discount > 0 else None,
@@ -1868,6 +2459,7 @@ async def verify_payment(payload: dict):
         "source":              "razorpay_miniapp",
         "razorpay_order_id":   rzp_order_id,
         "razorpay_payment_id": rzp_payment_id,
+        "auto_deliver":        bool(payload.get("auto_deliver", True)),
         "created_at":          datetime.now(timezone.utc),
     }
     await arya_db.db.orders.insert_one(order_doc)
@@ -1879,6 +2471,7 @@ async def verify_payment(payload: dict):
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
     asyncio.create_task(record_purchased_stories(order_doc))
+    asyncio.create_task(trigger_auto_delivery_for_order(arya_db, tg_id, order_doc=order_doc))
     asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
     return {"success": True, "message": "Payment verified successfully"}
@@ -2166,7 +2759,6 @@ async def verify_upi_utr(payload: dict):
     utr = str(payload.get("utr", "")).strip()
     promo_code = payload.get("promo_code", "")
     is_int = payload.get("is_international", False)
-    auto_deliver = bool(payload.get("auto_deliver", False))
 
     if not telegram_id or not story_ids or not utr:
         raise HTTPException(status_code=400, detail="Missing required validation parameters.")
@@ -2186,17 +2778,8 @@ async def verify_upi_utr(payload: dict):
         raise HTTPException(status_code=400, detail="This UTR/RRN has already been claimed for another purchase. Reuse is blocked.")
 
     # 3. Calculate expected amount
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories in cart.")
 
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
@@ -2410,7 +2993,8 @@ async def verify_upi_utr(payload: dict):
         "payer_name":          payer_name if payer_name else username,
         "invoice_number":      invoice_number,
         "story_ids":           story_ids,
-        "story_names":         [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+        "items":               resolved_items,
+        "story_names":         story_names,
         "subtotal":            subtotal,
         "discount":            discount,
         "promo_code":          pcode_clean if discount > 0 else None,
@@ -2420,7 +3004,7 @@ async def verify_upi_utr(payload: dict):
         "status":              "paid",
         "source":              "upi_manual_miniapp",
         "utr":                 utr,
-        "auto_deliver":        auto_deliver,
+        "auto_deliver":        bool(payload.get("auto_deliver", True)),
         "paid_at":             datetime.now(timezone.utc),
     }
 
@@ -2499,7 +3083,6 @@ async def create_pending_order(payload: dict):
     username      = str(payload.get("username", "")).strip()
     first_name    = str(payload.get("first_name", "")).strip()
     last_name     = str(payload.get("last_name", "")).strip()
-    auto_deliver  = bool(payload.get("auto_deliver", False))
 
     if not telegram_id:
         logger.warning("create_pending_order: missing telegram_id — skipping")
@@ -2531,17 +3114,9 @@ async def create_pending_order(payload: dict):
 
         tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else 0
 
-        # Resolve story names from DB for richer admin view
-        story_names = []
-        if story_ids:
-            from bson.objectid import ObjectId
-            for sid in story_ids:
-                try:
-                    doc = await db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-                    if doc:
-                        story_names.append(doc.get("story_name_en", doc.get("title", sid)))
-                except Exception:
-                    story_names.append(sid)
+        resolved_items, subtotal_calc, story_ids_res, story_names = await _resolve_order_items(db, payload)
+        if not story_names:
+            story_names = story_ids
 
         pending_doc = {
             "order_id":       order_id,
@@ -2549,14 +3124,15 @@ async def create_pending_order(payload: dict):
             "username":       username,
             "first_name":     first_name,
             "last_name":      last_name,
-            "story_ids":      story_ids,
+            "story_ids":      story_ids_res or story_ids,
+            "items":          resolved_items,
             "story_names":    story_names,
             "total":          amount,
             "promo_code":     promo_code if promo_code else None,
             "status":         "pending",
             "source":         "upi_manual_miniapp",
             "upi_id_shown":   upi_id_shown,
-            "auto_deliver":   auto_deliver,
+            "auto_deliver":   bool(payload.get("auto_deliver", True)),
             "created_at":     datetime.now(timezone.utc),
         }
         await db.db.orders.insert_one(pending_doc)
@@ -2777,20 +3353,10 @@ async def create_oxapay_order(payload: dict):
         raise HTTPException(status_code=400, detail="Cart is empty")
 
     arya_db = app.state.db
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, total_inr, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
 
-    total_inr = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     promo_code = payload.get("promo_code", "")
 
     # Fetch settings for promo codes
@@ -3015,13 +3581,9 @@ async def create_paytm_order(payload: dict):
     if not PAYTM_LIBS_AVAILABLE:
         raise HTTPException(status_code=500, detail="paytmchecksum library is not installed. Please run: pip install paytmchecksum")
         
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(400, "Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -3036,22 +3598,9 @@ async def create_paytm_order(payload: dict):
     if not mid or not merchant_key:
         raise HTTPException(status_code=400, detail="Paytm credentials are not configured.")
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(400, "No valid stories")
-
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
@@ -3126,11 +3675,13 @@ async def create_paytm_order(payload: dict):
         order_doc = {
             "order_id": orderId,
             "user_id": str(tg_id),
-            "story_ids": [ObjectId(sid) for sid in story_ids],
+            "story_ids": story_ids,
+            "items": resolved_items,
             "story_names": story_names,
             "total": total,
             "source": "paytm",
             "status": "pending",
+            "auto_deliver": bool(payload.get("auto_deliver", True)),
             "created_at": datetime.now(timezone.utc),
             "payment_id": None,
             "promo_code": pcode_clean if pcode_clean else None,
@@ -3361,15 +3912,11 @@ async def paytm_callback(request: Request):
 # ===== PayU Payment Gateway: Create Order =====
 @api_router.post("/create-payu-order")
 async def create_payu_order(payload: dict):
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
     first_name = payload.get("first_name", "") or ""
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -3395,22 +3942,9 @@ async def create_payu_order(payload: dict):
         if not merchant_key or not merchant_salt:
             raise HTTPException(status_code=400, detail="PayU live credentials (Merchant Key & Merchant Salt) are not configured in Admin Panel.")
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
-
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
@@ -3453,11 +3987,14 @@ async def create_payu_order(payload: dict):
     order_doc = {
         "order_id": txnid,
         "user_id": str(tg_id),
-        "story_ids": [ObjectId(sid) for sid in story_ids],
+        "username": username,
+        "story_ids": story_ids,
+        "items": resolved_items,
         "story_names": story_names,
         "total": total,
         "source": "payu",
         "status": "pending",
+        "auto_deliver": bool(payload.get("auto_deliver", True)),
         "created_at": datetime.now(timezone.utc),
         "payment_id": None,
         "promo_code": pcode_clean if pcode_clean else None,
@@ -3725,15 +4262,11 @@ async def payu_callback_get(request: Request):
 @api_router.post("/create-cashfree-order")
 async def create_cashfree_order(payload: dict):
     """Create Cashfree PG order and generate payment session for frontend checkout."""
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
     first_name = payload.get("first_name", "") or ""
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -3752,22 +4285,9 @@ async def create_cashfree_order(payload: dict):
 
     is_sandbox = (cf_env in ("sandbox", "staging", "test") or "TEST" in app_id.upper() or "SANDBOX" in app_id.upper())
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=400, detail="No valid stories found in cart")
-
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
     
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
@@ -3789,10 +4309,21 @@ async def create_cashfree_order(payload: dict):
     
     import uuid, re
     customer_id = f"cust_{tg_id}" if tg_id else f"cust_{uuid.uuid4().hex[:8]}"
-    raw_name = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
-    customer_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip() or "Customer"
+    
+    # Extract customer contact details passed from frontend
+    raw_name = str(payload.get("customer_name") or payload.get("name") or first_name or username or "").strip()
+    clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', raw_name).strip()
+    customer_name = clean_name[:50] if clean_name else "Customer"
+
+    # Extract 10-digit phone number
+    raw_phone = str(payload.get("phone") or payload.get("customer_phone") or "").strip()
+    phone_digits = re.sub(r'\D', '', raw_phone)
+    if len(phone_digits) >= 10:
+        customer_phone = phone_digits[-10:]
+    else:
+        customer_phone = phone_digits if phone_digits else "9999999999"
+
     customer_email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@sliceurl.app")
-    customer_phone = payload.get("phone", "").strip() or "9999999999"
     
     callback_url = cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback").strip()
     return_url_base = cfg.get("cashfree_return_url", "https://isaythanks.vercel.app").strip()
@@ -3848,7 +4379,11 @@ async def create_cashfree_order(payload: dict):
                 "payment_session_id": payment_session_id,
                 "user_id": tg_id_int,
                 "username": username or "Unknown",
+                "customer_name": customer_name,
+                "customer_phone": customer_phone,
+                "phone": customer_phone,
                 "story_ids": story_ids,
+                "items": resolved_items,
                 "story_names": story_names,
                 "subtotal": subtotal,
                 "discount": discount,
@@ -3857,7 +4392,7 @@ async def create_cashfree_order(payload: dict):
                 "total": total,
                 "gateway": "cashfree",
                 "status": "pending",
-                "auto_deliver": bool(payload.get("auto_deliver", False)),
+                "auto_deliver": bool(payload.get("auto_deliver", True)),
                 "created_at": datetime.now(timezone.utc)
             }
             try:
@@ -4091,8 +4626,6 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                     cust_id_str = str(cust_details.get("customer_id", ""))
                     user_id = order.get("user_id") if order else (int(cust_id_str.replace("cust_", "")) if "cust_" in cust_id_str and cust_id_str.replace("cust_", "").isdigit() else None)
                     story_ids = order.get("story_ids", []) if order else []
-                    # Preserve auto_deliver from the original order doc saved during create-cashfree-order
-                    auto_deliver_val = order.get("auto_deliver", False) if order else False
 
                     if order:
                         await arya_db.db.orders.update_one(
@@ -4112,7 +4645,6 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                             "gateway": "cashfree",
                             "status": "paid",
                             "payment_id": str(payment_id),
-                            "auto_deliver": auto_deliver_val,
                             "paid_at": datetime.now(timezone.utc),
                             "created_at": datetime.now(timezone.utc)
                         }
@@ -4135,16 +4667,14 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                         "status": "paid",
                         "payment_id": str(payment_id),
                         "payment_method": "Cashfree",
-                        "source": "Cashfree",
-                        "auto_deliver": auto_deliver_val,
+                        "source": "Cashfree"
                     }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
-                    asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Cashfree", verified_by="Auto Verified By System"))
+                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
 
                     
                     return {"success": True, "status": "paid", "order_id": oid, "payment_id": str(payment_id)}
-
                 else:
                     return {"success": False, "status": cf_status, "order_id": oid}
             else:
@@ -4199,15 +4729,11 @@ async def cashfree_webhook(request: Request):
 @api_router.post("/create-dodopayments-order")
 async def create_dodopayments_order(payload: dict):
     """Create Dodo Payments checkout session for Arya Premium Mini App."""
-    story_ids  = payload.get("story_ids", [])
     tg_id      = payload.get("telegram_id") or 0
     username   = payload.get("username", "") or ""
     first_name = payload.get("first_name", "") or ""
     promo_code = payload.get("promo_code", "")
 
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-        
     arya_db = app.state.db
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     
@@ -4227,22 +4753,9 @@ async def create_dodopayments_order(payload: dict):
     is_sandbox = (dodo_env in ("test", "sandbox") or "test" in api_key.lower())
     base_url = "https://test.dodopayments.com" if is_sandbox else "https://live.dodopayments.com"
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    story_names = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-            if doc:
-                valid_stories.append(doc)
-                story_names.append(doc.get("story_name_en") or doc.get("title") or "Premium Story")
-        except Exception:
-            pass
-
-    if not valid_stories:
+    resolved_items, subtotal, story_ids, story_names = await _resolve_order_items(arya_db, payload)
+    if not resolved_items:
         raise HTTPException(status_code=404, detail="Selected stories not found")
-
-    subtotal = sum(float(s.get("price", 0)) for s in valid_stories)
     promo_discount = 0.0
     if promo_code:
         p_doc = await arya_db.db.premium_promo_codes.find_one({"code": promo_code.upper().strip(), "active": True})
@@ -4363,6 +4876,7 @@ async def create_dodopayments_order(payload: dict):
         "username": username,
         "first_name": first_name,
         "story_ids": story_ids,
+        "items": resolved_items,
         "story_names": story_names,
         "subtotal": subtotal,
         "promo_code": promo_code,
@@ -4372,6 +4886,7 @@ async def create_dodopayments_order(payload: dict):
         "provider": "dodopayments",
         "payment_link": checkout_url,
         "status": "pending",
+        "auto_deliver": bool(payload.get("auto_deliver", True)),
         "created_at": datetime.now(timezone.utc),
         "is_sandbox": is_sandbox
     }
@@ -4428,9 +4943,6 @@ async def verify_dodopayments_payment(payload: dict = None, order_id: str = None
                 if p_status in ("succeeded", "paid", "completed", "success"):
                     user_id = order.get("user_id") if order else None
                     story_ids = order.get("story_ids", []) if order else []
-                    story_names = order.get("story_names", []) if order else []
-                    # Preserve auto_deliver from the original order doc
-                    auto_deliver_val = order.get("auto_deliver", False) if order else False
 
                     if order:
                         await arya_db.db.orders.update_one(
@@ -4452,19 +4964,16 @@ async def verify_dodopayments_payment(payload: dict = None, order_id: str = None
                         "order_id": oid,
                         "user_id": user_id,
                         "story_ids": story_ids,
-                        "story_names": story_names,
                         "total": float(order.get("total", 0.0)) if order else 0.0,
                         "status": "paid",
                         "payment_id": str(dodo_pid),
-                        "source": "dodopayments",
-                        "auto_deliver": auto_deliver_val,
+                        "source": "dodopayments"
                     }
                     asyncio.create_task(trigger_payment_log_from_order(updated_order))
                     asyncio.create_task(record_purchased_stories(updated_order))
-                    asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Dodo Payments", verified_by="Auto Verified By System"))
+                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
 
                     return {"success": True, "status": "paid", "order_id": oid}
-
                 else:
                     return {"success": False, "status": p_status, "order_id": oid}
             else:
@@ -5300,12 +5809,33 @@ async def get_my_purchases(telegram_id: str):
                         formatted["story_id"] = formatted["id"]
                         order = orders_by_story.get(story_id)
                         if order:
+                            purchased_part = None
+                            if order.get("items"):
+                                for itm in order["items"]:
+                                    if (itm.get("story_id") == story_id or itm.get("story_id") == str(story["_id"])) and itm.get("part_id"):
+                                        purchased_part = {
+                                            "id": itm.get("part_id"),
+                                            "name": itm.get("part_name"),
+                                            "start_id": itm.get("start_id"),
+                                            "end_id": itm.get("end_id"),
+                                            "price": itm.get("price")
+                                        }
+                                        break
+                            if purchased_part:
+                                formatted["purchased_part"] = purchased_part
+                                formatted["selected_part"] = purchased_part
+                                if purchased_part.get("start_id"):
+                                    formatted["start_id"] = purchased_part["start_id"]
+                                if purchased_part.get("end_id"):
+                                    formatted["end_id"] = purchased_part["end_id"]
+
                             formatted["order_details"] = {
                                 "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
                                 "source": order.get("source", "miniapp"),
                                 "status": order.get("status"),
                                 "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
-                                "resolved_by": order.get("resolved_by")
+                                "resolved_by": order.get("resolved_by"),
+                                "purchased_part": purchased_part,
                             }
                         else:
                             purchase_rec = pp_by_story.get(story_id)
@@ -6239,13 +6769,13 @@ async def save_admin_story(request: Request):
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         
-        # Remove non-DB fields
+        # Remove non-DB fields but preserve _id for update matching
         show_in_banners = data.get("show_in_banners")
-        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "_id", "show_in_banners")}
+        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "show_in_banners")}
         
         # Ensure story_id exists
         if not save_doc.get("story_id"):
-            raise HTTPException(status_code=400, detail="story_id is required")
+            save_doc["story_id"] = str(data.get("_id") or data.get("id") or f"story_{int(time.time()*1000)}")
         
         # Check if we should automatically outpaint and upload widescreen banner
         poster_url = save_doc.get("poster_url")
@@ -6273,11 +6803,8 @@ async def save_admin_story(request: Request):
             try:
                 logger.info(f"Auto-outpainting banner for story: {save_doc.get('story_name_en') or save_doc.get('story_id')}")
                 import aiohttp
-                fetch_url = poster_url
-                if fetch_url.startswith("/"):
-                    fetch_url = f"http://127.0.0.1:8000{fetch_url}"
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(fetch_url) as resp:
+                    async with session.get(poster_url) as resp:
                         if resp.status == 200:
                             poster_bytes = await resp.read()
                             
@@ -10565,8 +11092,11 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "description": p.get("description", ""),
                 "auto_apply": bool(p.get("auto_apply", False)),
                 "min_cart_items": p.get("min_cart_items"),
+                "min_order_amount": p.get("min_order_amount"),
                 "user_target": p.get("user_target", "all"),
                 "user_limit": p.get("user_limit"),
+                "story_status_target": p.get("story_status_target", "all"),
+                "payment_method_target": p.get("payment_method_target", "all"),
                 "target_story_ids": p.get("target_story_ids", [])
             })
             
@@ -10771,8 +11301,11 @@ async def update_admin_settings(payload: dict):
                             "description": str(pc.get("description", "")).strip(),
                             "auto_apply": bool(pc.get("auto_apply", False)),
                             "min_cart_items": int(pc["min_cart_items"]) if pc.get("min_cart_items") is not None and str(pc["min_cart_items"]).isdigit() else None,
+                            "min_order_amount": float(pc["min_order_amount"]) if pc.get("min_order_amount") is not None and str(pc["min_order_amount"]).replace(".", "", 1).isdigit() and float(pc["min_order_amount"]) > 0 else None,
                             "user_target": str(pc.get("user_target", "all")),
                             "user_limit": int(pc["user_limit"]) if pc.get("user_limit") is not None and str(pc["user_limit"]).isdigit() else None,
+                            "story_status_target": str(pc.get("story_status_target", "all")).strip().lower() if pc.get("story_status_target") else "all",
+                            "payment_method_target": str(pc.get("payment_method_target", "all")).strip().lower() if pc.get("payment_method_target") else "all",
                             "target_story_ids": pc.get("target_story_ids", []) if isinstance(pc.get("target_story_ids"), list) else []
                         })
             
@@ -10803,8 +11336,11 @@ async def update_admin_settings(payload: dict):
                             "description": p["description"],
                             "auto_apply": p["auto_apply"],
                             "min_cart_items": p["min_cart_items"],
+                            "min_order_amount": p.get("min_order_amount"),
                             "user_target": p["user_target"],
                             "user_limit": p["user_limit"],
+                            "story_status_target": p["story_status_target"],
+                            "payment_method_target": p["payment_method_target"],
                             "target_story_ids": p["target_story_ids"]
                         }}
                     )
@@ -10979,8 +11515,11 @@ async def get_public_settings():
                 "description": p.get("description", ""),
                 "auto_apply": bool(p.get("auto_apply", False)),
                 "min_cart_items": p.get("min_cart_items"),
+                "min_order_amount": p.get("min_order_amount"),
                 "user_target": p.get("user_target", "all"),
                 "user_limit": p.get("user_limit"),
+                "story_status_target": p.get("story_status_target", "all"),
+                "payment_method_target": p.get("payment_method_target", "all"),
                 "target_story_ids": p.get("target_story_ids", [])
             })
             
@@ -12572,38 +13111,66 @@ except Exception as e:
     logger.warning(f"Failed to load paage_backend router: {e}")
 
 # ─── Serve Front-End SPA Static Files & Catch-All Routes ──────────────────────
-DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pocket-arya-store-new", "dist")
+def get_dist_dir():
+    _cur_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(_cur_dir, "static_dist"),
+        os.path.join(_cur_dir, "..", "AryaPremium", "static_dist"),
+        os.path.join(_cur_dir, "..", "pocket-arya-store-new", "dist"),
+        os.path.join(_cur_dir, "pocket-arya-store-new", "dist"),
+        os.path.join(_cur_dir, "dist"),
+    ]
+    for c in candidates:
+        if os.path.exists(c) and (os.path.exists(os.path.join(c, "index.html")) or os.path.exists(os.path.join(c, "app.html"))):
+            return os.path.abspath(c)
+    return os.path.join(_cur_dir, "static_dist")
+
+DIST_DIR = get_dist_dir()
+logger.info(f"Serving SPA static assets from DIST_DIR: {DIST_DIR}")
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("ws/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
     
+    curr_dist = get_dist_dir()
+
     # Check if target static file exists in dist
-    target_file = os.path.join(DIST_DIR, full_path)
+    target_file = os.path.join(curr_dist, full_path)
     if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
-        return FileResponse(target_file)
+        headers = {}
+        if full_path.startswith("assets/"):
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return FileResponse(target_file, headers=headers)
     
-    # Check index.html in dist
-    index_file = os.path.join(DIST_DIR, "index.html")
-    if os.path.exists(index_file):
-        return FileResponse(index_file)
-    
-    # Check app.html or landing.html in dist
-    for alt in ["app.html", "landing.html"]:
-        alt_file = os.path.join(DIST_DIR, alt)
+    # Check index.html, app.html or landing.html in dist
+    no_cache_hdrs = {
+        "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
+    from fastapi.responses import HTMLResponse
+    for alt in ["index.html", "app.html", "landing.html"]:
+        alt_file = os.path.join(curr_dist, alt)
         if os.path.exists(alt_file):
-            return FileResponse(alt_file)
+            try:
+                with open(alt_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return HTMLResponse(content=content, headers=no_cache_hdrs)
+            except Exception:
+                return FileResponse(alt_file, headers=no_cache_hdrs)
     
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
         content="""<!DOCTYPE html>
 <html>
-<head><title>Paage — Bento Link-in-Bio Platform</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<head><title>Arya Premium</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="background:#070709;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
 <div style="text-align:center;padding:20px;">
-<h1 style="font-size:2rem;margin-bottom:0.5rem;color:#818cf8;">Paage App</h1>
-<p style="color:#a1a1aa;font-size:0.9rem;">Building production SPA assets... Please run <code>npm run build</code> in <code>pocket-arya-store-new</code>.</p>
+<h1 style="font-size:2rem;margin-bottom:0.5rem;color:#FFD232;">Arya Premium</h1>
+<p style="color:#a1a1aa;font-size:0.9rem;">Loading store assets...</p>
 </div>
 </body>
 </html>""",
