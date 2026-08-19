@@ -84,25 +84,62 @@ class PremiumDatabase:
         return await self.stories.find_one({"story_id": story_id})
 
     async def save_story(self, data: dict):
-        story_id = data.get("story_id")
-        query = {"story_id": story_id}
+        from bson.objectid import ObjectId
+        story_id = str(data.get("story_id") or "").strip()
+        doc_id = data.get("_id") or data.get("id")
         
-        # If story_id looks like a 24-char ObjectId, it might be an old story that didn't have story_id
-        if story_id and len(str(story_id)) == 24:
-            from bson.objectid import ObjectId
+        query = None
+        # 1. Try finding by MongoDB _id first
+        if doc_id:
             try:
-                obj_id = ObjectId(str(story_id))
-                query = {"$or": [{"story_id": story_id}, {"_id": obj_id}]}
-            except:
+                if isinstance(doc_id, ObjectId):
+                    query = {"_id": doc_id}
+                elif isinstance(doc_id, str) and ObjectId.is_valid(doc_id):
+                    query = {"$or": [{"_id": ObjectId(doc_id)}, {"story_id": doc_id}, {"id": doc_id}]}
+                else:
+                    query = {"$or": [{"story_id": str(doc_id)}, {"id": str(doc_id)}]}
+            except Exception:
                 pass
                 
-        existing = await self.stories.find_one(query)
+        # 2. Fallback to finding by story_id
+        if not query and story_id:
+            if ObjectId.is_valid(story_id):
+                try:
+                    query = {"$or": [{"story_id": story_id}, {"_id": ObjectId(story_id)}, {"id": story_id}]}
+                except Exception:
+                    query = {"story_id": story_id}
+            else:
+                query = {"$or": [{"story_id": story_id}, {"id": story_id}]}
+                
+        existing = await self.stories.find_one(query) if query else None
+        
+        # Clean update data
+        clean_data = {k: v for k, v in data.items() if k not in ("_id",)}
+        
+        # Clean parts list if present
+        if "parts" in clean_data and isinstance(clean_data["parts"], list):
+            cleaned_parts = []
+            for idx, p in enumerate(clean_data["parts"]):
+                if isinstance(p, dict):
+                    cleaned_parts.append({
+                        "id": str(p.get("id") or f"part_{idx+1}"),
+                        "name": str(p.get("name") or f"Part {idx+1}"),
+                        "name_hi": p.get("name_hi"),
+                        "start_id": int(p.get("start_id") or 0),
+                        "end_id": int(p.get("end_id") or 0),
+                        "episodes": str(p.get("episodes") or ""),
+                        "price": float(p.get("price") or 0),
+                    })
+            clean_data["parts"] = cleaned_parts
+            if len(cleaned_parts) > 0 and clean_data.get("enable_parts") is not False:
+                clean_data["enable_parts"] = True
+                
         if existing:
-            # Strip _id from data if present to avoid modifying immutable field
-            data.pop("_id", None)
-            await self.stories.update_one({"_id": existing["_id"]}, {"$set": data})
+            await self.stories.update_one({"_id": existing["_id"]}, {"$set": clean_data})
         else:
-            await self.stories.insert_one(data)
+            if doc_id and isinstance(doc_id, str) and ObjectId.is_valid(doc_id):
+                clean_data["_id"] = ObjectId(doc_id)
+            await self.stories.insert_one(clean_data)
     async def delete_story(self, story_id: str):
         from bson.objectid import ObjectId
         sid_str = str(story_id).strip()

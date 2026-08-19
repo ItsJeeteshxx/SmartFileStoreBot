@@ -1126,6 +1126,7 @@ def _format_story(s: dict) -> dict | None:
 
     return {
         "id":           story_id,
+        "story_id":     s.get("story_id") or story_id,
         "title":        title,
         "titleHi":      (s.get("story_name_hi") or "").strip() or None,
         "titleHin":     (s.get("story_name_hin") or "").strip() or None,
@@ -2212,9 +2213,17 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                 
             part_id = itm.get("part_id")
             selected_part = None
-            if part_id and story_doc.get("enable_parts"):
-                for p in story_doc.get("parts", []):
-                    if str(p.get("id")) == str(part_id):
+            parts_in_doc = (
+                story_doc.get("parts")
+                or story_doc.get("story_parts")
+                or story_doc.get("episode_parts")
+                or story_doc.get("episodes_parts")
+                or story_doc.get("part_list")
+                or []
+            )
+            if part_id and isinstance(parts_in_doc, list):
+                for p in parts_in_doc:
+                    if isinstance(p, dict) and str(p.get("id")) == str(part_id):
                         selected_part = p
                         break
             
@@ -6760,13 +6769,13 @@ async def save_admin_story(request: Request):
         if not is_admin(str(telegram_id)):
             raise HTTPException(status_code=403, detail="Not authorized")
         
-        # Remove non-DB fields
+        # Remove non-DB fields but preserve _id for update matching
         show_in_banners = data.get("show_in_banners")
-        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "_id", "show_in_banners")}
+        save_doc = {k: v for k, v in data.items() if k not in ("telegram_id", "show_in_banners")}
         
         # Ensure story_id exists
         if not save_doc.get("story_id"):
-            raise HTTPException(status_code=400, detail="story_id is required")
+            save_doc["story_id"] = str(data.get("_id") or data.get("id") or f"story_{int(time.time()*1000)}")
         
         # Check if we should automatically outpaint and upload widescreen banner
         poster_url = save_doc.get("poster_url")
