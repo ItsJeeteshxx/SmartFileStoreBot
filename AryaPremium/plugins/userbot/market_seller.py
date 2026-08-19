@@ -108,73 +108,6 @@ market_clients: dict = {}
 
 dm_aborts = set()
 
-_STORY_ACTIVE_IDS_CACHE: dict = {}
-
-async def get_active_story_message_ids(client, source_chat_id, start_id, end_id, story_id=None, force_refresh=False):
-    """
-    Scans the channel between start_id and end_id in batches of 200 to find strictly ACTIVE/VALID files.
-    Filters out deleted, empty, or non-media messages.
-    Caches the results in memory to avoid repeated Telegram API scans.
-    """
-    import time
-    if not source_chat_id or start_id is None or end_id is None:
-        return []
-
-    try:
-        s_id = int(start_id)
-        e_id = int(end_id)
-    except (ValueError, TypeError):
-        return []
-
-    if s_id > e_id:
-        s_id, e_id = e_id, s_id
-
-    cache_key = f"{source_chat_id}_{s_id}_{e_id}"
-    now = time.time()
-
-    if not force_refresh and cache_key in _STORY_ACTIVE_IDS_CACHE:
-        cached_ids, ts = _STORY_ACTIVE_IDS_CACHE[cache_key]
-        if now - ts < 600:  # 10 minutes cache TTL
-            return cached_ids
-
-    all_ids = list(range(s_id, e_id + 1))
-    if len(all_ids) <= 1:
-        return all_ids
-
-    valid_ids = []
-    # Batch in chunks of 200 (Pyrogram get_messages limit)
-    for i in range(0, len(all_ids), 200):
-        batch = all_ids[i:i + 200]
-        try:
-            msgs = await client.get_messages(int(source_chat_id), batch)
-            if not isinstance(msgs, list):
-                msgs = [msgs]
-            for m in msgs:
-                if not m or getattr(m, "empty", False):
-                    continue
-                # Accept document, audio, video, voice, photo, animation, or text
-                has_content = bool(
-                    getattr(m, "document", None) or 
-                    getattr(m, "audio", None) or 
-                    getattr(m, "video", None) or 
-                    getattr(m, "voice", None) or 
-                    getattr(m, "photo", None) or 
-                    getattr(m, "animation", None) or
-                    getattr(m, "text", None) or
-                    getattr(m, "caption", None)
-                )
-                if has_content:
-                    valid_ids.append(m.id)
-        except Exception as e:
-            logger.warning(f"Batch check failed for {batch[0]}-{batch[-1]} in chat {source_chat_id}: {e}")
-            # If batch check fails unexpectedly, fallback to including the batch
-            valid_ids.extend(batch)
-
-    valid_ids.sort()
-    final_ids = valid_ids if valid_ids else all_ids
-    _STORY_ACTIVE_IDS_CACHE[cache_key] = (final_ids, now)
-    return final_ids
-
 def _sc(val): return to_smallcap(str(val))
 
 def _bs(val): return f"<b>{val}</b>"
@@ -3029,14 +2962,11 @@ async def _process_start(client, message):
         else:
             start_id = story.get('start_id')
             end_id   = story.get('end_id')
-
-        src = story.get('source')
-        active_ids = await get_active_story_message_ids(client, src, start_id, end_id, story_id)
-        total_files = len(active_ids) if active_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
+        total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
         s_id_str = str(story['_id'])
 
         if total_files > 40:
-            # Build episode/chunk selection keyboard from ACTIVE files only
+            # Build episode/chunk selection keyboard
             if total_files > 300: chunk = 100
             elif total_files > 100: chunk = 50
             else: chunk = 30
@@ -3062,9 +2992,9 @@ async def _process_start(client, message):
             await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id_str}})
 
             if lang == "hi":
-                p_text = f"<b>फ़ाइलें चुनें ({total_files} सक्रिय फ़ाइलें):</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
+                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
             else:
-                p_text = f"<b>Select Files ({total_files} Active Files):</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
+                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
 
             return await message.reply_text(p_text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
 
@@ -3076,7 +3006,7 @@ async def _process_start(client, message):
                 wait_txt = "<i>⏳ Initializing DM Delivery... Preparing your files.</i>"
 
             wait_msg = await message.reply_text(wait_txt, parse_mode=enums.ParseMode.HTML)
-            asyncio.create_task(_do_dm_delivery(client, user_id, story, wait_msg, start_id, end_id, msg_ids_list=active_ids))
+            asyncio.create_task(_do_dm_delivery(client, user_id, story, wait_msg, start_id, end_id))
             return
 
     if len(args) > 1 and (args[1].startswith("buy_") or args[1].startswith("story_")):
@@ -4172,47 +4102,50 @@ async def _process_text(client, message):
 
 
     pending_s_id = user.get("dm_story_id_pending")
+
     if pending_s_id and ("files " in txt.lower() or "फ़ाइलें " in txt.lower() or "full delivery" in txt.lower() or "सभी फ़ाइलें" in txt.lower() or "cancel" in txt.lower() or "रद्द" in txt.lower()):
+
         await db.db.users.update_one({"id": user_id}, {"$unset": {"dm_story_id_pending": 1}})
+
         
+
         if "cancel" in txt.lower() or "रद्द" in txt.lower():
+
             return await message.reply_text("<i>❌ Delivery Selection Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
+
         
+
         from bson.objectid import ObjectId
+
         story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id)})
+
         if story:
-            src = story.get("source")
+
             start_id = story.get("start_id")
+
             end_id = story.get("end_id")
 
-            # Check if user purchased a specific part
-            user_order = await db.db.orders.find_one({
-                "user_id": {"$in": [user_id, str(user_id)]},
-                "story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]},
-                "status": {"$in": ["paid", "delivered"]}
-            }, sort=[("created_at", -1)])
-            if user_order and user_order.get("items"):
-                for itm in user_order["items"]:
-                    if (itm.get("story_id") == pending_s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                        if itm.get("start_id") and itm.get("end_id"):
-                            start_id = int(itm["start_id"])
-                            end_id = int(itm["end_id"])
-                        break
+            c_start, c_end = start_id, end_id
 
-            active_ids = await get_active_story_message_ids(client, src, start_id, end_id, pending_s_id)
-            selected_msg_ids = active_ids
+            
 
             import re
-            match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
-            if match and active_ids:
-                fs, fe = int(match.group(1)), int(match.group(2))
-                selected_msg_ids = active_ids[max(0, fs - 1) : min(fe, len(active_ids))]
-                count_lbl = f"Files {fs}-{fe}"
-            else:
-                count_lbl = f"All {len(selected_msg_ids)} Files"
 
-            m = await message.reply_text(f"<i>⏳ Initializing DM Delivery ({count_lbl})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove())
-            return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, msg_ids_list=selected_msg_ids))
+            match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
+
+            if match:
+
+                fs, fe = int(match.group(1)), int(match.group(2))
+
+                c_start = start_id + fs - 1
+
+                c_end = min(start_id + fe - 1, end_id)
+
+                
+
+            m = await message.reply_text(f"<i>⏳ Initializing DM Delivery (Files {fs if match else 1}-{fe if match else 'All'})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove())
+
+            return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
 
 
 
@@ -8087,80 +8020,114 @@ async def _process_callback(client, query):
     # ── Delivery choice (DM vs Channel) - handled via callbacks now ──
 
     elif cmd == "deliver_dm":
+
         s_id = data[2]
+
         from bson.objectid import ObjectId
+
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+
         if not story: return await query.answer("Story not found!", show_alert=True)
+
         
-        src = story.get('source')
+
         start_id = story.get('start_id')
+
         end_id = story.get('end_id')
 
-        # Check if user purchased a specific part
-        part_info = None
-        user_order = await db.db.orders.find_one({
-            "user_id": {"$in": [user_id, str(user_id)]},
-            "story_ids": {"$in": [s_id, str(story.get('_id', ''))]},
-            "status": {"$in": ["paid", "delivered"]}
-        }, sort=[("created_at", -1)])
-        if user_order and user_order.get("items"):
-            for itm in user_order["items"]:
-                if (itm.get("story_id") == s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                    part_info = itm
-                    break
+        total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
 
-        if part_info and part_info.get("start_id") and part_info.get("end_id"):
-            start_id = int(part_info["start_id"])
-            end_id   = int(part_info["end_id"])
 
-        active_ids = await get_active_story_message_ids(client, src, start_id, end_id, s_id)
-        total_files = len(active_ids) if active_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
 
         parts_data = len(data) > 3
+
         if not parts_data and total_files > 40:
+
             if total_files > 300: chunk = 100
+
             elif total_files > 100: chunk = 50
+
             else: chunk = 30
+
             
+
             kb = []
+
             row = []
+
             for i in range(0, total_files, chunk):
+
                 f_start = i + 1
+
                 f_end = min(i + chunk, total_files)
+
                 lbl = f"Files {f_start} - {f_end}" if lang != "hi" else f"फ़ाइलें {f_start} - {f_end}"
+
                 row.append(lbl)
+
                 if len(row) == 2:
+
                     kb.append(row)
+
                     row = []
+
             if row:
+
                 kb.append(row)
+
                 
+
             full_btn = "Full Delivery (All Files)" if lang != "hi" else "Full Delivery (सभी फ़ाइलें)"
+
             cancel_btn = "Cancel" if lang != "hi" else "रद्द करें"
+
             kb.append([full_btn])
+
             kb.append([cancel_btn])
+
             
+
             await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id}})
+
             
+
             await query.answer()
+
             try: await query.message.delete()
+
             except: pass
+
             
+
             if lang == "hi":
-                p_text = f"<b>फ़ाइलें चुनें ({total_files} सक्रिय फ़ाइलें):</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
+
+                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
+
             else:
-                p_text = f"<b>Select Files ({total_files} Active Files):</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
+
+                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
+
             return await client.send_message(user_id, p_text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
             
+
         c_start = int(data[3]) if len(data) > 3 else start_id
+
         c_end = int(data[4]) if len(data) > 4 else end_id
 
+
+
         await query.answer()
+
         await query.message.edit_text(
+
             f"<i>⏳ Initializing DM Delivery... Preparing your files.</i>",
+
             reply_markup=None
+
         )
-        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, c_start, c_end, msg_ids_list=active_ids if not parts_data else None))
+
+        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, c_start, c_end))
 
 
 
@@ -8758,34 +8725,22 @@ async def _send_demo_files(client, user_id, story, lang):
 
 
 
-async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=None, part_end=None, msg_ids_list=None):
+async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=None, part_end=None):
     try:
         dm_aborts.discard(user_id)
         bt = await db.db.premium_bots.find_one({"id": client.me.id})
         bt_cfg = bt.get("config", {}) if bt else {}
         user_obj = await get_robust_user(client, user_id)
         src = story.get('source')
+        start = part_start if part_start else story.get('start_id')
+        end = part_end if part_end else story.get('end_id')
         story_id_str = str(story['_id'])
         
-        if not src:
-            await client.send_message(user_id, "❌ Story source channel is not configured. Please contact admin.")
+        if not src or not start or not end:
+            await client.send_message(user_id, "❌ Story file range is not configured correctly. Please contact admin.")
             return
 
-        if msg_ids_list:
-            msg_range = msg_ids_list
-        else:
-            start = part_start if part_start else story.get('start_id')
-            end = part_end if part_end else story.get('end_id')
-            if not start or not end:
-                await client.send_message(user_id, "❌ Story file range is not configured correctly. Please contact admin.")
-                return
-            msg_range = await get_active_story_message_ids(client, src, start, end, story_id_str)
-            if not msg_range:
-                msg_range = list(range(int(start), int(end) + 1))
-
-        if not msg_range:
-            await client.send_message(user_id, "❌ No active files found for delivery. Please contact support.")
-            return
+        msg_range = range(int(start), int(end) + 1)
 
         # Fetching Message with Media & Cancel Button
         fetch_config = bt_cfg.get("fetching_media")
