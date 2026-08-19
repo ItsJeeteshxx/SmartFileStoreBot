@@ -84,6 +84,8 @@ class PremiumDatabase:
         return await self.stories.find_one({"story_id": story_id})
 
     async def save_story(self, data: dict):
+        if self.stories is None:
+            await self.connect()
         from bson.objectid import ObjectId
         story_id = str(data.get("story_id") or "").strip()
         doc_id = data.get("_id") or data.get("id")
