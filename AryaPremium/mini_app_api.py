@@ -678,6 +678,193 @@ async def track_client_telemetry(request: Request):
         logger.warning(f"Error in /track endpoint: {e}")
         return {"status": "error", "message": str(e)}
 
+# ─────────────────────────────────────────────────────────────
+# CRASHLYTICS & ERROR TRACKING SYSTEM
+# ─────────────────────────────────────────────────────────────
+@api_router.post("/crash-report")
+async def report_client_crash(request: Request):
+    """
+    Collects real-time frontend crash reports, component stack traces,
+    and user breadcrumbs, deduplicating and indexing them in MongoDB.
+    """
+    try:
+        payload = await request.json()
+        error_msg = str(payload.get("message") or payload.get("error_message") or "Unknown Error").strip()
+        stack = str(payload.get("stack") or "").strip()
+        component_stack = str(payload.get("componentStack") or payload.get("component_stack") or "").strip()
+        view_name = str(payload.get("view") or payload.get("view_name") or "unknown").strip()
+        url = str(payload.get("url") or payload.get("href") or "").strip()
+        
+        # User details
+        tg_id = str(payload.get("telegram_id") or payload.get("tg_id") or "0").strip()
+        username = str(payload.get("username") or "").strip()
+        first_name = str(payload.get("first_name") or "").strip()
+        
+        # Device details
+        device = payload.get("device") or {}
+        platform = str(payload.get("platform") or device.get("platform") or "unknown").strip()
+        user_agent = str(payload.get("user_agent") or device.get("userAgent") or "").strip()
+        breadcrumbs = payload.get("breadcrumbs") or []
+        
+        # Unique hash for grouping identical errors
+        first_stack_line = stack.split("\n")[0] if stack else ""
+        error_hash = hashlib.md5(f"{error_msg}::{first_stack_line}::{view_name}".encode()).hexdigest()
+        
+        arya_db = app.state.db
+        now_dt = datetime.now(timezone.utc)
+        now_str = now_dt.isoformat()
+        
+        # Upsert crash document in MongoDB
+        await arya_db.db.frontend_crashes.update_one(
+            {"error_hash": error_hash},
+            {
+                "$set": {
+                    "error_message": error_msg,
+                    "stack": stack,
+                    "component_stack": component_stack,
+                    "view_name": view_name,
+                    "url": url,
+                    "platform": platform,
+                    "user_agent": user_agent,
+                    "breadcrumbs": breadcrumbs[-10:],
+                    "last_seen": now_str,
+                    "last_seen_dt": now_dt,
+                    "last_user": {
+                        "telegram_id": tg_id,
+                        "username": username,
+                        "first_name": first_name,
+                    },
+                    "status": "open"
+                },
+                "$setOnInsert": {
+                    "error_hash": error_hash,
+                    "first_seen": now_str,
+                    "first_seen_dt": now_dt,
+                    "created_at": now_dt
+                },
+                "$inc": {"occurrences_count": 1},
+                "$addToSet": {"affected_users": tg_id if tg_id != "0" else "guest"}
+            },
+            upsert=True
+        )
+        
+        logger.info(f"🚨 [CRASHLYTICS REPORT] Hash={error_hash[:8]} Msg='{error_msg[:60]}' View={view_name} User={tg_id}")
+        return {"success": True, "error_hash": error_hash}
+    except Exception as e:
+        logger.warning(f"Failed to record crash report: {e}")
+        return {"success": False, "error": str(e)}
+
+@api_router.get("/admin/crashes")
+async def get_admin_crashes(telegram_id: str = Query(""), status: str = Query("all")):
+    """Fetch aggregated crash reports and statistics for the Admin Panel Crashlytics dashboard."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        query = {}
+        if status in ("open", "resolved"):
+            query["status"] = status
+            
+        cursor = arya_db.db.frontend_crashes.find(query).sort("last_seen_dt", -1).limit(100)
+        crashes = []
+        total_occurrences = 0
+        all_affected_users = set()
+        open_count = 0
+        resolved_count = 0
+        
+        async for doc in cursor:
+            occ = doc.get("occurrences_count", 1)
+            total_occurrences += occ
+            users_list = doc.get("affected_users", [])
+            for u in users_list:
+                all_affected_users.add(u)
+            if doc.get("status") == "resolved":
+                resolved_count += 1
+            else:
+                open_count += 1
+                
+            crashes.append({
+                "id": str(doc["_id"]),
+                "error_hash": doc.get("error_hash", ""),
+                "error_message": doc.get("error_message", "Unknown Error"),
+                "stack": doc.get("stack", ""),
+                "component_stack": doc.get("component_stack", ""),
+                "view_name": doc.get("view_name", "unknown"),
+                "url": doc.get("url", ""),
+                "platform": doc.get("platform", "unknown"),
+                "user_agent": doc.get("user_agent", ""),
+                "breadcrumbs": doc.get("breadcrumbs", []),
+                "occurrences_count": occ,
+                "affected_users_count": len(users_list),
+                "affected_users": users_list[:10],
+                "last_user": doc.get("last_user", {}),
+                "first_seen": doc.get("first_seen", ""),
+                "last_seen": doc.get("last_seen", ""),
+                "status": doc.get("status", "open")
+            })
+            
+        return {
+            "success": True,
+            "data": {
+                "summary": {
+                    "total_unique_crashes": len(crashes),
+                    "open_count": open_count,
+                    "resolved_count": resolved_count,
+                    "total_events": total_occurrences,
+                    "total_affected_users": len(all_affected_users)
+                },
+                "crashes": crashes
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching admin crashes: {e}")
+        return {"success": False, "data": {"summary": {}, "crashes": []}}
+
+@api_router.post("/admin/crashes/{crash_id}/status")
+async def toggle_crash_status(crash_id: str, payload: dict = Body(...), telegram_id: str = Query("")):
+    """Toggle or update crash resolution status."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        new_status = payload.get("status", "resolved")
+        await arya_db.db.frontend_crashes.update_one(
+            {"_id": ObjectId(crash_id)},
+            {"$set": {"status": new_status, "updated_at": datetime.now(timezone.utc)}}
+        )
+        return {"success": True, "status": new_status}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@api_router.delete("/admin/crashes/{crash_id}")
+async def delete_single_crash(crash_id: str, telegram_id: str = Query("")):
+    """Delete a single crash report."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        await arya_db.db.frontend_crashes.delete_one({"_id": ObjectId(crash_id)})
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@api_router.delete("/admin/crashes/clear-all")
+async def clear_all_crashes(telegram_id: str = Query(""), filter_type: str = Query("resolved")):
+    """Clear crashes (all or only resolved)."""
+    try:
+        if not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+            
+        arya_db = app.state.db
+        q = {"status": "resolved"} if filter_type == "resolved" else {}
+        res = await arya_db.db.frontend_crashes.delete_many(q)
+        return {"success": True, "deleted_count": res.deleted_count}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @api_router.get("/image")
 async def optimize_image(request: Request, url: str, w: int = 400, h: int = 400):
     """
