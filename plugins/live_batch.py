@@ -330,10 +330,18 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 keyboard.append(row)
                 
             tutorial_link = "https://t.me/StoriesLinkopningguide/21" if job.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
-            keyboard.append([
+            bottom_row1 = [
                 InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
-                InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl")
-            ])
+                InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl"),
+                InlineKeyboardButton(_sc("help us"), callback_data="help_us_donate")
+            ]
+            keyboard.append(bottom_row1)
+            
+            b_link = str(job.get('premium_buy_link') or job.get('buy_link') or '').strip()
+            if b_link and b_link != "#":
+                keyboard.append([
+                    InlineKeyboardButton(_sc("buy this story"), url=b_link)
+                ])
             
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.
             # If idx is within old_mids, it means we are replacing a previously sent incomplete block.
@@ -927,7 +935,7 @@ async def _lb_do_change_source(bot, uid: int, jid: str):
         await bot.send_message(uid, "▶️ <b>Job resumed and now monitoring the new source.</b>")
 
 
-@Client.on_callback_query(filters.regex(r"^lb#(main|setup|view|pause|resume|stop|del|change_src)"))
+@Client.on_callback_query(filters.regex(r"^lb#(main|setup|view|pause|resume|stop|del|change_src|change_merge|change_buy_link)"))
 async def _lb_callbacks(bot, update: CallbackQuery):
     uid = update.from_user.id
     data = update.data.split("#")
@@ -983,11 +991,14 @@ async def _lb_callbacks(bot, update: CallbackQuery):
                 InlineKeyboardButton("⏹ Sᴛᴏᴘ", callback_data=f"lb#stop#{jid}")
             ])
 
-        # ── Change Source button — available when job is running or paused ──
+        # ── Change Source & Buy Link buttons — available when job is running or paused ──
         if st in ("running", "queued", "paused"):
             kb.append([
                 InlineKeyboardButton("✏️ Cʜᴀɴɢᴇ Sᴏᴜʀᴄᴇ", callback_data=f"lb#change_src#{jid}"),
                 InlineKeyboardButton("🧩 Mᴇʀɢᴇ Sɪᴢᴇ", callback_data=f"lb#change_merge#{jid}")
+            ])
+            kb.append([
+                InlineKeyboardButton("🛒 Cʜᴀɴɢᴇ Bᴜʏ Lɪɴᴋ", callback_data=f"lb#change_buy_link#{jid}")
             ])
         
         buf = len(job.get("buffer_mids", []))
@@ -1015,12 +1026,14 @@ async def _lb_callbacks(bot, update: CallbackQuery):
 
         src_display = str(job.get("source", "?"))
         dup_st = "✅ Enabled" if job.get("duplicate_handling") == "yes" else "❌ Disabled"
+        buy_link_disp = str(job.get('premium_buy_link') or job.get('buy_link') or 'Not Set')
         txt = (
             f"<b>📡 Lɪᴠᴇ Bᴀᴛᴄʜ Sᴛᴀᴛᴜs</b>\n\n"
             f"<b>📖 Sᴛᴏʀʏ:</b> <code>{job.get('story')}</code>\n"
             f"<b>👤 Aᴄᴄᴏᴜɴᴛ:</b> {acc_lbl}\n"
             f"<b>📥 Sᴏᴜʀᴄᴇ:</b> <code>{src_display}</code>\n"
             f"<b>ℹ️ Sᴛᴀᴛᴜs:</b> <code>{st.upper()}</code>\n"
+            f"<b>🛒 Bᴜʏ Lɪɴᴋ:</b> <code>{buy_link_disp}</code>\n"
             f"<b>🔄 Dᴜᴘʟɪᴄᴀᴛᴇ Hᴀɴᴅʟɪɴɢ:</b> <code>{dup_st}</code>\n"
             f"<b>🎯 Tʜʀᴇsʜᴏʟᴅ:</b> Wait for {trgt} files\n"
             f"<b>🧩 Mᴇʀɢᴇ Sɪᴢᴇ:</b> <code>{job.get('merge_size', 10)}</code> files\n"
@@ -1030,6 +1043,39 @@ async def _lb_callbacks(bot, update: CallbackQuery):
         )
         try: await update.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
         except: pass
+
+    elif action == "change_buy_link":
+        jid = data[2]
+        job = await _lb_get_job(jid)
+        if not job: return await update.answer("Job not found.", show_alert=True)
+        
+        try:
+            ask_msg = await bot.ask(
+                uid,
+                "🛒 <b>Eɴᴛᴇʀ Aʀʏᴀ Pʀᴇᴍɪᴜᴍ Bᴜʏ Lɪɴᴋ</b>\n\n"
+                "Send the Arya Premium Mini App buy link for this story:\n"
+                "Example: <code>https://t.me/UseAryaBot/app?startapp=story_12345</code>\n\n"
+                "<i>Send ⛔ or 'none' to remove the buy link.</i>",
+                timeout=120
+            )
+            text = (ask_msg.text or "").strip()
+            if not text or "⛔" in text or text.lower() == "cancel":
+                await bot.send_message(uid, "<i>Cancelled.</i>")
+            elif text.lower() in ("none", "remove", "off", "clear"):
+                await _lb_update_job(jid, {"premium_buy_link": "", "buy_link": ""})
+                await bot.send_message(uid, "✅ <b>Buy Link removed.</b>")
+            elif text.startswith("http://") or text.startswith("https://") or text.startswith("t.me/"):
+                if text.startswith("t.me/"):
+                    text = "https://" + text
+                await _lb_update_job(jid, {"premium_buy_link": text, "buy_link": text})
+                await bot.send_message(uid, f"✅ <b>Buy Link updated to:</b>\n<code>{text}</code>")
+            else:
+                await bot.send_message(uid, "❌ <b>Invalid URL format. Must start with http:// or https://</b>")
+        except asyncio.TimeoutError:
+            await bot.send_message(uid, "<i>⏱ Timed out.</i>")
+            
+        update.data = f"lb#view#{jid}"
+        return await _lb_callbacks(bot, update)
 
     elif action == "change_merge":
         jid = data[2]
@@ -1166,3 +1212,45 @@ async def resume_live_batches():
         _lb_paused[jid].set()
         _lb_tasks[jid] = asyncio.create_task(_lb_run_job(jid))
         logger.info(f"[LiveBatch] Resumed job {jid}")
+
+
+@Client.on_callback_query(filters.regex(r"^(help_us_donate|lb#help_us|sbd#help_us)$"))
+async def _lb_help_us_callback(bot, query: CallbackQuery):
+    u_name = query.from_user.first_name if query.from_user else "User"
+    full_name = u_name + (" " + query.from_user.last_name if query.from_user and getattr(query.from_user, "last_name", None) else "")
+
+    don_text = (
+        f"💖 <b>Sᴜᴘᴘᴏʀᴛ & Hᴇʟᴘ Uꜱ</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"◑ Thank you for using our service! "
+        f"If you enjoy our platform and want us to keep delivering amazing stories, "
+        f"please consider supporting us with a small donation.\n\n"
+        f"▣ Every contribution helps us maintain our servers and expand our audiobook library.\n\n"
+        f"────────────────\n\n"
+        f"◑ हमारी सेवा का उपयोग करने के लिए धन्यवाद! "
+        f"यदि आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर बेहतरीन कहानियाँ "
+        f"लाते रहें, तो कृपया donation देकर हमारा सहयोग करें।\n\n"
+        f"▣ आपका सहयोग हमारे सर्वर को बनाए रखने और हमारी लाइब्रेरी का विस्तार करने में सहायता करता है।"
+    )
+    
+    donate_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💳 Support via UPI", callback_data="sbd#donate")
+        ]
+    ])
+
+    sent_dm = False
+    try:
+        await bot.send_message(query.from_user.id, don_text, reply_markup=donate_kb)
+        sent_dm = True
+    except Exception:
+        pass
+
+    if sent_dm:
+        await query.answer("📩 Sent support & donation details to your Telegram DM!", show_alert=True)
+    else:
+        await query.answer(
+            "💖 Thank you for supporting us!\n\n"
+            "If you enjoy our platform, please consider supporting us with a small donation to keep our servers running.",
+            show_alert=True
+        )

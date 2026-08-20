@@ -1547,10 +1547,19 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 for j in range(0, len(chunk), 2):
                     row = [c["btn"] for c in chunk[j:j + 2]]
                     keyboard.append(row)
-                keyboard.append([
-                    InlineKeyboardButton(_sc("tutorial"), url=("https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5")),
-                    InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl")
-                ])
+                tutorial_link = "https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
+                bottom_row1 = [
+                    InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
+                    InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl"),
+                    InlineKeyboardButton(_sc("help us"), callback_data="help_us_donate")
+                ]
+                keyboard.append(bottom_row1)
+
+                b_link = str(sj.get('premium_buy_link') or sj.get('buy_link') or '').strip()
+                if b_link and b_link != "#":
+                    keyboard.append([
+                        InlineKeyboardButton(_sc("buy this story"), url=b_link)
+                    ])
                 for attempt in range(6):
                     try:
                         await poster.send_message(
