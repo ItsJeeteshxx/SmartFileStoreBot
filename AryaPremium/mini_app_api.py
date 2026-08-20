@@ -7048,9 +7048,8 @@ async def save_admin_story(request: Request):
                 await arya_db.db.mini_app_banners.delete_many({"target_link": save_doc["story_id"]})
                 logger.info(f"Auto-removed story {save_doc['story_id']} from manual banners.")
         # Clear /stories cache
-        global _stories_cache, _stories_cache_time
+        global _stories_cache
         _stories_cache = None
-        _stories_cache_time = 0.0
         return {"success": True, "message": "Story saved successfully"}
     except HTTPException:
         raise
