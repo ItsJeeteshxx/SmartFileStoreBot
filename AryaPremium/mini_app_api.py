@@ -13290,10 +13290,10 @@ except Exception as e:
 def get_dist_dir():
     _cur_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = [
-        os.path.join(_cur_dir, "static_dist"),
-        os.path.join(_cur_dir, "..", "AryaPremium", "static_dist"),
         os.path.join(_cur_dir, "..", "pocket-arya-store-new", "dist"),
         os.path.join(_cur_dir, "pocket-arya-store-new", "dist"),
+        os.path.join(_cur_dir, "static_dist"),
+        os.path.join(_cur_dir, "..", "AryaPremium", "static_dist"),
         os.path.join(_cur_dir, "dist"),
     ]
     for c in candidates:
