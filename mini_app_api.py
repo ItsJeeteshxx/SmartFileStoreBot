@@ -961,11 +961,64 @@ async def get_customer_bot_token(user_id: int) -> str:
     return token
 
 
+@api_router.get("/image-proxy")
+async def image_proxy(url: str, w: int = 400, h: int = 400):
+    """Proxies and caches external images (such as Catbox URLs) to bypass ISP blocks in India and optimize to WebP."""
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing url parameter")
+        
+    url_clean = str(url).strip()
+    cache_key = hashlib.md5(f"proxy_{url_clean}_{w}_{h}".encode()).hexdigest()
+    cached_bytes = get_cached_image(cache_key)
+    if cached_bytes:
+        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
+        
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url_clean, timeout=12) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=resp.status, detail="Failed to fetch image from host")
+                img_bytes = await resp.read()
+                
+        import asyncio
+        def process_image(img_data):
+            img = Image.open(io.BytesIO(img_data))
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            img.thumbnail((w, h), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            quality = 85 if w > 600 else 80
+            img.save(output, format="WEBP", quality=quality, method=2)
+            return output.getvalue()
+            
+        optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
+        save_cached_image(cache_key, optimized_bytes)
+        
+        return Response(
+            content=optimized_bytes,
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
+        )
+    except Exception as e:
+        logger.warning(f"Image proxy error for {url_clean}: {e}")
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=url_clean)
+
+
 @api_router.get("/tg-image")
 async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int = 400):
-    """Fetches image directly from Telegram using a file_id, optimizes to WebP and caches it."""
+    """Fetches image directly from Telegram or HTTP URL, optimizes to WebP and caches it."""
     from AryaPremium.config import Config
     
+    if not file_id:
+        raise HTTPException(status_code=400, detail="Missing file_id")
+        
+    file_id_clean = str(file_id).strip()
+    
+    # If file_id is actually an HTTP URL (e.g. Catbox/external), proxy it
+    if file_id_clean.startswith("http://") or file_id_clean.startswith("https://"):
+        return await image_proxy(file_id_clean, w, h)
+        
     tokens = []
     arya_db = app.state.db
     if bot_id:
@@ -996,7 +1049,7 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
     if not tokens:
         raise HTTPException(status_code=500, detail="No bot token available")
         
-    cache_key = hashlib.md5(f"tg_{file_id}_{w}_{h}".encode()).hexdigest()
+    cache_key = hashlib.md5(f"tg_{file_id_clean}_{w}_{h}".encode()).hexdigest()
     cached_bytes = get_cached_image(cache_key)
     if cached_bytes:
         return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
@@ -1006,7 +1059,7 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
         for token in tokens:
             try:
                 # 1. Get file path
-                async with session.get(f"https://api.telegram.org/bot{token}/getFile", params={"file_id": file_id}, timeout=8) as resp:
+                async with session.get(f"https://api.telegram.org/bot{token}/getFile", params={"file_id": file_id_clean}, timeout=8) as resp:
                     data = await resp.json()
                     if not data.get("ok"):
                         continue
@@ -1082,7 +1135,7 @@ def _format_story(s: dict) -> dict | None:
         description = ""
 
     # COVER — prefer HTTP URL, fallback to Telegram file_id, then placeholder
-    cover = (
+    raw_cover = (
         s.get("poster_url")
         or s.get("image_url")
         or s.get("cover")
@@ -1091,14 +1144,24 @@ def _format_story(s: dict) -> dict | None:
         or s.get("banner")
         or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400"
     )
-    if cover and not str(cover).startswith("http") and not str(cover).startswith("/api/"):
-        bot_id = s.get("bot_id")
-        cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
+    raw_cover_str = str(raw_cover).strip() if raw_cover else ""
+    bot_id = s.get("bot_id")
+    
+    if "catbox.moe" in raw_cover_str:
+        cover = f"/api/image-proxy?url={raw_cover_str}"
+    elif raw_cover_str and not raw_cover_str.startswith("http") and not raw_cover_str.startswith("/api/"):
+        cover = f"/api/tg-image?file_id={raw_cover_str}" + (f"&bot_id={bot_id}" if bot_id else "")
+    else:
+        cover = raw_cover_str
 
-    banner = s.get("banner_url") or s.get("banner") or s.get("poster_url") or cover
-    if banner and not str(banner).startswith("http") and not str(banner).startswith("/api/"):
-        bot_id = s.get("bot_id")
-        banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
+    raw_banner = s.get("banner_url") or s.get("banner") or s.get("poster_url") or raw_cover
+    raw_banner_str = str(raw_banner).strip() if raw_banner else ""
+    if "catbox.moe" in raw_banner_str:
+        banner = f"/api/image-proxy?url={raw_banner_str}"
+    elif raw_banner_str and not raw_banner_str.startswith("http") and not raw_banner_str.startswith("/api/"):
+        banner = f"/api/tg-image?file_id={raw_banner_str}" + (f"&bot_id={bot_id}" if bot_id else "")
+    else:
+        banner = raw_banner_str
 
     raw_status = str(s.get("status") or "").strip()
     status_lower = raw_status.lower()
@@ -1830,10 +1893,22 @@ async def calculate_promo_discount(
             discount = round((applicable_story_price * pval) / 100.0, 2)
         elif ptype == "flat":
             discount = min(pval, applicable_story_price)
+        logger.info(f"[calculate_promo_discount] Result for '{pcode_clean}' -> Discount: {discount}")
+        return discount, ""
+
+    # If no stories in cart (e.g. browsing coupons in Offers page or validating before cart populated)
+    if not story_ids:
+        ptype = promo.get("type", "percentage")
+        pval = float(promo.get("value", 0))
+        preview_disc = pval if ptype == "flat" else round((100.0 * pval) / 100.0, 2)
+        logger.info(f"[calculate_promo_discount] Preview for '{pcode_clean}' -> Discount: {preview_disc}")
+        return preview_disc, ""
+
     # Global or status-filtered subtotal
     eligible_subtotal = sum(float(s.get("price", 0) or 0) for s in cart_story_docs) if cart_story_docs else effective_subtotal
     if eligible_subtotal <= 0:
         return 0.0, "Promo code is not applicable to any eligible stories in your cart"
+        
     ptype = promo.get("type", "percentage")
     pval = float(promo.get("value", 0))
     if ptype == "percentage":
@@ -1841,7 +1916,7 @@ async def calculate_promo_discount(
     elif ptype == "flat":
         discount = min(pval, eligible_subtotal)
         
-    logger.info(f"[calculate_promo_discount] Result for '{code}' -> Discount: {discount}, Error: '{err if 'err' in locals() else ''}'")
+    logger.info(f"[calculate_promo_discount] Result for '{pcode_clean}' -> Discount: {discount}")
     return discount, ""
 
 @api_router.post("/promo-codes/validate")
