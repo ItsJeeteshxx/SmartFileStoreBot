@@ -1194,6 +1194,9 @@ async def settings_query(bot, query):
               InlineKeyboardButton('Sᴜᴄᴄᴇss Msɢ',    callback_data=f"settings#sb_set_success_{b_id}"),
           ],
           [
+              InlineKeyboardButton('📣 Pᴏsᴛ-Dᴇʟɪᴠᴇʀʏ Mᴏᴅᴇ', callback_data=f"settings#sb_post_deliv_{b_id}")
+          ],
+          [
               InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}"),
               InlineKeyboardButton('Pʀᴇᴍɪᴜᴍ Aᴅ Msɢ', callback_data=f"settings#sb_premium_ad_{b_id}"),
           ],
@@ -1345,6 +1348,37 @@ async def settings_query(bot, query):
 
       import asyncio
       asyncio.create_task(_do_purge(b_id, deliveries, user_id))
+
+  elif type.startswith("sb_post_deliv_"):
+      b_id = type.split("sb_post_deliv_")[1]
+      cur_mode = await db.get_share_bot_text(b_id, "post_delivery_mode") or "random"
+      
+      def _mark_pdm(val): return "✅ " if cur_mode == val else ""
+      
+      buttons = [
+          [InlineKeyboardButton(f"{_mark_pdm('ad_only')}📢 Arya Premium Ad Only", callback_data=f"settings#sb_set_pdm_{b_id}_ad_only")],
+          [InlineKeyboardButton(f"{_mark_pdm('donation_only')}💖 Support / Donation Only", callback_data=f"settings#sb_set_pdm_{b_id}_donation_only")],
+          [InlineKeyboardButton(f"{_mark_pdm('random')}🎲 Random (Ad or Donation)", callback_data=f"settings#sb_set_pdm_{b_id}_random")],
+          [InlineKeyboardButton(f"{_mark_pdm('off')}🚫 Turn OFF (No Extra Msg)", callback_data=f"settings#sb_set_pdm_{b_id}_off")],
+          [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      await query.message.edit_text(
+          "<b>📣 Pᴏsᴛ-DᴇʟɪᴠᴇʀY Mᴇssᴀɢᴇ Sᴇᴛᴛɪɴɢs</b>\n\n"
+          "Choose which message is sent immediately after story files are delivered:\n\n"
+          "• <b>Arya Premium Ad Only:</b> Always show store ad banner.\n"
+          "• <b>Support / Donation Only:</b> Always show donation request message.\n"
+          "• <b>Random:</b> Alternate randomly between Ad and Donation.\n"
+          "• <b>Turn OFF:</b> Disable post-delivery extra message completely.",
+          reply_markup=InlineKeyboardMarkup(buttons)
+      )
+
+  elif type.startswith("sb_set_pdm_"):
+      parts = type.split("_")
+      b_id = parts[3]
+      val = "_".join(parts[4:])
+      await db.set_share_bot_text(b_id, "post_delivery_mode", val)
+      query.data = f"settings#sb_post_deliv_{b_id}"
+      return await settings_query(bot, query)
 
   elif type.startswith("sb_donation_"):
       b_id = type.split("sb_donation_")[1]

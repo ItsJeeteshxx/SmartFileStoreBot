@@ -918,9 +918,25 @@ async def _process_start(client, message):
         ]
     ])
     try:
-        import random
-        show_ad = random.choice([True, False])
-        
+        mode = await db.get_share_bot_text(bot_id, "post_delivery_mode") if bot_id else "random"
+        if not mode:
+            mode = "random"
+
+        show_ad = False
+        show_don = False
+
+        if mode == "ad_only":
+            show_ad = True
+        elif mode == "donation_only":
+            show_don = True
+        elif mode == "off":
+            show_ad = False
+            show_don = False
+        else:  # "random" or "both"
+            import random
+            show_ad = random.choice([True, False])
+            show_don = not show_ad
+
         if show_ad:
             custom_ad_text = await db.get_share_bot_text(bot_id, "premium_ad_text")
             ad_text = custom_ad_text if custom_ad_text else DEFAULT_PREMIUM_AD_TEXT
@@ -944,7 +960,7 @@ async def _process_start(client, message):
                     await message.reply_photo(photo=fid, caption=ad_text, reply_markup=ad_buttons)
             else:
                 await message.reply_text(ad_text, reply_markup=ad_buttons, disable_web_page_preview=True)
-        else:
+        elif show_don:
             await message.reply_text(thank_txt, reply_markup=donate_btn)
     except Exception as e:
         logger.warning(f"[ThankYou] send failed: {e}")
