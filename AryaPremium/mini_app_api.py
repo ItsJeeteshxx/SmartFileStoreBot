@@ -1191,7 +1191,7 @@ def _format_story(s: dict) -> dict | None:
     cleaned_parts = []
     for idx, p in enumerate(parts_list):
         if isinstance(p, dict):
-            b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none"))
+            b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none")).lower()
             is_new_val = bool(p.get("is_new") or b_val == "new")
             is_ongoing_val = bool(p.get("is_ongoing") or b_val == "ongoing")
             cleaned_parts.append({

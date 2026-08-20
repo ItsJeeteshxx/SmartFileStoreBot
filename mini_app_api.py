@@ -1191,6 +1191,9 @@ def _format_story(s: dict) -> dict | None:
     cleaned_parts = []
     for idx, p in enumerate(parts_list):
         if isinstance(p, dict):
+            b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none")).lower()
+            is_new_val = bool(p.get("is_new") or b_val == "new")
+            is_ongoing_val = bool(p.get("is_ongoing") or b_val == "ongoing")
             cleaned_parts.append({
                 "id": str(p.get("id") or f"part_{idx+1}"),
                 "name": str(p.get("name") or f"Part {idx+1}"),
@@ -1199,6 +1202,10 @@ def _format_story(s: dict) -> dict | None:
                 "end_id": int(p.get("end_id") or 0),
                 "episodes": str(p.get("episodes") or ""),
                 "price": float(p.get("price") or 0),
+                "badge": b_val,
+                "badge_type": b_val,
+                "is_new": is_new_val,
+                "is_ongoing": is_ongoing_val,
             })
 
     # If parts list has items, ensure enable_parts is True
