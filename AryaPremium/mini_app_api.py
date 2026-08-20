@@ -2964,8 +2964,6 @@ async def verify_upi_utr(payload: dict):
     if not cfg.get("upi_manual_enabled", False):
          raise HTTPException(status_code=400, detail="Direct UPI payments are currently disabled by the admin.")
 
-    subtotal = sum(float(s.get("price", 0) or 0) for s in valid_stories)
-    
     discount = 0.0
     pcode_clean = str(promo_code).strip().upper()
     if pcode_clean:
@@ -3567,7 +3565,7 @@ async def create_oxapay_order(payload: dict):
                     "lifetime": 30,
                     "fee_paid_by_payer": 1,
                     "order_id": oid,
-                    "description": f"{len(valid_stories)} Arya Premium stories for {customer_name}",
+                    "description": f"{len(resolved_items)} Arya Premium stories for {customer_name}",
                     "customer_name": customer_name,
                     "callback_url": "https://aryapremium.store/api/oxapay-webhook",
                     "return_url": f"https://t.me/{os.environ.get('BOT_USERNAME', 'UseAryaBot')}/app",
@@ -3620,7 +3618,7 @@ async def create_oxapay_order(payload: dict):
             "user_id":     int(tg_id) if str(tg_id).isdigit() else tg_id,
             "username":    username,
             "story_ids":   story_ids,
-            "story_names": [s.get("story_name_en", s.get("title", "")) for s in valid_stories],
+            "story_names": story_names,
             "total":       total_inr,
             "total_usd":   total_usd,
             "status":      "pending",
@@ -3640,13 +3638,13 @@ async def create_oxapay_order(payload: dict):
             bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
             if not bot_token or not tg_id:
                 return
-            story_list = "\n".join([f"  • {s.get('story_name_en', s.get('title', 'Story'))}" for s in valid_stories])
+            story_list = "\n".join([f"  • {name}" for name in story_names])
             dm_text = (
                 f"🪙 <b>Crypto Payment Invoice</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<b>Order ID:</b> <code>{oid}</code>\n"
                 f"<b>Amount:</b> ${total_usd:.2f} (~₹{total_inr:.0f})\n"
-                f"<b>Stories ({len(valid_stories)}):</b>\n{story_list}\n"
+                f"<b>Stories ({len(resolved_items)}):</b>\n{story_list}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💳 <b><a href=\'{pay_link}\'>Click here to Pay</a></b>\n"
                 f"⏳ Link expires in <b>30 minutes</b>\n\n"
@@ -4145,7 +4143,7 @@ async def create_payu_order(payload: dict):
     firstname = (first_name.strip() if first_name.strip() else username.strip()) or "Customer"
     email = payload.get("email", "").strip() or (f"{username}@t.me" if username else "customer@aryapremium.store")
     phone = payload.get("phone", "").strip() or "9999999999"
-    productinfo = f"{len(valid_stories)} Audiobook Stories"
+    productinfo = f"{len(resolved_items)} Audiobook Stories"
     amount_str = f"{total:.2f}"
     
     udf1 = str(tg_id)
