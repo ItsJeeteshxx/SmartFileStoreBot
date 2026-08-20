@@ -2771,22 +2771,41 @@ async def _edit_story_flow(client, user_id, s_id, action):
                 try:
                     from plugins.userbot.market_seller import market_clients
                     from utils import upload_to_catbox
-                    store_cli = market_clients.get(str(story["bot_id"]))
+                    store_cli = market_clients.get(str(story.get("bot_id")))
                     dl = await client.download_media(msg.photo.file_id)
                     
-                    # Upload to Catbox
                     catbox_url = await upload_to_catbox(dl)
                     updates = {}
                     if catbox_url:
                         updates["poster_url"] = catbox_url
+                        updates["image_url"] = catbox_url
                         
-                    ul = await store_cli.send_photo(user_id, photo=dl)
-                    updates["image"] = ul.photo.file_id
+                    if store_cli:
+                        try:
+                            ul = await store_cli.send_photo(user_id, photo=dl)
+                            updates["image"] = ul.photo.file_id
+                            updates["poster"] = ul.photo.file_id
+                            updates["banner"] = ul.photo.file_id
+                        except Exception:
+                            updates["image"] = msg.photo.file_id
+                            updates["poster"] = msg.photo.file_id
+                            updates["banner"] = msg.photo.file_id
+                    else:
+                        updates["image"] = msg.photo.file_id
+                        updates["poster"] = msg.photo.file_id
+                        updates["banner"] = msg.photo.file_id
                     
                     await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": updates})
-                    import os; os.remove(dl)
+                    try:
+                        import os; os.remove(dl)
+                    except Exception:
+                        pass
                 except Exception as e:
-                    await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"image": msg.photo.file_id}})
+                    await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {
+                        "image": msg.photo.file_id,
+                        "poster": msg.photo.file_id,
+                        "banner": msg.photo.file_id
+                    }})
             else:
                 back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]])
                 return await client.send_message(user_id, "❌ A valid photo is required.", reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)

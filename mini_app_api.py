@@ -966,20 +966,34 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
     """Fetches image directly from Telegram using a file_id, optimizes to WebP and caches it."""
     from AryaPremium.config import Config
     
-    token = None
+    tokens = []
+    arya_db = app.state.db
     if bot_id:
         try:
-            arya_db = app.state.db
-            bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]})
+            bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]}) if arya_db else None
             if bot_doc and bot_doc.get("token"):
-                token = bot_doc["token"]
+                tokens.append(bot_doc["token"])
         except Exception as e:
             logger.error(f"Failed to fetch bot token for {bot_id}: {e}")
             
-    if not token:
-        token = Config.MGMT_BOT_TOKEN or os.environ.get("MGMT_BOT_TOKEN")
+    if Config.MGMT_BOT_TOKEN and Config.MGMT_BOT_TOKEN not in tokens:
+        tokens.append(Config.MGMT_BOT_TOKEN)
+    if os.environ.get("MGMT_BOT_TOKEN") and os.environ.get("MGMT_BOT_TOKEN") not in tokens:
+        tokens.append(os.environ.get("MGMT_BOT_TOKEN"))
+    if Config.BOT_TOKEN and Config.BOT_TOKEN not in tokens:
+        tokens.append(Config.BOT_TOKEN)
         
-    if not token:
+    if arya_db:
+        try:
+            other_bots = await arya_db.db.premium_bots.find({"token": {"$exists": True, "$ne": ""}}).to_list(length=10)
+            for ob in other_bots:
+                tok = ob.get("token")
+                if tok and tok not in tokens:
+                    tokens.append(tok)
+        except Exception:
+            pass
+            
+    if not tokens:
         raise HTTPException(status_code=500, detail="No bot token available")
         
     cache_key = hashlib.md5(f"tg_{file_id}_{w}_{h}".encode()).hexdigest()
@@ -987,48 +1001,50 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
     if cached_bytes:
         return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
         
-    try:
-        async with aiohttp.ClientSession() as session:
-            # 1. Get file path
-            async with session.get(f"https://api.telegram.org/bot{token}/getFile", params={"file_id": file_id}, timeout=10) as resp:
-                data = await resp.json()
-                if not data.get("ok"):
-                    raise HTTPException(status_code=404, detail="getFile failed")
-                file_path = data["result"]["file_path"]
-                
-            # 2. Download file
-            dl_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-            async with session.get(dl_url, timeout=15) as resp:
-                if resp.status != 200:
-                    raise HTTPException(status_code=404, detail="File download failed")
-                img_bytes = await resp.read()
-                
-        # Optimize using Pillow in a separate thread
-        import asyncio
-        def process_image(img_data):
-            img = Image.open(io.BytesIO(img_data))
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGBA")
-            img.thumbnail((w, h), Image.Resampling.LANCZOS)
-            output = io.BytesIO()
-            quality = 85 if w > 600 else 80
-            img.save(output, format="WEBP", quality=quality, method=2)
-            return output.getvalue()
-            
-        optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
-        save_cached_image(cache_key, optimized_bytes)
+    img_bytes = None
+    async with aiohttp.ClientSession() as session:
+        for token in tokens:
+            try:
+                # 1. Get file path
+                async with session.get(f"https://api.telegram.org/bot{token}/getFile", params={"file_id": file_id}, timeout=8) as resp:
+                    data = await resp.json()
+                    if not data.get("ok"):
+                        continue
+                    file_path = data["result"]["file_path"]
+                    
+                # 2. Download file
+                dl_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+                async with session.get(dl_url, timeout=12) as resp:
+                    if resp.status == 200:
+                        img_bytes = await resp.read()
+                        if img_bytes:
+                            break
+            except Exception:
+                continue
+
+    if not img_bytes:
+        raise HTTPException(status_code=404, detail="File download failed")
         
-        return Response(
-            content=optimized_bytes, 
-            media_type="image/webp",
-            headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"TG Image proxy error for {file_id}: {e}")
-        # Return a fallback or 404
-        raise HTTPException(status_code=404, detail="Image fetch failed")
+    # Optimize using Pillow in a separate thread
+    import asyncio
+    def process_image(img_data):
+        img = Image.open(io.BytesIO(img_data))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA")
+        img.thumbnail((w, h), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        quality = 85 if w > 600 else 80
+        img.save(output, format="WEBP", quality=quality, method=2)
+        return output.getvalue()
+        
+    optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
+    save_cached_image(cache_key, optimized_bytes)
+    
+    return Response(
+        content=optimized_bytes, 
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
+    )
 
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 # Helper: format a single MongoDB story doc → frontend Story shape
@@ -1068,17 +1084,19 @@ def _format_story(s: dict) -> dict | None:
     # COVER — prefer HTTP URL, fallback to Telegram file_id, then placeholder
     cover = (
         s.get("poster_url")
-        or s.get("cover")
         or s.get("image_url")
+        or s.get("cover")
         or s.get("image")       # Telegram file_id (mgmt bot saves this)
+        or s.get("poster")
+        or s.get("banner")
         or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400"
     )
-    if cover and not cover.startswith("http") and not cover.startswith("/api/"):
+    if cover and not str(cover).startswith("http") and not str(cover).startswith("/api/"):
         bot_id = s.get("bot_id")
         cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
 
-    banner = s.get("banner_url") or cover
-    if banner and not banner.startswith("http") and not banner.startswith("/api/"):
+    banner = s.get("banner_url") or s.get("banner") or s.get("poster_url") or cover
+    if banner and not str(banner).startswith("http") and not str(banner).startswith("/api/"):
         bot_id = s.get("bot_id")
         banner = f"/api/tg-image?file_id={banner}" + (f"&bot_id={bot_id}" if bot_id else "")
 
@@ -1158,9 +1176,9 @@ def _format_story(s: dict) -> dict | None:
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ————————————————————————————————————————————————————————————————————————————————————————————————————
 # GET /stories
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ————————————————————————————————————————————————————————————————————————————————————————————————————
 _stories_cache = None
 _stories_cache_time = 0
 _stories_cache_ttl = 30  # 30 seconds
@@ -1193,14 +1211,14 @@ async def get_stories():
         arya_db = app.state.db
         stories = await arya_db.get_all_stories()
 
-        # Aggregate purchases (orders with status paid/delivered) in the last 30 days
+        # 1. Aggregate purchases (60-day / all-time) for Popular on AP ranking
         purchase_map = {}
         try:
-            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            sixty_days_ago = datetime.now(timezone.utc) - timedelta(days=60)
             purchase_pipeline = [
                 {"$match": {
                     "status": {"$in": ["paid", "delivered"]},
-                    "created_at": {"$gte": thirty_days_ago}
+                    "created_at": {"$gte": sixty_days_ago}
                 }},
                 {"$unwind": "$story_ids"},
                 {"$group": {
@@ -1217,16 +1235,19 @@ async def get_stories():
         except Exception as pe:
             logger.warning(f"Failed to aggregate purchases: {pe}")
 
-        # Aggregate story views (clicks) in the last 7 days
+        # 2. Aggregate views & searches over the last 3 days for real-time Trending
         views_map = {}
+        searches_map = {}
+        recent_purchases_map = {}
         try:
-            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-            views_pipeline = [
+            three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
+            analytics_pipeline = [
                 {"$match": {
-                    "type": "view_story",
-                    "timestamp": {"$gte": seven_days_ago}
+                    "type": {"$in": ["view_story", "click_story", "search_story", "story_search", "search"]},
+                    "timestamp": {"$gte": three_days_ago}
                 }},
                 {"$project": {
+                    "type": "$type",
                     "story_id": {
                         "$cond": {
                             "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
@@ -1239,18 +1260,42 @@ async def get_stories():
                     "story_id": {"$ne": None}
                 }},
                 {"$group": {
-                    "_id": "$story_id",
-                    "views": {"$sum": 1}
+                    "_id": {"story_id": "$story_id", "type": "$type"},
+                    "count": {"$sum": 1}
                 }}
             ]
             import asyncio
-            views_agg = await asyncio.wait_for(
-                arya_db.db.mini_app_analytics.aggregate(views_pipeline).to_list(length=None),
+            analytics_agg = await asyncio.wait_for(
+                arya_db.db.mini_app_analytics.aggregate(analytics_pipeline).to_list(length=None),
                 timeout=0.6
             )
-            views_map = {str(v["_id"]): int(v.get("views", 0)) for v in views_agg}
+            for a in analytics_agg:
+                sid = str(a["_id"].get("story_id"))
+                atype = str(a["_id"].get("type", "")).lower()
+                count = int(a.get("count", 0))
+                if "search" in atype:
+                    searches_map[sid] = searches_map.get(sid, 0) + count
+                else:
+                    views_map[sid] = views_map.get(sid, 0) + count
+                    
+            recent_p_pipeline = [
+                {"$match": {
+                    "status": {"$in": ["paid", "delivered"]},
+                    "created_at": {"$gte": three_days_ago}
+                }},
+                {"$unwind": "$story_ids"},
+                {"$group": {
+                    "_id": "$story_ids",
+                    "purchases": {"$sum": 1}
+                }}
+            ]
+            recent_p_agg = await asyncio.wait_for(
+                arya_db.db.orders.aggregate(recent_p_pipeline).to_list(length=None),
+                timeout=0.6
+            )
+            recent_purchases_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in recent_p_agg}
         except Exception as ve:
-            logger.warning(f"Failed to aggregate views: {ve}")
+            logger.warning(f"Failed to aggregate trending analytics: {ve}")
 
         formatted = []
         for s in stories:
@@ -1259,7 +1304,13 @@ async def get_stories():
                 sid = item["id"]
                 item["purchase_count"] = purchase_map.get(sid, 0)
                 item["view_count"] = views_map.get(sid, 0)
-                item["trending_score"] = float(item["purchase_count"] * 100.0 + item["view_count"] * 1.0)
+                item["search_count"] = searches_map.get(sid, 0)
+                # Trending score: dynamic daily views (weight 4.0) + searches (weight 3.0) + recent 3-day purchases (weight 15.0)
+                item["trending_score"] = float(
+                    views_map.get(sid, 0) * 4.0 +
+                    searches_map.get(sid, 0) * 3.0 +
+                    recent_purchases_map.get(sid, 0) * 15.0
+                )
                 formatted.append(item)
 
         parts_enabled_count = sum(1 for item in formatted if item.get("enable_parts") or (item.get("parts") and len(item.get("parts")) > 0))
@@ -1326,73 +1377,83 @@ async def debug_parts(id: str = None):
 @api_router.get("/trending")
 async def get_trending(limit: int = 10):
     """
-    Computes real-time trending stories:
-      - Purchases: Count instances of story IDs in paid/delivered orders. (Weight: 100)
-      - Views: Count 'view_story' events in mini_app_analytics. (Weight: 1)
+    Computes real-time trending stories based on daily engagement:
+      - Daily Views & Clicks (last 3 days): Weight 4.0
+      - Daily Searches (last 3 days): Weight 3.0
+      - Recent Purchases (last 3 days): Weight 15.0
     """
     try:
         arya_db = app.state.db
         from bson.objectid import ObjectId
 
-        # 1. Aggregate purchases over the last 30 days
-        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-        purchase_pipeline = [
-            {"$match": {
-                "status": {"$in": ["paid", "delivered"]},
-                "created_at": {"$gte": thirty_days_ago}
-            }},
-            {"$unwind": "$story_ids"},
-            {"$group": {
-                "_id": "$story_ids",
-                "purchases": {"$sum": 1}
-            }}
-        ]
-        purchases_agg = await arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None)
-        
-        # 2. Aggregate views (clicks on story card) over the last 3 days
         three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
-        views_pipeline = [
-            {"$match": {
-                "type": "view_story",
-                "timestamp": {"$gte": three_days_ago}
-            }},
-            {"$project": {
-                "story_id": {
-                    "$cond": {
-                        "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
-                        "then": "$story_id",
-                        "else": "$data.story_id"
+        views_map = {}
+        searches_map = {}
+        recent_purchases_map = {}
+
+        try:
+            analytics_pipeline = [
+                {"$match": {
+                    "type": {"$in": ["view_story", "click_story", "search_story", "story_search", "search"]},
+                    "timestamp": {"$gte": three_days_ago}
+                }},
+                {"$project": {
+                    "type": "$type",
+                    "story_id": {
+                        "$cond": {
+                            "if": {"$and": [{"$gt": ["$story_id", None]}, {"$ne": ["$story_id", ""]}]},
+                            "then": "$story_id",
+                            "else": "$data.story_id"
+                        }
                     }
-                }
-            }},
-            {"$match": {
-                "story_id": {"$ne": None}
-            }},
-            {"$group": {
-                "_id": "$story_id",
-                "views": {"$sum": 1}
-            }}
-        ]
-        views_agg = await arya_db.db.mini_app_analytics.aggregate(views_pipeline).to_list(length=None)
+                }},
+                {"$match": {"story_id": {"$ne": None}}},
+                {"$group": {
+                    "_id": {"story_id": "$story_id", "type": "$type"},
+                    "count": {"$sum": 1}
+                }}
+            ]
+            analytics_agg = await arya_db.db.mini_app_analytics.aggregate(analytics_pipeline).to_list(length=None)
+            for a in analytics_agg:
+                sid = str(a["_id"].get("story_id"))
+                atype = str(a["_id"].get("type", "")).lower()
+                count = int(a.get("count", 0))
+                if "search" in atype:
+                    searches_map[sid] = searches_map.get(sid, 0) + count
+                else:
+                    views_map[sid] = views_map.get(sid, 0) + count
+        except Exception as e:
+            logger.warning(f"Trending analytics aggregation error: {e}")
 
-        # 3. Combine scores
+        try:
+            purchase_pipeline = [
+                {"$match": {
+                    "status": {"$in": ["paid", "delivered"]},
+                    "created_at": {"$gte": three_days_ago}
+                }},
+                {"$unwind": "$story_ids"},
+                {"$group": {"_id": "$story_ids", "purchases": {"$sum": 1}}}
+            ]
+            recent_p_agg = await arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None)
+            recent_purchases_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in recent_p_agg}
+        except Exception as e:
+            logger.warning(f"Trending purchase aggregation error: {e}")
+
+        all_stories = await arya_db.get_all_stories()
+        story_map = {str(s["_id"]): s for s in all_stories}
+
         scores = {}
-        for p in purchases_agg:
-            sid = str(p["_id"])
-            scores[sid] = scores.get(sid, 0.0) + float(p.get("purchases", 0)) * 100.0
-
-        for v in views_agg:
-            sid = str(v["_id"])
-            # Weight views heavily down (0.1) so they don't overpower recent purchases
-            scores[sid] = scores.get(sid, 0.0) + float(v.get("views", 0)) * 0.1
+        for sid in story_map.keys():
+            v_cnt = views_map.get(sid, 0)
+            s_cnt = searches_map.get(sid, 0)
+            p_cnt = recent_purchases_map.get(sid, 0)
+            score = float(v_cnt * 4.0 + s_cnt * 3.0 + p_cnt * 15.0)
+            if score > 0:
+                scores[sid] = score
 
         # Sort by score descending
         sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         top_sids = [sid for sid, score in sorted_scores[:limit]]
-
-        # Fetch actual story documents
-        all_stories = await arya_db.get_all_stories()
-        story_map = {str(s["_id"]): s for s in all_stories}
 
         trending_list = []
         seen_sids = set()
@@ -1401,8 +1462,9 @@ async def get_trending(limit: int = 10):
             if sid in story_map:
                 fmt = _format_story(story_map[sid])
                 if fmt:
-                    fmt["purchase_count"] = int(next((p.get("purchases", 0) for p in purchases_agg if str(p["_id"]) == sid), 0))
-                    fmt["view_count"] = int(next((v.get("views", 0) for v in views_agg if str(v["_id"]) == sid), 0))
+                    fmt["purchase_count"] = recent_purchases_map.get(sid, 0)
+                    fmt["view_count"] = views_map.get(sid, 0)
+                    fmt["search_count"] = searches_map.get(sid, 0)
                     fmt["trending_score"] = scores.get(sid, 0.0)
                     trending_list.append(fmt)
                     seen_sids.add(sid)
@@ -1417,6 +1479,7 @@ async def get_trending(limit: int = 10):
                     if fmt:
                         fmt["purchase_count"] = 0
                         fmt["view_count"] = 0
+                        fmt["search_count"] = 0
                         fmt["trending_score"] = 0.0
                         trending_list.append(fmt)
                         seen_sids.add(sid)
@@ -1426,6 +1489,8 @@ async def get_trending(limit: int = 10):
         logger.info(f"Returning {len(trending_list)} dynamic trending stories")
         return {"success": True, "data": trending_list[:limit]}
     except Exception as e:
+        logger.error(f"/trending error: {e}")
+        return {"success": False, "data": []}
         logger.error(f"Trending route error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1860,19 +1925,31 @@ async def get_available_promos(data: AvailablePromosRequest):
         from bson.objectid import ObjectId
         valid_stories = []
         for sid in data.story_ids:
+            sid_str = str(sid).strip()
             s = None
-            try:
-                s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid) if len(sid) == 24 else None})
-            except Exception:
-                pass
-            if not s:
+            if len(sid_str) == 24:
                 try:
-                    s = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                    s = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid_str)})
                 except Exception:
                     pass
             if not s:
                 try:
-                    s = await arya_db.db.premium_stories.find_one({"id": sid})
+                    s = await arya_db.db.premium_stories.find_one({"story_id": sid_str})
+                except Exception:
+                    pass
+            if not s:
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": sid_str})
+                except Exception:
+                    pass
+            if not s and sid_str.isdigit():
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"story_id": int(sid_str)})
+                except Exception:
+                    pass
+            if not s and sid_str.isdigit():
+                try:
+                    s = await arya_db.db.premium_stories.find_one({"id": int(sid_str)})
                 except Exception:
                     pass
             if s:
@@ -1886,24 +1963,41 @@ async def get_available_promos(data: AvailablePromosRequest):
                 arya_db, promo["code"], data.story_ids, subtotal, data.telegram_id, data.payment_method
             )
             
+            # If no story was specified (general browsing), provide preview discount calculation
+            if not data.story_ids:
+                ptype = promo.get("type", "percentage")
+                pval = float(promo.get("value", 0))
+                preview_disc = pval if ptype == "flat" else round((100.0 * pval) / 100.0, 2)
+                discount = max(discount, preview_disc)
+                # If error was solely due to empty cart/amount, allow it to display as applicable
+                if "Minimum cart amount" in err or "eligible stories" in err or "at least" in err:
+                    err = ""
+            
             # Fetch target story titles for clarity if promo is specific to certain stories
             target_ids = promo.get("target_story_ids", [])
             target_titles = []
             if target_ids:
                 for tid in target_ids:
+                    tid_str = str(tid).strip()
                     t_doc = None
-                    try:
-                        t_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(tid) if len(tid) == 24 else None})
-                    except Exception:
-                        pass
-                    if not t_doc:
+                    if len(tid_str) == 24:
                         try:
-                            t_doc = await arya_db.db.premium_stories.find_one({"story_id": tid})
+                            t_doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(tid_str)})
                         except Exception:
                             pass
                     if not t_doc:
                         try:
-                            t_doc = await arya_db.db.premium_stories.find_one({"id": tid})
+                            t_doc = await arya_db.db.premium_stories.find_one({"story_id": tid_str})
+                        except Exception:
+                            pass
+                    if not t_doc:
+                        try:
+                            t_doc = await arya_db.db.premium_stories.find_one({"id": tid_str})
+                        except Exception:
+                            pass
+                    if not t_doc and tid_str.isdigit():
+                        try:
+                            t_doc = await arya_db.db.premium_stories.find_one({"story_id": int(tid_str)})
                         except Exception:
                             pass
                     if t_doc:
@@ -1911,14 +2005,15 @@ async def get_available_promos(data: AvailablePromosRequest):
                         if name:
                             target_titles.append(name)
             
+            is_app = not bool(err) and (discount > 0 or not data.story_ids)
             promo_info = {
                 "code": promo.get("code"),
                 "type": promo.get("type", "percentage"),
                 "value": promo.get("value", 0),
                 "description": promo.get("description", ""),
                 "discount_amount": discount if not err else 0,
-                "auto_apply": bool(promo.get("auto_apply", False)) if not err else False,
-                "applicable": not bool(err) and discount > 0,
+                "auto_apply": bool(promo.get("auto_apply", False)) if is_app else False,
+                "applicable": is_app,
                 "error_reason": err,
                 "min_cart_items": promo.get("min_cart_items"),
                 "min_order_amount": promo.get("min_order_amount") or promo.get("min_order_value"),
@@ -1931,7 +2026,6 @@ async def get_available_promos(data: AvailablePromosRequest):
                 "target_story_titles": target_titles,
             }
             
-            # Append all active promos so users can see available offers, but applicable flag indicates if valid for this story
             available.append(promo_info)
                 
         available.sort(key=lambda x: (1 if x["applicable"] else 0, x["discount_amount"]), reverse=True)
