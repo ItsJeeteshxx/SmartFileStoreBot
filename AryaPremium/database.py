@@ -123,6 +123,9 @@ class PremiumDatabase:
             cleaned_parts = []
             for idx, p in enumerate(clean_data["parts"]):
                 if isinstance(p, dict):
+                    b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none"))
+                    is_new_val = bool(p.get("is_new") or b_val == "new")
+                    is_ongoing_val = bool(p.get("is_ongoing") or b_val == "ongoing")
                     cleaned_parts.append({
                         "id": str(p.get("id") or f"part_{idx+1}"),
                         "name": str(p.get("name") or f"Part {idx+1}"),
@@ -131,6 +134,10 @@ class PremiumDatabase:
                         "end_id": int(p.get("end_id") or 0),
                         "episodes": str(p.get("episodes") or ""),
                         "price": float(p.get("price") or 0),
+                        "badge": b_val,
+                        "badge_type": b_val,
+                        "is_new": is_new_val,
+                        "is_ongoing": is_ongoing_val,
                     })
             clean_data["parts"] = cleaned_parts
             if len(cleaned_parts) > 0 and clean_data.get("enable_parts") is not False:
