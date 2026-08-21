@@ -1551,7 +1551,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 bottom_row1 = [
                     InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
                     InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl"),
-                    InlineKeyboardButton("₹ " + _sc("help us"), url="https://payments.cashfree.com/forms/aryapremium")
+                    InlineKeyboardButton(_sc("help us"), url="https://payments.cashfree.com/forms/aryapremium")
                 ]
                 keyboard.append(bottom_row1)
 
