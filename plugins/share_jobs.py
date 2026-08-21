@@ -1558,7 +1558,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 b_link = str(sj.get('premium_buy_link') or sj.get('buy_link') or '').strip()
                 if b_link and b_link != "#":
                     keyboard.append([
-                        InlineKeyboardButton("⊕ " + _sc("buy this story"), url=b_link)
+                        InlineKeyboardButton("вυу тнιѕ ѕтσʀу", url=b_link)
                     ])
                 for attempt in range(6):
                     try:

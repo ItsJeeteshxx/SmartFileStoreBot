@@ -340,7 +340,7 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             b_link = str(job.get('premium_buy_link') or job.get('buy_link') or '').strip()
             if b_link and b_link != "#":
                 keyboard.append([
-                    InlineKeyboardButton("⊕ " + _sc("buy this story"), url=b_link)
+                    InlineKeyboardButton("вυу тнιѕ ѕтσʀу", url=b_link)
                 ])
             
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.
