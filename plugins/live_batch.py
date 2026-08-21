@@ -337,14 +337,15 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             keyboard.append(bottom_row1)
             
             bottom_row2 = [
-                InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl")
+                InlineKeyboardButton("ꜱᴜᴘᴘ☏ʀᴛ", url="https://t.me/+KPVtaAm9k-RmMjdl")
             ]
+            keyboard.append(bottom_row2)
+
             b_link = str(job.get('premium_buy_link') or job.get('buy_link') or '').strip()
             if b_link and b_link != "#":
-                bottom_row2.append(
+                keyboard.append([
                     InlineKeyboardButton("вυу тнιѕ ѕтσʀу", url=b_link)
-                )
-            keyboard.append(bottom_row2)
+                ])
             
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.
             # If idx is within old_mids, it means we are replacing a previously sent incomplete block.

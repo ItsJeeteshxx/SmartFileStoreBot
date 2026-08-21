@@ -1555,14 +1555,15 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 keyboard.append(bottom_row1)
 
                 bottom_row2 = [
-                    InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl")
+                    InlineKeyboardButton("ꜱᴜᴘᴘ☏ʀᴛ", url="https://t.me/+KPVtaAm9k-RmMjdl")
                 ]
+                keyboard.append(bottom_row2)
+
                 b_link = str(sj.get('premium_buy_link') or sj.get('buy_link') or '').strip()
                 if b_link and b_link != "#":
-                    bottom_row2.append(
+                    keyboard.append([
                         InlineKeyboardButton("вυу тнιѕ ѕтσʀу", url=b_link)
-                    )
-                keyboard.append(bottom_row2)
+                    ])
                 for attempt in range(6):
                     try:
                         await poster.send_message(
