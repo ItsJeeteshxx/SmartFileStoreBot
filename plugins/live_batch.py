@@ -331,9 +331,9 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 
             tutorial_link = "https://t.me/StoriesLinkopningguide/21" if job.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
             bottom_row1 = [
-                InlineKeyboardButton("☏", url=tutorial_link),
-                InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl"),
-                InlineKeyboardButton("₹ " + _sc("help us"), callback_data="help_us_donate")
+                InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
+                InlineKeyboardButton("☏ " + _sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl"),
+                InlineKeyboardButton("₹ " + _sc("help us"), url="https://payments.cashfree.com/forms/aryapremium")
             ]
             keyboard.append(bottom_row1)
             
