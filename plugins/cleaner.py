@@ -344,14 +344,14 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
     if deep_clean:
         cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "2",
-                "-write_xing", "0", "-id3v2_version", "3"]
+                "-write_xing", "1", "-id3v2_version", "3"]
     elif in_ext == out_ext and not force_reencode:
         cmd += ["-c:a", "copy"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-c:v", "copy", "-movflags", "+faststart"]
     else:
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "2",
-                "-write_xing", "0", "-id3v2_version", "3"]
+                "-write_xing", "1", "-id3v2_version", "3"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-c:v", "copy", "-movflags", "+faststart"]
 
@@ -1345,7 +1345,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
                                 "-threads", "2",
-                                "-write_xing", "0", "-id3v2_version", "3",
+                                "-write_xing", "1", "-id3v2_version", "3",
+                                "-fflags", "+genpts",
                                 _inj_out
                             ]
 
@@ -1456,10 +1457,18 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                             p_out = _new_p_out
                                         except: pass
 
+                                        _up_dur = 0
+                                        if is_ff or is_aud:
+                                            try:
+                                                _up_dur = int(await _probe_dur_async(p_out) or 0)
+                                            except Exception:
+                                                _up_dur = 0
+
                                         if job.get("ad_inject_only"):
                                             # Direct upload + edit — preserve original title/performer
                                             if is_ff or is_aud:
                                                 _im = InputMediaAudio(p_out, caption=cap,
+                                                    duration=_up_dur or None,
                                                     title=c_title or None, performer=art or None)
                                             elif is_vid:
                                                 _im = InputMediaVideo(p_out, caption=cap)
@@ -1469,6 +1478,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                             # Normal replace mode: direct file upload → edit
                                             if is_ff or is_aud:
                                                 _im = InputMediaAudio(p_out, caption=cap,
+                                                    duration=_up_dur or None,
                                                     title=c_title or None, performer=art or None,
                                                     thumb=thumb)
                                             elif is_vid:
@@ -1478,7 +1488,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                                     else:
                                         if is_ff or is_aud:
-                                            await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
+                                            _up_dur = 0
+                                            try:
+                                                _up_dur = int(await _probe_dur_async(p_out) or 0)
+                                            except Exception:
+                                                _up_dur = 0
+                                            await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, duration=_up_dur or 0, title=c_title or None, performer=art or None, file_name=c_file, thumb=thumb), timeout=3600)
                                         elif is_vid:
                                             await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=3600)
                                         else:
