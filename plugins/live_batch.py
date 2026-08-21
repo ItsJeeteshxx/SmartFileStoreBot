@@ -1238,10 +1238,10 @@ async def _lb_help_us_callback(bot, query: CallbackQuery):
         
         donate_kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("💳 Support via UPI", callback_data="sbd#donate")
+                InlineKeyboardButton("Support via UPI", callback_data="sbd#donate")
             ],
             [
-                InlineKeyboardButton("💳 Support via Cashfree", url="https://cfpe.me/aryapremium")
+                InlineKeyboardButton("Support via Cashfree", url="https://cfpe.me/aryapremium")
             ]
         ])
 

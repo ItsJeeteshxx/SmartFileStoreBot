@@ -914,10 +914,10 @@ async def _process_start(client, message):
     
     donate_btn = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("💳 Support via UPI", callback_data="sbd#donate")
+            InlineKeyboardButton("Support via UPI", callback_data="sbd#donate")
         ],
         [
-            InlineKeyboardButton("💳 Support via Cashfree", url="https://cfpe.me/aryapremium")
+            InlineKeyboardButton("Support via Cashfree", url="https://cfpe.me/aryapremium")
         ]
     ])
     try:
