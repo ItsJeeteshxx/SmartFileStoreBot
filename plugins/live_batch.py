@@ -331,16 +331,16 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 
             tutorial_link = "https://t.me/StoriesLinkopningguide/21" if job.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
             bottom_row1 = [
-                InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
+                InlineKeyboardButton("☏", url=tutorial_link),
                 InlineKeyboardButton(_sc("support"), url="https://t.me/+KPVtaAm9k-RmMjdl"),
-                InlineKeyboardButton(_sc("help us"), callback_data="help_us_donate")
+                InlineKeyboardButton("₹ " + _sc("help us"), callback_data="help_us_donate")
             ]
             keyboard.append(bottom_row1)
             
             b_link = str(job.get('premium_buy_link') or job.get('buy_link') or '').strip()
             if b_link and b_link != "#":
                 keyboard.append([
-                    InlineKeyboardButton(_sc("buy this story"), url=b_link)
+                    InlineKeyboardButton("⊕ " + _sc("buy this story"), url=b_link)
                 ])
             
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.
@@ -1214,43 +1214,60 @@ async def resume_live_batches():
         logger.info(f"[LiveBatch] Resumed job {jid}")
 
 
-@Client.on_callback_query(filters.regex(r"^(help_us_donate|lb#help_us|sbd#help_us)$"))
+@Client.on_callback_query(filters.regex(r"^(help_us_donate|lb#help_us|sbd#help_us)$"), group=-100)
 async def _lb_help_us_callback(bot, query: CallbackQuery):
-    u_name = query.from_user.first_name if query.from_user else "User"
-    full_name = u_name + (" " + query.from_user.last_name if query.from_user and getattr(query.from_user, "last_name", None) else "")
-
-    don_text = (
-        f"💖 <b>Sᴜᴘᴘᴏʀᴛ & Hᴇʟᴘ Uꜱ</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"◑ Thank you for using our service! "
-        f"If you enjoy our platform and want us to keep delivering amazing stories, "
-        f"please consider supporting us with a small donation.\n\n"
-        f"▣ Every contribution helps us maintain our servers and expand our audiobook library.\n\n"
-        f"────────────────\n\n"
-        f"◑ हमारी सेवा का उपयोग करने के लिए धन्यवाद! "
-        f"यदि आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर बेहतरीन कहानियाँ "
-        f"लाते रहें, तो कृपया donation देकर हमारा सहयोग करें।\n\n"
-        f"▣ आपका सहयोग हमारे सर्वर को बनाए रखने और हमारी लाइब्रेरी का विस्तार करने में सहायता करता है।"
-    )
-    
-    donate_kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("💳 Support via UPI", callback_data="sbd#donate")
-        ]
-    ])
-
-    sent_dm = False
     try:
-        await bot.send_message(query.from_user.id, don_text, reply_markup=donate_kb)
-        sent_dm = True
-    except Exception:
-        pass
+        user = query.from_user
+        u_name = user.first_name if user else "User"
+        last = (" " + user.last_name) if getattr(user, "last_name", None) else ""
+        full_name = f"{u_name}{last}"
 
-    if sent_dm:
-        await query.answer("📩 Sent support & donation details to your Telegram DM!", show_alert=True)
-    else:
-        await query.answer(
-            "💖 Thank you for supporting us!\n\n"
-            "If you enjoy our platform, please consider supporting us with a small donation to keep our servers running.",
-            show_alert=True
+        don_text = (
+            f"💖 <b>Sᴜᴘᴘᴏʀᴛ & Hᴇʟᴘ Uꜱ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"◑ Thank you for using our service! "
+            f"If you enjoy our platform and want us to keep delivering amazing stories, "
+            f"please consider supporting us with a small donation.\n\n"
+            f"▣ Every contribution helps us maintain our servers and expand our audiobook library.\n\n"
+            f"────────────────\n\n"
+            f"◑ हमारी सेवा का उपयोग करने के लिए धन्यवाद! "
+            f"यदि आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर बेहतरीन कहानियाँ "
+            f"लाते रहें, तो कृपया donation देकर हमारा सहयोग करें।\n\n"
+            f"▣ आपका सहयोग हमारे सर्वर को बनाए रखने और हमारी लाइब्रेरी का विस्तार करने में सहायता करता है।"
         )
+        
+        donate_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💳 Support via UPI", callback_data="sbd#donate")
+            ],
+            [
+                InlineKeyboardButton("💳 Support via Cashfree", url="https://cfpe.me/aryapremium")
+            ]
+        ])
+
+        sent_dm = False
+        if user and user.id:
+            try:
+                await bot.send_message(user.id, don_text, reply_markup=donate_kb)
+                sent_dm = True
+            except Exception as ex:
+                logger.info(f"[HelpUsCallback] DM send skipped/failed for user {user.id}: {ex}")
+
+        if sent_dm:
+            await query.answer("📩 Sent support & donation details to your Telegram DM!", show_alert=True)
+        else:
+            popup_msg = (
+                "💖 Thank you for supporting us!\n\n"
+                "If you enjoy our platform and want us to keep delivering amazing stories, "
+                "please consider supporting us with a small donation.\n\n"
+                "• UPI ID: Q56571430@ybl\n"
+                "• Cashfree: https://cfpe.me/aryapremium\n\n"
+                "Your contribution helps maintain our servers!"
+            )
+            await query.answer(popup_msg, show_alert=True)
+    except Exception as e:
+        logger.error(f"[HelpUsCallback] Error: {e}")
+        try:
+            await query.answer("💖 Thank you for supporting us! Donate via https://cfpe.me/aryapremium", show_alert=True)
+        except Exception:
+            pass
