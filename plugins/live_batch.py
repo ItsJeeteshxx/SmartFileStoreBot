@@ -332,16 +332,19 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             tutorial_link = "https://t.me/StoriesLinkopningguide/21" if job.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
             bottom_row1 = [
                 InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
-                InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl"),
                 InlineKeyboardButton(_sc("help us"), url="https://payments.cashfree.com/forms/aryapremium")
             ]
             keyboard.append(bottom_row1)
             
+            bottom_row2 = [
+                InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl")
+            ]
             b_link = str(job.get('premium_buy_link') or job.get('buy_link') or '').strip()
             if b_link and b_link != "#":
-                keyboard.append([
+                bottom_row2.append(
                     InlineKeyboardButton("вυу тнιѕ ѕтσʀу", url=b_link)
-                ])
+                )
+            keyboard.append(bottom_row2)
             
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.
             # If idx is within old_mids, it means we are replacing a previously sent incomplete block.

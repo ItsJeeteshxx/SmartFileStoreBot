@@ -1550,16 +1550,19 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 tutorial_link = "https://t.me/StoriesLinkopningguide/21" if sj.get("shortener") else "https://t.me/StoriesLinkopningguide/5"
                 bottom_row1 = [
                     InlineKeyboardButton(_sc("tutorial"), url=tutorial_link),
-                    InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl"),
                     InlineKeyboardButton(_sc("help us"), url="https://payments.cashfree.com/forms/aryapremium")
                 ]
                 keyboard.append(bottom_row1)
 
+                bottom_row2 = [
+                    InlineKeyboardButton("☏", url="https://t.me/+KPVtaAm9k-RmMjdl")
+                ]
                 b_link = str(sj.get('premium_buy_link') or sj.get('buy_link') or '').strip()
                 if b_link and b_link != "#":
-                    keyboard.append([
+                    bottom_row2.append(
                         InlineKeyboardButton("вυу тнιѕ ѕтσʀу", url=b_link)
-                    ])
+                    )
+                keyboard.append(bottom_row2)
                 for attempt in range(6):
                     try:
                         await poster.send_message(
