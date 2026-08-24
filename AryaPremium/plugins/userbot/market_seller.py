@@ -50,7 +50,7 @@ MINI_APP_WELCOME_TEXT = (
     "<b>①</b> Explore <b>300+</b> stories from <b>Pocket FM</b>, <b>Kuku FM</b>, <b>Pratilipi FM</b> & other platforms, available in Hindi & English.\n\n"
     "<b>②</b> Buy your favorite stories directly using <b>UPI</b>, <b>Cards</b>, <b>NetBanking</b> or <b>Crypto</b>.\n\n"
     "<b>③</b> Easily discover stories by <b>Genre</b>, <b>Platform</b> or <b>Language</b> and own them instantly.\n\n"
-    "<b>☏ Support:-</b> @ItsNewtonPlanet\n\n"
+    '<emoji id="6269255258212404947">📢</emoji> <b>Join Channel:</b> @AryaPremiumTG\n\n'
     "↳ Tap <b>Open App</b> and start exploring Arya Premium ⤵"
 )
 
@@ -3727,26 +3727,10 @@ async def _process_text(client, message):
     bot_cfg = (bt.get("config") or {}) if bt else {}
     bot_mode = bot_cfg.get("bot_mode", "full")
 
-    # If in miniapp mode and not in any active state, check UTR first before sending welcome
+    # If in miniapp mode and not in any active state (like UTR entry), ignore random text (only /start triggers welcome)
     pending_s_id_utr = user.get("pending_utr_story_id")
     if not pending_s_id_utr and bot_mode == "miniapp":
-        poster_file = _get_arya_poster_path()
-        if poster_file and os.path.exists(poster_file):
-            try:
-                return await message.reply_photo(
-                    photo=poster_file,
-                    caption=MINI_APP_WELCOME_TEXT,
-                    reply_markup=MINI_APP_START_MARKUP,
-                    parse_mode=enums.ParseMode.HTML
-                )
-            except Exception:
-                pass
-        return await message.reply_text(
-            MINI_APP_WELCOME_TEXT,
-            reply_markup=MINI_APP_START_MARKUP,
-            parse_mode=enums.ParseMode.HTML,
-            disable_web_page_preview=True
-        )
+        return
 
     if cmd_text in ["/marketplace", "/mystories", "/stories", "/arya", "/help", "/settings", "/profile"]:
         m = await message.reply_text("<i>⏳ Loading...</i>")
