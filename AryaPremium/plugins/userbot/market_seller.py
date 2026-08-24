@@ -144,12 +144,39 @@ def to_mathbold(val): return f"<b>{val}</b>"
 
 
 
+_BOT_CONFIG_CACHE = {} # {bot_id: (timestamp, doc)}
+_FEATURE_TOGGLE_CACHE = {"ts": 0, "doc": {}}
+
+async def _get_cached_bot_doc(bot_id: int):
+    import time
+    now = time.time()
+    if bot_id in _BOT_CONFIG_CACHE:
+        ts, doc = _BOT_CONFIG_CACHE[bot_id]
+        if now - ts < 30.0:
+            return doc
+    doc = await db.db.premium_bots.find_one({"id": int(bot_id)})
+    _BOT_CONFIG_CACHE[bot_id] = (now, doc)
+    return doc
+
+async def _get_cached_features():
+    import time
+    now = time.time()
+    if now - _FEATURE_TOGGLE_CACHE["ts"] < 30.0:
+        return _FEATURE_TOGGLE_CACHE["doc"]
+    doc = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    _FEATURE_TOGGLE_CACHE["ts"] = now
+    _FEATURE_TOGGLE_CACHE["doc"] = doc
+    return doc
+
+def get_user_fast_info(from_user=None, user_doc=None, user_id=None):
+    fn = getattr(from_user, "first_name", "") or (user_doc or {}).get("first_name", "") or "User"
+    ln = getattr(from_user, "last_name", "") or (user_doc or {}).get("last_name", "") or ""
+    un = getattr(from_user, "username", "") or (user_doc or {}).get("username", "") or ""
+    full_name = f"{fn} {ln}".strip() or "User"
+    uname_str = f"@{un}" if un else "N/A"
+    return full_name, uname_str, fn, ln, un
+
 async def get_robust_user(client: Client, user_id: int):
-    """
-    Fetches user details with robust fallback mechanisms.
-    First tries client.get_users(), then queries Telegram get_chat directly,
-    then queries local MongoDB users collection, and finally returns a DummyUser object.
-    """
     class DummyUser:
         def __init__(self, uid, fn="User", ln="", un=""):
             self.id = int(uid)
@@ -157,35 +184,8 @@ async def get_robust_user(client: Client, user_id: int):
             self.last_name = ln
             self.username = un
 
-    user_obj = None
     try:
-        user_obj = await client.get_users(user_id)
-        if user_obj:
-            # If names are missing/generic, attempt database enrichment
-            if not getattr(user_obj, "first_name", "") or getattr(user_obj, "first_name") == "Unknown":
-                db_user = await db.db.users.find_one({"id": int(user_id)})
-                if db_user:
-                    user_obj.first_name = db_user.get("first_name") or user_obj.first_name
-                    user_obj.last_name = db_user.get("last_name") or getattr(user_obj, "last_name", "")
-                    user_obj.username = db_user.get("username") or getattr(user_obj, "username", "")
-            return user_obj
-    except Exception as e:
-        logger.warning(f"get_users failed for {user_id}: {e}")
-
-    try:
-        chat_obj = await client.get_chat(user_id)
-        if chat_obj:
-            return DummyUser(
-                user_id,
-                fn=chat_obj.first_name or "User",
-                ln=chat_obj.last_name or "",
-                un=chat_obj.username or ""
-            )
-    except Exception as e:
-        pass
-
-    try:
-        db_user = await db.db.users.find_one({"id": int(user_id)})
+        db_user = await db.db.users.find_one({"id": int(user_id)}, {"first_name": 1, "last_name": 1, "username": 1})
         if db_user:
             return DummyUser(
                 user_id,
@@ -193,8 +193,8 @@ async def get_robust_user(client: Client, user_id: int):
                 ln=db_user.get("last_name") or "",
                 un=db_user.get("username") or ""
             )
-    except Exception as e:
-        logger.warning(f"Database query failed for user {user_id}: {e}")
+    except Exception:
+        pass
 
     return DummyUser(user_id)
 
@@ -1651,7 +1651,7 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
 
 async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_message_id: int = None):
 
-    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bt = await _get_cached_bot_doc(client.me.id)
 
     bt_cfg = bt.get("config", {}) if bt else {}
 
@@ -2088,169 +2088,83 @@ async def _show_story_profile(client, user_id, story, lang):
         
 
     demo_btn = "डेमो फ़ाइलें देखें" if lang == "hi" else "View Demo Files"
-
     kb = [
-
         [InlineKeyboardButton(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}")],
-
         [InlineKeyboardButton(demo_btn, callback_data=f"mb#demo#{str(story['_id'])}")],
-
         [InlineKeyboardButton(back_btn, callback_data="mb#return_main")]
-
     ]
-
     markup = InlineKeyboardMarkup(kb)
 
-    
-
     from pyrogram import enums
-
-    tmp = await client.send_message(user_id, f"<b>› › ⏳ {loading_txt}</b>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
-
-    
-
     try:
-
         if image:
-
             try:
-
-                await client.send_photo(user_id, photo=image, caption=txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-
-                await tmp.delete()
-
-                return
-
+                return await client.send_photo(user_id, photo=image, caption=txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
             except Exception: pass
-
-        await client.send_message(user_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-
-        await tmp.delete()
-
+        return await client.send_message(user_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
     except Exception: pass
 
 
-
-async def _show_tc(client, user_id, story_id, lang='en'):
-
+async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
     if lang == 'hi':
-
         tc_title = "<b>⟦ नियम और शर्तें ⟧</b>"
-
         tc_subtitle = "खरीदने से पहले, कृपया निम्नलिखित पढ़ें और सहमत हों:"
-
         missing_title = "• <b>गायब एपिसोड</b>"
-
         missing_desc = "सार्वजनिक रूप से जारी न होने पर 3-4 एपिसोड अनुपलब्ध हो सकते हैं। ऐसा होने पर हम अपनी तरफ से कहानी की कीमत कम रखते हैं। यदि वे एपिसोड हमें बाद में मिलते हैं, तो उन्हें आपके वर्तमान एपिसोड्स में जोड़ दिया जाएगा। यदि 4 से अधिक एपिसोड गायब हैं, तो कृपया सपोर्ट से संपर्क करें।"
-
         quality_title = "• <b>क्वालिटी</b>"
-
         quality_desc = "पुराने एपिसोड्स की क्वालिटी कम हो सकती है। हम 100% क्वालिटी की गारंटी नहीं दे सकते, लेकिन हमेशा सर्वश्रेष्ठ वर्जन प्रदान करेंगे।"
-
         refund_title = "• <b>कोई रिफंड नहीं</b>"
-
         refund_desc = "एक बार भुगतान हो जाने और डिलीवरी शुरू होने के बाद कोई रिफंड नहीं दिया जाएगा। यदि आपका टेलीग्राम अकाउंट सस्पेंड या डिलीट हो जाता है, तो पूर्ण विवरण और प्रमाण के साथ एडमिन से संपर्क करें, आपको पुनः जोड़ दिया जाएगा। यदि आप गलती से अतिरिक्त राशि का भुगतान कर देते हैं, तो तुरंत प्रमाण के साथ संपर्क करें, आपको रिफंड मिल जाएगा (Razorpay पर प्लेटफ़ॉर्म फीस काटी जाएगी)।"
-
         fake_title = "• <b>नकली स्क्रीनशॉट</b>"
-
         fake_desc = "नकली या अमान्य भुगतान प्रमाण भेजने पर स्थायी रूप से प्रतिबंध लगा दिया जाएगा।"
-
         iaadnsa_note = "<b>• IAADNSA (भविष्य में T&C छोड़ें)</b>\nयदि आप चाहते हैं कि अगली बार कहानी खरीदते समय आपको यह नियम और शर्तें (T&C) पेज न दिखाई दे, तो <b>IAADNSA (I Accept And Do Not Show Again)</b> बटन पर क्लिक करें। इससे भविष्य में यह पेज अपने आप बाईपास हो जाएगा।"
-
         accept_btn = "I Accept"
-
         reject_btn = "Reject"
-
         iaadnsa_btn = "IAADNSA"
-
         back_btn = "‹ वापस"
-
     else:
-
         tc_title = "<b>⟦ 𝗧𝗘𝗥𝗠𝗦 & 𝗖𝗢𝗡𝗗𝗜𝗧𝗜𝗢𝗡𝗦 ⟧</b>"
-
         tc_subtitle = "𝖡𝖾𝖿𝗈𝗋𝖾 𝗉𝗎𝗋𝖼𝗁𝖺𝗌𝗂𝗇𝗀, 𝗉𝗅𝖾𝖺𝗌𝖾 𝗋𝖾𝖺𝖽 𝖺𝗇𝖽 𝖺𝗀𝗋𝖾𝖾 𝗍𝗈 𝗍𝗁𝖾 𝖿𝗈𝗅𝗅𝗈𝗐𝗂𝗇𝗀:"
-
         missing_title = "• <b>𝗠𝗶𝘀𝘀𝗶𝗻𝗴 𝗘𝗽𝗶𝘀𝗼𝗱𝗲𝘀</b>"
-
         missing_desc = "3-4 episodes may be missing if not publicly released. In such cases, we keep the story price lower from our side. If we find those episodes later, they will be automatically added to your current episodes. If more than 4 episodes are missing, please contact support."
-
         quality_title = "• <b>𝗤𝘂𝗮𝗹𝗶𝘁𝘆</b>"
-
         quality_desc = "𝖲𝗈𝗆𝖾 𝗈𝗅𝖽𝖾𝗋 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝗁𝖺𝗏𝖾 𝗋𝖾𝖽𝗎𝖼𝖾𝖽 𝗊𝗎𝖺𝗅𝗂𝗍𝗒. 𝖶𝖾 𝖼𝖺𝗇𝗇𝗈𝗍 𝗀𝗎𝖺𝗋𝖺𝗇𝗍𝖾𝖾 𝟣𝟢𝟢% 𝗊𝗎𝖺𝗅𝗂𝗍𝗒, 𝖻𝗎𝗍 𝖺𝗅𝗐𝖺𝗒𝗌 𝗉𝗋𝗈𝗏𝗂𝖽𝖾 𝖻𝖾𝗌𝗍 𝗏𝖾𝗋𝗌𝗂𝗈𝗇."
-
         refund_title = "• <b>𝗡𝗼 𝗥𝗲𝗳𝘂𝗻𝗱𝘀</b>"
-
         refund_desc = "No refunds once payment is confirmed and delivery starts. If your Telegram account gets suspended or deleted, contact the admin with complete details and proof to be added again. If you accidentally pay an extra amount, contact us immediately with proof for a refund (Razorpay platform fees will be deducted)."
-
         fake_title = "• <b>𝗙𝗮𝗸𝗲 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀</b>"
-
         fake_desc = "𝖥𝖺𝗄𝖾 𝗈𝗋 𝗂𝗇𝗏𝖺𝗅𝗂𝖽 𝗉𝖺𝗒𝗆𝖾𝗇𝗍 𝗉𝗋𝗈𝗈𝖿𝗌 𝗐𝗂𝗅𝗅 𝗅𝖾𝖺𝖽 𝗍𝗈 𝗉𝖾𝗋𝗆𝖺𝗇𝖾𝗇𝗍 𝖻𝖺𝗇."
-
         iaadnsa_note = "<b>• IAADNSA (Skip Future T&C)</b>\nIf you don't want to see this Terms & Conditions page for future purchases, click the <b>IAADNSA (I Accept And Do Not Show Again)</b> button. This will automatically accept the T&C and skip this page in the future."
-
         accept_btn = "𝗜 𝗔𝗰𝗰𝗲𝗽𝘁"
-
         reject_btn = "𝗥𝗲𝗷𝗲𝗰𝘁"
-
         iaadnsa_btn = "𝗜𝗔𝗔𝗗𝗡𝗦𝗔"
-
         back_btn = "‹ Back"
 
-
-
     from bson.objectid import ObjectId
-
-    u_obj = await get_robust_user(client, user_id)
-
-    s_obj = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
-
+    full_name, uname_str, _, _, _ = get_user_fast_info(from_user=from_user, user_id=user_id)
+    
+    s_obj = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)}, {"story_name_hi": 1, "story_name_en": 1})
     s_name = s_obj.get(f'story_name_{lang}', s_obj.get('story_name_en', 'Unknown')) if s_obj else 'Unknown'
-
-    uname_str = f"@{u_obj.username}" if getattr(u_obj, "username", None) else "N/A"
-
-    full_name = f"{getattr(u_obj, 'first_name', '') or ''} {getattr(u_obj, 'last_name', '') or ''}".strip() or "User"
 
     user_details = f"👤 <b>User:</b> {full_name} ({uname_str}) | <b>ID:</b> <code>{user_id}</code>\n📖 <b>Story:</b> {s_name}\n"
 
-
-
     tc_text = (
-
         f"{tc_title}\n\n"
-
         f"{user_details}\n"
-
         f"{tc_subtitle}\n\n"
-
         f"<blockquote expandable>{missing_title}\n{missing_desc}</blockquote>\n"
-
         f"<blockquote expandable>{quality_title}\n{quality_desc}</blockquote>\n"
-
         f"<blockquote expandable>{refund_title}\n{refund_desc}</blockquote>\n"
-
         f"<blockquote expandable>{fake_title}\n{fake_desc}</blockquote>\n"
-
         f"<blockquote expandable>{iaadnsa_note}</blockquote>"
-
     )
 
-    
-
     kb = [
-
         [InlineKeyboardButton(accept_btn, callback_data=f"mb#tc_accept_{story_id}"),
-
          InlineKeyboardButton(reject_btn, callback_data="mb#tc_reject")],
-
         [InlineKeyboardButton(iaadnsa_btn, callback_data=f"mb#tc_iaadnsa_{story_id}"),
-
          InlineKeyboardButton(back_btn, callback_data=f"mb#view_{story_id}")]
-
     ]
-
     from pyrogram import enums
-
     await client.send_message(user_id, tc_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
 
@@ -2388,7 +2302,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     # ── Checkout Mode Routing ──────────────────────────────────────────────────
     # Admin can switch between V1 (Razorpay + Manual UPI) and V2 (Direct UPI + Crypto)
     try:
-        _feat = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        _feat = await _get_cached_features()
         if _feat.get("checkout_mode", "v1") == "v2":
             return await _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg=bot_cfg)
     except Exception:
@@ -3132,7 +3046,7 @@ async def _process_start(client, message):
     # ── Normal Start ──
 
     # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
-    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bt = await _get_cached_bot_doc(client.me.id)
     bot_cfg = (bt.get("config") or {}) if bt else {}
     bot_mode = bot_cfg.get("bot_mode", "full")
 
@@ -3825,7 +3739,7 @@ async def _process_text(client, message):
         return await _process_start(client, message)
 
     # 4. Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
-    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bt = await _get_cached_bot_doc(client.me.id)
     bot_cfg = (bt.get("config") or {}) if bt else {}
     bot_mode = bot_cfg.get("bot_mode", "full")
 
@@ -4272,210 +4186,133 @@ async def _process_text(client, message):
 
 
     if txt in (_nav_next, _nav_prev, _nav_next_hi, _nav_prev_hi):
-
         plat = user.get("_mkt_plat")
-
         cur_page = int(user.get("_mkt_page", 0))
-
         if plat:
-
             is_next = txt in (_nav_next, _nav_next_hi)
-
-            new_page = cur_page + 1 if is_next else cur_page - 1
-
-            STORY_PAGE_SIZE = 8
-
+            STORY_PAGE_SIZE = 15
             q_find = {"bot_id": client.me.id}
-
             if plat != "Other": q_find["platform"] = plat
 
-            all_stories = await db.db.premium_stories.find(q_find).sort("_id", -1).to_list(length=None)
-
-            total_pg = max(1, (len(all_stories) + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
-
+            total_s = await db.db.premium_stories.count_documents(q_find)
+            total_pg = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
+            new_page = cur_page + 1 if is_next else cur_page - 1
             new_page = max(0, min(new_page, total_pg - 1))
 
             await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": new_page}})
 
-            pg_stories = all_stories[new_page * STORY_PAGE_SIZE:(new_page + 1) * STORY_PAGE_SIZE]
+            pg_stories = await db.db.premium_stories.find(
+                q_find,
+                {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+            ).sort("_id", -1).skip(new_page * STORY_PAGE_SIZE).limit(STORY_PAGE_SIZE).to_list(length=STORY_PAGE_SIZE)
 
             MNL = 22
-
             kb = []
-
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
-
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
-
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-
                 badge = " ɴᴇᴡ" if idx <= 5 else ""
-
                 kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
 
             nav_row = []
-
             if new_page > 0: nav_row.append("❬ " + (_sc("PREV") if lang == 'en' else "पिछला"))
-
             nav_row.append("📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें"))
-
             if new_page < total_pg - 1: nav_row.append(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭")
-
             if nav_row: kb.append(nav_row)
-
             kb.append(["🔍 " + ("SEARCH" if lang == 'en' else "खोजें")])
-
             kb.append([T[lang]["cant_find_btn"]])
-
             kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
 
             title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
-
             return await message.reply_text(
-
                 f"<b>⟦ {title} — {to_mathbold(plat)} ⟧</b>\n"
-
                 f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>",
-
                 reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-
                 parse_mode=enums.ParseMode.HTML
-
             )
-
         return
 
-
-
     # Check if it's a story selection e.g. "1. STORY NAME [ ₹ 49 ]"
-
     if " [ ₹ " in txt and (txt.endswith(" ]") or txt.endswith(" ɴᴇᴡ")):
-
         parts = txt.split(". ", 1)
-
         raw = parts[1] if len(parts) > 1 else txt
-
         sName = raw.split(" [ ₹ ")[0].strip()
+        clean_name = sName.rstrip("…").strip()
 
-        stories = await db.db.premium_stories.find({"bot_id": client.me.id}).to_list(length=None)
-
-        story = None
-
-        MAX_NAME_LEN = 22
-
-        for st in stories:
-
-            for field in ("story_name_en", "story_name_hi"):
-
-                full_name = st.get(field, "")
-
-                trunc = full_name[:MAX_NAME_LEN - 1] + "…" if len(full_name) > MAX_NAME_LEN else full_name
-
-                if sName in (full_name, trunc):
-
-                    story = st
-
-                    break
-
-            if story:
-
-                break
+        import re
+        reg = f"^{re.escape(clean_name)}"
+        story = await db.db.premium_stories.find_one({
+            "bot_id": client.me.id,
+            "$or": [
+                {"story_name_en": {"$regex": reg, "$options": "i"}},
+                {"story_name_hi": {"$regex": reg, "$options": "i"}}
+            ]
+        })
+        if not story:
+            story = await db.db.premium_stories.find_one({
+                "$or": [
+                    {"story_name_en": {"$regex": reg, "$options": "i"}},
+                    {"story_name_hi": {"$regex": reg, "$options": "i"}}
+                ]
+            })
 
         if not story:
-
             return await message.reply_text("<i>Story not found or removed.</i>", parse_mode=enums.ParseMode.HTML)
 
         # Clear search state upon story selection
         await db.db.users.update_one({"id": user_id}, {"$unset": {"state": 1}})
 
-
-
         has_paid = await db.has_purchase(user_id, str(story['_id']))
-
         if has_paid:
-
-            t=T[lang]
-
+            t = T[lang]
             await message.reply_text(t["already_owned"], reply_markup=ReplyKeyboardRemove())
-
             return await dispatch_delivery_choice(client, user_id, story)
-
-
 
         return await _show_story_profile(client, user_id, story, lang)
 
-
-
     # Platform selection
-
     platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
-
     platforms.append("Other")
 
-
-
     if txt in platforms:
-
         # -- Paginated story listing per platform --
-
-        STORY_PAGE_SIZE = 8
-
+        STORY_PAGE_SIZE = 15
         s_page = int(user.get("_mkt_page", 0))
-
         if user.get("_mkt_plat") != txt:
-
             s_page = 0
 
         query_find = {"bot_id": client.me.id}
-
         if txt != "Other": query_find["platform"] = txt
 
-        stories = await db.db.premium_stories.find(query_find).sort("_id", -1).to_list(length=None)
-
-        if not stories:
-
+        total_s = await db.db.premium_stories.count_documents(query_find)
+        if total_s == 0:
             return await message.reply_text("<i>No stories found for this platform.</i>", parse_mode=enums.ParseMode.HTML)
 
-
-
-        total_s = len(stories)
-
         total_pages_s = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
-
         s_page = max(0, min(s_page, total_pages_s - 1))
 
         await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_plat": txt, "_mkt_page": s_page}})
 
-        page_stories = stories[s_page * STORY_PAGE_SIZE:(s_page + 1) * STORY_PAGE_SIZE]
+        page_stories = await db.db.premium_stories.find(
+            query_find,
+            {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+        ).sort("_id", -1).skip(s_page * STORY_PAGE_SIZE).limit(STORY_PAGE_SIZE).to_list(length=STORY_PAGE_SIZE)
 
         MNL = 22
-
         kb = []
-
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
-
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
-
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
-
             badge = " ɴᴇᴡ" if idx <= 5 else ""
-
             kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
 
         nav_row = []
-
         if s_page > 0: nav_row.append("❬ " + (_sc("PREV") if lang == 'en' else "पिछला"))
-
         nav_row.append("📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें"))
-
         if s_page < total_pages_s - 1: nav_row.append(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭")
-
         if nav_row: kb.append(nav_row)
-
         kb.append(["🔍 " + ("SEARCH" if lang == 'en' else "खोजें")])
-
         kb.append([T[lang]["cant_find_btn"]])
-
         kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
 
 
@@ -5023,11 +4860,17 @@ async def _process_callback(client, query):
     lang = user.get('lang', 'en')
 
     data = query.data.split('#')
-
     cmd = data[1]
 
+    # Quick early answer for standard instant-transition callbacks to eliminate button loading spinner
+    if cmd in ("main_marketplace", "my_buys", "main_profile", "main_settings", "main_help", "main_back", "return_main", "noop", "show_tc") or cmd.startswith(("my_buys_page_", "about_arya_", "tc_accept_", "tc_iaadnsa_")):
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
     # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
-    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bt = await _get_cached_bot_doc(client.me.id)
     bot_cfg = (bt.get("config") or {}) if bt else {}
     bot_mode = bot_cfg.get("bot_mode", "full")
 
@@ -5113,11 +4956,6 @@ async def _process_callback(client, query):
         elif cmd == "demo": act = f"Viewed Demo Files for Story ID {data[2] if len(data)>2 else ''}"
 
         elif cmd == "help_tc": act = "Viewed T&C from Support"
-
-        elif cmd == "help_refund": act = "Viewed Refund Policy from Support"
-
-        elif cmd == "feedback": act = "Clicked Feedback/Suggestions"
-
         elif cmd == "pay": act = f"Selected Payment Method: {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
 
         elif cmd == "pay2": act = f"Selected Payment Method (V2): {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
@@ -5810,56 +5648,33 @@ async def _process_callback(client, query):
 
         _tnc_cfg1 = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
 
+        # Check if T&C is globally disabled by admin
+        _tnc_cfg1 = await _get_cached_features()
         if not _tnc_cfg1.get("tnc_enabled", True):
-
             from bson.objectid import ObjectId as _ObjId1
-
             _s1 = await db.db.premium_stories.find_one({"_id": _ObjId1(s_id)})
-
             if _s1:
-
-                _bt1 = await db.db.premium_bots.find_one({"id": client.me.id})
-
+                _bt1 = await _get_cached_bot_doc(client.me.id)
                 _bt_cfg1 = (_bt1 or {}).get("config", {})
-
                 return await _show_story_details(client, query, _s1, lang, bot_cfg=_bt_cfg1)
-
-        return await _show_tc(client, user_id, s_id, lang)
-
-
+        return await _show_tc(client, user_id, s_id, lang, from_user=query.from_user)
 
     elif cmd == "demo":
-
         s_id = data[2]
-
         from bson.objectid import ObjectId
-
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-
         if not story: return await query.answer("Story not found!", show_alert=True)
-
         await query.answer()
 
         try:
-
             from utils import log_arya_event
-
             ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", "")}
-
             sName = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
-
             asyncio.create_task(log_arya_event("VIEWED DEMO", user_id, ui, f"User viewed demo files for story: {sName}"))
-
         except: pass
-
         asyncio.create_task(_send_demo_files(client, user_id, story, lang))
 
-
-
-
-
     # -- My Buys (My Stories) --
-
     elif cmd == "my_buys" or cmd.startswith("my_buys_page_"):
         await query.answer()
         page = 0
@@ -5868,344 +5683,91 @@ async def _process_callback(client, query):
             except: page = 0
         return await _send_my_stories_menu(client, user_id, user, lang, page=page, edit_query=query)
 
-
-
-
-
-        # 1. Get raw purchases
-
-        raw_purchases = user.get('purchases', [])
-
-        from bson.objectid import ObjectId
-
-
-
-        # 2. Filter VALID stories (handle deleted content)
-
-        # We fetch valid IDs from the database to ensure the count is accurate
-
-        p_oids = []
-
-        for p in raw_purchases:
-
-            try: p_oids.append(ObjectId(p))
-
-            except: pass
-
-        
-
-        valid_stories_cursor = db.db.premium_stories.find({"_id": {"$in": p_oids}})
-
-        valid_stories = await valid_stories_cursor.to_list(length=1000)
-
-        valid_ids_set = {str(s['_id']) for s in valid_stories}
-
-        
-
-        # 3. Maintain user purchase order and filter
-
-        purchases = [p for p in raw_purchases if str(p) in valid_ids_set]
-
-        purchases.reverse() # NEWEST stories on Page 1
-
-
-
-        PAGE_SIZE = 5
-
-        page = 0
-
-        if cmd.startswith("my_buys_page_"):
-
-            try:
-
-                page = int(cmd.replace("my_buys_page_", ""))
-
-            except Exception:
-
-                page = 0
-
-
-
-        total = len(purchases)
-
-        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-
-        page = max(0, min(page, total_pages - 1))
-
-        page_purchases = purchases[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
-
-
-
-        kb = []
-
-        for pid in page_purchases:
-
-            try:
-
-                # We already know it exists from the filter step
-
-                st = next((s for s in valid_stories if str(s['_id']) == str(pid)), None)
-
-                if st:
-
-                    s_name = st.get(f'story_name_{lang}', st.get('story_name_en'))
-
-                    kb.append([InlineKeyboardButton(s_name, callback_data=f"mb#purchased_view_{pid}")])
-
-            except Exception:
-
-                pass
-
-
-
-        if total_pages > 1:
-
-            nav = []
-
-            if page > 0:
-
-                nav.append(InlineKeyboardButton(
-
-                    "❬ ᴘʀᴇᴠ",
-
-                    callback_data=f"mb#my_buys_page_{page - 1}"
-
-                ))
-
-            nav.append(InlineKeyboardButton(
-
-                f"ᴘᴀɢᴇ {page + 1}/{total_pages}",
-
-                callback_data="mb#noop"
-
-            ))
-
-            if page < total_pages - 1:
-
-                nav.append(InlineKeyboardButton(
-
-                    "𝗡𝗲𝘅𝘁 ❭",
-
-                    callback_data=f"mb#my_buys_page_{page + 1}"
-
-                ))
-
-            kb.append(nav)
-
-
-
-        kb.append([InlineKeyboardButton(_sc("BACK"), callback_data="mb#main_back")])
-
-
-
-        if total > 0:
-
-            txt_b = (
-
-                "<b>⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧</b>\n\n"
-
-                f"<b>ᴛᴏᴛᴀʟ ⟶</b> {total}\n\n"
-
-                "𝖠𝗅𝗅 𝗌𝗍𝗈𝗋𝗂𝖾𝗌 𝗅𝗂𝗌𝗍𝖾𝖽 𝖻𝖾𝗅𝗈𝗐 𝖺𝗋𝖾 𝖺𝗅𝗋𝖾𝖺𝖽𝗒\n"
-
-                "𝗈𝗇 𝗒𝗈𝗎𝗋 𝖺𝖼𝖼𝗈𝗎𝗇𝗍. 𝖲𝖾𝗅𝖾𝖼𝗍 𝖺𝗇𝗒 𝗌𝗍𝗈𝗋𝗒 𝗍𝗈 𝗏𝗂𝖾𝗐\n"
-
-                "𝖽𝖾𝗍𝖺𝗂𝗅𝗌 𝗈𝗋 𝖺𝖼𝖼𝖾𝗌𝗌 𝗂𝗍 𝖺𝗀𝖺𝗂𝗇."
-
-            )
-
-        else:
-
-            txt_b = (
-
-                "<b>⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧</b>\n\n"
-
-                "<b>ᴛᴏᴛᴀʟ ⟶</b> 0\n\n"
-
-                "ɴᴏ ᴘᴜʀᴄʜᴀꜱᴇꜱ ꜰᴏᴜɴᴅ.\n"
-
-                "ᴠɪꜱɪᴛ ᴛʜᴇ ᴍᴀʀᴋᴇᴛᴘʟᴀᴄᴇ ᴛᴏ ᴇxᴘʟᴏʀᴇ."
-
-            )
-
-            kb.insert(0, [InlineKeyboardButton(_sc("OPEN MARKETPLACE"), callback_data="mb#main_marketplace")])
-
-
-
-        await _safe_edit(query.message, text=txt_b, markup=InlineKeyboardMarkup(kb))
-
-
-
     elif cmd == "noop":
-
         await query.answer()
-
-
 
     # ── Language ──
-
     elif cmd == "lang":
-
         new_lang = data[2]
-
         pending_arg = data[3] if len(data) > 3 else None
-
         await query.answer("✓ Updates applied!", show_alert=False)
-
         m = await client.send_message(user_id, "<b>› › Yup, Bro updating... ⏳</b>")
-
         await asyncio.sleep(2)
-
         await db.update_user(user_id, {"lang": new_lang})
-
         try: await m.delete()
-
         except: pass
-
         if pending_arg:
-
             class MockMsg:
-
                 from_user = query.from_user
-
                 chat = query.message.chat
-
                 command = ["start", pending_arg]
-
                 id = query.message.id
-
                 async def reply_text(self, text, **kw):
-
                     return await client.send_message(user_id, text, **kw)
-
             from plugins.userbot.market_seller import _process_start
-
             return await _process_start(client, MockMsg())
-
             
-
         await _edit_main_menu_in_place(client, query, query.from_user, new_lang)
 
-
-
     # ── Story preview Continue button ──
-
     elif cmd.startswith("story_preview_continue_"):
-
         s_id = cmd.replace("story_preview_continue_", "")
-
         await query.answer()
-
         await query.message.delete()
-
         # Check if T&C is globally disabled by admin
-
-        _tnc_cfg0 = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-
+        _tnc_cfg0 = await _get_cached_features()
         if not _tnc_cfg0.get("tnc_enabled", True):
-
             from bson.objectid import ObjectId as _ObjId0
-
             _s0 = await db.db.premium_stories.find_one({"_id": _ObjId0(s_id)})
-
             if _s0:
-
-                _bt0 = await db.db.premium_bots.find_one({"id": client.me.id})
-
+                _bt0 = await _get_cached_bot_doc(client.me.id)
                 _bt_cfg0 = (_bt0 or {}).get("config", {})
-
                 return await _show_story_details(client, query, _s0, lang, bot_cfg=_bt_cfg0)
-
-        return await _show_tc(client, user_id, s_id, lang)
-
-
+        return await _show_tc(client, user_id, s_id, lang, from_user=query.from_user)
 
     # ── T&C Accept ──
-
     elif cmd.startswith("tc_iaadnsa_"):
-
         s_id = cmd.replace("tc_iaadnsa_", "")
-
         await db.update_user(user_id, {"tc_accepted": True, "tc_bypassed": True})
-
         await query.answer("Terms Accepted & Bypassed for Future!")
-
         
-
         from utils import log_arya_event
-
         user_obj = query.from_user
-
         from bson.objectid import ObjectId
-
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-
         s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown')) if story else 'Unknown'
 
-
-
         asyncio.create_task(log_arya_event(
-
             event_type="T&C ACCEPTED (IAADNSA)",
-
             user_id=user_id,
-
             user_info={"first_name": user_obj.first_name or "Unknown", "last_name": user_obj.last_name or "", "username": user_obj.username or ""},
-
             details=f"User accepted the Terms & Conditions and selected IAADNSA to skip it for future purchases (Story: {s_name})."
-
         ))
 
-
-
         if story:
-
-            _bt = await db.db.premium_bots.find_one({"id": client.me.id})
-
+            _bt = await _get_cached_bot_doc(client.me.id)
             _bt_cfg = (_bt or {}).get("config", {})
-
             return await _show_story_details(client, query, story, lang, bot_cfg=_bt_cfg)
 
-
-
     elif cmd.startswith("tc_accept_"):
-
         s_id = cmd.replace("tc_accept_", "")
-
         await db.update_user(user_id, {"tc_accepted": True})
-
         await query.answer("Terms Accepted!")
-
         
-
         from utils import log_arya_event
-
-        user_obj = await get_robust_user(client, user_id)
-
+        user_obj = query.from_user
         asyncio.create_task(log_arya_event(
-
             event_type="T&C ACCEPTED",
-
             user_id=user_id,
-
             user_info={"first_name": user_obj.first_name if user_obj else "Unknown", "last_name": user_obj.last_name if user_obj else "", "username": user_obj.username if user_obj else ""},
-
             details=f"User accepted the Terms & Conditions."
-
         ))
 
-
-
         from bson.objectid import ObjectId
-
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-
         if story:
-
-            _bt = await db.db.premium_bots.find_one({"id": client.me.id})
-
+            _bt = await _get_cached_bot_doc(client.me.id)
             _bt_cfg = (_bt or {}).get("config", {})
-
             return await _show_story_details(client, query, story, lang, bot_cfg=_bt_cfg)
 
     elif cmd == "feedback_start":
