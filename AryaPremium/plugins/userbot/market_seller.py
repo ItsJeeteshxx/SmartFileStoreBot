@@ -43,6 +43,34 @@ from config import Config
 from utils import native_ask, _deliver_purchased_story, to_smallcap
 
 from plugins.userbot.razorpay_helpers import _create_rzp_link, _check_rzp_status
+import os
+
+MINI_APP_WELCOME_TEXT = (
+    "<b>╰┈➤ Welcome to the world of Arya Premium!</b>\n\n"
+    "<b>①</b> Explore <b>300+</b> stories from <b>Pocket FM</b>, <b>Kuku FM</b>, <b>Pratilipi FM</b> & other platforms, available in Hindi & English.\n\n"
+    "<b>②</b> Buy your favorite stories directly using <b>UPI</b>, <b>Cards</b>, <b>NetBanking</b> or <b>Crypto</b>.\n\n"
+    "<b>③</b> Easily discover stories by <b>Genre</b>, <b>Platform</b> or <b>Language</b> and own them instantly.\n\n"
+    "<b>☏ Support:-</b> @ItsNewtonPlanet\n\n"
+    "↳ Tap <b>Open App</b> and start exploring Arya Premium ⤵"
+)
+
+MINI_APP_START_MARKUP = InlineKeyboardMarkup([
+    [InlineKeyboardButton("Open App", url="https://t.me/UseAryaBot/apminibyarya")],
+    [InlineKeyboardButton("Join Channel", url="https://t.me/AryaPremiumTG")]
+])
+
+def _get_arya_poster_path() -> str:
+    possible_paths = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "arya_premium_poster.png"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "arya_premium_poster.png"),
+        r"C:\Users\User\Downloads\new\Arya Premium Poster 1.png",
+        os.path.join(os.getcwd(), "AryaPremium", "arya_premium_poster.png"),
+        os.path.join(os.getcwd(), "arya_premium_poster.png"),
+    ]
+    for p in possible_paths:
+        if p and os.path.exists(p):
+            return p
+    return ""
 
 async def _make_arya_bot_order_id(user_id, story_id_str: str = None) -> str:
     """
@@ -3103,6 +3131,31 @@ async def _process_start(client, message):
 
     # ── Normal Start ──
 
+    # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
+    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bot_cfg = (bt.get("config") or {}) if bt else {}
+    bot_mode = bot_cfg.get("bot_mode", "full")
+
+    if bot_mode == "miniapp":
+        poster_file = _get_arya_poster_path()
+        if poster_file and os.path.exists(poster_file):
+            try:
+                return await message.reply_photo(
+                    photo=poster_file,
+                    caption=MINI_APP_WELCOME_TEXT,
+                    reply_markup=MINI_APP_START_MARKUP,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception as e:
+                logger.warning(f"Failed to reply_photo for miniapp start: {e}")
+
+        return await message.reply_text(
+            MINI_APP_WELCOME_TEXT,
+            reply_markup=MINI_APP_START_MARKUP,
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+
     if 'lang' not in user:
 
         lang_prompt = (
@@ -3714,8 +3767,37 @@ async def _process_text(client, message):
 
 
     # Intercept direct section commands
-
     cmd_text = txt.lower()
+
+    # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
+    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bot_cfg = (bt.get("config") or {}) if bt else {}
+    bot_mode = bot_cfg.get("bot_mode", "full")
+
+    if bot_mode == "miniapp":
+        if cmd_text in ["/mystories", "/stories", "/library"]:
+            return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
+        elif cmd_text == "/start":
+            return await _process_start(client, message)
+        
+        # Direct user to Mini App
+        poster_file = _get_arya_poster_path()
+        if poster_file and os.path.exists(poster_file):
+            try:
+                return await message.reply_photo(
+                    photo=poster_file,
+                    caption=MINI_APP_WELCOME_TEXT,
+                    reply_markup=MINI_APP_START_MARKUP,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                pass
+        return await message.reply_text(
+            MINI_APP_WELCOME_TEXT,
+            reply_markup=MINI_APP_START_MARKUP,
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
     if cmd_text in ["/marketplace", "/mystories", "/stories", "/arya", "/help", "/settings", "/profile"]:
 
@@ -4981,6 +5063,53 @@ async def _process_callback(client, query):
     data = query.data.split('#')
 
     cmd = data[1]
+
+    # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
+    bt = await db.db.premium_bots.find_one({"id": client.me.id})
+    bot_cfg = (bt.get("config") or {}) if bt else {}
+    bot_mode = bot_cfg.get("bot_mode", "full")
+
+    if bot_mode == "miniapp":
+        is_allowed = (
+            cmd in ("my_buys", "main_close", "close", "feedback") or
+            cmd.startswith("my_story_") or
+            cmd.startswith("deliv_") or
+            cmd.startswith("dlv_") or
+            cmd.startswith("ep_") or
+            cmd.startswith("chunk_") or
+            cmd.startswith("full_delivery_") or
+            cmd.startswith("part_") or
+            cmd.startswith("get_dm_") or
+            cmd.startswith("get_channel_") or
+            cmd.startswith("page_my_buys_") or
+            cmd.startswith("fbresv_") or
+            cmd.startswith("fbreply_") or
+            cmd.startswith("pay2") or
+            cmd.startswith("pay_back") or
+            cmd.endswith("_check") or
+            cmd.startswith("upi")
+        )
+        if not is_allowed:
+            await query.answer("🛍️ Store is in Mini App! Tap Open App below.", show_alert=False)
+            poster_file = _get_arya_poster_path()
+            if poster_file and os.path.exists(poster_file):
+                try:
+                    await query.message.delete()
+                    return await client.send_photo(
+                        user_id,
+                        photo=poster_file,
+                        caption=MINI_APP_WELCOME_TEXT,
+                        reply_markup=MINI_APP_START_MARKUP,
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+            return await query.message.edit_text(
+                MINI_APP_WELCOME_TEXT,
+                reply_markup=MINI_APP_START_MARKUP,
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
+            )
 
 
 

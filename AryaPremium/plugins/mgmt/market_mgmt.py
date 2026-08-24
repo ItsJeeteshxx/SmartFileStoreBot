@@ -1236,7 +1236,14 @@ async def market_callback(client, query):
             else:
                 upi_state = "Auto"
 
+            bot_mode = cfg.get("bot_mode", "full")
+            mode_btn_text = "🟢 STORE: ON (Full)" if bot_mode == "full" else "🔴 STORE: OFF (Mini App)"
+            mode_desc = "🟢 <b>Full Store Mode</b> (All bot menus active)" if bot_mode == "full" else "🔴 <b>Mini App Only Mode</b> (Store off, /mystories & delivery active)"
+            story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
+
             kb = [
+                [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
+                [InlineKeyboardButton("🔄 Transfer Stories to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}")],
                 [InlineKeyboardButton("📢 " + utils.to_smallcap('Broadcast Message'), callback_data=f"mk#bot_broadcast_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Welcome & About'), callback_data=f"mk#p_wa_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Delivery Report Msg'), callback_data=f"mk#pset_{b_id}_delivery_report")],
@@ -1252,10 +1259,96 @@ async def market_callback(client, query):
                 f"<b>❪ PREMIUM BOT PROFILE ❫</b>\n\n"
                 f"<b>» Name:</b> {bt.get('name')}\n"
                 f"<b>» Username:</b> @{bt.get('username')}\n"
-                f"<b>ID:</b> <code>{bt.get('id')}</code>\n\n"
-                "<i>All settings below are identical to Delivery bot options.</i>",
+                f"<b>» ID:</b> <code>{bt.get('id')}</code>\n"
+                f"<b>» Mode:</b> {mode_desc}\n"
+                f"<b>» Assigned Stories:</b> <code>{story_count}</code>\n\n"
+                "<i>Configure bot settings, switch Store ON/OFF, or transfer stories below:</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
+
+        elif cmd.startswith("bot_mode_menu_"):
+            b_id = cmd.split("_")[3]
+            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            cfg = bt.get("config", {}) or {}
+            curr_mode = cfg.get("bot_mode", "full")
+            story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
+
+            kb = [
+                [InlineKeyboardButton("🟢 Turn ON Full Store Mode", callback_data=f"mk#bot_set_mode_{b_id}_full")],
+                [InlineKeyboardButton("🔴 Turn OFF Store (Mini App Only)", callback_data=f"mk#bot_mode_confirm_off_{b_id}")],
+                [InlineKeyboardButton("« " + utils.to_smallcap("Back"), callback_data=f"mk#bot_view_{b_id}")],
+            ]
+            curr_label = "🟢 FULL STORE (ACTIVE)" if curr_mode == "full" else "🔴 MINI APP ONLY (LITE / STORE OFF)"
+            await query.message.edit_text(
+                f"<b>⚡ BOT MODE SETTINGS (@{bt.get('username')})</b>\n\n"
+                f"<b>Current Mode:</b> <code>{curr_label}</code>\n"
+                f"<b>Assigned Stories:</b> <code>{story_count}</code>\n\n"
+                "<b>Description of Modes:</b>\n"
+                "• <b>🟢 Full Store Mode:</b>\n"
+                "  Full Telegram bot store with category browsing, inline search, language selection & channel join requirements.\n\n"
+                "• <b>🔴 Mini App Only (Store OFF):</b>\n"
+                "  Disables all store browsing & channel join requirements. When users start the bot, they receive the Arya Premium Mini App welcome poster & 'Open App' button.\n"
+                "  <i>⚠️ <b>/mystories command and automatic story delivery will remain 100% active!</b></i>",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("bot_mode_confirm_off_") or cmd.startswith("bot_migrate_menu_"):
+            b_id = cmd.split("_")[4] if cmd.startswith("bot_mode_confirm_off_") else cmd.split("_")[3]
+            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            
+            story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
+            other_bots = await db.db.premium_bots.find({"id": {"$ne": int(b_id)}}).to_list(length=10)
+
+            kb = []
+            if other_bots:
+                for ob in other_bots:
+                    kb.append([InlineKeyboardButton(f"🔄 Reassign {story_count} Stories to @{ob.get('username')}", callback_data=f"mk#bot_migrate_{b_id}_{ob['id']}")])
+            
+            kb.append([InlineKeyboardButton("⚡ Keep Stories on This Bot & Turn OFF Store", callback_data=f"mk#bot_set_mode_{b_id}_miniapp")])
+            kb.append([InlineKeyboardButton("« Cancel", callback_data=f"mk#bot_view_{b_id}")])
+
+            await query.message.edit_text(
+                f"<b>🔄 CONNECTED BOT & STORIES MANAGEMENT</b>\n\n"
+                f"<b>Bot:</b> @{bt.get('username')}\n"
+                f"<b>Currently Assigned Stories:</b> <code>{story_count}</code>\n\n"
+                "Aap is bot ki stories ko kisi doosre connected delivery bot me transfer karna chahte hain ya isi bot par rakh kar store OFF karna chahte hain?\n\n"
+                "<i>💡 Kisi doosre bot ko select karne par sabhi stories us bot me shift ho jayengi aur user us naye bot se buy/delivery kar sakega.</i>",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("bot_migrate_"):
+            parts = cmd.split("_")
+            from_b_id = int(parts[2])
+            to_b_id = int(parts[3])
+            
+            from_bt = await db.db.premium_bots.find_one({"id": from_b_id})
+            to_bt = await db.db.premium_bots.find_one({"id": to_b_id})
+            
+            res = await db.db.premium_stories.update_many({"bot_id": from_b_id}, {"$set": {"bot_id": to_b_id}})
+            await db.db.premium_bots.update_one({"id": from_b_id}, {"$set": {"config.bot_mode": "miniapp"}})
+            
+            from_un = from_bt.get("username", str(from_b_id)) if from_bt else str(from_b_id)
+            to_un = to_bt.get("username", str(to_b_id)) if to_bt else str(to_b_id)
+            
+            await _safe_answer(query, f"✅ {res.modified_count} stories transferred to @{to_un}! @{from_un} is now in Mini App Only mode.", show_alert=True)
+            query.data = f"mk#bot_view_{from_b_id}"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("bot_set_mode_"):
+            parts = cmd.split("_")
+            b_id = int(parts[3])
+            target_mode = parts[4] # "full" or "miniapp"
+            
+            bt = await db.db.premium_bots.find_one({"id": b_id})
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            
+            await db.db.premium_bots.update_one({"id": b_id}, {"$set": {"config.bot_mode": target_mode}})
+            label = "Mini App Only (Lite / Store OFF)" if target_mode == "miniapp" else "Full Store"
+            await _safe_answer(query, f"✅ Bot Mode set to: {label}", show_alert=True)
+            query.data = f"mk#bot_view_{b_id}"
+            return await market_callback(client, query)
 
         elif cmd.startswith("bot_broadcast_"):
             b_id = cmd.split("_", 2)[2]
