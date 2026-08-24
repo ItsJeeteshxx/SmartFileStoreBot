@@ -50,13 +50,12 @@ MINI_APP_WELCOME_TEXT = (
     "<b>①</b> Explore <b>300+</b> stories from <b>Pocket FM</b>, <b>Kuku FM</b>, <b>Pratilipi FM</b> & other platforms, available in Hindi & English.\n\n"
     "<b>②</b> Buy your favorite stories directly using <b>UPI</b>, <b>Cards</b>, <b>NetBanking</b> or <b>Crypto</b>.\n\n"
     "<b>③</b> Easily discover stories by <b>Genre</b>, <b>Platform</b> or <b>Language</b> and own them instantly.\n\n"
-    '<emoji id="6269255258212404947">📢</emoji> <b>Join Channel:</b> @AryaPremiumTG\n\n'
     "↳ Tap <b>Open App</b> and start exploring Arya Premium ⤵"
 )
 
 MINI_APP_START_MARKUP = InlineKeyboardMarkup([
     [InlineKeyboardButton("Open App", url="https://t.me/UseAryaBot/apminibyarya")],
-    [InlineKeyboardButton("Join Channel", url="https://t.me/AryaPremiumTG")]
+    [InlineKeyboardButton("Join Channel", url="https://t.me/AryaPremiumTG", icon_custom_emoji_id="6269255258212404947")]
 ])
 
 def _get_arya_poster_path() -> str:
@@ -2741,7 +2740,7 @@ async def _process_start(client, message):
 
         
 
-    user = await db.get_user(user_id, from_user=message.from_user)
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=client.me.id)
 
     # Track which delivery bots this user has started
 
@@ -3626,7 +3625,7 @@ async def _process_text(client, message):
 
     asyncio.create_task(react_bg(client, message.chat.id, message.id, pool=REACTIONS_GENERAL))
 
-    user = await db.get_user(user_id, from_user=message.from_user)
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=client.me.id)
 
     lang = user.get('lang', 'en')
 
@@ -4823,7 +4822,7 @@ async def _process_callback(client, query):
 
     asyncio.create_task(react_bg(client, query.message.chat.id, query.message.id, pool=REACTIONS_GENERAL))
 
-    user = await db.get_user(user_id, from_user=query.from_user)
+    user = await db.get_user(user_id, from_user=query.from_user, bot_id=client.me.id)
 
     lang = user.get('lang', 'en')
 

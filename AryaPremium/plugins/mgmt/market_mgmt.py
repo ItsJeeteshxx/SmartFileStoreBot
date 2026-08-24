@@ -1236,16 +1236,47 @@ async def market_callback(client, query):
             else:
                 upi_state = "Auto"
 
+            b_id_int = int(b_id)
             bot_mode = cfg.get("bot_mode", "full")
             mode_btn_text = "🟢 STORE: ON (Full)" if bot_mode == "full" else "🔴 STORE: OFF (Mini App)"
             mode_desc = "🟢 <b>Full Store Mode</b> (All bot menus active)" if bot_mode == "full" else "🔴 <b>Mini App Only Mode</b> (Store off, /mystories & delivery active)"
-            story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
+            story_count = await db.db.premium_stories.count_documents({"bot_id": b_id_int})
 
             log_ch_val = cfg.get("log_channel", None)
             log_ch_str = str(log_ch_val) if log_ch_val else "Default Global"
 
+            # ── Per-Bot Live & Total Users Analytics ──
+            from datetime import datetime, timedelta, timezone
+            now_utc = datetime.now(timezone.utc)
+            cutoff_24h = now_utc - timedelta(hours=24)
+
+            bot_stories = await db.db.premium_stories.find({"bot_id": b_id_int}, {"_id": 1, "story_id": 1}).to_list(length=3000)
+            bot_s_ids = [str(s["_id"]) for s in bot_stories] + [s.get("story_id") for s in bot_stories if s.get("story_id")]
+
+            # Total Lifetime Users who have used this specific bot
+            total_bot_users = await db.db.users.count_documents({
+                "$or": [
+                    {"used_bots": b_id_int},
+                    {"bot_ids": b_id_int},
+                    {f"bot_last_active.{b_id}": {"$exists": True}},
+                    {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}
+                ]
+            })
+
+            # Currently Live / Active users in the last 24h on this bot
+            live_bot_users_24h = await db.db.users.count_documents({
+                "$or": [
+                    {f"bot_last_active.{b_id}": {"$gte": cutoff_24h}},
+                    {"$and": [
+                        {"$or": [{"used_bots": b_id_int}, {"bot_ids": b_id_int}, {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}]},
+                        {"last_active": {"$gte": cutoff_24h}}
+                    ]}
+                ]
+            })
+
             kb = [
                 [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
+                [InlineKeyboardButton("📊 " + utils.to_smallcap('Detailed Live Stats'), callback_data=f"mk#bot_stats_{b_id}")],
                 [InlineKeyboardButton("🔄 Transfer Stories to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}")],
                 [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
                 [InlineKeyboardButton("📢 " + utils.to_smallcap('Broadcast Message'), callback_data=f"mk#bot_broadcast_{b_id}")],
@@ -1260,14 +1291,96 @@ async def market_callback(client, query):
                 [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data="mk#accounts")],
             ]
             await query.message.edit_text(
-                f"<b>❪ PREMIUM BOT PROFILE ❫</b>\n\n"
+                f"<b>❪ PREMIUM BOT PROFILE & STATS ❫</b>\n\n"
                 f"<b>» Name:</b> {bt.get('name')}\n"
                 f"<b>» Username:</b> @{bt.get('username')}\n"
                 f"<b>» ID:</b> <code>{bt.get('id')}</code>\n"
                 f"<b>» Mode:</b> {mode_desc}\n"
-                f"<b>» Assigned Stories:</b> <code>{story_count}</code>\n"
-                f"<b>» Event Log Channel:</b> <code>{log_ch_str}</code>\n\n"
-                "<i>Configure bot settings, switch Store ON/OFF, or transfer stories below:</i>",
+                f"<b>» Assigned Stories:</b> <code>{story_count}</code>\n\n"
+                f"<b>📈 BOT USER METRICS:</b>\n"
+                f"• <b>🟢 Live Users (Last 24h):</b> <code>{live_bot_users_24h}</code>\n"
+                f"• <b>👥 Total Users Used:</b> <code>{total_bot_users}</code>\n"
+                f"• <b>📋 Event Log Channel:</b> <code>{log_ch_str}</code>\n\n"
+                "<i>Configure bot settings, switch Store ON/OFF, or view live analytics below:</i>",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("bot_stats_"):
+            b_id = cmd.split("_")[2]
+            b_id_int = int(b_id)
+            bt = await db.db.premium_bots.find_one({"id": b_id_int})
+            if not bt:
+                return await _safe_answer(query, "Bot not found!", show_alert=True)
+
+            from datetime import datetime, timedelta, timezone
+            now_utc = datetime.now(timezone.utc)
+            cutoff_24h = now_utc - timedelta(hours=24)
+            cutoff_7d = now_utc - timedelta(days=7)
+
+            bot_stories = await db.db.premium_stories.find({"bot_id": b_id_int}, {"_id": 1, "story_id": 1, "price": 1}).to_list(length=3000)
+            bot_s_ids = [str(s["_id"]) for s in bot_stories] + [s.get("story_id") for s in bot_stories if s.get("story_id")]
+
+            total_users = await db.db.users.count_documents({
+                "$or": [
+                    {"used_bots": b_id_int},
+                    {"bot_ids": b_id_int},
+                    {f"bot_last_active.{b_id}": {"$exists": True}},
+                    {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}
+                ]
+            })
+
+            live_24h = await db.db.users.count_documents({
+                "$or": [
+                    {f"bot_last_active.{b_id}": {"$gte": cutoff_24h}},
+                    {"$and": [
+                        {"$or": [{"used_bots": b_id_int}, {"bot_ids": b_id_int}, {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}]},
+                        {"last_active": {"$gte": cutoff_24h}}
+                    ]}
+                ]
+            })
+
+            active_7d = await db.db.users.count_documents({
+                "$or": [
+                    {f"bot_last_active.{b_id}": {"$gte": cutoff_7d}},
+                    {"$and": [
+                        {"$or": [{"used_bots": b_id_int}, {"bot_ids": b_id_int}, {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}]},
+                        {"last_active": {"$gte": cutoff_7d}}
+                    ]}
+                ]
+            })
+
+            # Orders & Revenue on this bot
+            paid_orders = await db.db.orders.find({
+                "$or": [
+                    {"bot_id": b_id_int},
+                    {"story_id": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}
+                ],
+                "status": {"$in": ["paid", "approved", "completed", "delivered"]}
+            }).to_list(length=5000)
+
+            total_revenue = sum(float(o.get("amount") or o.get("price") or 0) for o in paid_orders)
+            unique_buyers = len(set(o.get("user_id") for o in paid_orders if o.get("user_id")))
+
+            kb = [
+                [InlineKeyboardButton("🔄 Refresh Stats", callback_data=f"mk#bot_stats_{b_id}")],
+                [InlineKeyboardButton("📢 Broadcast to This Bot's Users", callback_data=f"mk#bot_broadcast_{b_id}")],
+                [InlineKeyboardButton("« Back to Bot Profile", callback_data=f"mk#bot_view_{b_id}")]
+            ]
+
+            await query.message.edit_text(
+                f"<b>📊 LIVE BOT ANALYTICS & STATS</b>\n\n"
+                f"<b>🤖 Bot:</b> {bt.get('name')} (@{bt.get('username')})\n"
+                f"<b>🆔 Bot ID:</b> <code>{bt.get('id')}</code>\n\n"
+                f"<b>👥 USER ENGAGEMENT:</b>\n"
+                f"• <b>🟢 Currently Live / Active (24h):</b> <code>{live_24h}</code> users\n"
+                f"• <b>📅 Active This Week (7 Days):</b> <code>{active_7d}</code> users\n"
+                f"• <b>🌐 Total Lifetime Users Used:</b> <code>{total_users}</code> users\n\n"
+                f"<b>💰 SALES & ORDERS:</b>\n"
+                f"• <b>🛒 Total Paid Orders:</b> <code>{len(paid_orders)}</code>\n"
+                f"• <b>👤 Unique Buyers:</b> <code>{unique_buyers}</code>\n"
+                f"• <b>💵 Total Revenue Generated:</b> <code>₹{total_revenue:,.2f}</code>\n"
+                f"• <b>📚 Stories Assigned:</b> <code>{len(bot_stories)}</code>\n\n"
+                f"<i>Updated at: {now_utc.strftime('%d %b %Y, %H:%M:%S UTC')}</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
 

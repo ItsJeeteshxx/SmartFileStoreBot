@@ -167,9 +167,10 @@ class PremiumDatabase:
     # ─────────────────────────────────────────────────────────────────
     # Users, State & Access Management
     # ─────────────────────────────────────────────────────────────────
-    async def get_user(self, user_id: int, from_user=None):
+    async def get_user(self, user_id: int, from_user=None, bot_id: int = None):
         user = await self.users.find_one({"id": int(user_id)})
         update_fields = {}
+        now = datetime.now(timezone.utc)
         if from_user:
             fn = getattr(from_user, "first_name", "") or ""
             ln = getattr(from_user, "last_name", "") or ""
@@ -179,8 +180,11 @@ class PremiumDatabase:
                     "first_name": fn,
                     "last_name": ln,
                     "username": un,
-                    "last_active": datetime.now(timezone.utc)
                 })
+        if bot_id:
+            update_fields[f"bot_last_active.{bot_id}"] = now
+            update_fields["last_active"] = now
+
         if not user:
             user = {
                 "id": int(user_id),
@@ -188,15 +192,30 @@ class PremiumDatabase:
                 "tc_accepted": False,
                 "purchases": [],
                 "used_channels": [],
+                "used_bots": [int(bot_id)] if bot_id else [],
                 "alerts_subscribed": False,   # OFF by default — user must explicitly opt-in
-                "joined_date": datetime.now(timezone.utc),
+                "joined_date": now,
+                "last_active": now,
             }
             if update_fields:
                 user.update(update_fields)
             await self.users.insert_one(user)
-        elif update_fields:
-            await self.users.update_one({"id": int(user_id)}, {"$set": update_fields})
-            user.update(update_fields)
+        else:
+            set_ops = {}
+            if update_fields:
+                set_ops["$set"] = update_fields
+            add_ops = {}
+            if bot_id:
+                add_ops["$addToSet"] = {"used_bots": int(bot_id)}
+            
+            update_doc = {}
+            if set_ops: update_doc.update(set_ops)
+            if add_ops: update_doc.update(add_ops)
+            
+            if update_doc:
+                await self.users.update_one({"id": int(user_id)}, update_doc)
+                if "$set" in update_doc:
+                    user.update(update_doc["$set"])
         return user
 
     async def update_user(self, user_id: int, data: dict):
