@@ -3766,21 +3766,72 @@ async def _process_text(client, message):
 
 
 
-    # Intercept direct section commands
-    cmd_text = txt.lower()
+    txt_lower = txt.lower()
 
-    # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
+    # 1. Episode Chunk Range Selection (Reply Keyboard)
+    pending_s_id = user.get("dm_story_id_pending")
+    if pending_s_id and ("files " in txt_lower or "फ़ाइलें " in txt_lower or "full delivery" in txt_lower or "सभी फ़ाइलें" in txt_lower or "cancel" in txt_lower or "रद्द" in txt_lower):
+        await db.db.users.update_one({"id": user_id}, {"$unset": {"dm_story_id_pending": 1}})
+        
+        if "cancel" in txt_lower or "रद्द" in txt_lower:
+            return await message.reply_text("<i>❌ Delivery Selection Cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+        
+        from bson.objectid import ObjectId
+        from bson.errors import InvalidId
+        story = None
+        try:
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id)})
+        except Exception:
+            pass
+        if not story:
+            story = await db.db.premium_stories.find_one({"_id": pending_s_id})
+        if not story:
+            story = await db.db.premium_stories.find_one({"story_id": pending_s_id})
+        
+        if story:
+            start_id = story.get("start_id")
+            end_id = story.get("end_id")
+            c_start, c_end = start_id, end_id
+            
+            import re
+            match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
+            fs, fe = 1, "All"
+            if match:
+                fs, fe = int(match.group(1)), int(match.group(2))
+                c_start = start_id + fs - 1
+                c_end = min(start_id + fe - 1, end_id)
+            
+            m = await message.reply_text(f"<i>⏳ Initializing DM Delivery (Files {fs}-{fe})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+            return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
+        else:
+            return await message.reply_text("❌ <i>Story not found.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+
+    # 2. Feedback submission state handler
+    if user.get("state") == "feedback_pending":
+        is_cancel = txt.strip().lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "back to menu", "वापस मेनू", "« वापस मेनू", "« cancel"]
+        if is_cancel:
+            await db.update_user(user_id, {"state": None})
+            await message.reply_text("<i>❌ Feedback cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+            return await _send_main_menu(client, user_id, message.from_user, lang)
+        await _submit_feedback(client, message, user_id, user, lang, content_type="text", text=txt)
+        return
+
+    # 3. Direct Section Commands
+    cmd_text = txt.lower()
+    if cmd_text in ["/mystories", "/stories", "/library"]:
+        return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
+
+    if cmd_text == "/start":
+        return await _process_start(client, message)
+
+    # 4. Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
     bt = await db.db.premium_bots.find_one({"id": client.me.id})
     bot_cfg = (bt.get("config") or {}) if bt else {}
     bot_mode = bot_cfg.get("bot_mode", "full")
 
-    if bot_mode == "miniapp":
-        if cmd_text in ["/mystories", "/stories", "/library"]:
-            return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
-        elif cmd_text == "/start":
-            return await _process_start(client, message)
-        
-        # Direct user to Mini App
+    # If in miniapp mode and not in any active state, check UTR first before sending welcome
+    pending_s_id_utr = user.get("pending_utr_story_id")
+    if not pending_s_id_utr and bot_mode == "miniapp":
         poster_file = _get_arya_poster_path()
         if poster_file and os.path.exists(poster_file):
             try:
@@ -3800,70 +3851,28 @@ async def _process_text(client, message):
         )
 
     if cmd_text in ["/marketplace", "/mystories", "/stories", "/arya", "/help", "/settings", "/profile"]:
-
         m = await message.reply_text("<i>⏳ Loading...</i>")
-
         
-
         class MockQuery:
-
             def __init__(self, msg, user, data):
-
                 self.message = msg
-
                 self.from_user = user
-
                 self.data = data
-
             async def answer(self, text="", show_alert=False):
-
                 pass
-
                 
-
         mapping = {
-
             "/marketplace": "mb#main_marketplace",
-
             "/mystories": "mb#my_buys",
-
             "/stories": "mb#my_buys",
-
             "/arya": "mb#about_arya_0",
-
             "/help": "mb#main_help",
-
             "/settings": "mb#main_settings",
-
             "/profile": "mb#main_profile"
-
         }
-
         
-
         if cmd_text in mapping:
-
             return await _process_callback(client, MockQuery(m, message.from_user, mapping[cmd_text]))
-
-    # -- Feedback submission state handler --
-
-    if user.get("state") == "feedback_pending":
-
-        is_cancel = txt.strip().lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "back to menu", "वापस मेनू", "« वापस मेनू", "« cancel"]
-
-        if is_cancel:
-
-            await db.update_user(user_id, {"state": None})
-
-            await message.reply_text("<i>❌ Feedback cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
-
-            return await _send_main_menu(client, user_id, message.from_user, lang)
-
-        # Only text feedback — media is handled by _process_media
-
-        await _submit_feedback(client, message, user_id, user, lang, content_type="text", text=txt)
-
-        return
 
     # -- UTR Payment handler: user sends their 12-digit UTR in chat --
     # Flow: User sees UPI page → sends 12-digit UTR → bot INSTANTLY verifies via IMAP
@@ -4181,53 +4190,6 @@ async def _process_text(client, message):
                     )
                 return
         return
-
-
-    pending_s_id = user.get("dm_story_id_pending")
-
-    if pending_s_id and ("files " in txt.lower() or "फ़ाइलें " in txt.lower() or "full delivery" in txt.lower() or "सभी फ़ाइलें" in txt.lower() or "cancel" in txt.lower() or "रद्द" in txt.lower()):
-
-        await db.db.users.update_one({"id": user_id}, {"$unset": {"dm_story_id_pending": 1}})
-
-        
-
-        if "cancel" in txt.lower() or "रद्द" in txt.lower():
-
-            return await message.reply_text("<i>❌ Delivery Selection Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-
-        
-
-        from bson.objectid import ObjectId
-
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(pending_s_id)})
-
-        if story:
-
-            start_id = story.get("start_id")
-
-            end_id = story.get("end_id")
-
-            c_start, c_end = start_id, end_id
-
-            
-
-            import re
-
-            match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
-
-            if match:
-
-                fs, fe = int(match.group(1)), int(match.group(2))
-
-                c_start = start_id + fs - 1
-
-                c_end = min(start_id + fe - 1, end_id)
-
-                
-
-            m = await message.reply_text(f"<i>⏳ Initializing DM Delivery (Files {fs if match else 1}-{fe if match else 'All'})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove())
-
-            return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
 
 
 
@@ -5071,7 +5033,12 @@ async def _process_callback(client, query):
 
     if bot_mode == "miniapp":
         is_allowed = (
-            cmd in ("my_buys", "main_close", "close", "feedback") or
+            cmd in ("my_buys", "main_close", "close", "feedback", "noop", "cancel_dm") or
+            cmd.startswith("my_buys_page_") or
+            cmd.startswith("purchased_view_") or
+            cmd.startswith("access_") or
+            cmd.startswith("dm_") or
+            cmd.startswith("channel_") or
             cmd.startswith("my_story_") or
             cmd.startswith("deliv_") or
             cmd.startswith("dlv_") or
