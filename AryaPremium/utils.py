@@ -413,7 +413,7 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Delivery log error: {e}")
 
-async def log_arya_event(event_type: str, user_id: int, user_info: dict, details: str):
+async def log_arya_event(event_type: str, user_id: int, user_info: dict, details: str, bot_id: int = None):
     try:
         from AryaPremium.config import Config
         from AryaPremium.database import db
@@ -421,7 +421,21 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         from config import Config
         from database import db
 
-    channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL") or getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL")
+    channel_id = None
+    target_bot_id = bot_id or user_info.get("bot_id")
+    if target_bot_id:
+        try:
+            bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
+            if bot_doc:
+                custom_ch = (bot_doc.get("config") or {}).get("log_channel")
+                if custom_ch:
+                    channel_id = custom_ch
+        except Exception:
+            pass
+
+    if not channel_id:
+        channel_id = getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL") or getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL")
+
     if not channel_id:
         import logging; logging.getLogger(__name__).warning("[AryaLog] log_arya_event: ARYA_LOGS_CHANNEL not configured — skipping.")
         return

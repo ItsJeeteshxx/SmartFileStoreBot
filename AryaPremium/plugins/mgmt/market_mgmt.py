@@ -1241,9 +1241,13 @@ async def market_callback(client, query):
             mode_desc = "🟢 <b>Full Store Mode</b> (All bot menus active)" if bot_mode == "full" else "🔴 <b>Mini App Only Mode</b> (Store off, /mystories & delivery active)"
             story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
 
+            log_ch_val = cfg.get("log_channel", None)
+            log_ch_str = str(log_ch_val) if log_ch_val else "Default Global"
+
             kb = [
                 [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
                 [InlineKeyboardButton("🔄 Transfer Stories to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}")],
+                [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
                 [InlineKeyboardButton("📢 " + utils.to_smallcap('Broadcast Message'), callback_data=f"mk#bot_broadcast_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Welcome & About'), callback_data=f"mk#p_wa_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Delivery Report Msg'), callback_data=f"mk#pset_{b_id}_delivery_report")],
@@ -1261,10 +1265,16 @@ async def market_callback(client, query):
                 f"<b>» Username:</b> @{bt.get('username')}\n"
                 f"<b>» ID:</b> <code>{bt.get('id')}</code>\n"
                 f"<b>» Mode:</b> {mode_desc}\n"
-                f"<b>» Assigned Stories:</b> <code>{story_count}</code>\n\n"
+                f"<b>» Assigned Stories:</b> <code>{story_count}</code>\n"
+                f"<b>» Event Log Channel:</b> <code>{log_ch_str}</code>\n\n"
                 "<i>Configure bot settings, switch Store ON/OFF, or transfer stories below:</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
+
+        elif cmd.startswith("bot_set_logch_"):
+            b_id = cmd.split("_")[3]
+            await query.message.delete()
+            asyncio.create_task(_bot_set_logch_flow(client, user_id, b_id))
 
         elif cmd.startswith("bot_mode_menu_"):
             b_id = cmd.split("_")[3]
@@ -1314,7 +1324,7 @@ async def market_callback(client, query):
                 f"<b>Bot:</b> @{bt.get('username')}\n"
                 f"<b>Currently Assigned Stories:</b> <code>{story_count}</code>\n\n"
                 "Aap is bot ki stories ko kisi doosre connected delivery bot me transfer karna chahte hain ya isi bot par rakh kar store OFF karna chahte hain?\n\n"
-                "<i>💡 Kisi doosre bot ko select karne par sabhi stories us bot me shift ho jayengi aur user us naye bot se buy/delivery kar sakega.</i>",
+                "<i>💡 Kisi doosre bot ko select karne par sabhi stories us bot me shift ho jayengi aur user us naye bot se normal delivery bot ki tarah buy/browse/delivery kar sakega.</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
 
@@ -1327,12 +1337,14 @@ async def market_callback(client, query):
             to_bt = await db.db.premium_bots.find_one({"id": to_b_id})
             
             res = await db.db.premium_stories.update_many({"bot_id": from_b_id}, {"$set": {"bot_id": to_b_id}})
+            # Set source bot to miniapp mode and target bot to full mode
             await db.db.premium_bots.update_one({"id": from_b_id}, {"$set": {"config.bot_mode": "miniapp"}})
+            await db.db.premium_bots.update_one({"id": to_b_id}, {"$set": {"config.bot_mode": "full"}})
             
             from_un = from_bt.get("username", str(from_b_id)) if from_bt else str(from_b_id)
             to_un = to_bt.get("username", str(to_b_id)) if to_bt else str(to_b_id)
             
-            await _safe_answer(query, f"✅ {res.modified_count} stories transferred to @{to_un}! @{from_un} is now in Mini App Only mode.", show_alert=True)
+            await _safe_answer(query, f"✅ {res.modified_count} stories transferred to @{to_un}! @{from_un} is in Mini App Mode.", show_alert=True)
             query.data = f"mk#bot_view_{from_b_id}"
             return await market_callback(client, query)
 
@@ -2258,6 +2270,59 @@ async def _settings_flow(client, user_id, cmd):
         
     elif cmd == "set_db":
         await client.send_message(user_id, "Channels are now managed from the Channels panel.", reply_markup=ReplyKeyboardRemove())
+
+
+async def _bot_set_logch_flow(client, user_id, b_id):
+    from pyrogram.types import CallbackQuery as _CQ
+    bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+    if not bt:
+        return await client.send_message(user_id, "❌ Bot not found!")
+    
+    cfg = bt.get("config", {}) or {}
+    curr_log = cfg.get("log_channel", "Default Global")
+    
+    msg = await native_ask(
+        client,
+        user_id,
+        f"<b>📋 SET EVENT LOG CHANNEL</b>\n\n"
+        f"<b>Bot:</b> @{bt.get('username')}\n"
+        f"<b>Current Log Channel:</b> <code>{curr_log}</code>\n\n"
+        f"Forward a message from your target Log Channel or send the Channel ID (e.g. <code>-1001234567890</code>):\n\n"
+        f"<i>💡 General bot activity logs will go to this channel. Payment & Delivery logs will continue to go to their dedicated channels.\n\n"
+        f"Send <code>reset</code> or <code>default</code> to use the global default channel.</i>",
+        reply_markup=ReplyKeyboardMarkup([["⛔ Cancel", "🔄 Reset to Default"]], resize_keyboard=True, one_time_keyboard=True)
+    )
+    
+    if isinstance(msg, _CQ):
+        return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+    txt = getattr(msg, 'text', '') or ''
+    if "Cancel" in txt or not txt:
+        return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    
+    if "Reset" in txt or txt.strip().lower() in ("reset", "default"):
+        await db.db.premium_bots.update_one({"id": int(b_id)}, {"$unset": {"config.log_channel": ""}})
+        return await client.send_message(user_id, f"✅ Log channel for @{bt.get('username')} reset to **Default Global** channel!", reply_markup=ReplyKeyboardRemove())
+
+    ch_id = None
+    if getattr(msg, 'forward_from_chat', None):
+        ch_id = msg.forward_from_chat.id
+    else:
+        try:
+            ch_id = int(txt.strip())
+        except ValueError:
+            if txt.strip().startswith("@"):
+                try:
+                    c = await client.get_chat(txt.strip())
+                    ch_id = c.id
+                except Exception as e:
+                    return await client.send_message(user_id, f"❌ Failed to find channel: {e}", reply_markup=ReplyKeyboardRemove())
+
+    if not ch_id:
+        return await client.send_message(user_id, "❌ Invalid channel. Please forward a message from the channel or enter a valid channel ID.", reply_markup=ReplyKeyboardRemove())
+
+    await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config.log_channel": ch_id}})
+    return await client.send_message(user_id, f"✅ Event Log Channel for @{bt.get('username')} updated to <code>{ch_id}</code>!", reply_markup=ReplyKeyboardRemove())
 
 
 async def _add_store_bot_flow(client, user_id):
