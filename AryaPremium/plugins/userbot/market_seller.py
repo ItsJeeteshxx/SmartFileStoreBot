@@ -55,7 +55,7 @@ MINI_APP_WELCOME_TEXT = (
 
 MINI_APP_START_MARKUP = InlineKeyboardMarkup([
     [InlineKeyboardButton("Open App", url="https://t.me/UseAryaBot/apminibyarya")],
-    [InlineKeyboardButton("Join Channel", url="https://t.me/AryaPremiumTG", icon_custom_emoji_id="6269255258212404947")]
+    [InlineKeyboardButton("✉️ Join Channel", url="https://t.me/AryaPremiumTG")]
 ])
 
 def _get_arya_poster_path() -> str:
