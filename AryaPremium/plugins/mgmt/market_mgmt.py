@@ -2650,29 +2650,53 @@ async def _add_story_flow(client, user_id):
         else:
             sj["payment_methods"] = ["upi", "razorpay"]  # default: both
 
-        pf_kb = ReplyKeyboardMarkup(
-            [
-                ["Pocket FM", "Eight FM"],
-                ["Kuku FM", "Kuku TV"],
-                ["Pratilipi FM", "Headfone"],
-                ["Custom", "⛔ Cᴀɴᴄᴇʟ"],
-            ],
-            resize_keyboard=True
-        )
-        msg_plat = await native_ask(client, user_id, "<b>❪ STEP 8: PLATFORM ❫</b>\n\nSelect the platform this story is from:", reply_markup=pf_kb)
-        if getattr(msg_plat, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_plat.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        plat_choice = (msg_plat.text or "Pocket FM").strip()
-        if plat_choice == "Custom":
-            msg_custom_plat = await native_ask(
-                client, user_id,
-                "<b>❪ CUSTOM PLATFORM ❫</b>\n\nType the platform name (e.g. Audible, Spotify, etc.):",
-                reply_markup=cancel_kb
-            )
-            if getattr(msg_custom_plat, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_custom_plat.text:
-                return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            sj['platform'] = (msg_custom_plat.text or 'Custom').strip()
-        else:
+        pf_kb = ReplyKeyboardMarkup(
+
+            [
+
+                ["Pocket FM", "Eight FM"],
+
+                ["Kuku FM", "Kuku TV"],
+
+                ["Pratilipi FM", "Headfone"],
+
+                ["Story TV", "Custom"],
+                ["⛔ Cᴀɴᴄᴇʟ"],
+
+            ],
+
+            resize_keyboard=True
+
+        )
+
+        msg_plat = await native_ask(client, user_id, "<b>❪ STEP 8: PLATFORM ❫</b>\n\nSelect the platform this story is from:", reply_markup=pf_kb)
+
+        if getattr(msg_plat, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_plat.text:
+
+            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+        plat_choice = (msg_plat.text or "Pocket FM").strip()
+
+        if plat_choice == "Custom":
+
+            msg_custom_plat = await native_ask(
+
+                client, user_id,
+
+                "<b>❪ CUSTOM PLATFORM ❫</b>\n\nType the platform name (e.g. Audible, Spotify, etc.):",
+
+                reply_markup=cancel_kb
+
+            )
+
+            if getattr(msg_custom_plat, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_custom_plat.text:
+
+                return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+            sj['platform'] = (msg_custom_plat.text or 'Custom').strip()
+
+        else:
+
             sj['platform'] = plat_choice
 
         # Delivery channel strategy (supports 100-200 channels via pool/rotation)

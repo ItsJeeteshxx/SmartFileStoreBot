@@ -5072,7 +5072,7 @@ async def _process_callback(client, query):
 
             # Priority order — these come first if they have stories
 
-            PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone"]
+            PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
 
             # Remove "Other" — we won't show it as a separate button anymore
 
