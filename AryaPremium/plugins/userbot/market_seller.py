@@ -2076,12 +2076,16 @@ async def _show_story_profile(client, user_id, story, lang):
     markup = InlineKeyboardMarkup(kb)
 
     from pyrogram import enums
+    tmp = await client.send_message(user_id, f"<b>› › ⏳ {loading_txt}</b>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
     try:
         if image:
             try:
-                return await client.send_photo(user_id, photo=image, caption=txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+                await client.send_photo(user_id, photo=image, caption=txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+                await tmp.delete()
+                return
             except Exception: pass
-        return await client.send_message(user_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        await client.send_message(user_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        await tmp.delete()
     except Exception: pass
 
 
