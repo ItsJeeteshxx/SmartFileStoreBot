@@ -1418,35 +1418,15 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str, lang: str = 'en') -> str:
         
 
     blocks = []
-
-    
-
     if welcome.strip():
-
         blocks.append(f'<blockquote expandable="true">{welcome.strip()}</blockquote>')
-
     if about.strip():
-
         blocks.append(f'<blockquote expandable="true">{about.strip()}</blockquote>')
-
-        
-
-    if (welcome.strip() or about.strip()) and (quote.strip() or author.strip()):
-
-        blocks.append("")
-
-        
-
     if quote.strip():
-
         blocks.append(f'<blockquote expandable="true">{quote.strip()}</blockquote>')
-
     if author.strip():
-
         blocks.append(f'<blockquote expandable="true"><b>{author.strip()}</b></blockquote>')
-
         
-
     return "\n".join(blocks)
 
 

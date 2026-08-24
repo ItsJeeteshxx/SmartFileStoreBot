@@ -1784,13 +1784,29 @@ async def market_callback(client, query):
                 [InlineKeyboardButton(utils.to_smallcap('About'), callback_data=f"mk#pset_{b_id}_about")],
                 [InlineKeyboardButton(utils.to_smallcap('Quote'), callback_data=f"mk#pset_{b_id}_quote"),
                  InlineKeyboardButton(utils.to_smallcap('Quote Author'), callback_data=f"mk#pset_{b_id}_quote_author")],
+                [InlineKeyboardButton("🔄 " + utils.to_smallcap('Reset to Default'), callback_data=f"mk#welcome_reset_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Back'), callback_data=f"mk#p_wa_{b_id}")],
             ]
             await query.message.edit_text(
                 "<b>❪ WELCOME MESSAGE SETTINGS ❫</b>\n\n"
-                "Set each block shown in delivery main menu card.",
+                "Set each block shown in delivery main menu card, or reset all text to default.",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
+
+        elif cmd.startswith("welcome_reset_"):
+            b_id = cmd.split("_")[2]
+            await db.db.premium_bots.update_one(
+                {"id": int(b_id)},
+                {"$unset": {
+                    "config.welcome": "",
+                    "config.about": "",
+                    "config.quote": "",
+                    "config.quote_author": ""
+                }}
+            )
+            await _safe_answer(query, "✅ Welcome Message & About reset to default!", show_alert=True)
+            query.data = f"mk#welcome_cfg_{b_id}"
+            return await market_callback(client, query)
 
         elif cmd.startswith("menu_media_add_"):
             b_id = cmd.split("_")[3]
@@ -3185,9 +3201,9 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
         f"<b>❪ SET: {utils.to_smallcap(pretty_label)} ❫</b>\n\n"
         f"Send the new {pretty_label} for your Store Bot.\n"
         f"{extra_note}"
-        f"Send <code>/reset</code> to revert to default.\n\n"
+        f"Tap <b>🔄 Reset to Default</b> or send <code>/reset</code> to revert to default.\n\n"
         f"{note}",
-        reply_markup=ReplyKeyboardMarkup([["❮ Cancel"]], resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup([["🔄 Reset to Default"], ["❮ Cancel"]], resize_keyboard=True)
     )
     
     txt = getattr(msg, 'text', "") or ""
@@ -3198,7 +3214,7 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
         back_kb = InlineKeyboardMarkup([[InlineKeyboardButton(utils.to_smallcap("Back"), callback_data=back_target)]])
         return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=back_kb)
     
-    if getattr(msg, 'text', None) == "/reset":
+    if txt == "/reset" or "Reset" in txt or txt.strip().lower() in ("reset", "/reset"):
         await db.db.premium_bots.update_one({"id": int(b_id)}, {"$unset": {f"config.{key}": ""}})
         tmp_rm = await client.send_message(user_id, "...", reply_markup=ReplyKeyboardRemove())
         await tmp_rm.delete()
