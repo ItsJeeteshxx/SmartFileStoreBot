@@ -8259,8 +8259,10 @@ async def _auto_delete_demo(client, user_id, msg_ids):
 async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, message_id: int, protect_content: bool = False, caption: str = None):
     """
     Safely copies a message from a source DB channel to the user.
-    If the current delivery bot is not in the source channel, automatically delegates/relays
-    through Arya Management Bot or any connected Store Bot that has channel admin access!
+    1. First tries client.copy_message directly.
+    2. If client lacks permission (e.g. 2nd bot is not in the source channel), fetches
+       the message using Management Bot (db.mgmt_client) or any Store Bot (market_clients)
+       that has channel admin access, and then sends the file/media directly to the user!
     """
     kwargs = {
         "chat_id": chat_id,
@@ -8276,42 +8278,96 @@ async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, messag
         return await client.copy_message(**kwargs)
     except Exception as e1:
         err1 = str(e1).upper()
-        if not any(k in err1 for k in ("CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED", "PEER_ID_INVALID", "USER_BANNED_IN_CHANNEL", "CHAT_WRITE_FORBIDDEN", "CHANNEL_INVALID")):
+        if "MESSAGE_ID_INVALID" in err1 or "MESSAGE_EMPTY" in err1 or "MESSAGE NOT FOUND" in err1:
             raise e1
 
-    # 2. Gather all connected fallback bot clients (Management Bot + all other Store Bots)
-    from plugins.mgmt.market_mgmt import client as mgmt_cli
+    # 2. Gather all fallback clients that might have channel access
     all_fallback_clients = []
+    mgmt_cli = getattr(db, "mgmt_client", None)
     if mgmt_cli and getattr(mgmt_cli, "is_connected", False) and mgmt_cli != client:
         all_fallback_clients.append(mgmt_cli)
     for c in market_clients.values():
         if c != client and getattr(c, "is_connected", False):
             all_fallback_clients.append(c)
 
+    # 3. Fetch source message from channel via fallback client, and deliver via client using file_id!
     for fallback_cli in all_fallback_clients:
         try:
-            return await fallback_cli.copy_message(**kwargs)
-        except Exception:
-            pass
+            src_msg = await fallback_cli.get_messages(int(from_chat_id), int(message_id))
+            if not src_msg or src_msg.empty:
+                continue
 
-    # 3. Intermediate Relay via Shared Log/Dump Channel
-    dump_ch = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or getattr(Config, "ARYA_LOGS_CHANNEL", None)
-    if dump_ch:
-        for fallback_cli in all_fallback_clients:
-            try:
-                dump_msg = await fallback_cli.copy_message(chat_id=int(dump_ch), from_chat_id=int(from_chat_id), message_id=int(message_id))
-                if dump_msg:
-                    bridge_kwargs = dict(kwargs)
-                    bridge_kwargs["from_chat_id"] = int(dump_ch)
-                    bridge_kwargs["message_id"] = dump_msg.id
-                    sent = await client.copy_message(**bridge_kwargs)
-                    try:
-                        await dump_msg.delete()
-                    except Exception:
-                        pass
-                    return sent
-            except Exception:
-                pass
+            final_cap = caption if caption is not None else (src_msg.caption or "")
+
+            # Send based on media type using client (the bot the user is chatting with)
+            if src_msg.audio:
+                return await client.send_audio(
+                    chat_id=chat_id,
+                    audio=src_msg.audio.file_id,
+                    caption=final_cap,
+                    duration=src_msg.audio.duration,
+                    performer=src_msg.audio.performer,
+                    title=src_msg.audio.title,
+                    protect_content=protect_content
+                )
+            elif src_msg.document:
+                return await client.send_document(
+                    chat_id=chat_id,
+                    document=src_msg.document.file_id,
+                    caption=final_cap,
+                    protect_content=protect_content
+                )
+            elif src_msg.video:
+                return await client.send_video(
+                    chat_id=chat_id,
+                    video=src_msg.video.file_id,
+                    caption=final_cap,
+                    duration=src_msg.video.duration,
+                    width=src_msg.video.width,
+                    height=src_msg.video.height,
+                    protect_content=protect_content
+                )
+            elif src_msg.photo:
+                return await client.send_photo(
+                    chat_id=chat_id,
+                    photo=src_msg.photo.file_id,
+                    caption=final_cap,
+                    protect_content=protect_content
+                )
+            elif src_msg.voice:
+                return await client.send_voice(
+                    chat_id=chat_id,
+                    voice=src_msg.voice.file_id,
+                    caption=final_cap,
+                    duration=src_msg.voice.duration,
+                    protect_content=protect_content
+                )
+            elif src_msg.video_note:
+                return await client.send_video_note(
+                    chat_id=chat_id,
+                    video_note=src_msg.video_note.file_id,
+                    duration=src_msg.video_note.duration,
+                    protect_content=protect_content
+                )
+            elif src_msg.animation:
+                return await client.send_animation(
+                    chat_id=chat_id,
+                    animation=src_msg.animation.file_id,
+                    caption=final_cap,
+                    duration=src_msg.animation.duration,
+                    protect_content=protect_content
+                )
+            elif src_msg.text:
+                return await client.send_message(
+                    chat_id=chat_id,
+                    text=src_msg.text,
+                    protect_content=protect_content
+                )
+            else:
+                return await fallback_cli.copy_message(**kwargs)
+        except Exception as fb_err:
+            logger.debug(f"[MultiBotBridge] Fallback client {getattr(fallback_cli, 'name', 'bot')} failed for msg {message_id}: {fb_err}")
+            continue
 
     raise e1
 
