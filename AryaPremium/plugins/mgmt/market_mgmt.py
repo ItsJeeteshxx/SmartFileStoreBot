@@ -1245,6 +1245,14 @@ async def market_callback(client, query):
             log_ch_val = cfg.get("log_channel", None)
             log_ch_str = str(log_ch_val) if log_ch_val else "Default Global"
 
+            ma_links_val = cfg.get("mini_app_deep_links", None)
+            if ma_links_val is True:
+                ma_links_state = "✅ ON"
+            elif ma_links_val is False:
+                ma_links_state = "❌ OFF"
+            else:
+                ma_links_state = "✅ ON (Default)"
+
             # ── Per-Bot Live & Total Users Analytics ──
             from datetime import datetime, timedelta, timezone
             now_utc = datetime.now(timezone.utc)
@@ -1276,9 +1284,10 @@ async def market_callback(client, query):
 
             kb = [
                 [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
+                [InlineKeyboardButton(f"📱 Mini App Deep Links: {ma_links_state}", callback_data=f"mk#bot_toggle_malinks_{b_id}")],
+                [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
                 [InlineKeyboardButton("📊 " + utils.to_smallcap('Detailed Live Stats'), callback_data=f"mk#bot_stats_{b_id}")],
                 [InlineKeyboardButton("🔄 Transfer Stories to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}")],
-                [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
                 [InlineKeyboardButton("📢 " + utils.to_smallcap('Broadcast Message'), callback_data=f"mk#bot_broadcast_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Welcome & About'), callback_data=f"mk#p_wa_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Delivery Report Msg'), callback_data=f"mk#pset_{b_id}_delivery_report")],
@@ -1300,6 +1309,7 @@ async def market_callback(client, query):
                 f"<b>📈 BOT USER METRICS:</b>\n"
                 f"• <b>🟢 Live Users (Last 24h):</b> <code>{live_bot_users_24h}</code>\n"
                 f"• <b>👥 Total Users Used:</b> <code>{total_bot_users}</code>\n"
+                f"• <b>📱 Mini App Deep Links:</b> <code>{ma_links_state}</code>\n"
                 f"• <b>📋 Event Log Channel:</b> <code>{log_ch_str}</code>\n\n"
                 "<i>Configure bot settings, switch Store ON/OFF, or view live analytics below:</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
@@ -1383,6 +1393,20 @@ async def market_callback(client, query):
                 f"<i>Updated at: {now_utc.strftime('%d %b %Y, %H:%M:%S UTC')}</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
+
+        elif cmd.startswith("bot_toggle_malinks_"):
+            b_id = cmd.split("_")[3]
+            b_id_int = int(b_id)
+            bt = await db.db.premium_bots.find_one({"id": b_id_int})
+            if not bt: return await _safe_answer(query, "Bot not found!", show_alert=True)
+            cfg = bt.get("config", {}) or {}
+            curr_val = cfg.get("mini_app_deep_links", True)
+            new_val = not curr_val
+            await db.db.premium_bots.update_one({"id": b_id_int}, {"$set": {"config.mini_app_deep_links": new_val}})
+            status = "✅ ON" if new_val else "❌ OFF"
+            await _safe_answer(query, f"Mini App Deep Links for @{bt.get('username')}: {status}", show_alert=True)
+            query.data = f"mk#bot_view_{b_id}"
+            return await market_callback(client, query)
 
         elif cmd.startswith("bot_set_logch_"):
             b_id = cmd.split("_")[3]
@@ -1743,17 +1767,19 @@ async def market_callback(client, query):
             s_id = cmd.split("_")[2]
             from bson.objectid import ObjectId
             story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-            if not story: return await _safe_answer(query, "Story not found!", show_alert=True)
-            
-            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+            bt_doc = await db.db.premium_bots.find_one({"id": int(story.get("bot_id", 0))}) if story.get("bot_id") else None
+            bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
+            _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
+            if _mini_app_on is None:
+                _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+                _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
             
             bot_un = story.get("bot_username", "Bot")
             if _mini_app_on:
                 deep_link = f"https://t.me/{bot_un}/apminibyarya?startapp=story_{s_id}"
                 msg_txt = "📱 **Mini App Link:**\n"
             else:
-                deep_link = f"https://t.me/{bot_un}?start=buy_{s_id}"
+                deep_link = f"https://t.me/{bot_un}?start=story_{s_id}"
                 msg_txt = "🤖 **Bot Only Link:**\n"
                 
             await client.send_message(user_id, f"{msg_txt}<code>{deep_link}</code>\n\n<i>Tap link to copy.</i>")
@@ -2912,12 +2938,16 @@ async def _add_story_flow(client, user_id):
         sj.setdefault("forwarding_enabled", True)
         result = await db.db.premium_stories.insert_one(sj)
         story_id = str(result.inserted_id)
-        _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-        _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+        bt_doc = await db.db.premium_bots.find_one({"id": int(sj.get("bot_id", 0))}) if sj.get("bot_id") else None
+        bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
+        _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
+        if _mini_app_on is None:
+            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
         if _mini_app_on:
             deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
         else:
-            deep_link = f"https://t.me/{sj['bot_username']}?start=buy_{story_id}"
+            deep_link = f"https://t.me/{sj['bot_username']}?start=story_{story_id}"
         
         await client.send_message(user_id, f"✅ **Story successfully added to Storefront!**\n\nThe Connected bot `@{(sj['bot_username'])}` is now actively selling `{sj['story_name_en']}` for ₹{sj['price']}!\n\n🔗 **Direct Purchase Link:**\n`{deep_link}`", reply_markup=ReplyKeyboardRemove())
 
@@ -3058,12 +3088,16 @@ async def _edit_story_flow(client, user_id, s_id, action):
                                 f"<i>🛒 Click the button below to buy now at the updated price!</i>"
                             )
                             
-                            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-                            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+                            bt_doc = await db.db.premium_bots.find_one({"id": int(story.get("bot_id", 0))}) if story.get("bot_id") else None
+                            bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
+                            _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
+                            if _mini_app_on is None:
+                                _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+                                _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
                             if _mini_app_on:
                                 buy_link = f"https://t.me/{story.get('bot_username')}/apminibyarya?startapp=story_{s_id}"
                             else:
-                                buy_link = f"https://t.me/{story.get('bot_username')}?start=buy_{s_id}"
+                                buy_link = f"https://t.me/{story.get('bot_username')}?start=story_{s_id}"
                             kb_buy = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ VIEW & BUY STORY", url=buy_link)]])
 
                             sent = 0

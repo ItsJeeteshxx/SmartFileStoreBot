@@ -2760,9 +2760,10 @@ async def _process_start(client, message):
 
             user_id=user_id,
 
-            user_info={"first_name": message.from_user.first_name, "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")},
+            user_info={"first_name": message.from_user.first_name, "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id},
 
-            details="User started the Premium Store bot for the first time."
+            details="User started the Premium Store bot for the first time.",
+            bot_id=client.me.id
 
         ))
 
@@ -2784,7 +2785,13 @@ async def _process_start(client, message):
 
         from utils import log_arya_event
 
-        asyncio.create_task(log_arya_event("START LINK CLICKED", user_id, {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}, f"User clicked start link with payload: {args[1]}"))
+        asyncio.create_task(log_arya_event(
+            "START LINK CLICKED",
+            user_id,
+            {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id},
+            f"User clicked start link with payload: {args[1]}",
+            bot_id=client.me.id
+        ))
 
 
 
@@ -3024,32 +3031,23 @@ async def _process_start(client, message):
 
             
 
-            # Check mini_app_enabled toggle from DB
-
-            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-
-            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
-
-
+            # Check per-bot Mini App Deep Links toggle, fallback to global
+            bt_doc = await _get_cached_bot_doc(client.me.id)
+            bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
+            _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
+            if _mini_app_on is None:
+                _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+                _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
 
             if _mini_app_on:
-
                 # Redirect to Mini App
-
                 bot_username = client.me.username
-
                 wa_url = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{story_id}"
-
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ Open in Mini App / मिनी ऐप खोलें", url=wa_url)]])
-
                 txt = "<b>🛍️ View Story / स्टोरी देखें</b>\n\nTap the button below to open this story securely in our new Premium Mini App.\nइस कहानी को सुरक्षित रूप से हमारे प्रीमियम मिनी ऐप में देखने और खरीदने के लिए नीचे दिए गए बटन पर टैप करें।"
-
                 return await message.reply_text(txt, reply_markup=kb)
-
             else:
-
                 # Old bot flow: show story preview directly (skips mini app)
-
                 return await _show_story_preview(client, user_id, story, lang)
 
 
@@ -3689,7 +3687,7 @@ async def _process_text(client, message):
 
         from utils import log_arya_event
 
-        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}
+        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id}
 
         if " [ ₹ " in txt:
 
@@ -4076,14 +4074,16 @@ async def _process_text(client, message):
                 s_name = story.get("story_name_en", "Unknown")
                 asyncio.create_task(log_arya_event(
                     event_type="PAYMENT PROCESSED", user_id=user_id,
-                    user_info={"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")},
-                    details=f"Story: {s_name}\nGateway: Direct UPI (IMAP Auto-Verify)\nUTR: <code>{utr_candidate}</code>\nAmount: ₹{expected_total:.0f}\nOrder: {order_id}"
+                    user_info={"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id},
+                    details=f"Story: {s_name}\nGateway: Direct UPI (IMAP Auto-Verify)\nUTR: <code>{utr_candidate}</code>\nAmount: ₹{expected_total:.0f}\nOrder: {order_id}",
+                    bot_id=client.me.id
                 ))
                 asyncio.create_task(log_payment(
                     user_id=user_id, user_first_name=getattr(message.from_user, "first_name", "User"),
                     username=getattr(message.from_user, "username", ""), s_name=s_name,
                     amount=expected_total, method="upi", receipt_id=utr_candidate,
-                    order_id=order_id, user_last_name=getattr(message.from_user, "last_name", "")
+                    order_id=order_id, user_last_name=getattr(message.from_user, "last_name", ""),
+                    bot_id=client.me.id
                 ))
                 logger.info("[UTR] Spawning log payment tasks.")
 
@@ -4946,7 +4946,7 @@ async def _process_callback(client, query):
 
         from utils import log_arya_event
 
-        ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", "")}
+        ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", ""), "bot_id": client.me.id}
 
         act = ""
 
@@ -5687,7 +5687,7 @@ async def _process_callback(client, query):
 
         try:
             from utils import log_arya_event
-            ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", "")}
+            ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", ""), "bot_id": client.me.id}
             sName = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
             asyncio.create_task(log_arya_event("VIEWED DEMO", user_id, ui, f"User viewed demo files for story: {sName}"))
         except: pass
@@ -7894,9 +7894,8 @@ async def _process_screenshot(client, message):
 
         from utils import log_arya_event
 
-        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}
-
-        asyncio.create_task(log_arya_event("PAYMENT SCREENSHOT", message.from_user.id, ui, "User uploaded a payment screenshot."))
+        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id}
+        asyncio.create_task(log_arya_event("PAYMENT SCREENSHOT", message.from_user.id, ui, "User uploaded a payment screenshot.", bot_id=client.me.id))
 
     except Exception: pass
 
@@ -8804,7 +8803,8 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                     status=f"Sent {sent_count}, Failed {failed_count}",
                     username=username,
                     order_id=order_id,
-                    user_last_name=last_name
+                    user_last_name=last_name,
+                    bot_id=client.me.id
                 ))
 
 
@@ -9026,7 +9026,8 @@ async def _do_channel_delivery(client, user_id, story, status_msg=None):
                     status=f"Link created (Channel ID: {channel_id})",
                     username=username,
                     order_id=order_id,
-                    user_last_name=last_name
+                    user_last_name=last_name,
+                    bot_id=client.me.id
                 ))
 
 

@@ -230,7 +230,7 @@ async def _deliver_purchased_story(bot_id: str, user_id: int, story: dict):
     # Show the delivery choice screen to the user (DM vs Channel as inline buttons)
     await dispatch_delivery_choice(seller_cli, user_id, story)
 
-async def _safe_send_log(client, channel_id, text: str, photo_path: str = None):
+async def _safe_send_log(client, channel_id, text: str, photo_path: str = None, bot_id: int = None):
     if not channel_id:
         return
     try:
@@ -238,34 +238,44 @@ async def _safe_send_log(client, channel_id, text: str, photo_path: str = None):
     except Exception:
         chat_id_val = channel_id
 
-    # 1. Try Pyrogram client first if connected
-    if client and getattr(client, "is_connected", False):
+    # 1. Gather clients in priority order: bot's own client -> passed client -> mgmt_client
+    clients_to_try = []
+    try:
+        from plugins.userbot.market_seller import market_clients
+        if bot_id and str(bot_id) in market_clients:
+            b_cli = market_clients[str(bot_id)]
+            if getattr(b_cli, "is_connected", False):
+                clients_to_try.append(b_cli)
+    except Exception:
+        pass
+
+    if client and getattr(client, "is_connected", False) and client not in clients_to_try:
+        clients_to_try.append(client)
+
+    try:
+        from database import db
+        if getattr(db, "mgmt_client", None) and getattr(db.mgmt_client, "is_connected", False) and db.mgmt_client not in clients_to_try:
+            clients_to_try.append(db.mgmt_client)
+    except Exception:
+        pass
+
+    for cli in clients_to_try:
         try:
             if photo_path:
-                await client.send_photo(chat_id_val, photo=photo_path, caption=text)
+                await cli.send_photo(chat_id_val, photo=photo_path, caption=text)
             else:
-                await client.send_message(chat_id_val, text=text)
+                await cli.send_message(chat_id_val, text=text, disable_web_page_preview=True)
             return
-        except Exception as e:
-            err_str = str(e).upper()
-            if "PEER_ID_INVALID" in err_str or "CHANNEL_INVALID" in err_str or "CHANNEL_PRIVATE" in err_str:
-                try:
-                    async for _ in client.get_dialogs(limit=100): pass
-                    if photo_path:
-                        await client.send_photo(chat_id_val, photo=photo_path, caption=text)
-                    else:
-                        await client.send_message(chat_id_val, text=text)
-                    return
-                except Exception:
-                    pass
+        except Exception:
+            continue
 
-    # 2. HTTP Telegram Bot API Fallback (Works 100% in FastAPI & when Pyrogram is offline)
+    # 2. HTTP Telegram Bot API Fallback
     try:
         from AryaPremium.config import Config
     except ImportError:
         from config import Config
     import os, aiohttp
-    token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN") or os.environ.get("MGMT_BOT_TOKEN")
+    token = getattr(Config, "MGMT_BOT_TOKEN", None) or getattr(Config, "BOT_TOKEN", None) or os.environ.get("MGMT_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
     if token:
         try:
             async with aiohttp.ClientSession() as session:
@@ -277,14 +287,12 @@ async def _safe_send_log(client, channel_id, text: str, photo_path: str = None):
                     "disable_web_page_preview": True
                 }
                 async with session.post(url, json=payload, timeout=10) as resp:
-                    res = await resp.json()
-                    if not res.get("ok"):
-                        import logging; logging.getLogger(__name__).warning(f"[LogFallback] HTTP Telegram API rejected log: {res}")
-        except Exception as e:
-            import logging; logging.getLogger(__name__).error(f"[LogFallback] HTTP send error: {e}")
+                    pass
+        except Exception:
+            pass
 
 async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, method: str,
-                      receipt_id: str = "", photo_path: str = None, username: str = "", pay_link: str = "", order_id: str = "", user_last_name: str = ""):
+                      receipt_id: str = "", photo_path: str = None, username: str = "", pay_link: str = "", order_id: str = "", user_last_name: str = "", bot_id: int = None, bot_username: str = ""):
     try:
         from AryaPremium.config import Config
         from AryaPremium.database import db
@@ -292,7 +300,37 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
         from config import Config
         from database import db
 
-    channel_id = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("PAYMENT_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    channel_id = None
+    target_bot_id = bot_id
+    if not target_bot_id and order_id and hasattr(db, "db") and db.db is not None:
+        try:
+            order_doc = await db.db.orders.find_one({"order_id": order_id})
+            if order_doc:
+                target_bot_id = order_doc.get("bot_id")
+        except Exception:
+            pass
+
+    if not target_bot_id and bot_username and hasattr(db, "db") and db.db is not None:
+        try:
+            b_clean = bot_username.lstrip("@").strip()
+            bot_doc = await db.db.premium_bots.find_one({"username": {"$regex": f"^{b_clean}$", "$options": "i"}})
+            if bot_doc:
+                target_bot_id = bot_doc.get("id")
+        except Exception:
+            pass
+
+    if target_bot_id and hasattr(db, "db") and db.db is not None:
+        try:
+            bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
+            if bot_doc:
+                custom_ch = (bot_doc.get("config") or {}).get("log_channel")
+                if custom_ch:
+                    channel_id = custom_ch
+        except Exception:
+            pass
+
+    if not channel_id:
+        channel_id = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("PAYMENT_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
     if not channel_id:
         import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: PAYMENT_LOGS_CHANNEL not configured — skipping.")
         return
@@ -307,7 +345,7 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
                 )
                 if res and res.get("payment_log_sent") is True:
                     return
-            except Exception as e:
+            except Exception:
                 pass
 
         from datetime import datetime, timezone, timedelta
@@ -357,11 +395,11 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Time:</b> {time_str}"
         )
-        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, caption, photo_path=photo_path)
+        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, caption, photo_path=photo_path, bot_id=target_bot_id)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Payment log error: {e}")
 
-async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_name: str, d_type: str, status: str, username: str = "", order_id: str = "", user_last_name: str = ""):
+async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_name: str, d_type: str, status: str, username: str = "", order_id: str = "", user_last_name: str = "", bot_id: int = None):
     try:
         from AryaPremium.config import Config
         from AryaPremium.database import db
@@ -369,7 +407,29 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
         from config import Config
         from database import db
 
-    channel_id = getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    channel_id = None
+    target_bot_id = bot_id
+    if not target_bot_id and bot_username and hasattr(db, "db") and db.db is not None:
+        try:
+            b_clean = bot_username.lstrip("@").strip()
+            bot_doc = await db.db.premium_bots.find_one({"username": {"$regex": f"^{b_clean}$", "$options": "i"}})
+            if bot_doc:
+                target_bot_id = bot_doc.get("id")
+        except Exception:
+            pass
+
+    if target_bot_id and hasattr(db, "db") and db.db is not None:
+        try:
+            bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
+            if bot_doc:
+                custom_ch = (bot_doc.get("config") or {}).get("log_channel")
+                if custom_ch:
+                    channel_id = custom_ch
+        except Exception:
+            pass
+
+    if not channel_id:
+        channel_id = getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
     if not channel_id:
         import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: DELIVERY_LOGS_CHANNEL not configured — skipping.")
         return
@@ -409,11 +469,11 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
             f"<b>Status:</b> {status}\n"
             f"<b>Date:</b> {time_str}"
         )
-        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, text)
+        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, text, bot_id=target_bot_id)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Delivery log error: {e}")
 
-async def log_arya_event(event_type: str, user_id: int, user_info: dict, details: str, bot_id: int = None):
+async def log_arya_event(event_type: str, user_id: int, user_info: dict, details: str, bot_id: int = None, bot_username: str = ""):
     try:
         from AryaPremium.config import Config
         from AryaPremium.database import db
@@ -422,8 +482,17 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         from database import db
 
     channel_id = None
-    target_bot_id = bot_id or user_info.get("bot_id")
-    if target_bot_id:
+    target_bot_id = bot_id or (user_info or {}).get("bot_id")
+    if not target_bot_id and bot_username and hasattr(db, "db") and db.db is not None:
+        try:
+            b_clean = bot_username.lstrip("@").strip()
+            bot_doc = await db.db.premium_bots.find_one({"username": {"$regex": f"^{b_clean}$", "$options": "i"}})
+            if bot_doc:
+                target_bot_id = bot_doc.get("id")
+        except Exception:
+            pass
+
+    if target_bot_id and hasattr(db, "db") and db.db is not None:
         try:
             bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
             if bot_doc:
@@ -445,9 +514,9 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         ist = timezone(timedelta(hours=5, minutes=30))
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
 
-        username = user_info.get("username", "")
-        user_first_name = user_info.get("first_name", "")
-        user_last_name = user_info.get("last_name", "")
+        username = (user_info or {}).get("username", "")
+        user_first_name = (user_info or {}).get("first_name", "")
+        user_last_name = (user_info or {}).get("last_name", "")
 
         def clean_username(uname: str) -> str:
             if not uname or str(uname).strip().lower() in ("", "unknown", "none", "@unknown", "@none"):
@@ -467,7 +536,7 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         tg_link = f"tg://user?id={user_id}"
         user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
-        joined = user_info.get("joined_date", time_str)
+        joined = (user_info or {}).get("joined_date", time_str)
         if isinstance(joined, datetime):
             joined = joined.astimezone(ist).strftime('%d %b %Y, %I:%M %p IST')
         elif not isinstance(joined, str):
@@ -484,7 +553,7 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
             f"────────────────────\n"
             f"<b>Time:</b> {time_str}"
         )
-        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, text)
+        await _safe_send_log(getattr(db, "mgmt_client", None), channel_id, text, bot_id=target_bot_id)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Arya core log error: {e}")
 
