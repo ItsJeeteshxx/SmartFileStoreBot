@@ -545,6 +545,9 @@ async def bypass_new_cb(bot, query):
     chat_id = query.message.chat.id
     try: await query.message.delete()
     except Exception: pass
+    await _bypass_flow(bot, user_id, chat_id)
+
+
 async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_id: int, msg_obj=None):
     """
     Safely copy a message to target channel. If CHAT_FORWARDS_RESTRICTED error occurs
