@@ -137,9 +137,18 @@ async def web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get('PORT', 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logging.info(f"Web server started on port {port}")
+    try:
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logging.info(f"Web server started on port {port}")
+    except OSError as e:
+        logging.warning(f"[WebServer] Port {port} already in use ({e}). Trying fallback port {port + 1}...")
+        try:
+            site = web.TCPSite(runner, '0.0.0.0', port + 1)
+            await site.start()
+            logging.info(f"Web server started on fallback port {port + 1}")
+        except Exception as ex:
+            logging.warning(f"[WebServer] Could not start web server on fallback port: {ex}. Continuing bot execution...")
 
 async def ping_server():
     """Self-ping to keep Render.com service alive. Reuses a single session to avoid connection pool exhaustion."""
