@@ -1904,6 +1904,54 @@ def to_mathitalic(text: str) -> str:
 
 
 
+async def _send_story_photo(client, user_id: int, story: dict, caption: str, reply_markup=None, fallback_photo: str = None):
+    """
+    Robustly sends a story image to user across bots:
+    1. Tries story.get('image') / story.get('poster')
+    2. Tries story.get('poster_url') / story.get('image_url') (CDN HTTP URL)
+    3. Tries fallback_photo (if provided)
+    4. Falls back to send_message with text
+    """
+    from pyrogram import enums
+    img_candidates = []
+    
+    # Priority 1: Direct file_id or image stored on story
+    for k in ("image", "poster", "banner"):
+        val = story.get(k)
+        if val and val not in img_candidates:
+            img_candidates.append(val)
+            
+    # Priority 2: CDN HTTP URLs (works 100% across all bots)
+    for k in ("poster_url", "image_url", "cover_url"):
+        val = story.get(k)
+        if val and val not in img_candidates:
+            img_candidates.append(val)
+            
+    if fallback_photo and fallback_photo not in img_candidates:
+        img_candidates.append(fallback_photo)
+
+    for photo_ref in img_candidates:
+        try:
+            return await client.send_photo(
+                chat_id=user_id,
+                photo=photo_ref,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.debug(f"Failed send_photo candidate {str(photo_ref)[:30]}: {e}")
+            continue
+
+    # Fallback: send text message if all image options failed
+    return await client.send_message(
+        chat_id=user_id,
+        text=caption,
+        reply_markup=reply_markup,
+        parse_mode=enums.ParseMode.HTML
+    )
+
+
 async def _show_story_profile(client, user_id, story, lang):
 
     name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
@@ -1916,7 +1964,7 @@ async def _show_story_profile(client, user_id, story, lang):
 
     episodes = story.get('episodes', 'Unknown')
 
-    image = story.get('image')
+    image = story.get('image') or story.get('poster_url') or story.get('image_url')
 
 
 
@@ -2077,15 +2125,10 @@ async def _show_story_profile(client, user_id, story, lang):
     from pyrogram import enums
     tmp = await client.send_message(user_id, f"<b>› › ⏳ {loading_txt}</b>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
     try:
-        if image:
-            try:
-                await client.send_photo(user_id, photo=image, caption=txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-                await tmp.delete()
-                return
-            except Exception: pass
-        await client.send_message(user_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        await _send_story_photo(client, user_id, story, caption=txt, reply_markup=markup)
         await tmp.delete()
-    except Exception: pass
+    except Exception:
+        pass
 
 
 async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
@@ -2529,38 +2572,22 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
 
     IMG_URL = "https://files.catbox.moe/4ud7fx.png"
 
-
-
     # Delete previous message as we are replacing text with an image
-
     try:
-
         if is_msg:
-
             await msg_or_query.delete()
-
         else:
-
             await msg_or_query.message.delete()
-
     except Exception:
-
         pass
 
-        
-
-    await client.send_photo(
-
-        chat_id=user_id,
-
-        photo=IMG_URL,
-
+    await _send_story_photo(
+        client=client,
+        user_id=user_id,
+        story=story,
         caption=txt,
-
         reply_markup=markup,
-
-        parse_mode=enums.ParseMode.HTML
-
+        fallback_photo=IMG_URL
     )
 
 
@@ -2700,12 +2727,13 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     except Exception:
         pass
 
-    await client.send_photo(
-        chat_id=user_id,
-        photo=IMG_URL,
+    await _send_story_photo(
+        client=client,
+        user_id=user_id,
+        story=story,
         caption=txt,
         reply_markup=markup,
-        parse_mode=enums.ParseMode.HTML
+        fallback_photo=IMG_URL
     )
 
 

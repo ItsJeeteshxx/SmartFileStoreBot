@@ -2667,16 +2667,40 @@ async def _add_story_flow(client, user_id):
                 store_cli = market_clients.get(str(sj["bot_id"]))
                 dl = await client.download_media(msg_img.photo.file_id)
                 
-                # Upload to CDN for Mini App
+                # Upload to CDN for Mini App & cross-bot universal access
                 catbox_url = await upload_to_catbox(dl)
                 if catbox_url:
                     sj['poster_url'] = catbox_url
+                    sj['image_url'] = catbox_url
                     
                 # Upload to Store Bot for Telegram delivery
-                ul = await store_cli.send_photo(user_id, photo=dl)
-                sj['image'] = ul.photo.file_id
+                uploaded = False
+                if store_cli:
+                    try:
+                        ul = await store_cli.send_photo(user_id, photo=dl)
+                        sj['image'] = ul.photo.file_id
+                        uploaded = True
+                    except Exception:
+                        pass
+                    
+                    if not uploaded:
+                        # Fallback to store bot upload via log channel if user hasn't started store bot
+                        log_ch = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "ARYA_LOGS_CHANNEL", None)
+                        if log_ch:
+                            try:
+                                ul = await store_cli.send_photo(int(log_ch), photo=dl)
+                                sj['image'] = ul.photo.file_id
+                                uploaded = True
+                                try: await ul.delete()
+                                except Exception: pass
+                            except Exception: pass
+
+                if not uploaded:
+                    sj['image'] = catbox_url or msg_img.photo.file_id
                 
-                import os; os.remove(dl)
+                try:
+                    import os; os.remove(dl)
+                except Exception: pass
             except Exception as e:
                 sj['image'] = msg_img.photo.file_id # fallback
         else:
