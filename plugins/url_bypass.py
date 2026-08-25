@@ -1,6 +1,6 @@
 """URL Bypass Agentic System - Arya Forward Bot"""
 from __future__ import annotations
-import asyncio, re, time, logging, random, uuid
+import os, asyncio, re, time, logging, random, uuid
 from typing import Optional
 from pyrogram import Client, filters, enums, ContinuePropagation
 from pyrogram.types import (
@@ -545,8 +545,82 @@ async def bypass_new_cb(bot, query):
     chat_id = query.message.chat.id
     try: await query.message.delete()
     except Exception: pass
-    await _bypass_flow(bot, user_id, chat_id)
+async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_id: int, msg_obj=None):
+    """
+    Safely copy a message to target channel. If CHAT_FORWARDS_RESTRICTED error occurs
+    (channel has 'Restrict saving content' enabled), it downloads and re-uploads the media.
+    """
+    if not hasattr(client, '_network_lock'):
+        client._network_lock = asyncio.Lock()
+        
+    # Attempt 1: Direct copy_message (fastest & 0 bandwidth)
+    try:
+        async with client._network_lock:
+            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+    except FloodWait as fw:
+        await asyncio.sleep(fw.value + 1)
+        async with client._network_lock:
+            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+    except Exception as e:
+        err_str = str(e).upper()
+        if "CHAT_FORWARDS_RESTRICTED" not in err_str and "RESTRICTED" not in err_str:
+            raise e
 
+    # Attempt 2: Restricted channel bypass (Download & Re-upload)
+    if not msg_obj:
+        async with client._network_lock:
+            msg_obj = await client.get_messages(from_chat_id, msg_id)
+            
+    if not msg_obj:
+        raise Exception(f"Message {msg_id} could not be retrieved from {from_chat_id}")
+
+    caption = msg_obj.caption
+    caption_entities = msg_obj.caption_entities
+    reply_markup = msg_obj.reply_markup
+
+    # If it's a text-only message
+    if not (msg_obj.photo or msg_obj.video or msg_obj.document or msg_obj.audio or msg_obj.voice or msg_obj.animation or msg_obj.video_note or msg_obj.sticker):
+        async with client._network_lock:
+            return await client.send_message(
+                to_chat_id,
+                text=msg_obj.text or "",
+                entities=msg_obj.entities,
+                reply_markup=reply_markup
+            )
+
+    # Download media to local file and send
+    os.makedirs("downloads/bypass_temp", exist_ok=True)
+    temp_name = f"downloads/bypass_temp/{msg_obj.chat.id}_{msg_obj.id}"
+    dl_path = None
+    try:
+        async with client._network_lock:
+            dl_path = await client.download_media(msg_obj, file_name=temp_name)
+        if not dl_path or not os.path.exists(dl_path):
+            raise Exception("Failed to download restricted media")
+
+        async with client._network_lock:
+            if msg_obj.photo:
+                return await client.send_photo(to_chat_id, photo=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+            elif msg_obj.video:
+                return await client.send_video(to_chat_id, video=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+            elif msg_obj.document:
+                return await client.send_document(to_chat_id, document=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+            elif msg_obj.audio:
+                return await client.send_audio(to_chat_id, audio=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+            elif msg_obj.animation:
+                return await client.send_animation(to_chat_id, animation=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+            elif msg_obj.voice:
+                return await client.send_voice(to_chat_id, voice=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+            elif msg_obj.video_note:
+                return await client.send_video_note(to_chat_id, video_note=dl_path, reply_markup=reply_markup)
+            elif msg_obj.sticker:
+                return await client.send_sticker(to_chat_id, sticker=dl_path, reply_markup=reply_markup)
+    finally:
+        if dl_path and os.path.exists(dl_path):
+            try:
+                os.remove(dl_path)
+            except Exception:
+                pass
 
 # ── Setup flow ────────────────────────────────────────────────────────────────
 async def _bypass_flow(bot, user_id: int, chat_id: int):
@@ -997,9 +1071,7 @@ async def _ub_run_job(job_id: str):
             # ── 1. Forward/Copy Original Source Post to Target Channel ──
             if target_channel_id:
                 try:
-                    if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
-                    async with curr_ub._network_lock:
-                        await curr_ub.copy_message(chat_id=target_channel_id, from_chat_id=channel_id, message_id=post_id)
+                    await _safe_forward_or_copy(curr_ub, target_channel_id, channel_id, post_id)
                 except Exception as e:
                     logger.warning(f"[Bypass] Failed to copy post {post_id} to target channel: {e}")
 
@@ -1218,9 +1290,7 @@ async def _ub_run_job(job_id: str):
                 received_media_msgs.sort(key=lambda m: m.id)
                 for m_msg in received_media_msgs:
                     try:
-                        if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
-                        async with curr_ub._network_lock:
-                            await curr_ub.copy_message(chat_id=target_channel_id, from_chat_id=m_msg.chat.id, message_id=m_msg.id)
+                        await _safe_forward_or_copy(curr_ub, target_channel_id, m_msg.chat.id, m_msg.id, msg_obj=m_msg)
                     except Exception as e:
                         logger.warning(f"[Bypass] Failed to forward video message {m_msg.id} to target channel: {e}")
 
