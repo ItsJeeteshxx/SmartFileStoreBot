@@ -3065,7 +3065,7 @@ async def _process_start(client, message):
         poster_file = _get_arya_poster_path()
         if poster_file and os.path.exists(poster_file):
             try:
-                return await message.reply_photo(
+                await message.reply_photo(
                     photo=poster_file,
                     caption=MINI_APP_WELCOME_TEXT,
                     reply_markup=MINI_APP_START_MARKUP,
@@ -3073,10 +3073,34 @@ async def _process_start(client, message):
                 )
             except Exception as e:
                 logger.warning(f"Failed to reply_photo for miniapp start: {e}")
+                await message.reply_text(
+                    MINI_APP_WELCOME_TEXT,
+                    reply_markup=MINI_APP_START_MARKUP,
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+        else:
+            await message.reply_text(
+                MINI_APP_WELCOME_TEXT,
+                reply_markup=MINI_APP_START_MARKUP,
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
+            )
 
-        return await message.reply_text(
-            MINI_APP_WELCOME_TEXT,
-            reply_markup=MINI_APP_START_MARKUP,
+        # Additional notice message for transferred bot services
+        first_name = (getattr(message.from_user, 'first_name', '') or '').strip() or 'User'
+        notice_text = (
+            f"<b>Hey {first_name},</b>\n\n"
+            f"<blockquote>We have transitioned our bot store services to our new bot. If you prefer purchasing stories directly via Telegram bot, please use our new bot. This current bot is now dedicated to the Mini App, though you can still access and receive your previously purchased stories here using /mystories. All other store operations have moved to our new bot.</blockquote>\n\n"
+            f"<blockquote>Humne apni bot store services ko nayi bot par shift kar diya hai. Agar aap Telegram bot ke zariye hi stories khareedna chahte hain, to aap hamari nayi bot ka upyog kar sakte hain. Yeh bot ab mukhya roop se Mini App ke liye samarpit rahegi, lekin aap /mystories ka upyog karke apni pehle se khareedi hui stories ki delivery yahan le sakte hain. Baaki sabhi store services nayi bot par shift ho chuki hain.</blockquote>"
+        )
+        notice_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Open Storyfi", url="https://t.me/StoryfiBot")]
+        ])
+        return await client.send_message(
+            user_id,
+            notice_text,
+            reply_markup=notice_markup,
             parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True
         )
