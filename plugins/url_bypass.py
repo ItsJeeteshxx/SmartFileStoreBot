@@ -33,6 +33,26 @@ _ub_refcounts: dict = {}
 async def _save_bypass_job(job: dict):
     await db.db[UB_COLL].replace_one({"job_id": job["job_id"]}, job, upsert=True)
 
+async def _resume_running_jobs_on_start():
+    await asyncio.sleep(5)
+    try:
+        if hasattr(db, "db") and db.db is not None:
+            running_jobs = await db.db[UB_COLL].find({"status": "running"}).to_list(length=100)
+            for j in running_jobs:
+                jid = j["job_id"]
+                if jid not in _ub_tasks:
+                    _ub_paused[jid] = asyncio.Event()
+                    _ub_paused[jid].set()
+                    _ub_tasks[jid] = asyncio.create_task(_ub_run_job(jid))
+                    logger.info(f"[Bypass] Auto-resumed running job {jid[:8]} on startup")
+    except Exception as e:
+        logger.error(f"[Bypass] Startup resume error: {e}")
+
+try:
+    asyncio.create_task(_resume_running_jobs_on_start())
+except Exception:
+    pass
+
 async def _get_bypass_job(jid: str):
     return await db.db[UB_COLL].find_one({"job_id": jid})
 
