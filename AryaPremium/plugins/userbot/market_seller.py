@@ -8256,6 +8256,66 @@ async def _auto_delete_demo(client, user_id, msg_ids):
 
 
 
+async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, message_id: int, protect_content: bool = False, caption: str = None):
+    """
+    Safely copies a message from a source DB channel to the user.
+    If the current delivery bot is not in the source channel, automatically delegates/relays
+    through Arya Management Bot or any connected Store Bot that has channel admin access!
+    """
+    kwargs = {
+        "chat_id": chat_id,
+        "from_chat_id": int(from_chat_id),
+        "message_id": int(message_id),
+        "protect_content": protect_content,
+    }
+    if caption:
+        kwargs["caption"] = caption
+
+    # 1. Try directly with current delivery bot client
+    try:
+        return await client.copy_message(**kwargs)
+    except Exception as e1:
+        err1 = str(e1).upper()
+        if not any(k in err1 for k in ("CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED", "PEER_ID_INVALID", "USER_BANNED_IN_CHANNEL", "CHAT_WRITE_FORBIDDEN", "CHANNEL_INVALID")):
+            raise e1
+
+    # 2. Gather all connected fallback bot clients (Management Bot + all other Store Bots)
+    from plugins.mgmt.market_mgmt import client as mgmt_cli
+    all_fallback_clients = []
+    if mgmt_cli and getattr(mgmt_cli, "is_connected", False) and mgmt_cli != client:
+        all_fallback_clients.append(mgmt_cli)
+    for c in market_clients.values():
+        if c != client and getattr(c, "is_connected", False):
+            all_fallback_clients.append(c)
+
+    for fallback_cli in all_fallback_clients:
+        try:
+            return await fallback_cli.copy_message(**kwargs)
+        except Exception:
+            pass
+
+    # 3. Intermediate Relay via Shared Log/Dump Channel
+    dump_ch = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or getattr(Config, "ARYA_LOGS_CHANNEL", None)
+    if dump_ch:
+        for fallback_cli in all_fallback_clients:
+            try:
+                dump_msg = await fallback_cli.copy_message(chat_id=int(dump_ch), from_chat_id=int(from_chat_id), message_id=int(message_id))
+                if dump_msg:
+                    bridge_kwargs = dict(kwargs)
+                    bridge_kwargs["from_chat_id"] = int(dump_ch)
+                    bridge_kwargs["message_id"] = dump_msg.id
+                    sent = await client.copy_message(**bridge_kwargs)
+                    try:
+                        await dump_msg.delete()
+                    except Exception:
+                        pass
+                    return sent
+            except Exception:
+                pass
+
+    raise e1
+
+
 async def _send_demo_files(client, user_id, story, lang):
 
     import asyncio
@@ -8318,7 +8378,7 @@ async def _send_demo_files(client, user_id, story, lang):
 
         for mid in range(start, start + s_count):
 
-            sent = await client.copy_message(chat_id=user_id, from_chat_id=src, message_id=mid, protect_content=True)
+            sent = await _safe_copy_from_source(client, chat_id=user_id, from_chat_id=src, message_id=mid, protect_content=True)
 
             msg_ids.append(sent.id)
 
@@ -8332,7 +8392,7 @@ async def _send_demo_files(client, user_id, story, lang):
 
             msg_ids.append(m_e.id)
 
-            sent_end = await client.copy_message(chat_id=user_id, from_chat_id=src, message_id=end, protect_content=True)
+            sent_end = await _safe_copy_from_source(client, chat_id=user_id, from_chat_id=src, message_id=end, protect_content=True)
 
             msg_ids.append(sent_end.id)
 
@@ -8444,7 +8504,13 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                     my_kwargs = dict(kwargs)
                     if "{original_caption}" in cap_tpl or "{file_name}" in cap_tpl:
                         try:
-                            orig_msg = await client.get_messages(int(src), msg_id)
+                            orig_msg = None
+                            try:
+                                orig_msg = await client.get_messages(int(src), msg_id)
+                            except Exception:
+                                from plugins.mgmt.market_mgmt import client as mgmt_cli
+                                if mgmt_cli and getattr(mgmt_cli, "is_connected", False):
+                                    orig_msg = await mgmt_cli.get_messages(int(src), msg_id)
                             orig_cap = (orig_msg.caption or orig_msg.text or "") if orig_msg else ""
                             doc = getattr(orig_msg, "document", None) or getattr(orig_msg, "video", None) or getattr(orig_msg, "audio", None)
                             fname = getattr(doc, "file_name", "") or ""
@@ -8453,9 +8519,9 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                             my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story).replace("{original_caption}", "").replace("{file_name}", "")
                     else:
                         my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story)
-                    sent = await client.copy_message(**my_kwargs)
+                    sent = await _safe_copy_from_source(client, **my_kwargs)
                 else:
-                    sent = await client.copy_message(**kwargs)
+                    sent = await _safe_copy_from_source(client, **kwargs)
 
                 sent_ids.append(sent.id)
                 sent_count += 1
