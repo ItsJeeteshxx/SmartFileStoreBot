@@ -536,7 +536,7 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
             parse_mode=PM)
         return
 
-    # Step 1: Userbot
+    # Step 1: Userbot Selection
     bots     = await db.get_bots(user_id)
     userbots = [b for b in bots if not b.get('is_bot', True)]
     if not userbots:
@@ -545,32 +545,46 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
             parse_mode=PM)
         return
 
-    ub_btns = [[KeyboardButton(f"👤 {b.get('name','?')}  [{b.get('id','')}]")] for b in userbots]
+    ub_btns = []
+    if len(userbots) > 1:
+        ub_btns.append([KeyboardButton("👥 All Available Userbots (Auto-Rotation)")])
+    for b in userbots:
+        ub_btns.append([KeyboardButton(f"👤 {b.get('name','?')}  [{b.get('id','')}]")])
     ub_btns.append([CANCEL_BTN])
+
     try:
         r1 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 1/5</b>\n\n"
-            "Select the <b>Userbot</b> to run this job:\n\n"
-            "<blockquote>The userbot must be a member of the source channel.</blockquote>",
+            "<b>»  URL Bypass — Step 1/8 (Userbot)</b>\n\n"
+            "Select the <b>Userbot(s)</b> to run this job:\n\n"
+            "<blockquote expandable>"
+            "• <b>👥 All Available Userbots</b> — Automatically rotates between your userbots (e.g. 3 files per account per hour) for maximum speed with 0 rate limit bans!\n"
+            "• <b>👤 Single Userbot</b> — Runs only on the selected account."
+            "</blockquote>",
             reply_markup=ReplyKeyboardMarkup(ub_btns, resize_keyboard=True, one_time_keyboard=True))
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
     if _is_cancel(r1.text):
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
-    bot_id = None
-    if '[' in r1.text and ']' in r1.text:
-        try: bot_id = r1.text.split('[')[-1].split(']')[0].strip()
-        except Exception: pass
-    if not bot_id: bot_id = str(userbots[0].get('id', ''))
-    sel_ub  = next((b for b in userbots if str(b.get('id','')) == str(bot_id)), userbots[0])
-    ub_name = sel_ub.get('name', f'Userbot {bot_id}')
+    bot_ids = []
+    if "all available userbots" in r1.text.lower():
+        bot_ids = [str(b['id']) for b in userbots]
+        ub_name = f"All ({len(userbots)} Userbots Auto-Rotation)"
+    else:
+        bot_id = None
+        if '[' in r1.text and ']' in r1.text:
+            try: bot_id = r1.text.split('[')[-1].split(']')[0].strip()
+            except Exception: pass
+        if not bot_id: bot_id = str(userbots[0].get('id', ''))
+        sel_ub  = next((b for b in userbots if str(b.get('id','')) == str(bot_id)), userbots[0])
+        bot_ids = [str(bot_id)]
+        ub_name = sel_ub.get('name', f'Userbot {bot_id}')
 
-    # Step 2: Channel
+    # Step 2: Source Channel
     try:
         r2 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 2/5</b>\n\n"
-            "Send the <b>Source Channel</b>:\n\n"
+            "<b>»  URL Bypass — Step 2/8 (Source Channel)</b>\n\n"
+            "Send the <b>Source Channel</b> (where posts and inline button links are):\n\n"
             "<blockquote expandable>"
             "• <code>https://t.me/channelname</code>\n"
             "• <code>https://t.me/c/1234567890/1</code>\n"
@@ -597,11 +611,40 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     except Exception:
         pass
 
-    # Step 3: Range
+    # Step 3: Target / Destination Channel
     try:
-        r3 = await _ask(bot, user_id,
-            f"<b>»  URL Bypass — Step 3/5</b>\n\n"
-            f"Channel: <b>{channel_title}</b>\n\n"
+        r3_dest = await _ask(bot, user_id,
+            "<b>»  URL Bypass — Step 3/8 (Destination Forwarding)</b>\n\n"
+            "Send the <b>Target / Destination Channel</b> where the original story post (Image + Caption) and downloaded video files should be forwarded:\n\n"
+            "<blockquote expandable>"
+            "• <code>https://t.me/targetchannel</code>\n"
+            "• <code>-1001234567890</code>\n"
+            "• Forward any message from the target channel\n\n"
+            "<i>Tap <b>⏩ SKIP</b> if you only want Userbot to receive files in private DM without forwarding to a channel.</i>"
+            "</blockquote>",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⏩ SKIP (Userbot DM Only)")], [UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
+    except asyncio.TimeoutError:
+        return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+    if _is_cancel(r3_dest.text):
+        return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+
+    target_channel_id = None
+    target_channel_title = "None (DM Only)"
+    if "skip" not in r3_dest.text.lower():
+        fwd_dest = getattr(r3_dest, 'forward_from_chat', None)
+        target_channel_id, target_channel_title = _resolve_channel(r3_dest.text, fwd_dest)
+        if target_channel_id:
+            try:
+                t_ci = await bot.get_chat(target_channel_id)
+                target_channel_title = t_ci.title or target_channel_title
+                target_channel_id = t_ci.id
+            except Exception: pass
+
+    # Step 4: Range
+    try:
+        r4 = await _ask(bot, user_id,
+            f"<b>»  URL Bypass — Step 4/8 (Range)</b>\n\n"
+            f"Source Channel: <b>{channel_title}</b>\n\n"
             "Set <b>scan range</b>:\n\n"
             "<blockquote expandable>"
             "• <b>ALL</b> — scan entire channel\n"
@@ -614,11 +657,11 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
                 resize_keyboard=True, one_time_keyboard=True))
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-    if _is_cancel(r3.text):
+    if _is_cancel(r4.text):
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
     scan_start = 0; scan_end = 0
-    rt = r3.text.strip()
+    rt = r4.text.strip()
     if rt.lower() != 'all':
         if ':' in rt:
             try: scan_start = int(rt.split(':')[0].strip())
@@ -629,10 +672,10 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
             try: scan_start = int(rt)
             except Exception: pass
 
-    # Step 4: Buttons Selection
+    # Step 5: Buttons Selection
     try:
-        r4 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 4/6</b>\n\n"
+        r5 = await _ask(bot, user_id,
+            "<b>»  URL Bypass — Step 5/8 (Buttons)</b>\n\n"
             "Which <b>buttons</b> should be clicked in each post?\n\n"
             "<blockquote expandable>"
             "• <b>ALL</b> — Process all buttons\n"
@@ -643,21 +686,21 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
                 resize_keyboard=True, one_time_keyboard=True))
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-    if _is_cancel(r4.text):
+    if _is_cancel(r5.text):
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
     allowed_buttons = None
-    if r4.text.strip().lower() != 'all':
+    if r5.text.strip().lower() != 'all':
         allowed_buttons = []
-        for x in r4.text.replace(',', ' ').split():
+        for x in r5.text.replace(',', ' ').split():
             try: allowed_buttons.append(int(x.strip()))
             except Exception: pass
         if not allowed_buttons: allowed_buttons = None
 
-    # Step 5: Order
+    # Step 6: Order
     try:
-        r5 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 5/6</b>\n\n"
+        r6 = await _ask(bot, user_id,
+            "<b>»  URL Bypass — Step 6/8 (Order)</b>\n\n"
             "Choose <b>processing order</b>:\n\n"
             "<blockquote>"
             "• <b>New → Old</b> — process latest posts first\n"
@@ -669,57 +712,84 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
                 resize_keyboard=True, one_time_keyboard=True))
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-    if _is_cancel(r5.text):
+    if _is_cancel(r6.text):
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
-    order       = 'old_to_new' if 'Old → New' in r5.text else 'new_to_old'
+    order       = 'old_to_new' if 'Old → New' in r6.text else 'new_to_old'
     order_label = '🕐 Old → New' if order == 'old_to_new' else '🕑 New → Old'
 
-    # Step 6: Pacing Delay
+    # Step 7: Hourly Rate Limit Quota
     try:
-        r6 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 6/7</b>\n\n"
-            "Set <b>Pacing Delay</b> for Live Job Synchronization:\n\n"
+        r7 = await _ask(bot, user_id,
+            "<b>»  URL Bypass — Step 7/8 (Hourly Rate Limit)</b>\n\n"
+            "Set the <b>Hourly Download Quota per Userbot</b>:\n\n"
             "<blockquote>"
-            "Target bots auto-delete files quickly. "
-            "To give your Live Batch job time to forward the files, set a pacing delay "
-            "between opening shortener links.\n\n"
-            "• <code>0</code> — No extra delay\n"
-            "• <code>2</code> — Wait 2 minutes\n"
-            "• <code>4</code> — Wait 4 minutes"
+            "• <b>⚡ 3 Files / Hour (Recommended)</b> — Safely avoids target bot bans. Each Userbot fetches 3 files, then automatically rotates to the next Userbot or sleeps until the 1-hour cooldown resets.\n"
+            "• <b>5 Files / Hour</b> — 5 files per hour per Userbot.\n"
+            "• <b>⚡ Unlimited (No Quota)</b> — Continuous downloading without hourly limits."
             "</blockquote>",
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("0"), KeyboardButton("2"), KeyboardButton("4"), KeyboardButton("5")],
+                [[KeyboardButton("⚡ 3 Files / Hour (Recommended)")],
+                 [KeyboardButton("5 Files / Hour"), KeyboardButton("⚡ Unlimited (No Quota)")],
                  [UNDO_BTN, CANCEL_BTN]],
                 resize_keyboard=True, one_time_keyboard=True))
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-    if _is_cancel(r6.text):
+    if _is_cancel(r7.text):
+        return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+
+    hourly_quota = 3
+    if "5" in r7.text:
+        hourly_quota = 5
+    elif "unlimited" in r7.text.lower():
+        hourly_quota = 0
+
+    # Step 8: Pacing Delay
+    try:
+        r8 = await _ask(bot, user_id,
+            "<b>»  URL Bypass — Step 8/8 (Pacing Delay)</b>\n\n"
+            "Set <b>Pacing Delay</b> between individual links:\n\n"
+            "<blockquote>"
+            "• <code>0</code> — No extra delay (Fastest)\n"
+            "• <code>1</code> — Wait 1 minute\n"
+            "• <code>2</code> — Wait 2 minutes"
+            "</blockquote>",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("0"), KeyboardButton("1"), KeyboardButton("2")],
+                 [UNDO_BTN, CANCEL_BTN]],
+                resize_keyboard=True, one_time_keyboard=True))
+    except asyncio.TimeoutError:
+        return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+    if _is_cancel(r8.text):
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
     pacing_delay = 0
-    try: pacing_delay = int(r6.text.strip())
+    try: pacing_delay = int(r8.text.strip())
     except Exception: pass
 
-    # Step 7: Confirm
+    # Confirm
     range_label = f"<code>{scan_start}:{scan_end}</code>" if (scan_start or scan_end) else "ALL"
     btn_label = "ALL" if not allowed_buttons else ", ".join(map(str, allowed_buttons))
+    quota_label = f"{hourly_quota} files/hr per Userbot" if hourly_quota > 0 else "Unlimited"
+
     try:
-        r7 = await _ask(bot, user_id,
-            f"<b>»  URL Bypass — Confirm</b>\n\n"
-            f"»  Userbot: <b>{ub_name}</b>\n"
-            f"»  Channel: <b>{channel_title}</b>\n"
-            f"»  Range: {range_label}\n"
-            f"»  Buttons: <b>{btn_label}</b>\n"
-            f"»  Order: {order_label}\n"
-            f"»  Pacing Delay: <b>{pacing_delay} min</b>\n\n"
-            "<i>Tap Confirm to start.</i>",
+        r_conf = await _ask(bot, user_id,
+            f"<b>»  URL Bypass — Confirmation</b>\n\n"
+            f"<b>»  Userbots:</b> {ub_name}\n"
+            f"<b>»  Source Channel:</b> {channel_title}\n"
+            f"<b>»  Target Channel:</b> {target_channel_title}\n"
+            f"<b>»  Scan Range:</b> {range_label}\n"
+            f"<b>»  Buttons:</b> {btn_label}\n"
+            f"<b>»  Order:</b> {order_label}\n"
+            f"<b>»  Hourly Quota:</b> <code>{quota_label}</code>\n"
+            f"<b>»  Pacing Delay:</b> <code>{pacing_delay} min</code>\n\n"
+            "<i>Tap Confirm to start scraping & auto-forwarding!</i>",
             reply_markup=ReplyKeyboardMarkup(
                 [[KeyboardButton("✅ Confirm & Start")], [CANCEL_BTN]],
                 resize_keyboard=True, one_time_keyboard=True))
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-    if _is_cancel(r7.text) or '✅' not in r7.text:
+    if _is_cancel(r_conf.text) or '✅' not in r_conf.text:
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
     # Create job in DB
@@ -727,11 +797,13 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     job_id = str(uuid.uuid4())
     job = {
         "job_id": job_id, "user_id": user_id, "status": "running",
-        "bot_id": bot_id, "ub_name": ub_name, "chat_id": chat_id,
+        "bot_ids": bot_ids, "bot_id": bot_ids[0] if bot_ids else "",
+        "ub_name": ub_name, "chat_id": chat_id,
         "channel_id": channel_id, "channel_title": channel_title,
+        "target_channel_id": target_channel_id, "target_channel_title": target_channel_title,
         "order": order, "scan_start": scan_start, "scan_end": scan_end,
-        "allowed_buttons": allowed_buttons, "pacing_delay": pacing_delay,
-        "bypass_bot": bypass_bot,
+        "allowed_buttons": allowed_buttons, "hourly_quota": hourly_quota,
+        "pacing_delay": pacing_delay, "bypass_bot": bypass_bot,
         "done": 0, "failed": [], "queue": [], "created_at": time.time()
     }
     await _save_bypass_job(job)
@@ -742,8 +814,9 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
         chat_id,
         f"<b>»  URL Bypass — Starting</b>\n\n"
         f"»  Job ID: <code>{job_id[:8]}</code>\n"
+        f"»  Userbots: <b>{ub_name}</b>\n"
         f"»  Bypass Bot: <b>@{bypass_bot}</b>\n"
-        f"⏳ Connecting userbot...",
+        f"⏳ Connecting userbot pool...",
         parse_mode=PM, reply_markup=ReplyKeyboardRemove()
     )
     _status_msgs[job_id] = (chat_id, status_msg.id)
@@ -756,7 +829,7 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
 
 # ── Job runner ────────────────────────────────────────────────────────────────
 async def _ub_run_job(job_id: str):
-    ub = None
+    ub_pool: dict[str, Client] = {}
     try:
         job = await _get_bypass_job(job_id)
         if not job or job.get("status") in ("stopped", "failed", "completed"):
@@ -767,32 +840,56 @@ async def _ub_run_job(job_id: str):
         bypass_bot_uname = job.get("bypass_bot") or await db.get_bypass_bot(user_id)
         bypass_bot_uname = bypass_bot_uname.strip().lstrip('@')
         
-        logger.info(f"[Bypass] Loading userbot {job['bot_id']} (Bypass Bot: @{bypass_bot_uname})...")
-        ub = await _load_ub(user_id, job["bot_id"])
-        if not ub:
-            await _update_bypass_job(job_id, {"status": "failed", "error": "Userbot connect fail"})
-            return await _upd(BOT_INSTANCE, job_id, chat_id, "<b>»  Failed to connect userbot!</b>")
+        bot_ids = job.get("bot_ids") or ([str(job.get("bot_id"))] if job.get("bot_id") else [])
+        if not bot_ids:
+            bots = await db.get_bots(user_id)
+            userbots = [b for b in bots if not b.get('is_bot', True)]
+            bot_ids = [str(b['id']) for b in userbots]
 
-        await _upd(BOT_INSTANCE, job_id, chat_id, f"✅ Connected! Using <b>@{bypass_bot_uname}</b>...")
+        logger.info(f"[Bypass] Loading userbot pool {bot_ids} for job {job_id[:8]}...")
+        for b_id in bot_ids:
+            u_cli = await _load_ub(user_id, b_id)
+            if u_cli:
+                ub_pool[str(b_id)] = u_cli
+
+        if not ub_pool:
+            await _update_bypass_job(job_id, {"status": "failed", "error": "Userbot connect fail"})
+            return await _upd(BOT_INSTANCE, job_id, chat_id, "<b>»  Failed to connect userbot(s)!</b>")
+
+        bot_id_list = list(ub_pool.keys())
+        first_ub = ub_pool[bot_id_list[0]]
+        await _upd(BOT_INSTANCE, job_id, chat_id, f"✅ Connected {len(ub_pool)} Userbot(s)! Setting up queue...")
         
+        channel_id = job["channel_id"]
+        target_channel_id = job.get("target_channel_id")
+
+        # Ensure userbots join source channel
+        for b_id, u_cli in ub_pool.items():
+            try:
+                await asyncio.wait_for(u_cli.join_chat(channel_id), timeout=15)
+            except Exception: pass
+            if target_channel_id:
+                try:
+                    await asyncio.wait_for(u_cli.join_chat(target_channel_id), timeout=15)
+                except Exception: pass
+
         queue = job.get("queue", [])
         if not queue:
-            # First run, need to scan
-            channel_id = job["channel_id"]
-            try:
-                await asyncio.wait_for(ub.join_chat(channel_id), timeout=20)
-            except: pass
-            
-            queue = await _scan(BOT_INSTANCE, job_id, chat_id, ub, channel_id, job["order"], job["scan_start"], job["scan_end"], job["allowed_buttons"])
+            queue = await _scan(BOT_INSTANCE, job_id, chat_id, first_ub, channel_id, job["order"], job["scan_start"], job["scan_end"], job["allowed_buttons"])
             if not queue:
                 await _update_bypass_job(job_id, {"status": "completed"})
-                return await _upd(BOT_INSTANCE, job_id, chat_id, "<b>»  No Shortener Links Found!</b>")
+                return await _upd(BOT_INSTANCE, job_id, chat_id, "<b>»  No Shortener / Deep Links Found!</b>")
             job["queue"] = queue
             await _update_bypass_job(job_id, {"queue": queue})
         
         total = len(queue)
         pacing = job.get("pacing_delay", 0)
-        
+        hourly_quota = job.get("hourly_quota", 3)
+
+        # Quota Tracking: b_id -> list of successful processing timestamps in epoch seconds
+        ub_history: dict[str, list[float]] = {b_id: [] for b_id in bot_id_list}
+        current_ub_idx = 0
+
         while True:
             # Check pause state
             ev = _ub_paused.get(job_id)
@@ -810,18 +907,83 @@ async def _ub_run_job(job_id: str):
             failed = job.get("failed", [])
             post_id, label, short_url = queue[done]
 
+            # ── Multi-Userbot Hourly Quota Controller ──
+            selected_b_id = None
+            if hourly_quota > 0:
+                while not selected_b_id:
+                    now = time.time()
+                    # Clean up timestamps older than 1 hour (3600 seconds)
+                    for b in bot_id_list:
+                        ub_history[b] = [t for t in ub_history[b] if now - t < 3600]
+
+                    # Check which userbot has available quota
+                    for i in range(len(bot_id_list)):
+                        cand_idx = (current_ub_idx + i) % len(bot_id_list)
+                        cand_b_id = bot_id_list[cand_idx]
+                        if len(ub_history[cand_b_id]) < hourly_quota:
+                            selected_b_id = cand_b_id
+                            current_ub_idx = cand_idx
+                            break
+
+                    if not selected_b_id:
+                        # All userbots have exhausted their quota for the current 60-minute window
+                        # Find earliest timestamp when a slot frees up
+                        all_active_ts = [ub_history[b][0] for b in bot_id_list if ub_history[b]]
+                        earliest_t = min(all_active_ts) if all_active_ts else now
+                        wait_seconds = max(1, int(3600 - (now - earliest_t)) + 3)
+                        
+                        logger.info(f"[Bypass] All userbots reached {hourly_quota} quota. Sleeping for {wait_seconds}s...")
+                        for w_sec in range(wait_seconds):
+                            if job_id not in _ub_tasks: break
+                            ev = _ub_paused.get(job_id)
+                            if ev and not ev.is_set(): await ev.wait()
+                            job = await _get_bypass_job(job_id)
+                            if not job or job.get("status") in ("stopped", "failed"): break
+
+                            if w_sec % 10 == 0 or w_sec == 0:
+                                rem_m = (wait_seconds - w_sec) // 60
+                                rem_s = (wait_seconds - w_sec) % 60
+                                ub_status_str = " | ".join(f"UB {b[:6]}: {len(ub_history[b])}/{hourly_quota}" for b in bot_id_list)
+                                await _upd(BOT_INSTANCE, job_id, chat_id,
+                                    f"⏳ <b>Hourly Rate Limit Safety Cooldown</b>\n"
+                                    f"<code>{_progress_bar(done, total)}</code>\n\n"
+                                    f"<b>»  Quota Status :</b> <code>{ub_status_str}</code>\n"
+                                    f"<b>»  Next Batch   :</b> <code>{done+1} - {min(done+hourly_quota, total)}</code>\n"
+                                    f"<b>»  Auto-Resumes :</b> in <code>{rem_m:02d}m {rem_s:02d}s</code>\n"
+                                    f"<b>»  Total Done   :</b> <code>{done} / {total}</code>\n\n"
+                                    f"<i>🚫 /bypass to manage</i>"
+                                )
+                            await asyncio.sleep(1)
+            else:
+                selected_b_id = bot_id_list[current_ub_idx % len(bot_id_list)]
+
+            curr_ub = ub_pool[selected_b_id]
+            curr_ub_quota_count = len(ub_history[selected_b_id]) + 1
+            quota_display = f"{curr_ub_quota_count}/{hourly_quota}" if hourly_quota > 0 else "Active"
+
             bar = _progress_bar(done, total)
             await _upd(BOT_INSTANCE, job_id, chat_id,
                 f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
                 f"<code>{bar}</code>\n\n"
-                f"<b>\u00bb  Bypass Bot:</b> <code>@{bypass_bot_uname}</code>\n"
-                f"<b>\u00bb  Pᴏsᴛ ID  :</b> <code>{post_id}</code>\n"
-                f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{done+1} / {total}</code>\n"
-                f"<b>\u00bb  Lᴀʙᴇʟ  :</b> <code>{label[:35]}</code>\n"
-                f"<b>\u00bb  Sᴛᴇᴘ   :</b> Sending to @{bypass_bot_uname}...\n\n"
+                f"<b>\u00bb  Active UB  :</b> <code>UB {selected_b_id[:6]} ({quota_display})</code>\n"
+                f"<b>\u00bb  Bypass Bot :</b> <code>@{bypass_bot_uname}</code>\n"
+                f"<b>\u00bb  Pᴏsᴛ ID    :</b> <code>{post_id}</code>\n"
+                f"<b>\u00bb  Lɪɴᴋ      :</b> <code>{done+1} / {total}</code>\n"
+                f"<b>\u00bb  Lᴀʙᴇʟ    :</b> <code>{label[:35]}</code>\n"
+                f"<b>\u00bb  Sᴛᴇᴘ     :</b> Processing post...\n\n"
                 f"<i>\u26d4 /bypass to manage</i>"
             )
 
+            # ── 1. Forward/Copy Original Source Post to Target Channel ──
+            if target_channel_id:
+                try:
+                    if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
+                    async with curr_ub._network_lock:
+                        await curr_ub.copy_message(chat_id=target_channel_id, from_chat_id=channel_id, message_id=post_id)
+                except Exception as e:
+                    logger.warning(f"[Bypass] Failed to copy post {post_id} to target channel: {e}")
+
+            # ── 2. Bypass / Resolve Bot Deep Link ──
             bypassed = None
             bot_uname, param = _parse_start(short_url)
             if bot_uname and param:
@@ -829,27 +991,20 @@ async def _ub_run_job(job_id: str):
             else:
                 attempt = 0
                 while not bypassed:
-                    # Check if job is stopped or cancelled
                     job = await _get_bypass_job(job_id)
-                    if not job or job.get("status") in ("stopped", "failed"):
-                        break
-                    if job_id not in _ub_tasks:
-                        break
+                    if not job or job.get("status") in ("stopped", "failed"): break
+                    if job_id not in _ub_tasks: break
 
                     attempt += 1
                     if attempt > 1:
                         wait_time = random.randint(30, 60)
                         for w_sec in range(wait_time):
                             if job_id not in _ub_tasks: break
-                            
-                            # Check pause state
                             ev = _ub_paused.get(job_id)
-                            if ev and not ev.is_set(): 
-                                await ev.wait()
+                            if ev and not ev.is_set(): await ev.wait()
 
                             job = await _get_bypass_job(job_id)
-                            if not job or job.get("status") in ("stopped", "failed"):
-                                break
+                            if not job or job.get("status") in ("stopped", "failed"): break
 
                             if w_sec % 5 == 0:
                                 await _upd(BOT_INSTANCE, job_id, chat_id,
@@ -861,19 +1016,15 @@ async def _ub_run_job(job_id: str):
                                 )
                             await asyncio.sleep(1)
 
-                        # Check if job status changed during sleep
                         job = await _get_bypass_job(job_id)
-                        if not job or job.get("status") in ("stopped", "failed"):
-                            break
-                        if job_id not in _ub_tasks:
-                            break
+                        if not job or job.get("status") in ("stopped", "failed"): break
+                        if job_id not in _ub_tasks: break
 
                     sent_time = time.time()
                     try:
-                        if not hasattr(ub, '_network_lock'):
-                            ub._network_lock = asyncio.Lock()
-                        async with ub._network_lock:
-                            sent_msg = await asyncio.wait_for(ub.send_message(bypass_bot_uname, short_url), timeout=20)
+                        if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
+                        async with curr_ub._network_lock:
+                            sent_msg = await asyncio.wait_for(curr_ub.send_message(bypass_bot_uname, short_url), timeout=20)
                             if sent_msg and getattr(sent_msg, 'date', None):
                                 sent_time = sent_msg.date.timestamp()
                     except FloodWait as fw:
@@ -891,28 +1042,24 @@ async def _ub_run_job(job_id: str):
                         continue
             
                     t0 = sent_time - 30
-                    # Fast polling: poll chat history every 0.4s (up to 75 attempts = 30s)
                     for check_step in range(75):
                         await asyncio.sleep(0.4)
                         if job_id not in _ub_tasks: break
                         
                         job = await _get_bypass_job(job_id)
-                        if not job or job.get("status") in ("stopped", "failed"):
-                            break
+                        if not job or job.get("status") in ("stopped", "failed"): break
 
                         try:
-                            if not hasattr(ub, '_network_lock'):
-                                ub._network_lock = asyncio.Lock()
-                            async with ub._network_lock:
-                                async for m in ub.get_chat_history(bypass_bot_uname, limit=5):
+                            if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
+                            async with curr_ub._network_lock:
+                                async for m in curr_ub.get_chat_history(bypass_bot_uname, limit=5):
                                     ts = m.date.timestamp() if m.date else 0
                                     if ts < t0: break
                                     c = _parse_bypassed(m.text or m.caption or '')
                                     if c and c != short_url:
                                         bypassed = c
                                         break
-                            if bypassed: 
-                                break
+                            if bypassed: break
                         except FloodWait as fw:
                             from plugins.arya_logger import log_admin_dm
                             if fw.value >= 60:
@@ -921,15 +1068,11 @@ async def _ub_run_job(job_id: str):
                         except Exception as e:
                             logger.warning(f"Error checking @{bypass_bot_uname}: {e}")
 
-            # Recheck job after attempting bypass
             job = await _get_bypass_job(job_id)
-            if not job or job.get("status") in ("stopped", "failed"):
-                break
-            if job_id not in _ub_tasks:
-                break
+            if not job or job.get("status") in ("stopped", "failed"): break
+            if job_id not in _ub_tasks: break
 
             if not bypassed:
-                # If we broke loop without bypassed (e.g. stopped), continue
                 continue
 
             bot_uname, param = _parse_start(bypassed)
@@ -943,20 +1086,20 @@ async def _ub_run_job(job_id: str):
             await _upd(BOT_INSTANCE, job_id, chat_id,
                 f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
                 f"<code>{bar}</code>\n\n"
-                f"<b>\u00bb  Lɪɴᴋ    :</b> <code>{done+1} / {total}</code>\n"
-                f"<b>\u00bb  Sᴛᴇᴘ   :</b> Sending /start to @{bot_uname}...\n\n"
+                f"<b>\u00bb  Active UB  :</b> <code>UB {selected_b_id[:6]} ({quota_display})</code>\n"
+                f"<b>\u00bb  Lɪɴᴋ      :</b> <code>{done+1} / {total}</code>\n"
+                f"<b>\u00bb  Sᴛᴇᴘ     :</b> Sending /start to @{bot_uname}...\n\n"
                 f"<i>\u26d4 /bypass to manage</i>"
             )
 
+            # ── 3. Send /start {param} to Target Bot ──
             start_ok = False
             start_attempt = 0
             wait_since = time.time() - 10
             while not start_ok:
                 job = await _get_bypass_job(job_id)
-                if not job or job.get("status") in ("stopped", "failed"):
-                    break
-                if job_id not in _ub_tasks:
-                    break
+                if not job or job.get("status") in ("stopped", "failed"): break
+                if job_id not in _ub_tasks: break
 
                 start_attempt += 1
                 if start_attempt > 1:
@@ -964,10 +1107,9 @@ async def _ub_run_job(job_id: str):
                     if job_id not in _ub_tasks: break
 
                 try:
-                    if not hasattr(ub, '_network_lock'):
-                        ub._network_lock = asyncio.Lock()
-                    async with ub._network_lock:
-                        sent_msg = await asyncio.wait_for(ub.send_message(bot_uname, f"/start {param}"), timeout=20)
+                    if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
+                    async with curr_ub._network_lock:
+                        sent_msg = await asyncio.wait_for(curr_ub.send_message(bot_uname, f"/start {param}"), timeout=20)
                         if sent_msg and getattr(sent_msg, 'date', None):
                             wait_since = sent_msg.date.timestamp() - 10
                         else:
@@ -991,12 +1133,9 @@ async def _ub_run_job(job_id: str):
                         failed.append((label, f"/start failed after 5 attempts: {e}"))
                         break
 
-            # Recheck job state
             job = await _get_bypass_job(job_id)
-            if not job or job.get("status") in ("stopped", "failed"):
-                break
-            if job_id not in _ub_tasks:
-                break
+            if not job or job.get("status") in ("stopped", "failed"): break
+            if job_id not in _ub_tasks: break
 
             if not start_ok:
                 done += 1
@@ -1004,28 +1143,32 @@ async def _ub_run_job(job_id: str):
                 await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
                 continue
 
+            # ── 4. Capture Incoming Video/Media Files ──
             files = 0; last_file = wait_since; got_file = False
             adaptive = BASE_IDLE_SEC
+            received_media_ids = set()
+            received_media_msgs = []
 
             while True:
                 await asyncio.sleep(2)
                 if job_id not in _ub_tasks: break
                 try:
                     nc = 0
-                    if not hasattr(ub, '_network_lock'):
-                        ub._network_lock = asyncio.Lock()
-                    async with ub._network_lock:
-                        async for m in ub.get_chat_history(bot_uname, limit=20):
+                    if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
+                    async with curr_ub._network_lock:
+                        async for m in curr_ub.get_chat_history(bot_uname, limit=20):
                             ts = m.date.timestamp() if m.date else 0
                             if ts < wait_since: break
                             if m.media or m.document or m.video or m.audio or m.voice:
                                 nc += 1
                                 if ts > last_file: last_file = ts; got_file = True
+                                if m.id not in received_media_ids:
+                                    received_media_ids.add(m.id)
+                                    received_media_msgs.append(m)
                     
                     if nc > files:
                         files = nc
-                        # Intelligent Timer Logic
-                        adaptive = BASE_IDLE_SEC + int(files * 0.7) # Extra 0.7s per file
+                        adaptive = BASE_IDLE_SEC + int(files * 0.7)
                         
                 except FloodWait as fw:
                     from plugins.arya_logger import log_admin_dm
@@ -1043,12 +1186,26 @@ async def _ub_run_job(job_id: str):
                 await _upd(BOT_INSTANCE, job_id, chat_id,
                     f"\U0001f504 <b>URL Sʜᴏʀᴛᴇɴᴇʀ Bʏᴘᴀss</b>\n"
                     f"<code>{_progress_bar(done, total)}</code>\n\n"
+                    f"<b>\u00bb  Active UB  :</b> <code>UB {selected_b_id[:6]} ({quota_display})</code>\n"
                     f"<b>\u00bb  Lɪɴᴋ      :</b> <code>{done+1} / {total}</code>\n"
                     f"<b>\u00bb  Fɪʟᴇs     :</b> <code>{files}</code> received\n"
                     f"<b>\u00bb  Iᴅʟᴇ Tɪᴍᴇ :</b> <code>{int(idle)}s / {adaptive}s</code>\n\n"
                     f"<i>\u26d4 /bypass to manage</i>"
                 )
 
+            # ── 5. Forward Captured Video/Media to Target Channel ──
+            if target_channel_id and received_media_msgs:
+                received_media_msgs.sort(key=lambda m: m.id)
+                for m_msg in received_media_msgs:
+                    try:
+                        if not hasattr(curr_ub, '_network_lock'): curr_ub._network_lock = asyncio.Lock()
+                        async with curr_ub._network_lock:
+                            await curr_ub.copy_message(chat_id=target_channel_id, from_chat_id=m_msg.chat.id, message_id=m_msg.id)
+                    except Exception as e:
+                        logger.warning(f"[Bypass] Failed to forward video message {m_msg.id} to target channel: {e}")
+
+            # Record success in quota history
+            ub_history[selected_b_id].append(time.time())
             done += 1
             await _update_bypass_job(job_id, {"done": done, "failed": failed})
             
@@ -1091,20 +1248,19 @@ async def _ub_run_job(job_id: str):
         logger.error(f"[Bypass] job error: {e}", exc_info=True)
     finally:
         _ub_tasks.pop(job_id, None)
-        if ub and job and "bot_id" in job:
-            bot_id = str(job["bot_id"])
-            if bot_id in _ub_refcounts:
-                _ub_refcounts[bot_id] -= 1
-                logger.info(f"[Bypass] Job {job_id[:8]} released Userbot {bot_id} (Refs: {_ub_refcounts[bot_id]})")
-                if _ub_refcounts[bot_id] <= 0:
+        for b_id, ub_inst in ub_pool.items():
+            if b_id in _ub_refcounts:
+                _ub_refcounts[b_id] -= 1
+                logger.info(f"[Bypass] Job {job_id[:8]} released Userbot {b_id} (Refs: {_ub_refcounts[b_id]})")
+                if _ub_refcounts[b_id] <= 0:
                     try:
                         from plugins.test import release_client
-                        await release_client(ub.name)
-                        logger.info(f"[Bypass] Fully stopped Userbot {bot_id}")
+                        await release_client(ub_inst.name)
+                        logger.info(f"[Bypass] Fully stopped Userbot {b_id}")
                     except Exception as e:
-                        logger.error(f"Failed to release ub {bot_id}: {e}")
-                    _active_ubs.pop(bot_id, None)
-                    _ub_refcounts.pop(bot_id, None)
+                        logger.error(f"Failed to release ub {b_id}: {e}")
+                    _active_ubs.pop(b_id, None)
+                    _ub_refcounts.pop(b_id, None)
 
 # ── Stop ──────────────────────────────────────────────────────────────────────
 @Client.on_message(filters.private & filters.command(['stopbypass', 'bypass_stop']))
