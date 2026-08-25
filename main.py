@@ -357,22 +357,12 @@ if __name__ == "__main__":
         task_name = getattr(task, "get_name", lambda: "unknown")() if task else "unknown"
         logging.error(f"[AsyncIO] Unhandled task exception in '{task_name}': {msg}", exc_info=context.get("exception"))
 
-    restart_delay = 5
-    while True:
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.set_exception_handler(_handle_asyncio_exception)
-            loop.run_until_complete(main())
-        except (KeyboardInterrupt, SystemExit):
-            logging.info("Bot stopped manually by user.")
-            break
-        except Exception as e:
-            logging.critical(f"Bot crashed with exception: {e}. Restarting in {restart_delay}s...", exc_info=True)
-            try:
-                time.sleep(restart_delay)
-                restart_delay = min(restart_delay * 2, 60)  # exponential backoff, max 60s
-            except KeyboardInterrupt:
-                break
-        else:
-            restart_delay = 5  # reset on clean exit
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(_handle_asyncio_exception)
+        loop.run_until_complete(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped manually by user.")
+    except Exception as e:
+        logging.critical(f"Bot crashed with exception: {e}", exc_info=True)
