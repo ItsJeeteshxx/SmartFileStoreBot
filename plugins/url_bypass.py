@@ -591,9 +591,22 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
                 reply_markup=reply_markup
             )
 
+    # Determine proper file extension so Telegram doesn't reject with PHOTO_EXT_INVALID
+    ext = ".jpg"
+    if msg_obj.photo: ext = ".jpg"
+    elif msg_obj.video: ext = ".mp4"
+    elif msg_obj.document:
+        doc_name = getattr(msg_obj.document, 'file_name', '') or 'file.bin'
+        ext = os.path.splitext(doc_name)[1] or ".bin"
+    elif msg_obj.audio: ext = ".mp3"
+    elif msg_obj.voice: ext = ".ogg"
+    elif msg_obj.animation: ext = ".mp4"
+    elif msg_obj.video_note: ext = ".mp4"
+    elif msg_obj.sticker: ext = ".webp"
+
     # Download media to local file and send
     os.makedirs("downloads/bypass_temp", exist_ok=True)
-    temp_name = f"downloads/bypass_temp/{msg_obj.chat.id}_{msg_obj.id}"
+    temp_name = f"downloads/bypass_temp/{abs(msg_obj.chat.id)}_{msg_obj.id}{ext}"
     dl_path = None
     try:
         async with client._network_lock:
@@ -603,7 +616,11 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
 
         async with client._network_lock:
             if msg_obj.photo:
-                return await client.send_photo(to_chat_id, photo=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                try:
+                    return await client.send_photo(to_chat_id, photo=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                except Exception as pe:
+                    logger.warning(f"send_photo fallback to send_document: {pe}")
+                    return await client.send_document(to_chat_id, document=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
             elif msg_obj.video:
                 return await client.send_video(to_chat_id, video=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
             elif msg_obj.document:
