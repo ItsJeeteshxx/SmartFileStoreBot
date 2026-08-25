@@ -3091,8 +3091,8 @@ async def _process_start(client, message):
         first_name = (getattr(message.from_user, 'first_name', '') or '').strip() or 'User'
         notice_text = (
             f"<b>Hey {first_name},</b>\n\n"
-            f"<blockquote>We have transitioned our bot store services to our new bot. If you prefer purchasing stories directly via Telegram bot, please use our new bot. This current bot is now dedicated to the Mini App, though you can still access and receive your previously purchased stories here using /mystories. All other store operations have moved to our new bot.</blockquote>\n\n"
-            f"<blockquote>Humne apni bot store services ko nayi bot par shift kar diya hai. Agar aap Telegram bot ke zariye hi stories khareedna chahte hain, to aap hamari nayi bot ka upyog kar sakte hain. Yeh bot ab mukhya roop se Mini App ke liye samarpit rahegi, lekin aap /mystories ka upyog karke apni pehle se khareedi hui stories ki delivery yahan le sakte hain. Baaki sabhi store services nayi bot par shift ho chuki hain.</blockquote>"
+            f"<blockquote>हमने अपनी बॉट स्टोर सेवाओं को नए बॉट पर स्थानांतरित कर दिया है। यदि आप टेलीग्राम बॉट के माध्यम से कहानियां खरीदना चाहते हैं, तो आप हमारे नए बॉट का उपयोग कर सकते हैं। यह बॉट अब केवल मिनी ऐप के लिए समर्पित रहेगा, लेकिन आप /mystories द्वारा अपनी पहले से खरीदी गई कहानियों की डिलीवरी यहां प्राप्त कर सकते हैं। बाकी सभी सेवाएं नए बॉट पर शिफ्ट हो चुकी हैं।</blockquote>\n\n"
+            f"<blockquote>We have transitioned our bot store services to our new bot. If you prefer purchasing stories directly via Telegram bot, please use our new bot. This current bot is now dedicated to the Mini App, though you can still access and receive your previously purchased stories here using /mystories. All other store operations have moved to our new bot.</blockquote>"
         )
         notice_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("Open Storyfi", url="https://t.me/StoryfiBot")]
