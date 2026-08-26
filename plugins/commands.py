@@ -87,6 +87,14 @@ async def start(client, message):
     else:
         await db.reactivate_user(user.id)
 
+    # Check for deep-link batch delivery
+    if len(message.command) > 1:
+        param = message.command[1].strip()
+        link_data = await db.get_share_link(param)
+        if link_data:
+            from plugins.share_bot import _process_start
+            return await _process_start(client, message)
+
     # Ban check is now handled globally in plugins/banned.py
     configs = await db.get_configs(user.id)
     menu_image_id = configs.get('menu_image_id')

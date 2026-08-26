@@ -602,22 +602,27 @@ async def _process_start(client, message):
                     win_verbose = format_duration_verbose(window_seconds)
 
                     # Send rate limit reached log to configured log channel in Quoteblock format
-                    rl_log_ch = rl_cfg.get('rate_limit_log_channel')
-                    user_obj = message.from_user
-                    from plugins.arya_logger import log_rate_limit_reached
-                    import asyncio
-                    asyncio.create_task(log_rate_limit_reached(
-                        user_id=user_id,
-                        user_name=user_obj.first_name if user_obj else "User",
-                        username=user_obj.username if user_obj else None,
-                        hits_count=len(hits),
-                        max_limit=max_limit,
-                        window_str=win_verbose,
-                        cooldown_str=rem_time_str,
-                        bot_name=client.me.first_name if hasattr(client, 'me') and client.me else "Delivery Bot",
-                        bot_username=client.me.username if hasattr(client, 'me') and client.me else None,
-                        log_channel=rl_log_ch
-                    ))
+                    try:
+                        rl_log_ch = rl_cfg.get('rate_limit_log_channel')
+                        user_obj = message.from_user
+                        from plugins.arya_logger import log_rate_limit_reached
+                        bot_me = getattr(client, 'me', None)
+                        b_fn = getattr(bot_me, 'first_name', None) or "Delivery Bot"
+                        b_un = getattr(bot_me, 'username', None)
+                        asyncio.create_task(log_rate_limit_reached(
+                            user_id=user_id,
+                            user_name=user_obj.first_name if user_obj else "User",
+                            username=user_obj.username if user_obj else None,
+                            hits_count=len(hits),
+                            max_limit=max_limit,
+                            window_str=win_verbose,
+                            cooldown_str=rem_time_str,
+                            bot_name=b_fn,
+                            bot_username=b_un,
+                            log_channel=rl_log_ch
+                        ))
+                    except Exception as _log_e:
+                        logger.warning(f"Failed to schedule rate limit log: {_log_e}")
 
                     limit_text = (
                         f"⏳ <b>Rate Limit Reached</b>\n\n"
@@ -1668,7 +1673,6 @@ async def _process_pass_callback(client, query):
             rl_cfg = await db.get_delivery_rate_limit_config()
             log_ch = rl_cfg.get('log_channel')
             from plugins.arya_logger import log_pass_purchased
-            import asyncio
             asyncio.create_task(log_pass_purchased(
                 user_id=user_id,
                 user_name=user_name,
