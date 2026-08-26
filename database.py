@@ -8,6 +8,100 @@ async def mongodb_version():
     mongodb_version = x.server_info()['version']
     return mongodb_version
 
+def parse_duration_to_seconds(val, default_unit='m') -> int:
+    """
+    Parses flexible duration input to seconds.
+    Examples:
+        '15' -> 900 (if default_unit == 'm') or 54000 (if 'h')
+        '15m', '15min', '15 mins', '15 minutes' -> 900
+        '2h', '2hr', '2 hrs', '2 hours' -> 7200
+        '1d', '1 day', '7d', '7 days' -> 604800
+        '90s', '90 sec', '90 seconds' -> 90
+    """
+    if isinstance(val, (int, float)):
+        if default_unit == 's':
+            return int(val)
+        elif default_unit == 'm':
+            return int(val * 60)
+        elif default_unit == 'h':
+            return int(val * 3600)
+        elif default_unit == 'd':
+            return int(val * 86400)
+        return int(val)
+
+    s = str(val).strip().lower()
+    if not s:
+        raise ValueError("Empty duration string")
+
+    import re
+    m = re.match(r'^(\d+(?:\.\d+)?)\s*([a-z]*)$', s)
+    if not m:
+        raise ValueError(f"Invalid duration format: '{val}'")
+
+    num = float(m.group(1))
+    unit = m.group(2).strip()
+
+    if not unit:
+        unit = default_unit
+
+    if unit in ('s', 'sec', 'secs', 'second', 'seconds'):
+        return int(num)
+    elif unit in ('m', 'min', 'mins', 'minute', 'minutes'):
+        return int(num * 60)
+    elif unit in ('h', 'hr', 'hrs', 'hour', 'hours'):
+        return int(num * 3600)
+    elif unit in ('d', 'day', 'days'):
+        return int(num * 86400)
+    elif unit in ('w', 'week', 'weeks'):
+        return int(num * 604800)
+    elif unit in ('mo', 'month', 'months'):
+        return int(num * 2592000)
+    else:
+        raise ValueError(f"Unknown duration unit: '{unit}'")
+
+
+def format_duration_friendly(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        mins = seconds // 60
+        sec = seconds % 60
+        return f"{mins}m" if sec == 0 else f"{mins}m {sec}s"
+    elif seconds < 86400:
+        hrs = seconds // 3600
+        rem_m = (seconds % 3600) // 60
+        return f"{hrs}h" if rem_m == 0 else f"{hrs}h {rem_m}m"
+    else:
+        days = seconds // 86400
+        rem_h = (seconds % 86400) // 3600
+        return f"{days}d" if rem_h == 0 else f"{days}d {rem_h}h"
+
+
+def format_duration_verbose(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} second" if seconds == 1 else f"{seconds} seconds"
+    elif seconds < 3600:
+        mins = seconds // 60
+        sec = seconds % 60
+        if sec == 0:
+            return f"{mins} minute" if mins == 1 else f"{mins} minutes"
+        return f"{mins} min {sec} sec"
+    elif seconds < 86400:
+        hrs = seconds // 3600
+        rem_m = (seconds % 3600) // 60
+        if rem_m == 0:
+            return f"{hrs} hour" if hrs == 1 else f"{hrs} hours"
+        return f"{hrs} hr {rem_m} min"
+    else:
+        days = seconds // 86400
+        rem_h = (seconds % 86400) // 3600
+        if rem_h == 0:
+            return f"{days} day" if days == 1 else f"{days} days"
+        return f"{days} day{'s' if days != 1 else ''} {rem_h} hr"
+
+
 class Database:
     
     def __init__(self, uri, database_name):
@@ -1474,100 +1568,6 @@ class Database:
 
     async def clear_all_deliveries(self, bot_id: str):
         await self.share_deliveries.delete_many({'bot_id': str(bot_id)})
-
-def parse_duration_to_seconds(val, default_unit='m') -> int:
-    """
-    Parses flexible duration input to seconds.
-    Examples:
-        '15' -> 900 (if default_unit == 'm') or 54000 (if 'h')
-        '15m', '15min', '15 mins', '15 minutes' -> 900
-        '2h', '2hr', '2 hrs', '2 hours' -> 7200
-        '1d', '1 day', '7d', '7 days' -> 604800
-        '90s', '90 sec', '90 seconds' -> 90
-    """
-    if isinstance(val, (int, float)):
-        if default_unit == 's':
-            return int(val)
-        elif default_unit == 'm':
-            return int(val * 60)
-        elif default_unit == 'h':
-            return int(val * 3600)
-        elif default_unit == 'd':
-            return int(val * 86400)
-        return int(val)
-
-    s = str(val).strip().lower()
-    if not s:
-        raise ValueError("Empty duration string")
-
-    import re
-    m = re.match(r'^(\d+(?:\.\d+)?)\s*([a-z]*)$', s)
-    if not m:
-        raise ValueError(f"Invalid duration format: '{val}'")
-
-    num = float(m.group(1))
-    unit = m.group(2).strip()
-
-    if not unit:
-        unit = default_unit
-
-    if unit in ('s', 'sec', 'secs', 'second', 'seconds'):
-        return int(num)
-    elif unit in ('m', 'min', 'mins', 'minute', 'minutes'):
-        return int(num * 60)
-    elif unit in ('h', 'hr', 'hrs', 'hour', 'hours'):
-        return int(num * 3600)
-    elif unit in ('d', 'day', 'days'):
-        return int(num * 86400)
-    elif unit in ('w', 'week', 'weeks'):
-        return int(num * 604800)
-    elif unit in ('mo', 'month', 'months'):
-        return int(num * 2592000)
-    else:
-        raise ValueError(f"Unknown duration unit: '{unit}'")
-
-
-def format_duration_friendly(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s"
-    elif seconds < 3600:
-        mins = seconds // 60
-        sec = seconds % 60
-        return f"{mins}m" if sec == 0 else f"{mins}m {sec}s"
-    elif seconds < 86400:
-        hrs = seconds // 3600
-        rem_m = (seconds % 3600) // 60
-        return f"{hrs}h" if rem_m == 0 else f"{hrs}h {rem_m}m"
-    else:
-        days = seconds // 86400
-        rem_h = (seconds % 86400) // 3600
-        return f"{days}d" if rem_h == 0 else f"{days}d {rem_h}h"
-
-
-def format_duration_verbose(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds} second" if seconds == 1 else f"{seconds} seconds"
-    elif seconds < 3600:
-        mins = seconds // 60
-        sec = seconds % 60
-        if sec == 0:
-            return f"{mins} minute" if mins == 1 else f"{mins} minutes"
-        return f"{mins} min {sec} sec"
-    elif seconds < 86400:
-        hrs = seconds // 3600
-        rem_m = (seconds % 3600) // 60
-        if rem_m == 0:
-            return f"{hrs} hour" if hrs == 1 else f"{hrs} hours"
-        return f"{hrs} hr {rem_m} min"
-    else:
-        days = seconds // 86400
-        rem_h = (seconds % 86400) // 3600
-        if rem_h == 0:
-            return f"{days} day" if days == 1 else f"{days} days"
-        return f"{days} day{'s' if days != 1 else ''} {rem_h} hr"
-
 
     # ── Delivery Rate Limit & Pass Methods ────────────────────────────────────
     async def get_delivery_rate_limit_config(self) -> dict:
