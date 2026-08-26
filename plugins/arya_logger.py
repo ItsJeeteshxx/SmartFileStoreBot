@@ -471,14 +471,16 @@ async def log_pass_purchased(
         exp_str = datetime.datetime.fromtimestamp(expiry_ts).strftime('%d-%m-%Y %I:%M %p')
 
     text = (
-        f"💎 <b>UNLIMITED ACCESS PASS PURCHASED</b>\n\n"
-        f"<blockquote><b>👤 User:</b> {_esc(user_name)} [<code>{user_id}</code>]\n"
-        f"<b>⚡ Plan:</b> {days} Day(s) Unlimited Access\n"
-        f"<b>💰 Amount:</b> ₹{amount:.2f}\n"
-        f"<b>💳 Gateway:</b> Cashfree PG\n"
-        f"<b>🆔 Order ID:</b> <code>{_esc(order_id)}</code>\n"
-        f"<b>⏰ Valid Until:</b> <code>{exp_str}</code>\n"
-        f"<b>📅 Purchased At:</b> <code>{now_str}</code></blockquote>"
+        f"<blockquote><b>UNLIMITED ACCESS PASS PURCHASED</b>\n"
+        f"────────────────────\n"
+        f"<b>Name:</b> {_esc(user_name)}\n"
+        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Plan:</b> {days} Day(s) Unlimited Access\n"
+        f"<b>Amount:</b> ₹{amount:.2f}\n"
+        f"<b>Gateway:</b> Cashfree PG\n"
+        f"<b>Order ID:</b> <code>{_esc(order_id)}</code>\n"
+        f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+        f"<b>Purchased At:</b> <code>{now_str}</code></blockquote>"
     )
 
     if log_channel:

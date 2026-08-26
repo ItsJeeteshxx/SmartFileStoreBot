@@ -1580,6 +1580,17 @@ class Database:
             {'$set': {'status': 'PAID', 'paid_at': time.time(), 'payment_details': payment_details or {}}}
         )
 
+    async def get_next_pass_order_number(self) -> int:
+        """Atomically get next unique sequential order number."""
+        from pymongo import ReturnDocument
+        doc = await self.stats.find_one_and_update(
+            {'_id': 'pass_order_counter'},
+            {'$inc': {'count': 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER
+        )
+        return doc.get('count', 1)
+
     async def ensure_indexes(self):
         try:
             await self.col.create_index("id", unique=True, background=True)

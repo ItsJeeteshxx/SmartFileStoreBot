@@ -77,7 +77,8 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, days: int, am
 
     clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', str(user_name or "User")).strip()
     customer_name = clean_name[:40] if clean_name else "User"
-    order_id = f"PASS_{user_id}_{days}D_{uuid.uuid4().hex[:6]}"
+    order_num = await db.get_next_pass_order_number()
+    order_id = f"PASS-{user_id}-{days}D-{order_num}"
 
     payload = {
         "order_id": order_id,
