@@ -451,11 +451,12 @@ async def log_admin_dm(error_type: str, details: str) -> None:
 async def log_pass_purchased(
     user_id: int,
     user_name: str,
-    days: int,
-    amount: float,
-    order_id: str,
-    expiry_ts: float,
-    log_channel: Optional[int] = None
+    days: Union[int, float, str] = 1,
+    amount: float = 0.0,
+    order_id: str = "",
+    expiry_ts: float = 0.0,
+    log_channel: Optional[int] = None,
+    duration_str: Optional[str] = None
 ) -> None:
     """Log when a user purchases an Unlimited Delivery Pass in Quoteblock format."""
     now_str = _ist_str()
@@ -470,12 +471,14 @@ async def log_pass_purchased(
     except Exception:
         exp_str = datetime.datetime.fromtimestamp(expiry_ts).strftime('%d-%m-%Y %I:%M %p')
 
+    plan_display = duration_str if duration_str else (f"{days} Day(s)" if str(days).isdigit() else str(days))
+
     text = (
         f"<blockquote><b>UNLIMITED ACCESS PASS PURCHASED</b>\n"
         f"────────────────────\n"
         f"<b>Name:</b> {_esc(user_name)}\n"
         f"<b>User ID:</b> <code>{user_id}</code>\n"
-        f"<b>Plan:</b> {days} Day(s) Unlimited Access\n"
+        f"<b>Plan:</b> {plan_display} Unlimited Access\n"
         f"<b>Amount:</b> ₹{amount:.2f}\n"
         f"<b>Gateway:</b> Cashfree PG\n"
         f"<b>Order ID:</b> <code>{_esc(order_id)}</code>\n"

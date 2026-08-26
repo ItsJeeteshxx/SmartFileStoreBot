@@ -1112,7 +1112,7 @@ async def settings_query(bot, query):
   # Delivery Rate Limit & Pass Settings Panel
   # ──────────────────────────────────────────────────────────────────────────
   elif type == "sb_ratelimit":
-    from database import format_duration_friendly, format_duration_verbose, parse_duration_to_seconds
+    from database import format_duration_friendly, format_duration_verbose, parse_duration_to_seconds, format_pricing_summary
     rl_cfg         = await db.get_delivery_rate_limit_config()
     enabled        = rl_cfg.get('enabled', True)
     max_limit      = rl_cfg.get('max_limit', 5)
@@ -1120,10 +1120,8 @@ async def settings_query(bot, query):
     win_friendly   = format_duration_friendly(window_seconds)
     win_verbose    = format_duration_verbose(window_seconds)
     log_ch         = rl_cfg.get('log_channel')
-    prices         = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
-    p1 = prices.get('1', 15)
-    p3 = prices.get('3', 30)
-    p7 = prices.get('7', 50)
+    prices         = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+    pricing_str    = format_pricing_summary(prices)
 
     log_ch_str  = str(log_ch) if log_ch else "None (Not Set)"
     toggle_lbl  = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
@@ -1135,7 +1133,7 @@ async def settings_query(bot, query):
             InlineKeyboardButton(f"⏱ Window: {win_friendly}",     callback_data="settings#sb_rl_window"),
         ],
         [InlineKeyboardButton(f"📋 Pass Logs: {log_ch_str}", callback_data="settings#sb_rl_log_ch")],
-        [InlineKeyboardButton(f"💰 Pricing (1D:₹{p1} | 3D:₹{p3} | 7D:₹{p7})", callback_data="settings#sb_rl_pricing")],
+        [InlineKeyboardButton(f"💰 Pricing ({pricing_str})", callback_data="settings#sb_rl_pricing")],
         [InlineKeyboardButton("🔑 Cashfree Gateway Config", callback_data="settings#sb_rl_cf_menu")],
         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
     ]
@@ -1145,7 +1143,7 @@ async def settings_query(bot, query):
         f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
         f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{win_verbose}</code>\n"
         f"<b>Pass Log Channel:</b> <code>{log_ch_str}</code>\n"
-        f"<b>Pass Plans:</b> 1D: ₹{p1} | 3D: ₹{p3} | 7D: ₹{p7}\n"
+        f"<b>Pass Plans:</b> {pricing_str}\n"
         f"────────────────────\n"
         f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
         f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
@@ -1318,14 +1316,19 @@ async def settings_query(bot, query):
 
   elif type == "sb_rl_pricing":
     await query.message.delete()
+    from database import parse_pricing_input, format_pricing_summary
     rl_cfg = await db.get_delivery_rate_limit_config()
-    cur_prices = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
+    cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+    cur_summary = format_pricing_summary(cur_prices)
     ask = await bot.send_message(
         user_id,
-        "<b>💰 Set Unlimited Pass Pricing</b>\n\n"
-        f"Current Prices: 1 Day: <b>₹{cur_prices.get('1',15)}</b> | 3 Days: <b>₹{cur_prices.get('3',30)}</b> | 7 Days: <b>₹{cur_prices.get('7',50)}</b>\n\n"
-        "Send 3 space-separated numbers for <b>1-Day, 3-Days, and 7-Days</b> prices.\n"
-        "Example: <code>15 30 50</code>\n\n"
+        "<b>💰 Set Unlimited Pass Pricing & Plans</b>\n\n"
+        f"<b>Current Plans:</b> <code>{cur_summary}</code>\n\n"
+        "You can configure custom pass plans in <b>minutes, hours, or days</b> with prices!\n\n"
+        "<b>Examples:</b>\n"
+        "• <code>30m:10 1h:15 1d:20 3d:30 7d:50</code> (Minutes, Hours & Days)\n"
+        "• <code>15m:5 1h:10 1d:15</code> (15 Minutes: ₹5, 1 Hour: ₹10, 1 Day: ₹15)\n"
+        "• <code>15 30 50</code> (Sets 1D=₹15, 3D=₹30, 7D=₹50)\n\n"
         "Send /cancel to abort."
     )
     try:
@@ -1336,19 +1339,18 @@ async def settings_query(bot, query):
                 "<i>Cancelled.</i>",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
             )
-        nums = [float(x.strip()) for x in (resp.text or '').replace(',', ' ').split() if x.strip()]
-        if len(nums) != 3 or any(n <= 0 for n in nums):
-            raise ValueError("Expected 3 positive numbers")
-        new_prices = {'1': nums[0], '3': nums[1], '7': nums[2]}
+        txt = (resp.text or '').strip()
+        new_prices = parse_pricing_input(txt)
         await db.set_delivery_rate_limit_config(prices=new_prices)
         await resp.delete()
+        new_summary = format_pricing_summary(new_prices)
         await ask.edit_text(
-            f"✅ Pricing updated: 1D: <b>₹{nums[0]:.0f}</b> | 3D: <b>₹{nums[1]:.0f}</b> | 7D: <b>₹{nums[2]:.0f}</b>",
+            f"✅ <b>Pricing updated successfully!</b>\n\n<b>New Plans:</b> <code>{new_summary}</code>",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
         )
     except Exception as e:
         await ask.edit_text(
-            f"❌ Invalid format. Please send 3 numbers like: <code>15 30 50</code>",
+            f"❌ Invalid format: {e}\n\nPlease send plans like: <code>30m:10 1d:15 3d:30 7d:50</code> or <code>15 30 50</code>",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_pricing"),
                 InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")

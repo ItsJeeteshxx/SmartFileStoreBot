@@ -102,6 +102,61 @@ def format_duration_verbose(seconds: int) -> str:
         return f"{days} day{'s' if days != 1 else ''} {rem_h} hr"
 
 
+def parse_pricing_input(text: str) -> dict:
+    """
+    Parses flexible pricing input from admin.
+    Supported formats:
+    - Key-value pairs: '30m:10 1h:15 1d:20 3d:30 7d:50' or '30m:10, 1d:15, 3d:30, 7d:50'
+    - Space/comma separated numbers: '15 30 50' (maps to 1d, 3d, 7d)
+    """
+    import re
+    cleaned = text.replace(',', ' ').strip()
+    tokens = [t.strip() for t in cleaned.split() if t.strip()]
+    if not tokens:
+        raise ValueError("Empty pricing input")
+
+    if all(re.match(r'^\d+(?:\.\d+)?$', t) for t in tokens):
+        nums = [float(t) for t in tokens]
+        if len(nums) == 3:
+            return {'1d': nums[0], '3d': nums[1], '7d': nums[2]}
+        elif len(nums) == 1:
+            return {'1d': nums[0]}
+        else:
+            default_keys = ['1d', '3d', '7d', '14d', '30d']
+            return {default_keys[i] if i < len(default_keys) else f"{i+1}d": n for i, n in enumerate(nums)}
+
+    res = {}
+    for tok in tokens:
+        sep = ':' if ':' in tok else ('=' if '=' in tok else ('-' if '-' in tok else ''))
+        if not sep:
+            raise ValueError(f"Invalid plan format '{tok}'. Expected format like 30m:10 or 1d:15")
+        parts = tok.split(sep, 1)
+        dur_str = parts[0].strip()
+        price_str = parts[1].strip()
+        sec = parse_duration_to_seconds(dur_str, default_unit='d')
+        if sec <= 0:
+            raise ValueError(f"Invalid duration in '{tok}'")
+        price = float(price_str)
+        if price <= 0:
+            raise ValueError(f"Price must be positive in '{tok}'")
+        res[dur_str] = price
+
+    if not res:
+        raise ValueError("No valid plans found")
+    return res
+
+
+def format_pricing_summary(prices: dict) -> str:
+    """Formats prices dictionary for display in menus."""
+    items = []
+    for k, v in prices.items():
+        dur_sec = parse_duration_to_seconds(k, default_unit='d')
+        friendly = format_duration_friendly(dur_sec).upper()
+        p_val = f"₹{int(v)}" if float(v).is_integer() else f"₹{v:.2f}"
+        items.append(f"{friendly}:{p_val}")
+    return " | ".join(items)
+
+
 class Database:
     
     def __init__(self, uri, database_name):

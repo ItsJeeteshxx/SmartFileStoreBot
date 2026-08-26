@@ -1530,31 +1530,37 @@ async def _process_pass_callback(client, query):
 
     if data == "pass#unlock_menu":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
-        p1 = int(prices.get('1', 15))
-        p3 = int(prices.get('3', 30))
-        p7 = int(prices.get('7', 50))
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+        from database import parse_duration_to_seconds, format_duration_friendly, format_duration_verbose
         
+        plan_lines = []
+        plan_buttons = []
+        icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
+        idx = 0
+        for dur_key, price in prices.items():
+            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+            verb_dur = format_duration_verbose(dur_sec)
+            friendly_tag = format_duration_friendly(dur_sec)
+            p_val = int(price) if float(price).is_integer() else price
+            icon = icons[idx % len(icons)]
+            idx += 1
+            plan_lines.append(f"» {verb_dur.title()} Pass — ₹{p_val}")
+            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#buy_{dur_key}_{p_val}")])
+
+        plan_lines_str = "\n".join(plan_lines)
         text = (
             "<b>ᴜɴʟᴏᴄᴋ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ</b>\n\n"
             "<blockquote expandable>सभी डिलीवरी लिमिट और कूलडाउन हटाने के लिए एक्सेस पास चुनें:\n"
             "Select an access pass to completely remove all delivery limits & cooldowns:</blockquote>\n\n"
-            f"» 1 Day Pass — ₹{p1}\n"
-            f"» 3 Days Pass — ₹{p3} (ᴘᴏᴘᴜʟᴀʀ)\n"
-            f"» 7 Days Pass — ₹{p7} (ʙᴇꜱᴛ ᴠᴀʟᴜᴇ)\n\n"
+            f"{plan_lines_str}\n\n"
             "<blockquote>Instant activation via Cashfree Payment Gateway (UPI / QR / Cards)!</blockquote>"
         )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⸢ ✷ 1 Dαყ ( ₹{p1} ) ⸥", callback_data=f"pass#buy_1_{p1}")],
-            [InlineKeyboardButton(f"⸢ ✺ 3 Dαყ ( ₹{p3} ) ⸥", callback_data=f"pass#buy_3_{p3}")],
-            [InlineKeyboardButton(f"⸢ ♞ 7 Dαყ ( ₹{p7} ) ⸥", callback_data=f"pass#buy_7_{p7}")],
-            [InlineKeyboardButton("⸢ ❮ Back ⸥", callback_data="pass#back")]
-        ])
-        await query.message.edit_text(text, reply_markup=kb)
+        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back ⸥", callback_data="pass#back")])
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data.startswith("pass#buy_"):
         parts = data.split("_")
-        days = int(parts[1])
+        dur_key = parts[1]
         amount = float(parts[2])
 
         try:
@@ -1562,8 +1568,12 @@ async def _process_pass_callback(client, query):
         except Exception:
             pass
 
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+
         from plugins.cashfree_helper import create_cashfree_pass_order
-        res = await create_cashfree_pass_order(user_id, user_name, days, amount)
+        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount)
 
         if not res.get("success"):
             err_text = res.get('error', 'Failed to generate payment link')
@@ -1578,19 +1588,20 @@ async def _process_pass_callback(client, query):
 
         order_id = res["order_id"]
         checkout_pay_link = res["checkout_pay_link"]
+        p_label = int(amount) if float(amount).is_integer() else amount
 
         inv_text = (
             f"🧾 <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n"
             f"<b>Name:</b> {user_name}\n"
             f"<b>User ID:</b> <code>{user_id}</code>\n"
-            f"<b>Plan:</b> {days} Day(s) Unlimited Delivery Pass\n"
+            f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass\n"
             f"<b>Amount:</b> ₹{amount:.2f}\n"
             f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
             f"<blockquote>𝑻𝒂𝒑 𝒕𝒉𝒆 𝒃𝒖𝒕𝒕𝒐𝒏 𝒃𝒆𝒍𝒐𝒘 𝒕𝒐 𝒄𝒐𝒎𝒑𝒍𝒆𝒕𝒆 𝒑𝒂𝒚𝒎𝒆𝒏𝒕 𝒗𝒊𝒂 𝑼𝑷𝑰, 𝑮𝒐𝒐𝒈𝒍𝒆 𝑷𝒂𝒚, 𝑷𝒉𝒐𝒏𝒆𝑷𝒆, 𝑷𝒂𝒚𝒕𝒎, 𝑸𝑹, 𝒐𝒓 𝑪𝒂𝒓𝒅. 𝑨𝒇𝒕𝒆𝒓 𝒑𝒂𝒚𝒎𝒆𝒏𝒕, 𝒕𝒂𝒑 𝑽𝒆𝒓𝒊𝒇𝒚 𝑷𝒂𝒚𝒎𝒆𝒏𝒕 𝒕𝒐 𝒂𝒄𝒕𝒊𝒗𝒂𝒕𝒆!</blockquote>"
         )
         inv_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Pay ₹{int(amount)} for {days} Day(s)➟", url=checkout_pay_link)],
-            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{days}_{amount}")],
+            [InlineKeyboardButton(f"Pay ₹{p_label} for {dur_verbose.title()}➟", url=checkout_pay_link)],
+            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
             [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")]
         ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
@@ -1598,7 +1609,7 @@ async def _process_pass_callback(client, query):
     elif data.startswith("pass#verify_"):
         parts = data.split("_")
         order_id = "_".join(parts[1:-2])
-        days = int(parts[-2])
+        dur_key = parts[-2]
         amount = float(parts[-1])
 
         try:
@@ -1606,12 +1617,16 @@ async def _process_pass_callback(client, query):
         except Exception:
             pass
 
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+
         from plugins.cashfree_helper import verify_cashfree_pass_order
         v_res = await verify_cashfree_pass_order(order_id)
 
         if v_res.get("is_paid"):
             await db.mark_pass_order_paid(order_id, v_res)
-            new_expiry = await db.grant_user_unlimited_pass(user_id, days)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
             
             import datetime
             try:
@@ -1624,7 +1639,7 @@ async def _process_pass_callback(client, query):
 
             success_text = (
                 f"🎉 <b>Unlimited Pass Activated Successfully!</b>\n\n"
-                f"Hey <b>{user_name}</b>, your <b>{days} Day(s) Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
                 f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
                 f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
@@ -1639,7 +1654,7 @@ async def _process_pass_callback(client, query):
             asyncio.create_task(log_pass_purchased(
                 user_id=user_id,
                 user_name=user_name,
-                days=days,
+                duration_str=dur_verbose.title(),
                 amount=amount,
                 order_id=order_id,
                 expiry_ts=new_expiry,
