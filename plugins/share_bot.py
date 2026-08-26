@@ -581,6 +581,41 @@ async def _process_start(client, message):
         await message.reply_text("<b>‣  Database Error:</b> Missing file references.")
         return
 
+    # ── Delivery Rate Limit & Cooldown Check ─────────────────────────────────
+    from plugins.banned import _is_any_owner
+    is_owner_or_whitelisted = (await _is_any_owner(user_id)) or (await db.is_whitelisted(user_id))
+    
+    if not is_owner_or_whitelisted:
+        pass_data = await db.get_user_unlimited_pass(user_id)
+        if not pass_data.get('active', False):
+            rl_cfg = await db.get_delivery_rate_limit_config()
+            if rl_cfg.get('enabled', True):
+                import time as _t
+                max_limit = int(rl_cfg.get('max_limit', 5))
+                window_hours = int(rl_cfg.get('window_hours', 12))
+                window_seconds = window_hours * 3600
+                hits = await db.get_user_delivery_hits(user_id, window_seconds)
+                if len(hits) >= max_limit:
+                    oldest_hit = hits[0]['timestamp']
+                    reset_time = oldest_hit + window_seconds
+                    rem_sec = max(1, int(reset_time - _t.time()))
+                    rem_hours = rem_sec // 3600
+                    rem_mins = (rem_sec % 3600) // 60
+                    rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+                    
+                    limit_text = (
+                        f"⏳ <b>Rate Limit Reached</b>\n\n"
+                        f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{window_hours} hours</b>. 🎬\n\n"
+                        f"The limit is <b>{max_limit} links per {window_hours} hours</b> to ensure fair usage for everyone.\n\n"
+                        f"⏰ <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n"
+                        f"<i>Please try again later or unlock unlimited access below! 👇</i>"
+                    )
+                    unlock_kb = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔒 Unlock Access for ₹", callback_data="pass#unlock_menu")
+                    ]])
+                    await message.reply_text(limit_text, reply_markup=unlock_kb)
+                    return
+
     # 2. Force-Subscribe check (per-bot fsub)
     fsub_channels = await db.get_bot_fsub_channels(bot_id) if bot_id else []
     if not fsub_channels:
@@ -814,12 +849,17 @@ async def _process_start(client, message):
     except Exception:
         pass
 
-    # ── Track delivery in DB for global Purge ───────────────
-    if sent_ids and bot_id:
+    # ── Track delivery in DB for global Purge & Rate Limit ───────────────
+    if sent_ids:
         try:
-            await db.track_delivery(bot_id, user_id, sent_ids)
+            await db.record_user_delivery_hit(user_id)
         except Exception as e:
-            logger.error(f"Failed to track delivery for purge: {e}")
+            logger.warning(f"Failed to record delivery hit: {e}")
+        if bot_id:
+            try:
+                await db.track_delivery(bot_id, user_id, sent_ids)
+            except Exception as e:
+                logger.error(f"Failed to track delivery for purge: {e}")
 
     total = len(sent_ids)
     if total == 0:
@@ -1478,6 +1518,150 @@ async def _process_fsub_check(client, query):
     await _process_start(client, msg)
 
 
+# ── Unlimited Delivery Pass Callback Handlers ─────────────────────────────────
+@Client.on_callback_query(filters.regex(r'^pass#'))
+async def _process_pass_callback(client, query):
+    data = query.data
+    user_id = query.from_user.id
+    user_name = query.from_user.first_name or "User"
+
+    if data == "pass#unlock_menu":
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        prices = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
+        p1 = prices.get('1', 15)
+        p3 = prices.get('3', 30)
+        p7 = prices.get('7', 50)
+        
+        text = (
+            "💎 <b>Unlock Unlimited Access</b> 🚀\n\n"
+            "Select an access pass to completely remove all delivery limits & cooldowns:\n\n"
+            f"⚡ <b>1 Day Pass</b> — ₹{p1}\n"
+            f"🔥 <b>3 Days Pass</b> — ₹{p3} <i>(Popular)</i>\n"
+            f"👑 <b>7 Days Pass</b> — ₹{p7} <i>(Best Value)</i>\n\n"
+            "<i>Instant activation via Cashfree Payment Gateway (UPI / QR / Cards)!</i>"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⚡ 1 Day (₹{p1})", callback_data=f"pass#buy_1_{p1}")],
+            [InlineKeyboardButton(f"🔥 3 Days (₹{p3})", callback_data=f"pass#buy_3_{p3}")],
+            [InlineKeyboardButton(f"👑 7 Days (₹{p7})", callback_data=f"pass#buy_7_{p7}")],
+            [InlineKeyboardButton("❮ Back", callback_data="pass#back")]
+        ])
+        await query.message.edit_text(text, reply_markup=kb)
+
+    elif data.startswith("pass#buy_"):
+        parts = data.split("_")
+        days = int(parts[1])
+        amount = float(parts[2])
+
+        await query.answer("Creating payment order...", show_alert=False)
+        from plugins.cashfree_helper import create_cashfree_pass_order
+        res = await create_cashfree_pass_order(user_id, user_name, days, amount)
+
+        if not res.get("success"):
+            return await query.answer(f"❌ Error: {res.get('error', 'Failed to generate payment link')}", show_alert=True)
+
+        order_id = res["order_id"]
+        checkout_pay_link = res["checkout_pay_link"]
+
+        inv_text = (
+            f"💳 <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n"
+            f"<b>👤 User:</b> {user_name}\n"
+            f"<b>⚡ Plan:</b> {days} Day(s) Unlimited Delivery Pass\n"
+            f"<b>💰 Amount:</b> ₹{amount:.2f}\n"
+            f"<b>🆔 Order ID:</b> <code>{order_id}</code>\n\n"
+            f"<i>Tap the button below to complete payment via UPI, Google Pay, PhonePe, Paytm, QR, or Card. After payment, tap <b>Verify Payment</b> to activate!</i>"
+        )
+        inv_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"💳 Pay ₹{int(amount)} for {days} Day(s) ➔", url=checkout_pay_link)],
+            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{days}_{amount}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")]
+        ])
+        await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+    elif data.startswith("pass#verify_"):
+        parts = data.split("_")
+        # format: pass#verify_PASS_1234_1D_abc_1_15
+        order_id = "_".join(parts[1:-2])
+        days = int(parts[-2])
+        amount = float(parts[-1])
+
+        await query.answer("Verifying payment with gateway...", show_alert=False)
+        from plugins.cashfree_helper import verify_cashfree_pass_order
+        v_res = await verify_cashfree_pass_order(order_id)
+
+        if v_res.get("is_paid"):
+            await db.mark_pass_order_paid(order_id, v_res)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, days)
+            
+            import datetime
+            try:
+                import pytz
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+                exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+            except Exception:
+                exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+            success_text = (
+                f"🎉 <b>Unlimited Pass Activated Successfully!</b> 🚀\n\n"
+                f"Hey <b>{user_name}</b>, your <b>{days} Day(s) Unlimited Delivery Pass</b> is now ACTIVE!\n\n"
+                f"⏰ <b>Valid Until:</b> <code>{exp_str}</code>\n"
+                f"🎬 <b>Delivery Limit:</b> Unlimited (No Cooldown)\n\n"
+                f"<i>You can now access and download any links without waiting! Enjoy!</i>"
+            )
+            await query.message.edit_text(success_text)
+
+            # Log to dedicated pass log channel
+            rl_cfg = await db.get_delivery_rate_limit_config()
+            log_ch = rl_cfg.get('log_channel')
+            from plugins.arya_logger import log_pass_purchased
+            import asyncio
+            asyncio.create_task(log_pass_purchased(
+                user_id=user_id,
+                user_name=user_name,
+                days=days,
+                amount=amount,
+                order_id=order_id,
+                expiry_ts=new_expiry,
+                log_channel=log_ch
+            ))
+        else:
+            await query.answer(
+                "⏳ Payment not received yet.\n\nIf you have already paid, please wait 5-10 seconds and tap Verify again.",
+                show_alert=True
+            )
+
+    elif data.startswith("pass#cancel_"):
+        await query.message.edit_text("<i>Payment invoice cancelled.</i>")
+
+    elif data == "pass#back":
+        # Return to rate limit message
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        max_limit = int(rl_cfg.get('max_limit', 5))
+        window_hours = int(rl_cfg.get('window_hours', 12))
+        window_seconds = window_hours * 3600
+        hits = await db.get_user_delivery_hits(user_id, window_seconds)
+        
+        import time as _t
+        rem_sec = window_seconds
+        if hits:
+            oldest_hit = hits[0]['timestamp']
+            rem_sec = max(1, int((oldest_hit + window_seconds) - _t.time()))
+        rem_hours = rem_sec // 3600
+        rem_mins = (rem_sec % 3600) // 60
+        rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+
+        limit_text = (
+            f"⏳ <b>Rate Limit Reached</b>\n\n"
+            f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{window_hours} hours</b>. 🎬\n\n"
+            f"The limit is <b>{max_limit} links per {window_hours} hours</b> to ensure fair usage for everyone.\n\n"
+            f"⏰ <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n"
+            f"<i>Please try again later or unlock unlimited access below! 👇</i>"
+        )
+        unlock_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔒 Unlock Access for ₹", callback_data="pass#unlock_menu")
+        ]])
+        await query.message.edit_text(limit_text, reply_markup=unlock_kb)
 
 
 # 
@@ -1619,6 +1803,10 @@ def register_share_handlers(app: Client):
     app.add_handler(CallbackQueryHandler(
         _process_fsub_check,
         filters.regex(r'^fsub_chk_')
+    ))
+    app.add_handler(CallbackQueryHandler(
+        _process_pass_callback,
+        filters.regex(r'^pass#')
     ))
 
     # Add AI Enhancer support to Delivery Bot seamlessly

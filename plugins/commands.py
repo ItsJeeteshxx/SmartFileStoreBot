@@ -643,5 +643,94 @@ async def workers_cb(bot, query):
             await query.answer("❌ Job not found — may have already finished.", show_alert=True)
 
 
+# ── Delivery Pass Admin Commands ──────────────────────────────────────────────
+@Client.on_message(filters.command(["grantpass"]) & filters.private)
+async def cmd_grant_pass(client, message):
+    from plugins.banned import _is_any_owner
+    if not await _is_any_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        return await message.reply_text("<b>Usage:</b> <code>/grantpass &lt;user_id&gt; &lt;days&gt;</code>\nExample: <code>/grantpass 12345678 7</code>")
+    try:
+        target_uid = int(args[1])
+        days = int(args[2])
+        if days <= 0:
+            raise ValueError()
+    except Exception:
+        return await message.reply_text("❌ Invalid User ID or Days.")
+
+    new_expiry = await db.grant_user_unlimited_pass(target_uid, days)
+    import datetime
+    try:
+        import pytz
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+        exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+    except Exception:
+        exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+    await message.reply_text(
+        f"✅ <b>Unlimited Pass Granted!</b>\n\n"
+        f"<b>User ID:</b> <code>{target_uid}</code>\n"
+        f"<b>Duration:</b> {days} Day(s)\n"
+        f"<b>Expires At:</b> <code>{exp_str}</code>"
+    )
+
+@Client.on_message(filters.command(["revokepass"]) & filters.private)
+async def cmd_revoke_pass(client, message):
+    from plugins.banned import _is_any_owner
+    if not await _is_any_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply_text("<b>Usage:</b> <code>/revokepass &lt;user_id&gt;</code>")
+    try:
+        target_uid = int(args[1])
+    except Exception:
+        return await message.reply_text("❌ Invalid User ID.")
+
+    await db.revoke_user_unlimited_pass(target_uid)
+    await message.reply_text(f"✅ Unlimited Pass revoked for user <code>{target_uid}</code>.")
+
+@Client.on_message(filters.command(["pass_status"]) & filters.private)
+async def cmd_pass_status(client, message):
+    from plugins.banned import _is_any_owner
+    if not await _is_any_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply_text("<b>Usage:</b> <code>/pass_status &lt;user_id&gt;</code>")
+    try:
+        target_uid = int(args[1])
+    except Exception:
+        return await message.reply_text("❌ Invalid User ID.")
+
+    pass_data = await db.get_user_unlimited_pass(target_uid)
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    win_sec = int(rl_cfg.get('window_hours', 12)) * 3600
+    hits = await db.get_user_delivery_hits(target_uid, win_sec)
+
+    status_str = "🟢 ACTIVE" if pass_data['active'] else "🔴 INACTIVE / FREE"
+    exp_str = "N/A"
+    if pass_data['expires_at']:
+        import datetime
+        try:
+            import pytz
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            exp_dt = datetime.datetime.fromtimestamp(pass_data['expires_at'], tz=ist_tz)
+            exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+        except Exception:
+            exp_str = datetime.datetime.fromtimestamp(pass_data['expires_at']).strftime('%d-%m-%Y %I:%M %p')
+
+    await message.reply_text(
+        f"📊 <b>User Pass & Delivery Status</b>\n\n"
+        f"<b>User ID:</b> <code>{target_uid}</code>\n"
+        f"<b>Pass Status:</b> {status_str}\n"
+        f"<b>Expires At:</b> <code>{exp_str}</code> (Days Left: {pass_data['days_left']})\n"
+        f"<b>Recent Deliveries (Past {rl_cfg.get('window_hours',12)}h):</b> {len(hits)} / {rl_cfg.get('max_limit', 5)}"
+    )
+
+
 
 

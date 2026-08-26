@@ -31,6 +31,9 @@ class Database:
         self.premium_ban_activity = self.db.premium_ban_activity
         self.share_deliveries = self.db.share_deliveries
         self.share_users = self.db.share_users
+        self.delivery_hits = self.db.delivery_hits
+        self.unlimited_passes = self.db.unlimited_passes
+        self.pass_orders = self.db.delivery_pass_orders
         
         self._ban_status_cache = {}  # {user_id: (ban_status_dict, expiry)}
         self._bot_cfg_cache = {}     # {bot_id: (cfg_dict, expiry)}
@@ -1472,6 +1475,108 @@ class Database:
     async def clear_all_deliveries(self, bot_id: str):
         await self.share_deliveries.delete_many({'bot_id': str(bot_id)})
 
+    # ── Delivery Rate Limit & Pass Methods ────────────────────────────────────
+    async def get_delivery_rate_limit_config(self) -> dict:
+        """Returns delivery rate limit and pass config."""
+        doc = await self.stats.find_one({'_id': 'delivery_rate_limit_config'})
+        defaults = {
+            'enabled': True,
+            'max_limit': 5,
+            'window_hours': 12,
+            'log_channel': None,
+            'prices': {'1': 15, '3': 30, '7': 50}
+        }
+        if not doc:
+            return defaults
+        res = {**defaults}
+        for k in defaults:
+            if k in doc:
+                res[k] = doc[k]
+        return res
+
+    async def set_delivery_rate_limit_config(self, **kwargs) -> None:
+        """Update delivery rate limit and pass config."""
+        _VALID = {'enabled', 'max_limit', 'window_hours', 'log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key', 'cashfree_env'}
+        filtered = {k: v for k, v in kwargs.items() if k in _VALID}
+        if not filtered:
+            return
+        await self.stats.update_one(
+            {'_id': 'delivery_rate_limit_config'},
+            {'$set': filtered},
+            upsert=True
+        )
+
+    async def record_user_delivery_hit(self, user_id: int):
+        """Record a successful delivery hit with timestamp."""
+        import time
+        await self.delivery_hits.insert_one({
+            'user_id': int(user_id),
+            'timestamp': time.time()
+        })
+
+    async def get_user_delivery_hits(self, user_id: int, window_seconds: int = 43200) -> list:
+        """Get user delivery timestamps within rolling window (oldest to newest)."""
+        import time
+        cutoff = time.time() - window_seconds
+        cursor = self.delivery_hits.find({
+            'user_id': int(user_id),
+            'timestamp': {'$gte': cutoff}
+        }).sort('timestamp', 1)
+        return [doc async for doc in cursor]
+
+    async def get_user_unlimited_pass(self, user_id: int) -> dict:
+        """Check if user has an active unlimited delivery pass."""
+        import time
+        doc = await self.unlimited_passes.find_one({'user_id': int(user_id)})
+        expires_at = doc.get('expires_at', 0.0) if doc else 0.0
+        now = time.time()
+        active = bool(expires_at > now)
+        days_left = max(0.0, (expires_at - now) / 86400.0)
+        return {
+            'active': active,
+            'expires_at': expires_at,
+            'days_left': round(days_left, 1)
+        }
+
+    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float):
+        """Set or update unlimited pass expiry."""
+        import time
+        await self.unlimited_passes.update_one(
+            {'user_id': int(user_id)},
+            {'$set': {'expires_at': float(expiry_timestamp), 'updated_at': time.time()}},
+            upsert=True
+        )
+
+    async def grant_user_unlimited_pass(self, user_id: int, days: int) -> float:
+        """Extend or activate unlimited pass for specified days and return new expiry."""
+        import time
+        cur = await self.get_user_unlimited_pass(user_id)
+        now = time.time()
+        base_time = cur['expires_at'] if (cur['active'] and cur['expires_at'] > now) else now
+        new_expiry = base_time + (int(days) * 86400.0)
+        await self.set_user_unlimited_pass(user_id, new_expiry)
+        return new_expiry
+
+    async def revoke_user_unlimited_pass(self, user_id: int):
+        """Revoke user's unlimited pass."""
+        await self.unlimited_passes.delete_one({'user_id': int(user_id)})
+
+    async def create_pass_order(self, order_dict: dict):
+        """Save a pending pass order."""
+        await self.pass_orders.insert_one(order_dict)
+
+    async def get_pass_order(self, order_id: str) -> dict:
+        """Fetch a pass order by order_id."""
+        return await self.pass_orders.find_one({'order_id': order_id})
+
+    async def mark_pass_order_paid(self, order_id: str, payment_details: dict = None):
+        """Mark pass order as PAID."""
+        import time
+        await self.pass_orders.update_one(
+            {'order_id': order_id},
+            {'$set': {'status': 'PAID', 'paid_at': time.time(), 'payment_details': payment_details or {}}}
+        )
+
     async def ensure_indexes(self):
         try:
             await self.col.create_index("id", unique=True, background=True)
@@ -1493,6 +1598,15 @@ class Database:
         except Exception: pass
         try:
             await self.share_users.create_index([("bot_id", 1), ("user_id", 1)], unique=True, background=True)
+        except Exception: pass
+        try:
+            await self.delivery_hits.create_index([("user_id", 1), ("timestamp", -1)], background=True)
+        except Exception: pass
+        try:
+            await self.unlimited_passes.create_index("user_id", unique=True, background=True)
+        except Exception: pass
+        try:
+            await self.pass_orders.create_index("order_id", unique=True, background=True)
         except Exception: pass
 
         # Self-migration routine: migrate old seen_users_* and bot_* configs to the new share_users collection

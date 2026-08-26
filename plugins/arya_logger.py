@@ -448,3 +448,49 @@ async def log_admin_dm(error_type: str, details: str) -> None:
         logger.warning(f"[AryaLog] Failed to send admin DM: {e}")
 
 
+async def log_pass_purchased(
+    user_id: int,
+    user_name: str,
+    days: int,
+    amount: float,
+    order_id: str,
+    expiry_ts: float,
+    log_channel: Optional[int] = None
+) -> None:
+    """Log when a user purchases an Unlimited Delivery Pass in Quoteblock format."""
+    now_str = _ist_str()
+    
+    # Format expiry in IST
+    import datetime
+    try:
+        import pytz
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        exp_dt = datetime.datetime.fromtimestamp(expiry_ts, tz=ist_tz)
+        exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+    except Exception:
+        exp_str = datetime.datetime.fromtimestamp(expiry_ts).strftime('%d-%m-%Y %I:%M %p')
+
+    text = (
+        f"💎 <b>UNLIMITED ACCESS PASS PURCHASED</b>\n\n"
+        f"<blockquote><b>👤 User:</b> {_esc(user_name)} [<code>{user_id}</code>]\n"
+        f"<b>⚡ Plan:</b> {days} Day(s) Unlimited Access\n"
+        f"<b>💰 Amount:</b> ₹{amount:.2f}\n"
+        f"<b>💳 Gateway:</b> Cashfree PG\n"
+        f"<b>🆔 Order ID:</b> <code>{_esc(order_id)}</code>\n"
+        f"<b>⏰ Valid Until:</b> <code>{exp_str}</code>\n"
+        f"<b>📅 Purchased At:</b> <code>{now_str}</code></blockquote>"
+    )
+
+    if log_channel:
+        bot = _get_bot()
+        if bot:
+            try:
+                await bot.send_message(chat_id=int(log_channel), text=text, parse_mode=enums.ParseMode.HTML)
+                return
+            except Exception as e:
+                logger.warning(f"[AryaLog] Failed to send pass purchase log to custom channel {log_channel}: {e}")
+
+    # Fallback to general share bot log channel if no dedicated pass log channel
+    await _send(text, 'ch_share')
+
+

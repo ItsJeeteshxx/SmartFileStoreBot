@@ -943,11 +943,19 @@ async def settings_query(bot, query):
      abuse_on  = abuse_cfg.get('enabled', True)
      abuse_lbl = f"»  ON  (cd={abuse_cfg.get('cooldown_secs',60)}s, strikes={abuse_cfg.get('max_strikes',5)})" if abuse_on else "‣  OFF"
 
+     # Rate limit status for display
+     rl_cfg = await db.get_delivery_rate_limit_config()
+     rl_on = rl_cfg.get('enabled', True)
+     rl_max = rl_cfg.get('max_limit', 5)
+     rl_win = rl_cfg.get('window_hours', 12)
+     rl_lbl = f"»  ON ({rl_max} in {rl_win}h)" if rl_on else "‣  OFF"
+
      buttons = []
      buttons.append([InlineKeyboardButton(f"Pʀᴏᴛᴇᴄᴛɪᴏɴ:{ptxt}", callback_data="settings#sharebotprotect")])
      buttons.append([InlineKeyboardButton(f"📋 Lᴏɢs Cᴏɴꜰɪɢ: {logs_lbl}", callback_data="settings#sb_logs_channel")])
      buttons.append([InlineKeyboardButton(f"🛡 Aɴᴛɪ-Aʙᴜsᴇ: {abuse_lbl}", callback_data="settings#sb_anti_abuse")])
-     buttons.append([InlineKeyboardButton("— Dᴇʟɪᴠᴇʀʏ Bᴏᴛs —", callback_data="settings#noop")])
+     buttons.append([InlineKeyboardButton(f"⏳ Rᴀᴛᴇ Lɪᴍɪᴛ & Pᴀss: {rl_lbl}", callback_data="settings#sb_ratelimit")])
+     buttons.append([InlineKeyboardButton("— DᴇʟɪᴠᴇʀY Bᴏᴛs —", callback_data="settings#noop")])
      for b in bots:
          buttons.append([InlineKeyboardButton(f"{b['name']}", callback_data=f"settings#sb_view_{b['id']}")])
      if len(bots) < 10:
@@ -1097,6 +1105,314 @@ async def settings_query(bot, query):
             "Timeout or error.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
         )
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Delivery Rate Limit & Pass Settings Panel
+  # ──────────────────────────────────────────────────────────────────────────
+  elif type == "sb_ratelimit":
+    rl_cfg       = await db.get_delivery_rate_limit_config()
+    enabled      = rl_cfg.get('enabled', True)
+    max_limit    = rl_cfg.get('max_limit', 5)
+    window_hours = rl_cfg.get('window_hours', 12)
+    log_ch       = rl_cfg.get('log_channel')
+    prices       = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
+    p1 = prices.get('1', 15)
+    p3 = prices.get('3', 30)
+    p7 = prices.get('7', 50)
+
+    log_ch_str  = str(log_ch) if log_ch else "None (Not Set)"
+    toggle_lbl  = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
+    status_icon = "🟢" if enabled else "🔴"
+    buttons = [
+        [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
+        [
+            InlineKeyboardButton(f"🔢 Limit: {max_limit} Links", callback_data="settings#sb_rl_limit"),
+            InlineKeyboardButton(f"⏱ Window: {window_hours}h",    callback_data="settings#sb_rl_window"),
+        ],
+        [InlineKeyboardButton(f"📋 Pass Logs: {log_ch_str}", callback_data="settings#sb_rl_log_ch")],
+        [InlineKeyboardButton(f"💰 Pricing (1D:₹{p1} | 3D:₹{p3} | 7D:₹{p7})", callback_data="settings#sb_rl_pricing")],
+        [InlineKeyboardButton("🔑 Cashfree Gateway Config", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
+    ]
+    await query.message.edit_text(
+        f"<b>⏳ DELIVERY RATE LIMIT & PASS CONFIG</b>\n"
+        f"────────────────────\n"
+        f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
+        f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{window_hours} hours</code>\n"
+        f"<b>Pass Log Channel:</b> <code>{log_ch_str}</code>\n"
+        f"<b>Pass Plans:</b> 1D: ₹{p1} | 3D: ₹{p3} | 7D: ₹{p7}\n"
+        f"────────────────────\n"
+        f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
+        f"When a free user accesses more than <b>{max_limit} links in {window_hours}h</b>, they get a "
+        f"cooldown message showing their live remaining time and a <b>'🔒 Unlock Access for ₹'</b> button. "
+        f"Pass purchases via Cashfree activate instantly and are logged to your Pass Log Channel in Quoteblock format. "
+        f"Pass holders and Bot Owners are completely exempt from all limits.</blockquote>",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+  elif type == "sb_rl_toggle":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    new_state = not rl_cfg.get('enabled', True)
+    await db.set_delivery_rate_limit_config(enabled=new_state)
+    try:
+        await query.answer(f"Delivery Rate Limit {'ENABLED ✅' if new_state else 'DISABLED ❌'}!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_ratelimit"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_limit":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>🔢 Set Free Delivery Limit</b>\n\n"
+        "Enter maximum number of links a free user can access within the cooldown window.\n\n"
+        "<b>Default:</b> <code>5</code>\n"
+        "<b>Range:</b> 1 – 100 links\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        val = int((resp.text or '').strip())
+        if not (1 <= val <= 100):
+            raise ValueError('out of range')
+        await db.set_delivery_rate_limit_config(max_limit=val)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Free limit set to <code>{val} links</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+    except ValueError:
+        await ask.edit_text(
+            "❌ Invalid value. Must be a number between 1 and 100.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_limit"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+            ]])
+        )
+    except Exception:
+        await ask.edit_text(
+            "Timeout or error.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+
+  elif type == "sb_rl_window":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>⏱ Set Rate Limit Cooldown Window</b>\n\n"
+        "Enter cooldown window duration in <b>hours</b>.\n\n"
+        "<b>Default:</b> <code>12</code> (12 hours)\n"
+        "<b>Range:</b> 1 – 72 hours\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        val = int((resp.text or '').strip())
+        if not (1 <= val <= 72):
+            raise ValueError('out of range')
+        await db.set_delivery_rate_limit_config(window_hours=val)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Cooldown window set to <code>{val} hours</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+    except ValueError:
+        await ask.edit_text(
+            "❌ Invalid value. Must be a number between 1 and 72.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_window"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+            ]])
+        )
+    except Exception:
+        await ask.edit_text(
+            "Timeout or error.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+
+  elif type == "sb_rl_log_ch":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>📋 Set Pass Purchase Log Channel</b>\n\n"
+        "Send the <b>Channel ID</b> (e.g. <code>-1001234567890</code>) or <b>@username</b> where "
+        "Quoteblock pass purchase logs will be sent.\n\n"
+        "• Send <code>0</code> or <code>clear</code> to reset to default.\n"
+        "• Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        txt = (resp.text or '').strip()
+        if txt.lower() in ('0', 'clear', 'none'):
+            await db.set_delivery_rate_limit_config(log_channel=None)
+            await resp.delete()
+            return await ask.edit_text(
+                "✅ Pass Log Channel cleared (using global logs).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        target_ch_id = None
+        if txt.lstrip('-').isdigit():
+            target_ch_id = int(txt)
+        else:
+            try:
+                ch_obj = await bot.get_chat(txt)
+                target_ch_id = ch_obj.id
+            except Exception as e:
+                raise ValueError(f"Could not resolve channel {txt}: {e}")
+
+        await db.set_delivery_rate_limit_config(log_channel=target_ch_id)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Pass Purchase Log Channel set to <code>{target_ch_id}</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+    except Exception as e:
+        await ask.edit_text(
+            f"❌ Failed to set channel: {e}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_log_ch"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+            ]])
+        )
+
+  elif type == "sb_rl_pricing":
+    await query.message.delete()
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_prices = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
+    ask = await bot.send_message(
+        user_id,
+        "<b>💰 Set Unlimited Pass Pricing</b>\n\n"
+        f"Current Prices: 1 Day: <b>₹{cur_prices.get('1',15)}</b> | 3 Days: <b>₹{cur_prices.get('3',30)}</b> | 7 Days: <b>₹{cur_prices.get('7',50)}</b>\n\n"
+        "Send 3 space-separated numbers for <b>1-Day, 3-Days, and 7-Days</b> prices.\n"
+        "Example: <code>15 30 50</code>\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        nums = [float(x.strip()) for x in (resp.text or '').replace(',', ' ').split() if x.strip()]
+        if len(nums) != 3 or any(n <= 0 for n in nums):
+            raise ValueError("Expected 3 positive numbers")
+        new_prices = {'1': nums[0], '3': nums[1], '7': nums[2]}
+        await db.set_delivery_rate_limit_config(prices=new_prices)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Pricing updated: 1D: <b>₹{nums[0]:.0f}</b> | 3D: <b>₹{nums[1]:.0f}</b> | 7D: <b>₹{nums[2]:.0f}</b>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+    except Exception as e:
+        await ask.edit_text(
+            f"❌ Invalid format. Please send 3 numbers like: <code>15 30 50</code>",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_pricing"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+            ]])
+        )
+
+  elif type == "sb_rl_cf_menu":
+    from plugins.cashfree_helper import get_cashfree_credentials
+    creds = await get_cashfree_credentials()
+    app_id = creds.get('app_id', '')
+    secret = creds.get('secret_key', '')
+    env_str = "Sandbox (Test)" if creds.get('is_sandbox') else "Production (Live)"
+    
+    app_id_masked = f"{app_id[:6]}...{app_id[-4:]}" if len(app_id) > 10 else (app_id or "Not Configured ❌")
+    secret_masked = f"{secret[:4]}...{secret[-4:]}" if len(secret) > 8 else ("Set ✅" if secret else "Not Configured ❌")
+
+    buttons = [
+        [InlineKeyboardButton("📝 Set App ID / Client ID", callback_data="settings#sb_rl_cf_appid")],
+        [InlineKeyboardButton("🔐 Set Secret Key", callback_data="settings#sb_rl_cf_secret")],
+        [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_cf_env")],
+        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
+    ]
+    await query.message.edit_text(
+        f"<b>🔑 CASHFREE PAYMENT GATEWAY CONFIGURATION</b>\n"
+        f"────────────────────\n"
+        f"<b>App ID / Client ID:</b> <code>{app_id_masked}</code>\n"
+        f"<b>Secret Key:</b> <code>{secret_masked}</code>\n"
+        f"<b>Environment:</b> <code>{env_str}</code>\n"
+        f"<b>Status:</b> {'🟢 Ready & Active' if creds.get('configured') else '🔴 Incomplete'}\n"
+        f"────────────────────\n"
+        f"<blockquote expandable>ℹ️ <b>How to get Cashfree Credentials:</b>\n"
+        f"1. Login to your Cashfree Merchant Dashboard at https://merchant.cashfree.com\n"
+        f"2. Go to <b>Payment Gateway → Developers → API Keys</b>\n"
+        f"3. Copy your <b>App ID</b> and <b>Secret Key</b> and set them here or in <code>.env</code>.</blockquote>",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+  elif type == "sb_rl_cf_appid":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>📝 Set Cashfree App ID / Client ID</b>\n\n"
+        "Send your Cashfree <b>App ID</b> (e.g. <code>TEST102938...</code> or <code>102938...</code>).\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+        val = (resp.text or '').strip()
+        await db.set_delivery_rate_limit_config(cashfree_app_id=val)
+        await resp.delete()
+        await ask.edit_text(f"✅ Cashfree App ID set to <code>{val[:6]}...{val[-4:] if len(val)>10 else val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+
+  elif type == "sb_rl_cf_secret":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>🔐 Set Cashfree Secret Key</b>\n\n"
+        "Send your Cashfree <b>Secret Key</b> (e.g. <code>cfsk_ma_prod_...</code>).\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+        val = (resp.text or '').strip()
+        await db.set_delivery_rate_limit_config(cashfree_secret_key=val)
+        await resp.delete()
+        await ask.edit_text("✅ Cashfree Secret Key updated securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+
+  elif type == "sb_rl_cf_env":
+    from plugins.cashfree_helper import get_cashfree_credentials
+    creds = await get_cashfree_credentials()
+    new_env = "production" if creds.get('is_sandbox') else "sandbox"
+    await db.set_delivery_rate_limit_config(cashfree_env=new_env)
+    try: await query.answer(f"Environment switched to: {new_env.upper()}!", show_alert=True)
+    except Exception: pass
+    query.data = "settings#sb_rl_cf_menu"
+    return await settings_query(bot, query)
 
   elif type == "sbt_manage":
       bots = await db.get_share_bots()
