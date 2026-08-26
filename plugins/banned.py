@@ -28,12 +28,20 @@ async def ban_interceptor(client, update):
     except Exception:
         return  # DB error — don't block user
     if ban_status.get('is_banned'):
-        if hasattr(update, 'answer'):
+        reason = str(ban_status.get('reason', '')).lower()
+        if 'rapid' in reason or 'strike' in reason:
             try:
-                await update.answer("⛔ You are banned from using this bot.", show_alert=True)
+                await db.unban_user(user.id)
+                ban_status = {'is_banned': False}
             except Exception:
                 pass
-        raise StopPropagation
+        if ban_status.get('is_banned'):
+            if hasattr(update, 'answer'):
+                try:
+                    await update.answer("⛔ You are banned from using this bot.", show_alert=True)
+                except Exception:
+                    pass
+            raise StopPropagation
 
 # Register on main bot via @Client.on_* decorators
 @Client.on_message(filters.all, group=-999)

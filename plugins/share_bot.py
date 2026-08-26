@@ -49,18 +49,8 @@ _ANTI_ABUSE_CACHE_TTL = 60  # Cache anti-abuse configuration for 1 minute
 
 
 async def _check_and_record_rapid_request(client, message, user_id: int, bot_id: str) -> bool:
-    """
-    Check whether this request is a "rapid re-request" (within cooldown window).
-    If they exceed the max strike limit, silently ban them and return True to abort.
-    Otherwise, increment strike count internally but allow delivery (return False)
-    with absolutely no warning message sent to the user.
-
-    Returns False immediately (no-op) if the Anti-Abuse system is disabled from Settings.
-    """
-    import time as _t
-    from config import Config as _Cfg
-    from plugins.banned import _is_any_owner
-    import plugins.arya_logger as _log
+    """Legacy anti-abuse replaced by rate limit & pass system."""
+    return False
 
     # ── Master switch: skip everything if Anti-Abuse is disabled ────────────
     now_time = _t.time()
@@ -522,19 +512,18 @@ async def _process_start(client, message):
     try:
         ban_status = await db.get_ban_status(user_id)
         if ban_status.get('is_banned'):
-            logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
-            return
+            reason = str(ban_status.get('reason', '')).lower()
+            if 'rapid' in reason or 'strike' in reason:
+                await db.unban_user(user_id)
+                ban_status = {'is_banned': False}
+            else:
+                logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
+                return
     except Exception:
         pass
         
     args = message.command
     bot_id = str(client.me.id) if client.me else None
-
-    # Check for rapid re-request FIRST (before any DB or delivery work)
-    # Returns True → abort silently or with warning. False → proceed.
-    if len(args) >= 2 and args[1].strip() not in ("help",):
-        if await _check_and_record_rapid_request(client, message, user_id, bot_id):
-            return
 
     # Track user for stats and broadcast; detect first-ever start for new-user log in background
     async def _track_user_background():

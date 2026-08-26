@@ -1872,9 +1872,10 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             # Send to admin DM — independent of channel
             try:
+                safe_dm_cap = (dm_cap[:1020] + "...") if (dm_cap and len(dm_cap) > 1024) else dm_cap
                 await bot.send_document(
                     user_id, report_bytes,
-                    caption=dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    caption=safe_dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name,
                     reply_markup=report_markup
                 )
@@ -1893,9 +1894,10 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
             try:
                 report_bytes.seek(0)
+                safe_ch_cap = (ch_cap[:1020] + "...") if (ch_cap and len(ch_cap) > 1024) else ch_cap
                 await poster.send_document(
                     sj['target'], report_bytes,
-                    caption=ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    caption=safe_ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name,
                     reply_to_message_id=sj.get('target_topic_id'),
                     reply_markup=report_markup
