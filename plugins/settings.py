@@ -1119,20 +1119,25 @@ async def settings_query(bot, query):
     window_seconds = int(rl_cfg.get('window_seconds', int(rl_cfg.get('window_hours', 12)) * 3600))
     win_friendly   = format_duration_friendly(window_seconds)
     win_verbose    = format_duration_verbose(window_seconds)
-    log_ch         = rl_cfg.get('log_channel')
+    pass_log_ch    = rl_cfg.get('log_channel')
+    hit_log_ch     = rl_cfg.get('rate_limit_log_channel')
     prices         = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
     pricing_str    = format_pricing_summary(prices)
 
-    log_ch_str  = str(log_ch) if log_ch else "None (Not Set)"
-    toggle_lbl  = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
-    status_icon = "🟢" if enabled else "🔴"
+    pass_log_str = str(pass_log_ch) if pass_log_ch else "None (Not Set)"
+    hit_log_str  = str(hit_log_ch) if hit_log_ch else "None (Not Set)"
+    toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
+    status_icon  = "🟢" if enabled else "🔴"
     buttons = [
         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
         [
             InlineKeyboardButton(f"🔢 Limit: {max_limit} Links", callback_data="settings#sb_rl_limit"),
             InlineKeyboardButton(f"⏱ Window: {win_friendly}",     callback_data="settings#sb_rl_window"),
         ],
-        [InlineKeyboardButton(f"📋 Pass Logs: {log_ch_str}", callback_data="settings#sb_rl_log_ch")],
+        [
+            InlineKeyboardButton(f"📋 Pass Logs: {pass_log_str}", callback_data="settings#sb_rl_log_ch"),
+            InlineKeyboardButton(f"⚠️ Limit Logs: {hit_log_str}", callback_data="settings#sb_rl_hit_log_ch"),
+        ],
         [InlineKeyboardButton(f"💰 Pricing ({pricing_str})", callback_data="settings#sb_rl_pricing")],
         [InlineKeyboardButton("🔑 Cashfree Gateway Config", callback_data="settings#sb_rl_cf_menu")],
         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
@@ -1142,13 +1147,15 @@ async def settings_query(bot, query):
         f"────────────────────\n"
         f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
         f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{win_verbose}</code>\n"
-        f"<b>Pass Log Channel:</b> <code>{log_ch_str}</code>\n"
+        f"<b>Pass Purchase Logs:</b> <code>{pass_log_str}</code>\n"
+        f"<b>Rate Limit Hit Logs:</b> <code>{hit_log_str}</code>\n"
         f"<b>Pass Plans:</b> {pricing_str}\n"
         f"────────────────────\n"
         f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
         f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
         f"cooldown message showing their live remaining time and a <b>'🔒 Unlock Access for ₹'</b> button. "
-        f"Pass purchases via Cashfree activate instantly and are logged to your Pass Log Channel in Quoteblock format. "
+        f"A log message with complete user details is sent to your <b>Rate Limit Hit Logs Channel</b> in Quoteblock format. "
+        f"Pass purchases via Cashfree activate instantly and are logged to your <b>Pass Purchase Logs Channel</b> in Quoteblock format. "
         f"Pass holders and Bot Owners are completely exempt from all limits.</blockquote>",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -1310,6 +1317,57 @@ async def settings_query(bot, query):
             f"❌ Failed to set channel: {e}",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_log_ch"),
+                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+            ]])
+        )
+
+  elif type == "sb_rl_hit_log_ch":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>⚠️ Set Rate Limit Hit Log Channel</b>\n\n"
+        "Send the <b>Channel ID</b> (e.g. <code>-1001234567890</code>) or <b>@username</b> where "
+        "Quoteblock logs will be sent when a user reaches their free delivery limit.\n\n"
+        "• Send <code>0</code> or <code>clear</code> to disable / reset.\n"
+        "• Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text(
+                "<i>Cancelled.</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        txt = (resp.text or '').strip()
+        if txt.lower() in ('0', 'clear', 'none'):
+            await db.set_delivery_rate_limit_config(rate_limit_log_channel=None)
+            await resp.delete()
+            return await ask.edit_text(
+                "✅ Rate Limit Hit Log Channel cleared.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            )
+        target_ch_id = None
+        if txt.lstrip('-').isdigit():
+            target_ch_id = int(txt)
+        else:
+            try:
+                ch_obj = await bot.get_chat(txt)
+                target_ch_id = ch_obj.id
+            except Exception as e:
+                raise ValueError(f"Could not resolve channel {txt}: {e}")
+
+        await db.set_delivery_rate_limit_config(rate_limit_log_channel=target_ch_id)
+        await resp.delete()
+        await ask.edit_text(
+            f"✅ Rate Limit Hit Log Channel set to <code>{target_ch_id}</code>.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+        )
+    except Exception as e:
+        await ask.edit_text(
+            f"❌ Failed to set channel: {e}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_hit_log_ch"),
                 InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
             ]])
         )

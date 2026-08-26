@@ -499,3 +499,46 @@ async def log_pass_purchased(
     await _send(text, 'ch_share')
 
 
+async def log_rate_limit_reached(
+    user_id: int,
+    user_name: str,
+    username: Optional[str] = None,
+    hits_count: int = 5,
+    max_limit: int = 5,
+    window_str: str = "12 hours",
+    cooldown_str: str = "11h 59m",
+    bot_name: Optional[str] = None,
+    bot_username: Optional[str] = None,
+    log_channel: Optional[int] = None
+) -> None:
+    """Log when a user reaches their free delivery rate limit in Quoteblock format."""
+    now_str = _ist_str()
+    uname_str = f"@{username}" if username else "None"
+    bot_display = f"@{bot_username}" if bot_username else (bot_name or "Delivery Bot")
+
+    text = (
+        f"<blockquote><b>RATE LIMIT REACHED</b>\n"
+        f"────────────────────\n"
+        f"<b>Name:</b> {_esc(user_name)}\n"
+        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Username:</b> {uname_str}\n"
+        f"<b>Deliveries Accessed:</b> <code>{hits_count} / {max_limit}</code>\n"
+        f"<b>Window:</b> <code>{window_str}</code>\n"
+        f"<b>Cooldown Left:</b> <code>{cooldown_str}</code>\n"
+        f"<b>Triggered On:</b> {_esc(bot_display)}\n"
+        f"<b>Triggered At:</b> <code>{now_str}</code></blockquote>"
+    )
+
+    if log_channel:
+        bot = _get_bot()
+        if bot:
+            try:
+                await bot.send_message(chat_id=int(log_channel), text=text, parse_mode=enums.ParseMode.HTML)
+                return
+            except Exception as e:
+                logger.warning(f"[AryaLog] Failed to send rate limit log to custom channel {log_channel}: {e}")
+
+    # Fallback to general share bot log channel if configured
+    await _send(text, 'ch_share')
+
+

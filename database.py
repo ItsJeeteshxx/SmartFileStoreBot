@@ -1633,8 +1633,9 @@ class Database:
             'max_limit': 5,
             'window_seconds': 43200,
             'window_hours': 12,
-            'log_channel': None,
-            'prices': {'1': 15, '3': 30, '7': 50},
+            'log_channel': None,               # Pass purchase log channel
+            'rate_limit_log_channel': None,    # Rate limit hit log channel
+            'prices': {'1d': 15, '3d': 30, '7d': 50},
             'cashfree_app_id': '',
             'cashfree_secret_key': '',
             'cashfree_env': 'production'
@@ -1654,7 +1655,7 @@ class Database:
 
     async def set_delivery_rate_limit_config(self, **kwargs) -> None:
         """Update delivery rate limit and pass config."""
-        _VALID = {'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key', 'cashfree_env'}
+        _VALID = {'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel', 'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key', 'cashfree_env'}
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
             return
