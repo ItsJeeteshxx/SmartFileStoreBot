@@ -6,7 +6,7 @@ import re
 import uuid
 import time
 import logging
-import httpx
+import aiohttp
 from database import db
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, days: int, am
     if not creds["configured"]:
         return {
             "success": False,
-            "error": "Cashfree Gateway is not configured. Please contact the administrator."
+            "error": "Cashfree Gateway is not configured. Please configure it in Settings → Delivery Bots → Rate Limit & Pass → Cashfree Config."
         }
 
     clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', str(user_name or "User")).strip()
@@ -103,47 +103,48 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, days: int, am
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(f"{creds['base_url']}/orders", json=payload, headers=headers)
-            res_json = resp.json()
-            logger.info(f"Cashfree Pass Order Create response: status={resp.status_code}, body={res_json}")
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(f"{creds['base_url']}/orders", json=payload, headers=headers) as resp:
+                res_json = await resp.json()
+                logger.info(f"Cashfree Pass Order Create response: status={resp.status}, body={res_json}")
 
-            if resp.status_code not in (200, 201):
-                err_msg = res_json.get("message") or res_json.get("detail") or f"HTTP {resp.status_code}"
-                return {"success": False, "error": f"Cashfree Error: {err_msg}"}
+                if resp.status not in (200, 201):
+                    err_msg = res_json.get("message") or res_json.get("detail") or f"HTTP {resp.status}"
+                    return {"success": False, "error": f"Cashfree Error: {err_msg}"}
 
-            payment_session_id = res_json.get("payment_session_id")
-            cf_order_id = res_json.get("cf_order_id") or order_id
-            
-            # Hosted checkout link
-            checkout_pay_link = (
-                f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}"
-                f"&sandbox={'true' if creds['is_sandbox'] else 'false'}"
-            )
+                payment_session_id = res_json.get("payment_session_id")
+                cf_order_id = res_json.get("cf_order_id") or order_id
+                
+                # Hosted checkout link
+                checkout_pay_link = (
+                    f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}"
+                    f"&sandbox={'true' if creds['is_sandbox'] else 'false'}"
+                )
 
-            # Persist order to database
-            order_doc = {
-                "order_id": order_id,
-                "cf_order_id": str(cf_order_id),
-                "payment_session_id": payment_session_id,
-                "user_id": int(user_id),
-                "user_name": customer_name,
-                "days": int(days),
-                "amount": float(amount),
-                "status": "PENDING",
-                "checkout_pay_link": checkout_pay_link,
-                "created_at": time.time()
-            }
-            await db.create_pass_order(order_doc)
+                # Persist order to database
+                order_doc = {
+                    "order_id": order_id,
+                    "cf_order_id": str(cf_order_id),
+                    "payment_session_id": payment_session_id,
+                    "user_id": int(user_id),
+                    "user_name": customer_name,
+                    "days": int(days),
+                    "amount": float(amount),
+                    "status": "PENDING",
+                    "checkout_pay_link": checkout_pay_link,
+                    "created_at": time.time()
+                }
+                await db.create_pass_order(order_doc)
 
-            return {
-                "success": True,
-                "order_id": order_id,
-                "payment_session_id": payment_session_id,
-                "checkout_pay_link": checkout_pay_link,
-                "amount": float(amount),
-                "days": int(days)
-            }
+                return {
+                    "success": True,
+                    "order_id": order_id,
+                    "payment_session_id": payment_session_id,
+                    "checkout_pay_link": checkout_pay_link,
+                    "amount": float(amount),
+                    "days": int(days)
+                }
 
     except Exception as e:
         logger.error(f"Cashfree order creation exception: {e}", exc_info=True)
@@ -166,28 +167,29 @@ async def verify_cashfree_pass_order(order_id: str) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(f"{creds['base_url']}/orders/{order_id}", headers=headers)
-            res_json = resp.json()
-            logger.info(f"Cashfree Pass Verify status: status={resp.status_code}, body={res_json}")
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{creds['base_url']}/orders/{order_id}", headers=headers) as resp:
+                res_json = await resp.json()
+                logger.info(f"Cashfree Pass Verify status: status={resp.status}, body={res_json}")
 
-            if resp.status_code == 200:
-                cf_status = str(res_json.get("order_status", "")).upper()
-                is_paid = (cf_status == "PAID")
-                return {
-                    "success": True,
-                    "is_paid": is_paid,
-                    "status": cf_status,
-                    "order_id": order_id,
-                    "cf_order_id": res_json.get("cf_order_id"),
-                    "order_amount": res_json.get("order_amount")
-                }
-            else:
-                return {
-                    "success": False,
-                    "is_paid": False,
-                    "error": res_json.get("message", f"HTTP {resp.status_code}")
-                }
+                if resp.status == 200:
+                    cf_status = str(res_json.get("order_status", "")).upper()
+                    is_paid = (cf_status == "PAID")
+                    return {
+                        "success": True,
+                        "is_paid": is_paid,
+                        "status": cf_status,
+                        "order_id": order_id,
+                        "cf_order_id": res_json.get("cf_order_id"),
+                        "order_amount": res_json.get("order_amount")
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "is_paid": False,
+                        "error": res_json.get("message", f"HTTP {resp.status}")
+                    }
     except Exception as e:
         logger.error(f"Cashfree pass verify exception for {order_id}: {e}")
         return {"success": False, "is_paid": False, "error": str(e)}
