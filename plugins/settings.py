@@ -944,11 +944,13 @@ async def settings_query(bot, query):
      abuse_lbl = f"»  ON  (cd={abuse_cfg.get('cooldown_secs',60)}s, strikes={abuse_cfg.get('max_strikes',5)})" if abuse_on else "‣  OFF"
 
      # Rate limit status for display
+     from database import format_duration_friendly, format_duration_verbose, parse_duration_to_seconds
      rl_cfg = await db.get_delivery_rate_limit_config()
      rl_on = rl_cfg.get('enabled', True)
      rl_max = rl_cfg.get('max_limit', 5)
-     rl_win = rl_cfg.get('window_hours', 12)
-     rl_lbl = f"»  ON ({rl_max} in {rl_win}h)" if rl_on else "‣  OFF"
+     rl_win_sec = int(rl_cfg.get('window_seconds', int(rl_cfg.get('window_hours', 12)) * 3600))
+     rl_win_str = format_duration_friendly(rl_win_sec)
+     rl_lbl = f"»  ON ({rl_max} in {rl_win_str})" if rl_on else "‣  OFF"
 
      buttons = []
      buttons.append([InlineKeyboardButton(f"Pʀᴏᴛᴇᴄᴛɪᴏɴ:{ptxt}", callback_data="settings#sharebotprotect")])
@@ -1110,12 +1112,15 @@ async def settings_query(bot, query):
   # Delivery Rate Limit & Pass Settings Panel
   # ──────────────────────────────────────────────────────────────────────────
   elif type == "sb_ratelimit":
-    rl_cfg       = await db.get_delivery_rate_limit_config()
-    enabled      = rl_cfg.get('enabled', True)
-    max_limit    = rl_cfg.get('max_limit', 5)
-    window_hours = rl_cfg.get('window_hours', 12)
-    log_ch       = rl_cfg.get('log_channel')
-    prices       = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
+    from database import format_duration_friendly, format_duration_verbose, parse_duration_to_seconds
+    rl_cfg         = await db.get_delivery_rate_limit_config()
+    enabled        = rl_cfg.get('enabled', True)
+    max_limit      = rl_cfg.get('max_limit', 5)
+    window_seconds = int(rl_cfg.get('window_seconds', int(rl_cfg.get('window_hours', 12)) * 3600))
+    win_friendly   = format_duration_friendly(window_seconds)
+    win_verbose    = format_duration_verbose(window_seconds)
+    log_ch         = rl_cfg.get('log_channel')
+    prices         = rl_cfg.get('prices', {'1': 15, '3': 30, '7': 50})
     p1 = prices.get('1', 15)
     p3 = prices.get('3', 30)
     p7 = prices.get('7', 50)
@@ -1127,7 +1132,7 @@ async def settings_query(bot, query):
         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
         [
             InlineKeyboardButton(f"🔢 Limit: {max_limit} Links", callback_data="settings#sb_rl_limit"),
-            InlineKeyboardButton(f"⏱ Window: {window_hours}h",    callback_data="settings#sb_rl_window"),
+            InlineKeyboardButton(f"⏱ Window: {win_friendly}",     callback_data="settings#sb_rl_window"),
         ],
         [InlineKeyboardButton(f"📋 Pass Logs: {log_ch_str}", callback_data="settings#sb_rl_log_ch")],
         [InlineKeyboardButton(f"💰 Pricing (1D:₹{p1} | 3D:₹{p3} | 7D:₹{p7})", callback_data="settings#sb_rl_pricing")],
@@ -1138,12 +1143,12 @@ async def settings_query(bot, query):
         f"<b>⏳ DELIVERY RATE LIMIT & PASS CONFIG</b>\n"
         f"────────────────────\n"
         f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
-        f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{window_hours} hours</code>\n"
+        f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{win_verbose}</code>\n"
         f"<b>Pass Log Channel:</b> <code>{log_ch_str}</code>\n"
         f"<b>Pass Plans:</b> 1D: ₹{p1} | 3D: ₹{p3} | 7D: ₹{p7}\n"
         f"────────────────────\n"
         f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
-        f"When a free user accesses more than <b>{max_limit} links in {window_hours}h</b>, they get a "
+        f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
         f"cooldown message showing their live remaining time and a <b>'🔒 Unlock Access for ₹'</b> button. "
         f"Pass purchases via Cashfree activate instantly and are logged to your Pass Log Channel in Quoteblock format. "
         f"Pass holders and Bot Owners are completely exempt from all limits.</blockquote>",
@@ -1207,12 +1212,18 @@ async def settings_query(bot, query):
     ask = await bot.send_message(
         user_id,
         "<b>⏱ Set Rate Limit Cooldown Window</b>\n\n"
-        "Enter cooldown window duration in <b>hours</b>.\n\n"
-        "<b>Default:</b> <code>12</code> (12 hours)\n"
-        "<b>Range:</b> 1 – 72 hours\n\n"
+        "Enter cooldown window duration in <b>minutes (1–60m)</b>, <b>hours (1–72h)</b>, or <b>days (1–30d)</b>.\n\n"
+        "<b>Examples:</b>\n"
+        "• <code>10m</code> or <code>10</code> — 10 Minutes\n"
+        "• <code>30m</code> — 30 Minutes\n"
+        "• <code>60m</code> or <code>1h</code> — 1 Hour\n"
+        "• <code>12h</code> — 12 Hours (Default)\n"
+        "• <code>24h</code> or <code>1d</code> — 1 Day\n\n"
+        "<b>Valid Range:</b> 1 Minute to 30 Days (<code>1m</code> – <code>30d</code>)\n\n"
         "Send /cancel to abort."
     )
     try:
+        from database import parse_duration_to_seconds, format_duration_verbose, format_duration_friendly
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
@@ -1220,18 +1231,29 @@ async def settings_query(bot, query):
                 "<i>Cancelled.</i>",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
             )
-        val = int((resp.text or '').strip())
-        if not (1 <= val <= 72):
-            raise ValueError('out of range')
-        await db.set_delivery_rate_limit_config(window_hours=val)
+        txt = (resp.text or '').strip()
+        if txt.isdigit():
+            val_num = int(txt)
+            unit = 'm' if val_num <= 60 else 'h'
+            win_seconds = parse_duration_to_seconds(txt, default_unit=unit)
+        else:
+            win_seconds = parse_duration_to_seconds(txt, default_unit='m')
+
+        if not (60 <= win_seconds <= 30 * 86400):
+            raise ValueError('out of range (must be between 1 minute and 30 days)')
+
+        await db.set_delivery_rate_limit_config(window_seconds=win_seconds)
         await resp.delete()
+        win_verbose = format_duration_verbose(win_seconds)
+        win_friendly = format_duration_friendly(win_seconds)
         await ask.edit_text(
-            f"✅ Cooldown window set to <code>{val} hours</code>.",
+            f"✅ Cooldown window set to <b>{win_verbose}</b> (<code>{win_friendly}</code>).",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
         )
     except ValueError:
         await ask.edit_text(
-            "❌ Invalid value. Must be a number between 1 and 72.",
+            "❌ Invalid value. Please enter a valid duration like <code>10m</code>, <code>30m</code>, <code>1h</code>, <code>12h</code>, or <code>1d</code>.\n"
+            "Range: 1 minute – 30 days.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_window"),
                 InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")

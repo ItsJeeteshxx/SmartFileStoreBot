@@ -580,22 +580,31 @@ async def _process_start(client, message):
             rl_cfg = await db.get_delivery_rate_limit_config()
             if rl_cfg.get('enabled', True):
                 import time as _t
+                from database import format_duration_verbose, format_duration_friendly
                 max_limit = int(rl_cfg.get('max_limit', 5))
-                window_hours = int(rl_cfg.get('window_hours', 12))
-                window_seconds = window_hours * 3600
+                window_seconds = int(rl_cfg.get('window_seconds', int(rl_cfg.get('window_hours', 12)) * 3600))
                 hits = await db.get_user_delivery_hits(user_id, window_seconds)
                 if len(hits) >= max_limit:
                     oldest_hit = hits[0]['timestamp']
                     reset_time = oldest_hit + window_seconds
                     rem_sec = max(1, int(reset_time - _t.time()))
-                    rem_hours = rem_sec // 3600
-                    rem_mins = (rem_sec % 3600) // 60
-                    rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+                    if rem_sec >= 3600:
+                        rem_hours = rem_sec // 3600
+                        rem_mins = (rem_sec % 3600) // 60
+                        rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+                    elif rem_sec >= 60:
+                        rem_mins = rem_sec // 60
+                        rem_secs = rem_sec % 60
+                        rem_time_str = f"{rem_mins:02d}m {rem_secs:02d}s"
+                    else:
+                        rem_time_str = f"{rem_sec:02d}s"
                     
+                    win_verbose = format_duration_verbose(window_seconds)
+
                     limit_text = (
                         f"⏳ <b>Rate Limit Reached</b>\n\n"
-                        f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{window_hours} hours</b>. 🎬\n\n"
-                        f"The limit is <b>{max_limit} links per {window_hours} hours</b> to ensure fair usage for everyone.\n\n"
+                        f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. 🎬\n\n"
+                        f"The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n"
                         f"⏰ <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n"
                         f"<i>Please try again later or unlock unlimited access below! 👇</i>"
                     )
@@ -1651,9 +1660,9 @@ async def _process_pass_callback(client, query):
     elif data == "pass#back":
         # Return to rate limit message
         rl_cfg = await db.get_delivery_rate_limit_config()
+        from database import format_duration_verbose, format_duration_friendly
         max_limit = int(rl_cfg.get('max_limit', 5))
-        window_hours = int(rl_cfg.get('window_hours', 12))
-        window_seconds = window_hours * 3600
+        window_seconds = int(rl_cfg.get('window_seconds', int(rl_cfg.get('window_hours', 12)) * 3600))
         hits = await db.get_user_delivery_hits(user_id, window_seconds)
         
         import time as _t
@@ -1661,14 +1670,23 @@ async def _process_pass_callback(client, query):
         if hits:
             oldest_hit = hits[0]['timestamp']
             rem_sec = max(1, int((oldest_hit + window_seconds) - _t.time()))
-        rem_hours = rem_sec // 3600
-        rem_mins = (rem_sec % 3600) // 60
-        rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+        if rem_sec >= 3600:
+            rem_hours = rem_sec // 3600
+            rem_mins = (rem_sec % 3600) // 60
+            rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+        elif rem_sec >= 60:
+            rem_mins = rem_sec // 60
+            rem_secs = rem_sec % 60
+            rem_time_str = f"{rem_mins:02d}m {rem_secs:02d}s"
+        else:
+            rem_time_str = f"{rem_sec:02d}s"
+
+        win_verbose = format_duration_verbose(window_seconds)
 
         limit_text = (
             f"⏳ <b>Rate Limit Reached</b>\n\n"
-            f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{window_hours} hours</b>. 🎬\n\n"
-            f"The limit is <b>{max_limit} links per {window_hours} hours</b> to ensure fair usage for everyone.\n\n"
+            f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. 🎬\n\n"
+            f"The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n"
             f"⏰ <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n"
             f"<i>Please try again later or unlock unlimited access below! 👇</i>"
         )
