@@ -24,7 +24,7 @@ Usage:
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Union, Any
 from pyrogram import enums
 
 logger = logging.getLogger(__name__)
