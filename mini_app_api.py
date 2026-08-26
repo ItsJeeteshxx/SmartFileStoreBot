@@ -4632,7 +4632,7 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
       justify-content: center;
       padding: 24px;
       padding-top: env(safe-area-inset-top, 24px);
-      padding-bottom: calc(env(safe-area-inset-bottom, 24px) + 6vh);
+      padding-bottom: calc(env(safe-area-inset-bottom, 24px) + 8vh);
       text-align: center;
     }
     @keyframes checkout-mark-in {
@@ -4793,12 +4793,18 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
   <script>
     const sessionId = "__SESSION_ID__";
     const isSandbox = __IS_SANDBOX__;
+    const WRAPPER_DURATION_MS = 3800;
+    const EXIT_DURATION_MS = 420;
+
+    let checkoutStarted = false;
 
     function startCheckout() {
+      if (checkoutStarted) return;
       if (!sessionId) {
-        document.getElementById('contentBlock').innerHTML = '<h1 style="color:#ef4444; font-size:20px;">Invalid Session</h1><p style="color:#a1a1aa; margin-top:8px;">Payment session ID is missing.</p>';
+        document.getElementById('contentBlock').innerHTML = '<h1 style="color:#ef4444; font-size:20px; font-weight:500;">Invalid Session</h1><p style="color:#a1a1aa; margin-top:8px; font-size:14px;">Payment session ID is missing.</p>';
         return;
       }
+      checkoutStarted = true;
       try {
         const cashfree = Cashfree({ mode: isSandbox ? "sandbox" : "production" });
         cashfree.checkout({
@@ -4807,11 +4813,19 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
         });
       } catch (e) {
         console.error("Cashfree Checkout error:", e);
+        const block = document.getElementById('contentBlock');
+        if (block) block.classList.remove('checkout-exit');
         document.getElementById('fallback').style.display = 'block';
+        checkoutStarted = false;
       }
     }
 
-    setTimeout(startCheckout, 600);
+    setTimeout(() => {
+      const block = document.getElementById('contentBlock');
+      if (block) block.classList.add('checkout-exit');
+    }, WRAPPER_DURATION_MS);
+
+    setTimeout(startCheckout, WRAPPER_DURATION_MS + EXIT_DURATION_MS);
   </script>
 </body>
 </html>'''.replace("__SESSION_ID__", session_id).replace("__IS_SANDBOX__", is_sandbox_str)
