@@ -1542,12 +1542,24 @@ async def _process_pass_callback(client, query):
         days = int(parts[1])
         amount = float(parts[2])
 
-        await query.answer("Creating payment order...", show_alert=False)
+        try:
+            await query.answer("Creating payment order...")
+        except Exception:
+            pass
+
         from plugins.cashfree_helper import create_cashfree_pass_order
         res = await create_cashfree_pass_order(user_id, user_name, days, amount)
 
         if not res.get("success"):
-            return await query.answer(f"❌ Error: {res.get('error', 'Failed to generate payment link')}", show_alert=True)
+            err_text = res.get('error', 'Failed to generate payment link')
+            err_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Retry", callback_data=data)],
+                [InlineKeyboardButton("❮ Back", callback_data="pass#unlock_menu")]
+            ])
+            return await query.message.edit_text(
+                f"❌ <b>Payment Order Failed</b>\n\n{err_text}",
+                reply_markup=err_kb
+            )
 
         order_id = res["order_id"]
         checkout_pay_link = res["checkout_pay_link"]

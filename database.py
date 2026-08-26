@@ -1484,14 +1484,17 @@ class Database:
             'max_limit': 5,
             'window_hours': 12,
             'log_channel': None,
-            'prices': {'1': 15, '3': 30, '7': 50}
+            'prices': {'1': 15, '3': 30, '7': 50},
+            'cashfree_app_id': '',
+            'cashfree_secret_key': '',
+            'cashfree_env': 'production'
         }
         if not doc:
             return defaults
         res = {**defaults}
-        for k in defaults:
-            if k in doc:
-                res[k] = doc[k]
+        for k, v in doc.items():
+            if k != '_id':
+                res[k] = v
         return res
 
     async def set_delivery_rate_limit_config(self, **kwargs) -> None:

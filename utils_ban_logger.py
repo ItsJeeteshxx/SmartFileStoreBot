@@ -2,7 +2,6 @@ import logging
 import time
 import sys
 import os
-import httpx
 from datetime import datetime, timezone
 from pyrogram import enums
 
@@ -95,6 +94,7 @@ async def _send_plain_text_log(text: str) -> None:
     bot_token = _get_env_or_config("BOT_TOKEN") or _get_env_or_config("MGMT_BOT_TOKEN")
     if bot_token:
         try:
+            import aiohttp
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             payload = {
                 "chat_id": str(ch_id),
@@ -102,12 +102,14 @@ async def _send_plain_text_log(text: str) -> None:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True
             }
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, json=payload, timeout=5.0)
-                if resp.status_code == 200:
-                    return
-                else:
-                    logger.warning(f"[BanLogger] HTTP fallback rejected: {resp.status_code} - {resp.text}")
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        return
+                    else:
+                        resp_text = await resp.text()
+                        logger.warning(f"[BanLogger] HTTP fallback rejected: {resp.status} - {resp_text}")
         except Exception as http_err:
             logger.error(f"[BanLogger] HTTP fallback failed: {http_err}")
 
