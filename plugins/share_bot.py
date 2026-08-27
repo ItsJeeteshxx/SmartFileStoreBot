@@ -1758,7 +1758,7 @@ def format_plan_button_label(dur_key: str, price) -> str:
         num = dur_str
         unit = "Days"
     p_val = int(price) if float(price).is_integer() else price
-    return f"💰 {num} {unit} (₹{p_val})"
+    return f"{num} {unit} (₹{p_val})"
 
 
 PLAN_CUSTOM_EMOJIS = [
@@ -1971,11 +1971,17 @@ async def _process_pass_callback(client, query):
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
-        for dur_key, price in prices.items():
+        plan_api_kb = []
+        for idx, (dur_key, price) in enumerate(prices.items()):
             p_val = int(price) if float(price).is_integer() else price
-            plan_buttons.append([InlineKeyboardButton(format_plan_button_label(dur_key, p_val), callback_data=f"pass#cfbuy_{dur_key}_{p_val}")])
+            label = format_plan_button_label(dur_key, p_val)
+            emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+            cb = f"pass#cfbuy_{dur_key}_{p_val}"
+            plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+            plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": "← Back", "callback_data": "pass#unlock_menu"}])
 
         text = (
             '<emoji id="5920332557466997677">⚡</emoji> <b>Pay with Cashfree</b>\n'
@@ -1986,33 +1992,69 @@ async def _process_pass_callback(client, query):
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
-            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=plan_api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
         else:
-            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=plan_api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#method_upi":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
-        for dur_key, price in prices.items():
+        plan_api_kb = []
+        for idx, (dur_key, price) in enumerate(prices.items()):
             p_val = int(price) if float(price).is_integer() else price
-            plan_buttons.append([InlineKeyboardButton(format_plan_button_label(dur_key, p_val), callback_data=f"pass#upibuy_{dur_key}_{p_val}")])
+            label = format_plan_button_label(dur_key, p_val)
+            emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+            cb = f"pass#upibuy_{dur_key}_{p_val}"
+            plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+            plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": "← Back", "callback_data": "pass#unlock_menu"}])
 
         text = (
-            "<b>🇮🇳 Pay with UPI ( Manual )</b>\n"
+            '<emoji id="5766975922620076409">💳</emoji> <b>Pay with UPI ( Manual )</b>\n'
             "──────────────────────\n\n"
-            "Instant payment with Paytm, PhonePe, Gpay , BHIM, or any UPI app.\n\n"
+            "Instant payment with Paytm, PhonePe, Gpay, BHIM, or any UPI app.\n\n"
             "Select your desired Pass plan:"
         )
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
-            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=plan_api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
         else:
-            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=plan_api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#method_crypto":
         rl_cfg = await db.get_delivery_rate_limit_config()
@@ -2022,14 +2064,20 @@ async def _process_pass_callback(client, query):
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
-        for dur_key, price in prices.items():
+        plan_api_kb = []
+        for idx, (dur_key, price) in enumerate(prices.items()):
             p_val = int(price) if float(price).is_integer() else price
             usd_val = round(float(price) / 92.0, 2)
             # OxaPay minimum is $0.50 USD (0.50 USDT = ₹46 INR)
             if usd_val >= 0.50:
-                plan_buttons.append([InlineKeyboardButton(f"{format_plan_button_label(dur_key, p_val)} [${usd_val:.2f}]", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
+                label = f"{format_plan_button_label(dur_key, p_val)} [${usd_val:.2f}]"
+                emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+                cb = f"pass#oxabuy_{dur_key}_{p_val}"
+                plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+                plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": "← Back", "callback_data": "pass#unlock_menu"}])
 
         if len(plan_buttons) <= 1:
             text = (
@@ -2051,9 +2099,24 @@ async def _process_pass_callback(client, query):
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
-            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=plan_api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
         else:
-            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=plan_api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#my_transactions":
         pass_info = await db.get_user_unlimited_pass(user_id)

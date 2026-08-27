@@ -1669,9 +1669,10 @@ class Database:
         for k, v in doc.items():
             if k != '_id':
                 res[k] = v if v is not None else defaults.get(k, '')
-        # Upgrade old 3-plan default to 5-plan default
-        if 'prices' in doc and list(doc['prices'].keys()) == ['1d', '3d', '7d']:
-            res['prices'] = {'1d': doc['prices'].get('1d', 15), '3d': doc['prices'].get('3d', 30), '7d': doc['prices'].get('7d', 50), '15d': 99, '30d': 149}
+        # Upgrade old/legacy plans to the new 5 default plans: 1d:15, 3d:30, 7d:55, 1mo:250, 6mo:1199
+        p = res.get('prices')
+        if not isinstance(p, dict) or len(p) < 5 or '1mo' not in p or '6mo' not in p or p.get('7d') == 50 or '30d' in p or '15d' in p:
+            res['prices'] = defaults['prices']
         # Ensure window_seconds is properly initialized and synced
         if 'window_seconds' not in doc and 'window_hours' in doc:
             res['window_seconds'] = int(float(doc['window_hours']) * 3600)
