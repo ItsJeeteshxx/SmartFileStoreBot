@@ -1130,7 +1130,7 @@ async def settings_query(bot, query):
     win_verbose    = format_duration_verbose(window_seconds)
     pass_log_ch    = rl_cfg.get('log_channel')
     hit_log_ch     = rl_cfg.get('rate_limit_log_channel')
-    prices         = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+    prices         = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
     pricing_str    = format_pricing_summary(prices)
 
     pass_log_str = str(pass_log_ch) if pass_log_ch else "None (Not Set)"
@@ -1407,7 +1407,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     from database import parse_pricing_input, format_pricing_summary
     rl_cfg = await db.get_delivery_rate_limit_config()
-    cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+    cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
     cur_summary = format_pricing_summary(cur_prices)
     ask = await bot.send_message(
         user_id,
@@ -1417,7 +1417,7 @@ async def settings_query(bot, query):
         "<b>Examples:</b>\n"
         "• <code>30m:10 1h:15 1d:20 3d:30 7d:50</code> (Minutes, Hours & Days)\n"
         "• <code>15m:5 1h:10 1d:15</code> (15 Minutes: ₹5, 1 Hour: ₹10, 1 Day: ₹15)\n"
-        "• <code>15 30 50</code> (Sets 1D=₹15, 3D=₹30, 7D=₹50)\n\n"
+        "• <code>15 30 55 250 1199</code> (Sets 1D=₹15, 3D=₹30, 7D=₹55, 1MO=₹250, 6MO=₹1199)\n\n"
         "Send /cancel to abort."
     )
     try:

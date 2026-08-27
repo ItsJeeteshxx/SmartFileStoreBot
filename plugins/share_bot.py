@@ -1739,15 +1739,21 @@ def generate_upi_qr_bytes(upi_id: str, amount: float, payee_name: str = "Merchan
 def format_plan_button_label(dur_key: str, price) -> str:
     """Returns clean label: '💰 1 Days (₹15)' without extra unicode decorations."""
     dur_str = str(dur_key).lower().strip()
-    if dur_str.endswith('d'):
+    if dur_str.endswith('mo'):
+        num = dur_str[:-2]
+        unit = "Month" if num == "1" else "Months"
+    elif dur_str.endswith('month') or dur_str.endswith('months'):
+        num = dur_str.replace('months', '').replace('month', '').strip()
+        unit = "Month" if num == "1" else "Months"
+    elif dur_str.endswith('d'):
         num = dur_str[:-1]
-        unit = "Days"
+        unit = "Day" if num == "1" else "Days"
     elif dur_str.endswith('h'):
         num = dur_str[:-1]
-        unit = "Hours"
+        unit = "Hour" if num == "1" else "Hours"
     elif dur_str.endswith('m'):
         num = dur_str[:-1]
-        unit = "Minutes"
+        unit = "Minute" if num == "1" else "Minutes"
     else:
         num = dur_str
         unit = "Days"
@@ -1865,14 +1871,20 @@ async def _process_pass_callback(client, query):
 
     if data == "pass#unlock_menu":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_lines = []
         for idx, (dur_key, price) in enumerate(prices.items()):
             dur_str = str(dur_key).lower().strip()
-            if dur_str.endswith('d'):
+            if dur_str.endswith('mo'):
+                num = dur_str[:-2]
+                unit = "Month" if num == "1" else "Months"
+            elif dur_str.endswith('month') or dur_str.endswith('months'):
+                num = dur_str.replace('months', '').replace('month', '').strip()
+                unit = "Month" if num == "1" else "Months"
+            elif dur_str.endswith('d'):
                 num = dur_str[:-1]
-                unit = "Days"
+                unit = "Day" if num == "1" else "Days"
             elif dur_str.endswith('h'):
                 num = dur_str[:-1]
                 unit = "Hours"
@@ -1956,7 +1968,7 @@ async def _process_pass_callback(client, query):
 
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
         for dur_key, price in prices.items():
@@ -1980,7 +1992,7 @@ async def _process_pass_callback(client, query):
 
     elif data == "pass#method_upi":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
         for dur_key, price in prices.items():
@@ -2007,7 +2019,7 @@ async def _process_pass_callback(client, query):
         if not rl_cfg.get('oxapay_enabled', True):
             return await query.answer("⚠️ Crypto payments are currently disabled by administrator.", show_alert=True)
 
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
         for dur_key, price in prices.items():
@@ -2123,7 +2135,13 @@ async def _process_pass_callback(client, query):
         amount = float(parts[2])
 
         dur_str = str(dur_key).lower().strip()
-        if dur_str.endswith('d'):
+        if dur_str.endswith('mo'):
+            count = dur_str[:-2]
+            unit = "Month" if count == "1" else "Months"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            count = dur_str.replace('months', '').replace('month', '').strip()
+            unit = "Month" if count == "1" else "Months"
+        elif dur_str.endswith('d'):
             count = dur_str[:-1]
             unit = "Days"
         elif dur_str.endswith('h'):

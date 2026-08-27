@@ -75,6 +75,9 @@ def format_duration_friendly(seconds: int) -> str:
     else:
         days = seconds // 86400
         rem_h = (seconds % 86400) // 3600
+        if rem_h == 0 and days % 30 == 0:
+            months = days // 30
+            return f"{months}mo"
         return f"{days}d" if rem_h == 0 else f"{days}d {rem_h}h"
 
 
@@ -98,6 +101,9 @@ def format_duration_verbose(seconds: int) -> str:
         days = seconds // 86400
         rem_h = (seconds % 86400) // 3600
         if rem_h == 0:
+            if days % 30 == 0:
+                months = days // 30
+                return f"{months} month" if months == 1 else f"{months} months"
             return f"{days} day" if days == 1 else f"{days} days"
         return f"{days} day{'s' if days != 1 else ''} {rem_h} hr"
 
@@ -118,13 +124,13 @@ def parse_pricing_input(text: str) -> dict:
     if all(re.match(r'^\d+(?:\.\d+)?$', t) for t in tokens):
         nums = [float(t) for t in tokens]
         if len(nums) == 5:
-            return {'1d': nums[0], '3d': nums[1], '7d': nums[2], '15d': nums[3], '30d': nums[4]}
+            return {'1d': nums[0], '3d': nums[1], '7d': nums[2], '1mo': nums[3], '6mo': nums[4]}
         elif len(nums) == 3:
             return {'1d': nums[0], '3d': nums[1], '7d': nums[2]}
         elif len(nums) == 1:
             return {'1d': nums[0]}
         else:
-            default_keys = ['1d', '3d', '7d', '15d', '30d']
+            default_keys = ['1d', '3d', '7d', '1mo', '6mo']
             return {default_keys[i] if i < len(default_keys) else f"{i+1}d": n for i, n in enumerate(nums)}
 
     res = {}
@@ -1645,7 +1651,7 @@ class Database:
             'window_hours': 12,
             'log_channel': None,               # Pass purchase log channel
             'rate_limit_log_channel': None,    # Rate limit hit log channel
-            'prices': {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149},
+            'prices': {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199},
             'cashfree_app_id': '',
             'cashfree_secret_key': '',
             'cashfree_env': 'production',
