@@ -1753,7 +1753,7 @@ async def _process_pass_callback(client, query):
                 num = dur_str
                 unit = "Days"
             p_val = int(price) if float(price).is_integer() else price
-            usd_val = max(0.50, round(float(price) / 85.0, 2))
+            usd_val = max(0.50, round(float(price) / 92.0, 2))
             plan_lines.append(f"• {num} {unit}: ₹{p_val} | ${usd_val:.2f}")
 
         plans_str = "\n".join(plan_lines)
@@ -1855,8 +1855,8 @@ async def _process_pass_callback(client, query):
         plan_buttons = []
         for dur_key, price in prices.items():
             p_val = int(price) if float(price).is_integer() else price
-            usd_val = round(float(price) / 85.0, 2)
-            # OxaPay minimum is $0.50 USD
+            usd_val = round(float(price) / 92.0, 2)
+            # OxaPay minimum is $0.50 USD (0.50 USDT = ₹46 INR)
             if usd_val >= 0.50:
                 plan_buttons.append([InlineKeyboardButton(f"{format_plan_button_label(dur_key, p_val)} [${usd_val:.2f}]", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
 
@@ -1867,7 +1867,7 @@ async def _process_pass_callback(client, query):
                 "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
                 "──────────────────────\n\n"
                 "⚠️ <b>No Eligible Crypto Plans Available</b>\n\n"
-                "OxaPay requires a minimum order amount of <b>$0.50 USD (~₹43)</b>.\n"
+                "OxaPay requires a minimum order amount of <b>$0.50 USD (~₹46)</b>.\n"
                 "None of the current configured plans meet this minimum.\n\n"
                 "👉 Please pay using <b>UPI (INR)</b> or <b>Cashfree</b> instead!"
             )
@@ -1876,7 +1876,7 @@ async def _process_pass_callback(client, query):
                 "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
                 "──────────────────────\n\n"
                 "Instant payment with USDT, BTC, SOL, TON.\n\n"
-                "<i>💡 Note: OxaPay has a minimum order limit of $0.50 USD (~₹43). Only eligible plans are displayed below:</i>\n\n"
+                "<i>💡 Note: OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:</i>\n\n"
                 "Select your desired Pass plan:"
             )
         if getattr(query.message, "photo", None):
@@ -2150,9 +2150,9 @@ async def _process_pass_callback(client, query):
         dur_key = parts[1]
         amount_inr = float(parts[2])
 
-        usd_check = round(float(amount_inr) / 85.0, 2)
+        usd_check = round(float(amount_inr) / 92.0, 2)
         if usd_check < 0.50:
-            return await query.answer("⚠️ Minimum crypto payment is $0.50 USD (~₹43). Please choose a larger plan or use UPI.", show_alert=True)
+            return await query.answer("⚠️ Minimum crypto payment is $0.50 USD (~₹46). Please choose a larger plan or use UPI.", show_alert=True)
 
         try:
             await query.answer("Generating crypto invoice via OxaPay...", show_alert=False)

@@ -51,8 +51,8 @@ async def create_oxapay_pass_order(
     is_sandbox = bool("sandbox" in key.lower() or env == "sandbox")
     base_url = "https://api.oxapay.com"
 
-    # OxaPay expects USD with minimum $0.50
-    amount_usd = max(0.50, round(float(amount_inr) / 85.0, 2))
+    # OxaPay expects USD with minimum $0.50 (0.50 USDT = ₹46 INR, rate: 92 INR/USD)
+    amount_usd = max(0.50, round(float(amount_inr) / 92.0, 2))
     order_id = f"pass_oxa_{user_id}_{int(time.time())}"
 
     dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
