@@ -1929,19 +1929,21 @@ class Database:
             elif not users_map[uid]['name'] and u_name:
                 users_map[uid]['name'] = u_name
 
-        # Resolve names for users who don't have one
+        # Bulk resolve missing names in a single fast query
+        missing_name_uids = [uid for uid, data in users_map.items() if not data.get('name')]
+        if missing_name_uids:
+            try:
+                cursor = self.col.find({'id': {'$in': missing_name_uids}}, {'id': 1, 'name': 1})
+                async for udoc in cursor:
+                    u_id = udoc.get('id')
+                    if u_id in users_map and udoc.get('name'):
+                        users_map[u_id]['name'] = udoc['name']
+            except Exception:
+                pass
+
         results = []
         for uid, data in users_map.items():
-            name = data.get('name')
-            if not name:
-                try:
-                    user_doc = await self.col.find_one({'id': uid})
-                    if user_doc and user_doc.get('name'):
-                        name = user_doc['name']
-                except Exception:
-                    pass
-            if not name:
-                name = f"User {uid}"
+            name = data.get('name') or f"User {uid}"
             data['name'] = str(name)[:25]
 
             exp = data['expires_at']

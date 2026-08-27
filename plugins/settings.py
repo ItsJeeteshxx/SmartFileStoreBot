@@ -503,6 +503,10 @@ async def owners_cb(bot, query):
 async def settings_query(bot, query):
   import os
   from config import Config
+  try:
+      await query.answer()
+  except Exception:
+      pass
   user_id = query.from_user.id
   i, type = query.data.split("#")
 

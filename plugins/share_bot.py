@@ -1,3 +1,4 @@
+_share_bot_token_cache = {}
 """
 Share Bot — Delivery Agent
 ==========================
@@ -571,14 +572,16 @@ async def _process_start(client, message):
         await message.reply_text("<b>‣  Database Error:</b> Missing file references.")
         return
 
-    # ── Delivery Rate Limit & Cooldown Check ─────────────────────────────────
+    # ── Delivery Rate Limit & Cooldown Check (Concurrent Fetch for speed) ───
     from plugins.banned import _is_any_owner
-    is_owner_or_whitelisted = (await _is_any_owner(user_id)) or (await db.is_whitelisted(user_id))
-    
-    if not is_owner_or_whitelisted:
-        pass_data = await db.get_user_unlimited_pass(user_id)
-        if not pass_data.get('active', False):
-            rl_cfg = await db.get_delivery_rate_limit_config()
+    is_owner = await _is_any_owner(user_id)
+    if not is_owner:
+        is_wl, pass_data, rl_cfg = await asyncio.gather(
+            db.is_whitelisted(user_id),
+            db.get_user_unlimited_pass(user_id),
+            db.get_delivery_rate_limit_config()
+        )
+        if not is_wl and not pass_data.get('active', False):
             if rl_cfg.get('enabled', True):
                 import time as _t
                 from database import format_duration_verbose, format_duration_friendly
@@ -720,18 +723,32 @@ async def _process_start(client, message):
     # 3. Warm peer cache for source channel (cached — near-instant on repeat requests)
     await _warm_peer(client, source_chat)
 
-    # Send actual files
-    sent_ids = []
-    auto_delete_mins = (await db.get_share_bot_about(bot_id)).get('auto_delete', 0) if bot_id else 0
-    if not auto_delete_mins:
-        auto_delete_mins = await db.get_share_autodelete_global()
-
     # 5. Deliver
     dl_id = f"{user_id}_{uuid_str}"
     active_downloads.add(dl_id)
 
+    # Concurrently fetch delivery configs (media, about, auto-delete, caption template, custom buttons)
+    (
+        fetching_media,
+        bot_about,
+        auto_del_global,
+        cap_tpl_bot,
+        cap_tpl_global,
+        custom_btns_data
+    ) = await asyncio.gather(
+        db.get_bot_fetching_media(bot_id) if bot_id else asyncio.sleep(0, result=[]),
+        db.get_share_bot_about(bot_id) if bot_id else asyncio.sleep(0, result={}),
+        db.get_share_autodelete_global(),
+        db.get_share_bot_text(bot_id, "custom_caption") if bot_id else asyncio.sleep(0, result=""),
+        db.get_share_text("custom_caption", ""),
+        db.get_share_bot_buttons(bot_id) if bot_id else asyncio.sleep(0, result=[])
+    )
+
+    auto_delete_mins = (bot_about.get('auto_delete', 0) if bot_about else 0) or auto_del_global
+    cap_tpl = cap_tpl_bot or cap_tpl_global
+    needs_msg_metadata = bool(cap_tpl and any(k in cap_tpl for k in ("{file_name}", "{file_size}", "{caption}")))
+
     # Show configurable fetching media (GIF / Photo / Video) or fallback to text
-    fetching_media = await db.get_bot_fetching_media(bot_id) if bot_id else []
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cᴀɴᴄᴇʟ", callback_data=f"cancel_dl_{uuid_str}")]])
     fetch_text = '<i><emoji id="6215133834149629990">⏳</emoji>  Fᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs sᴇᴄᴜʀᴇʟʏ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>'
     sts = None
@@ -759,25 +776,17 @@ async def _process_start(client, message):
                 )
             logger.info(f"[Fetch] Sent {ftyp} to user {user_id} via bot {bot_id}")
         except Exception as _fe:
-            # Log the exact error so we know WHY it failed
             logger.warning(
                 f"[Fetch] Media send FAILED for bot={bot_id} user={user_id} "
                 f"type={ftyp} file_id={fid[:30]}... error: {_fe}"
             )
-            # Do NOT clear the DB — just fall back to text for this request.
-            # File references can expire; the admin can re-upload to refresh.
             sts = None
 
     if sts is None:
-        # Fallback: plain text status
         sts = await message.reply_text(fetch_text, reply_markup=cancel_kb)
 
     sent_ids   = []
     fail_count = 0
-    cap_tpl    = (await db.get_share_bot_text(bot_id, "custom_caption") if bot_id else "") or \
-                 await db.get_share_text("custom_caption", "")
-                 
-    custom_btns_data = await db.get_share_bot_buttons(bot_id) if bot_id else []
     custom_markup = None
     if custom_btns_data:
         row = []
@@ -794,29 +803,30 @@ async def _process_start(client, message):
         retry_count = 0
         while retry_count < 3:
             try:
-                # Resolve placeholder values for this specific message
+                # Resolve placeholder values only if needed by custom caption
                 file_name = "Unknown"
                 file_size_str = "Unknown"
                 orig_caption = ""
 
-                try:
-                    src_msg = await client.get_messages(chat_id=source_chat, message_ids=msg_id)
-                    if src_msg:
-                        orig_caption = src_msg.caption or ""
-                        media = (src_msg.document or src_msg.audio or src_msg.video or
-                                 src_msg.voice or src_msg.video_note or src_msg.photo)
-                        if media:
-                            if hasattr(media, "file_name") and media.file_name:
-                                file_name = media.file_name
-                            elif hasattr(media, "title") and media.title:
-                                file_name = media.title
-                            else:
-                                file_name = "Media_File"
+                if needs_msg_metadata:
+                    try:
+                        src_msg = await client.get_messages(chat_id=source_chat, message_ids=msg_id)
+                        if src_msg:
+                            orig_caption = src_msg.caption or ""
+                            media = (src_msg.document or src_msg.audio or src_msg.video or
+                                     src_msg.voice or src_msg.video_note or src_msg.photo)
+                            if media:
+                                if hasattr(media, "file_name") and media.file_name:
+                                    file_name = media.file_name
+                                elif hasattr(media, "title") and media.title:
+                                    file_name = media.title
+                                else:
+                                    file_name = "Media_File"
 
-                            if hasattr(media, "file_size") and media.file_size:
-                                file_size_str = _get_readable_file_size(media.file_size)
-                except Exception as _ge:
-                    logger.warning(f"Failed to get source message metadata: {_ge}")
+                                if hasattr(media, "file_size") and media.file_size:
+                                    file_size_str = _get_readable_file_size(media.file_size)
+                    except Exception as _ge:
+                        logger.warning(f"Failed to get source message metadata: {_ge}")
 
                 if cap_tpl:
                     # First format user variables
@@ -1098,6 +1108,18 @@ async def _send_welcome(client, message, bot_id: str = None):
         if welcome_img:
             wid  = welcome_img.get('file_id') if isinstance(welcome_img, dict) else welcome_img
             wtyp = welcome_img.get('media_type', 'photo') if isinstance(welcome_img, dict) else 'photo'
+
+            # First try Bot API HTTP to preserve custom animated emojis on buttons & caption
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=user.id,
+                text=txt,
+                inline_keyboard=welcome_api_kb,
+                media_id=wid,
+                media_type=wtyp
+            )
+            if sent_ok:
+                return
 
             try:
                 if wtyp == 'animation':
@@ -1864,18 +1886,26 @@ async def send_or_edit_with_custom_icons(
     text: str,
     inline_keyboard: list,
     message_id: int = None,
-    parse_mode: str = "HTML"
+    parse_mode: str = "HTML",
+    media_id: str = None,
+    media_type: str = "photo",
+    is_media_edit: bool = False
 ) -> bool:
     """
     Sends or edits a message using Telegram Bot API HTTP endpoint.
-    This enables `icon_custom_emoji_id` on inline keyboard buttons,
-    which Pyrogram's MTProto layer does not support.
+    This enables `icon_custom_emoji_id` on inline keyboard buttons and
+    custom animated emojis (<tg-emoji>) in text and captions across Photos/Animations/Videos.
     """
     import aiohttp
     import re
     from config import Config
 
-    bot_token = getattr(client, "bot_token", None) or getattr(Config, "BOT_TOKEN", "")
+    bot_token = getattr(client, "bot_token", None)
+    if not bot_token and client and hasattr(client, "me") and client.me:
+        bot_token = _share_bot_token_cache.get(str(client.me.id))
+    if not bot_token:
+        bot_token = getattr(Config, "BOT_TOKEN", "")
+
     if not bot_token:
         return False
 
@@ -1890,7 +1920,6 @@ async def send_or_edit_with_custom_icons(
 
     payload = {
         "chat_id": c_id,
-        "text": api_text,
         "parse_mode": parse_mode,
         "reply_markup": {
             "inline_keyboard": inline_keyboard
@@ -1898,9 +1927,28 @@ async def send_or_edit_with_custom_icons(
     }
 
     url = f"https://api.telegram.org/bot{bot_token}/"
-    method = "editMessageText" if m_id else "sendMessage"
-    if m_id:
+    if media_id and not is_media_edit:
+        payload["caption"] = api_text
+        if media_type == "animation":
+            method = "sendAnimation"
+            payload["animation"] = media_id
+        elif media_type == "video":
+            method = "sendVideo"
+            payload["video"] = media_id
+        else:
+            method = "sendPhoto"
+            payload["photo"] = media_id
+    elif is_media_edit and m_id:
+        method = "editMessageCaption"
         payload["message_id"] = m_id
+        payload["caption"] = api_text
+    elif m_id:
+        method = "editMessageText"
+        payload["message_id"] = m_id
+        payload["text"] = api_text
+    else:
+        method = "sendMessage"
+        payload["text"] = api_text
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -2948,6 +2996,8 @@ async def start_share_bot():
                 api_hash=Config.API_HASH,
                 workdir="sessions"
             )
+            sc.bot_token = b['token']
+            _share_bot_token_cache[str(b['id'])] = b['token']
             await sc.start()
             sc.is_initialized = True
             register_share_handlers(sc)
