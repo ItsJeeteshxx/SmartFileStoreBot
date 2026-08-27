@@ -632,7 +632,7 @@ async def _process_start(client, message):
                         f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
                     )
                     unlock_kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton('<emoji id="6019568309417023812">🔒</emoji> Unlock Access Via Payment', callback_data="pass#unlock_menu")
+                        InlineKeyboardButton("🔒 Unlock Access Via Payment", callback_data="pass#unlock_menu")
                     ]])
                     await message.reply_text(limit_text, reply_markup=unlock_kb)
                     return
@@ -1728,7 +1728,7 @@ async def _process_pass_callback(client, query):
             f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
         )
         unlock_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton('<emoji id="6019568309417023812">🔒</emoji> Unlock Access Via Payment', callback_data="pass#unlock_menu")
+            InlineKeyboardButton("🔒 Unlock Access Via Payment", callback_data="pass#unlock_menu")
         ]])
         await query.message.edit_text(limit_text, reply_markup=unlock_kb)
 
