@@ -637,7 +637,7 @@ async def _process_start(client, message):
                             {
                                 "text": "Unlock Access Via Payment",
                                 "callback_data": "pass#unlock_menu",
-                                "icon_custom_emoji_id": "6019568309417023812"
+                                "icon_custom_emoji_id": "6030561664758191905"
                             }
                         ]
                     ]
@@ -2728,7 +2728,7 @@ async def _process_pass_callback(client, query):
                 {
                     "text": "Unlock Access Via Payment",
                     "callback_data": "pass#unlock_menu",
-                    "icon_custom_emoji_id": "6019568309417023812"
+                    "icon_custom_emoji_id": "6030561664758191905"
                 }
             ]
         ]
