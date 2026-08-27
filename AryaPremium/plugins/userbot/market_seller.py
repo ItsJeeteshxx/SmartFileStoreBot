@@ -7163,14 +7163,24 @@ async def _process_callback(client, query):
                             if result["verified"] or result["amount_mismatch"]:
                                 break
 
-                    # If verified, archive the email out of INBOX to prevent cross-bot double claims
+                    # If verified, archive/trash the email out of INBOX to prevent cross-bot double claims
                     if result.get("verified") and 'mail_id' in locals():
                         try:
-                            mail.store(mail_id, '-X-GM-LABELS', '\\Inbox')
+                            mail.store(mail_id, '-X-GM-LABELS', '(\\Inbox)')
+                        except Exception:
+                            pass
+
+                        try:
+                            res, _ = mail.copy(mail_id, '[Gmail]/Trash')
+                            if res == 'OK':
+                                mail.store(mail_id, '+FLAGS', '(\\Deleted)')
+                                mail.expunge()
                         except Exception:
                             try:
-                                mail.store(mail_id, '+FLAGS', '\\Deleted')
-                                mail.expunge()
+                                res, _ = mail.copy(mail_id, 'Trash')
+                                if res == 'OK':
+                                    mail.store(mail_id, '+FLAGS', '(\\Deleted)')
+                                    mail.expunge()
                             except Exception:
                                 pass
 
