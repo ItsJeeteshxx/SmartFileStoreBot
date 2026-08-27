@@ -1661,7 +1661,8 @@ class Database:
             'gmail_app_password': '',
             'oxapay_key': '',
             'oxapay_env': 'production',
-            'oxapay_enabled': True
+            'oxapay_enabled': True,
+            'upi_enabled': True
         }
         if not doc:
             return defaults

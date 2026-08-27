@@ -1554,7 +1554,10 @@ async def settings_query(bot, query):
     gmail_disp = gmail_user if gmail_user else "Not Configured ❌"
     pass_disp = "Set ✅" if gmail_pass else "Not Configured ❌"
 
+    upi_enabled = rl_cfg.get('upi_enabled', True)
+    upi_toggle_lbl = "🟢 UPI Gateway: ENABLED" if upi_enabled else "🔴 UPI Gateway: DISABLED"
     buttons = [
+        [InlineKeyboardButton(upi_toggle_lbl, callback_data="settings#sb_rl_upi_toggle")],
         [InlineKeyboardButton("📱 Set UPI ID", callback_data="settings#sb_rl_upi_id")],
         [InlineKeyboardButton("👤 Set Payee Name", callback_data="settings#sb_rl_upi_name")],
         [InlineKeyboardButton("📧 Set Gmail Address", callback_data="settings#sb_rl_gmail_user")],
@@ -1577,6 +1580,17 @@ async def settings_query(bot, query):
         f"<b>Note:</b> For Gmail App Password, generate a 16-character App Password from Google Account → Security → 2-Step Verification → App Passwords.</blockquote>",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+  elif type == "sb_rl_upi_toggle":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_state = rl_cfg.get('upi_enabled', True)
+    new_state = not cur_state
+    await db.set_delivery_rate_limit_config(upi_enabled=new_state)
+    state_str = "ENABLED 🟢" if new_state else "DISABLED 🔴"
+    try: await query.answer(f"UPI Gateway is now: {state_str}!", show_alert=True)
+    except Exception: pass
+    query.data = "settings#sb_rl_upi_menu"
+    return await settings_query(bot, query)
 
   elif type == "sb_rl_upi_id":
     await query.message.delete()

@@ -2439,6 +2439,8 @@ async def _process_pass_callback(client, query):
 
     elif data == "pass#method_upi":
         rl_cfg = await db.get_delivery_rate_limit_config()
+        if not rl_cfg.get('upi_enabled', True):
+            return await query.answer("⚠️ Pay Via UPI is currently disabled by administrator.", show_alert=True)
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         
         plan_buttons = []
