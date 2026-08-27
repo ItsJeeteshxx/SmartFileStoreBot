@@ -1802,8 +1802,8 @@ async def settings_query(bot, query):
         else:
             txns_text = "<i>No paid transactions found.</i>\n"
     else:
-        for idx, t in enumerate(txns[:10], 1):
-            t_time = t.get('time', 0)
+        for idx, txn in enumerate(txns[:10], 1):
+            t_time = txn.get('time', 0)
             t_str = "N/A"
             if t_time > 0:
                 try:
@@ -1813,12 +1813,12 @@ async def settings_query(bot, query):
                 except Exception:
                     t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d-%m-%Y %I:%M %p')
             
-            p_name = str(t.get('plan', 'N/A'))
+            p_name = str(txn.get('plan', 'N/A'))
             from database import parse_duration_to_seconds, format_duration_verbose
             dur_verb = format_duration_verbose(parse_duration_to_seconds(p_name, default_unit='d')) if p_name != 'N/A' else "Pass"
-            amt = f"₹{float(t.get('amount', 0)):.2f}"
-            gw = t.get('gateway', 'Pay Via UPI (INR)')
-            oid = t.get('id', 'N/A')
+            amt = f"₹{float(txn.get('amount', 0)):.2f}"
+            gw = txn.get('gateway', 'Pay Via UPI (INR)')
+            oid = txn.get('id', 'N/A')
             txns_text += (
                 f"<b>{idx}. Order :-</b> <code>{oid}</code>\n"
                 f"   • <b>Plan:</b> {dur_verb.title()} ({amt}) , ({gw}) | <b>Status -</b> ✅ Paid , <code>{t_str} IST</code>\n\n"
