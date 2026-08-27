@@ -1775,10 +1775,27 @@ async def settings_query(bot, query):
         return await settings_query(bot, query)
 
     raw_input = resp.text.strip()
-    try:
+    target_uid = None
+    u_name = ""
+    if raw_input.isdigit() or (raw_input.startswith("-") and raw_input[1:].isdigit()):
         target_uid = int(raw_input)
-    except ValueError:
-        try: await resp.reply_text("❌ Invalid User ID. Must be numeric digits (e.g. <code>123456789</code>).", quote=True)
+        try:
+            chat_obj = await bot.get_chat(target_uid)
+            u_name = chat_obj.first_name or f"User {target_uid}"
+        except Exception:
+            u_name = f"User {target_uid}"
+    else:
+        # Username lookup
+        username_query = raw_input if raw_input.startswith("@") else f"@{raw_input}"
+        try:
+            chat_obj = await bot.get_chat(username_query)
+            target_uid = chat_obj.id
+            u_name = chat_obj.first_name or username_query
+        except Exception:
+            target_uid = None
+
+    if not target_uid:
+        try: await resp.reply_text("❌ Invalid User ID or Username. Please send a valid numeric Telegram ID (e.g. <code>123456789</code>) or @username.", quote=True)
         except Exception: pass
         query.data = "settings#sb_rl_cust_0"
         return await settings_query(bot, query)

@@ -386,6 +386,8 @@ def _sync_imap_search_by_amount(
         import time as _t
         now = _t.time()
 
+        from email.utils import parsedate_to_datetime
+
         for mail_id in reversed(mail_ids):
             res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
             if res_status != "OK":
@@ -393,11 +395,27 @@ def _sync_imap_search_by_amount(
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
+                    
+                    # 1. Timestamp Freshness Check: Ignore emails older than order creation
+                    date_hdr = msg.get("Date")
+                    if date_hdr and order_time:
+                        try:
+                            msg_dt = parsedate_to_datetime(date_hdr)
+                            msg_ts = msg_dt.timestamp()
+                            # If email was received before order creation (allowing 60s clock skew) -> skip old email
+                            if msg_ts < (order_time - 60):
+                                logger.info(f"[Gmail IMAP] Skipping old email {mail_id} from {date_hdr} (received before order was created)")
+                                continue
+                        except Exception as dt_err:
+                            logger.debug(f"Date check debug: {dt_err}")
+
                     body = get_email_body(msg)
 
+                    # 2. Exact Dynamic Amount Check
                     if verify_amount_in_email(body, expected_amount):
                         utr = extract_utr_from_email(body)
-                        if utr and str(utr).strip() in claimed_utrs:
+                        # Skip only if claimed by ANOTHER user
+                        if claimed_utrs and utr and str(utr).strip() in claimed_utrs:
                             logger.info(f"[Gmail IMAP] Skipping already-claimed UTR {utr} in email {mail_id}")
                             continue
 
