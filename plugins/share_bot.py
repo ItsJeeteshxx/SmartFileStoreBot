@@ -7,6 +7,7 @@ add_handler() after the client is started (Pyrogram 2.x requirement).
 """
 import logging
 import asyncio
+import time
 import random
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -1653,7 +1654,7 @@ async def _handle_share_bot_utr_message(client, message):
     else:
         retry_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Re-Verify UTR", callback_data=f"pass#upirecheck_{utr}_{dur_key}_{expected_amount}")],
-            [InlineKeyboardButton("❮ Back to Payment Methods", callback_data="pass#unlock_menu")]
+            [InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")]
         ])
         err_msg = res.get("error", "UTR not found in bank email notifications yet.")
         await sts.edit(
@@ -1672,6 +1673,25 @@ async def _main_bot_utr_interceptor(client, message):
     await _handle_share_bot_utr_message(client, message)
 
 
+def format_plan_button_label(dur_key: str, price) -> str:
+    """Returns clean label: '💰 1 Days (₹15)' without extra unicode decorations."""
+    dur_str = str(dur_key).lower().strip()
+    if dur_str.endswith('d'):
+        num = dur_str[:-1]
+        unit = "Days"
+    elif dur_str.endswith('h'):
+        num = dur_str[:-1]
+        unit = "Hours"
+    elif dur_str.endswith('m'):
+        num = dur_str[:-1]
+        unit = "Minutes"
+    else:
+        num = dur_str
+        unit = "Days"
+    p_val = int(price) if float(price).is_integer() else price
+    return f"💰 {num} {unit} (₹{p_val})"
+
+
 @Client.on_callback_query(filters.regex(r'^pass#'))
 async def _process_pass_callback(client, query):
     data = query.data
@@ -1685,11 +1705,22 @@ async def _process_pass_callback(client, query):
         
         plan_lines = []
         for dur_key, price in prices.items():
-            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
-            verb_dur = format_duration_verbose(dur_sec)
+            dur_str = str(dur_key).lower().strip()
+            if dur_str.endswith('d'):
+                num = dur_str[:-1]
+                unit = "Days"
+            elif dur_str.endswith('h'):
+                num = dur_str[:-1]
+                unit = "Hours"
+            elif dur_str.endswith('m'):
+                num = dur_str[:-1]
+                unit = "Minutes"
+            else:
+                num = dur_str
+                unit = "Days"
             p_val = int(price) if float(price).is_integer() else price
             usd_val = max(0.50, round(float(price) / 85.0, 2))
-            plan_lines.append(f"• {verb_dur.title()}: ₹{p_val} | ${usd_val:.2f}")
+            plan_lines.append(f"• {num} {unit}: ₹{p_val} | ${usd_val:.2f}")
 
         plans_str = "\n".join(plan_lines)
 
@@ -1724,18 +1755,11 @@ async def _process_pass_callback(client, query):
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
-        from database import parse_duration_to_seconds, format_duration_verbose
         
         plan_buttons = []
-        icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
-        idx = 0
         for dur_key, price in prices.items():
-            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
-            verb_dur = format_duration_verbose(dur_sec)
             p_val = int(price) if float(price).is_integer() else price
-            icon = icons[idx % len(icons)]
-            idx += 1
-            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#cfbuy_{dur_key}_{p_val}")])
+            plan_buttons.append([InlineKeyboardButton(format_plan_button_label(dur_key, p_val), callback_data=f"pass#cfbuy_{dur_key}_{p_val}")])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
 
@@ -1750,18 +1774,11 @@ async def _process_pass_callback(client, query):
     elif data == "pass#method_upi":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
-        from database import parse_duration_to_seconds, format_duration_verbose
         
         plan_buttons = []
-        icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
-        idx = 0
         for dur_key, price in prices.items():
-            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
-            verb_dur = format_duration_verbose(dur_sec)
             p_val = int(price) if float(price).is_integer() else price
-            icon = icons[idx % len(icons)]
-            idx += 1
-            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#upibuy_{dur_key}_{p_val}")])
+            plan_buttons.append([InlineKeyboardButton(format_plan_button_label(dur_key, p_val), callback_data=f"pass#upibuy_{dur_key}_{p_val}")])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
 
@@ -1776,19 +1793,11 @@ async def _process_pass_callback(client, query):
     elif data == "pass#method_crypto":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
-        from database import parse_duration_to_seconds, format_duration_verbose
         
         plan_buttons = []
-        icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
-        idx = 0
         for dur_key, price in prices.items():
-            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
-            verb_dur = format_duration_verbose(dur_sec)
             p_val = int(price) if float(price).is_integer() else price
-            usd_val = max(0.50, round(float(price) / 85.0, 2))
-            icon = icons[idx % len(icons)]
-            idx += 1
-            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ${usd_val:.2f} | ₹{p_val} ) ⸥", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
+            plan_buttons.append([InlineKeyboardButton(format_plan_button_label(dur_key, p_val), callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
 
@@ -1862,8 +1871,8 @@ async def _process_pass_callback(client, query):
 
         rl_cfg = await db.get_delivery_rate_limit_config()
         from config import Config
-        raw_upi = rl_cfg.get("upi_id", "").strip() or getattr(Config, "UPI_ID", "").strip() or os.environ.get("UPI_ID", "").strip()
-        payee_name = rl_cfg.get("upi_name", "").strip() or "Arya Delivery Pass"
+        raw_upi = str(rl_cfg.get("upi_id") or getattr(Config, "UPI_ID", "") or os.environ.get("UPI_ID", "") or "").strip()
+        payee_name = str(rl_cfg.get("upi_name") or "Arya Delivery Pass").strip()
 
         if not raw_upi:
             err_kb = InlineKeyboardMarkup([
@@ -1876,9 +1885,6 @@ async def _process_pass_callback(client, query):
                 reply_markup=err_kb
             )
 
-        import urllib.parse
-        upi_uri = f"upi://pay?pa={raw_upi}&pn={urllib.parse.quote_plus(payee_name)}&am={amount:.2f}&cu=INR&tn={urllib.parse.quote_plus(f'{dur_verbose.title()} Pass')}"
-
         inv_text = (
             f"🧾 <b>UPI Payment Invoice — Unlimited Delivery Pass</b>\n\n"
             f"<b>Plan:</b> {dur_verbose.title()} Unlimited Access\n"
@@ -1887,13 +1893,13 @@ async def _process_pass_callback(client, query):
             f"<code>{raw_upi}</code>\n\n"
             f"<b>Payee Name:</b> <code>{payee_name}</code>\n\n"
             f"<blockquote expandable>ℹ️ <b>HOW TO PAY & ACTIVATE:</b>\n"
-            f"1. Tap <b>'Open UPI App'</b> or copy the UPI ID above.\n"
-            f"2. Pay the exact amount: <b>₹{amount:.2f}</b> via GPay, PhonePe, Paytm, Slice, or CRED.\n"
+            f"1. Tap the UPI ID above to copy it: <code>{raw_upi}</code>\n"
+            f"2. Pay the exact amount: <b>₹{amount:.2f}</b> via GPay, PhonePe, Paytm, Slice, or BHIM.\n"
             f"3. After payment, copy the <b>12-digit UTR / Ref No / Transaction ID</b>.\n"
             f"4. Tap <b>'✍️ Submit 12-Digit UTR'</b> below and send your UTR here for instant automated verification!</blockquote>"
         )
+        # Note: Do NOT use upi:// url on InlineKeyboardButton as Telegram rejects it with BUTTON_URL_INVALID
         inv_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📱 Open UPI App", url=upi_uri)],
             [InlineKeyboardButton("✍️ Submit 12-Digit UTR", callback_data=f"pass#upisubmit_{dur_key}_{amount}")],
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
@@ -2400,7 +2406,7 @@ def register_share_handlers(app: Client):
         except Exception as e:
             logger.exception(f"Exception in _process_pass_callback: {e}")
             try:
-                await query.answer("An error occurred. Please try again.", show_alert=True)
+                await query.answer(f"⚠️ Error: {e}", show_alert=True)
             except Exception:
                 pass
 

@@ -233,17 +233,17 @@ async def verify_upi_payment_via_gmail(
     from config import Config
     from database import db
 
-    u = (gmail_user or "").strip()
-    p = (gmail_password or "").strip()
+    u = str(gmail_user or "").strip()
+    p = str(gmail_password or "").strip()
 
     if not u or not p:
         rl_cfg = await db.get_delivery_rate_limit_config()
-        u = rl_cfg.get("gmail_user", "").strip() or u
-        p = rl_cfg.get("gmail_app_password", "").strip() or p
+        u = str(rl_cfg.get("gmail_user") or u or "").strip()
+        p = str(rl_cfg.get("gmail_app_password") or p or "").strip()
 
     if not u or not p:
-        u = getattr(Config, "GMAIL_USER", "").strip() or os.environ.get("GMAIL_USER", "").strip()
-        p = getattr(Config, "GMAIL_APP_PASSWORD", "").strip() or os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+        u = str(getattr(Config, "GMAIL_USER", "") or os.environ.get("GMAIL_USER", "") or u or "").strip()
+        p = str(getattr(Config, "GMAIL_APP_PASSWORD", "") or os.environ.get("GMAIL_APP_PASSWORD", "") or p or "").strip()
 
     if not u or not p:
         return {

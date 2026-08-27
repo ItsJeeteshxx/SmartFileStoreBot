@@ -22,6 +22,8 @@ async def _settings_input_router(bot, message):
         fut = _settings_waiting.pop(uid)
         if not fut.done():
             fut.set_result(message)
+            message.stop_propagation()
+            return
     raise ContinuePropagation
 
 async def _ask(bot, user_id: int, timeout: int = 300):

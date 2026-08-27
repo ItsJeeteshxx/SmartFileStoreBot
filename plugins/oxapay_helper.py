@@ -30,17 +30,17 @@ async def create_oxapay_pass_order(
     from database import db, format_duration_verbose, parse_duration_to_seconds
 
     # 1. Resolve key
-    key = (oxapay_key or "").strip()
-    env = (oxapay_env or "production").strip().lower()
+    key = str(oxapay_key or "").strip()
+    env = str(oxapay_env or "production").strip().lower()
 
     if not key:
         rl_cfg = await db.get_delivery_rate_limit_config()
-        key = rl_cfg.get("oxapay_key", "").strip() or key
-        env = rl_cfg.get("oxapay_env", "production").strip().lower()
+        key = str(rl_cfg.get("oxapay_key") or key or "").strip()
+        env = str(rl_cfg.get("oxapay_env") or env or "production").strip().lower()
 
     if not key:
-        key = getattr(Config, "OXAPAY_KEY", "").strip() or os.environ.get("OXAPAY_KEY", "").strip()
-        env = (getattr(Config, "OXAPAY_ENV", "production") or os.environ.get("OXAPAY_ENV", "production")).strip().lower()
+        key = str(getattr(Config, "OXAPAY_KEY", "") or os.environ.get("OXAPAY_KEY", "") or "").strip()
+        env = str(getattr(Config, "OXAPAY_ENV", "production") or os.environ.get("OXAPAY_ENV", "production") or "production").strip().lower()
 
     if not key:
         return {
@@ -144,13 +144,13 @@ async def verify_oxapay_pass_order(
     from config import Config
     from database import db
 
-    key = (oxapay_key or "").strip()
+    key = str(oxapay_key or "").strip()
     if not key:
         rl_cfg = await db.get_delivery_rate_limit_config()
-        key = rl_cfg.get("oxapay_key", "").strip() or key
+        key = str(rl_cfg.get("oxapay_key") or key or "").strip()
 
     if not key:
-        key = getattr(Config, "OXAPAY_KEY", "").strip() or os.environ.get("OXAPAY_KEY", "").strip()
+        key = str(getattr(Config, "OXAPAY_KEY", "") or os.environ.get("OXAPAY_KEY", "") or "").strip()
 
     if not key:
         return {
