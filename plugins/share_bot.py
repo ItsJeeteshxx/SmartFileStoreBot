@@ -1930,12 +1930,12 @@ async def schedule_pass_payment_reminder(
                 pass
 
             rem_text = (
-                f'<emoji id="6217487596486922033">⏰</emoji> <b>Payment Reminder — Complete Your Order</b>\n\n'
+                f'<emoji id="6034898821517940846">⏰</emoji> <b>Payment Reminder — Complete Your Order</b>\n\n'
                 f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> order is waiting for payment!\n\n"
                 f"• <b>Order ID:</b> <code>{order_id}</code>\n"
                 f"• <b>Amount Due:</b> <code>{amount_str}</code>\n"
                 f"• <b>Payment Method:</b> {gateway_name}\n\n"
-                f"<blockquote>⚡️ <i>Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</i></blockquote>\n\n"
+                f'<blockquote><emoji id="5773677501825945508">⚡️</emoji> <i>Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</i></blockquote>\n\n'
                 f"<i>If you have already paid or need assistance, please submit your reference or contact support.</i>"
             )
 
@@ -2096,7 +2096,7 @@ async def _process_pass_callback(client, query):
         plans_str = "\n".join(plan_lines)
 
         methods_text = (
-            '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plan</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+            '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n'
             "──────────────────────\n\n"
             '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
             '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
