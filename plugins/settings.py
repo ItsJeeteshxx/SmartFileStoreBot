@@ -1781,9 +1781,12 @@ async def settings_query(bot, query):
     txns = details.get('transactions', [])
     txns_text = ""
     if not txns:
-        txns_text = "<i>No recorded orders or UTR transactions.</i>\n"
+        if active:
+            txns_text = "<i>No gateway transactions found. (Access granted manually by Bot Admin).</i>\n"
+        else:
+            txns_text = "<i>No paid transactions found.</i>\n"
     else:
-        for idx, t in enumerate(txns[:8], 1):
+        for idx, t in enumerate(txns[:10], 1):
             t_time = t.get('time', 0)
             t_str = "N/A"
             if t_time > 0:
@@ -1796,14 +1799,14 @@ async def settings_query(bot, query):
             
             p_name = str(t.get('plan', 'N/A'))
             amt = f"₹{float(t.get('amount', 0)):.2f}"
-            gw = t.get('gateway', 'UPI')
+            gw = t.get('gateway', 'Pay Via UPI (INR)')
             oid = t.get('id', 'N/A')
-            st_badge = "🟢 Active" if active else "🔴 Expired"
             txns_text += (
                 f"<b>{idx}.</b> <code>{oid}</code>\n"
-                f"   • <b>Plan:</b> {p_name} | <b>Paid:</b> {amt} ({gw})\n"
-                f"   • <b>Date:</b> {t_str}\n"
-                f"   • <b>Subscription:</b> {st_badge}\n\n"
+                f"   • <b>Plan:</b> {p_name} | <b>Amount Paid:</b> {amt}\n"
+                f"   • <b>Payment Method:</b> {gw}\n"
+                f"   • <b>Payment Date:</b> {t_str} IST\n"
+                f"   • <b>Payment Status:</b> ✅ Paid & Verified\n\n"
             )
 
     body = (

@@ -1718,28 +1718,40 @@ class Database:
             upsert=True
         )
 
-    async def get_user_pass_transactions(self, user_id: int, limit: int = 5) -> list:
-        """Fetch recent pass orders and UTRs for user."""
-        orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit).to_list(limit)
+    async def get_user_pass_transactions(self, user_id: int, limit: int = 15) -> list:
+        """Fetch only completed/paid pass orders and verified UTRs for user (no unpaid or pending orders)."""
+        # Strictly query PAID orders only
+        orders = await self.pass_orders.find({'user_id': int(user_id), 'status': 'PAID'}).sort('paid_at', -1).limit(limit).to_list(limit)
         utrs = await self.used_utrs.find({'user_id': int(user_id)}).sort('used_at', -1).limit(limit).to_list(limit)
         results = []
         for o in orders:
+            oid = str(o.get('order_id', ''))
+            gw_raw = str(o.get('gateway') or '').lower()
+            if 'oxa' in oid.lower() or 'crypto' in gw_raw or 'oxapay' in gw_raw:
+                gw_display = "Pay Via Crypto (Oxapay)"
+            elif 'cf' in oid.lower() or 'order_' in oid or 'cashfree' in gw_raw:
+                gw_display = "Pay Via Cashfree"
+            elif 'upi' in oid.lower() or 'upi' in gw_raw:
+                gw_display = "Pay Via UPI (INR)"
+            else:
+                gw_display = "Pay Via Cashfree" if 'order_' in oid else "Online Gateway"
+
             results.append({
-                'id': o.get('order_id', ''),
+                'id': oid,
                 'amount': o.get('amount', 0.0),
                 'plan': o.get('duration_key', ''),
-                'status': o.get('status', 'PENDING'),
+                'status': 'PAID',
                 'time': o.get('paid_at') or o.get('created_at', 0),
-                'gateway': 'Cashfree' if 'order_' in o.get('order_id', '') else 'Online'
+                'gateway': gw_display
             })
         for u in utrs:
             results.append({
-                'id': f"UTR {u.get('utr', '')}",
+                'id': f"UTR: {u.get('utr', '')}",
                 'amount': u.get('amount', 0.0),
                 'plan': u.get('plan', ''),
                 'status': 'PAID',
                 'time': u.get('used_at', 0),
-                'gateway': 'UPI (Manual)'
+                'gateway': "Pay Via UPI (INR)"
             })
         results.sort(key=lambda x: x.get('time', 0), reverse=True)
         return results[:limit]

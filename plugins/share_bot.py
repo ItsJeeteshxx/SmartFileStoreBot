@@ -1918,7 +1918,7 @@ async def _process_pass_callback(client, query):
                 dur_verbose = format_duration_verbose(parse_duration_to_seconds(t['plan'], default_unit='d')) if t['plan'] else "Pass"
                 txn_lines.append(
                     f"• <b>{dur_verbose.title()}</b> — ₹{t['amount']:.2f}\n"
-                    f"  Status: <code>{t['status']}</code> | Gateway: <i>{t['gateway']}</i>\n"
+                    f"  Status: <code>{t['status']}</code> | Method: <i>{t['gateway']}</i>\n"
                     f"  Date: <code>{t_str}</code>"
                 )
             txns_body = "\n\n".join(txn_lines)
