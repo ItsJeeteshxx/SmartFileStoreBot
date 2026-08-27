@@ -1727,6 +1727,10 @@ class Database:
             upsert=True
         )
 
+    async def record_used_utr(self, utr: str, user_id: int, amount: float, order_id: str = "", plan: str = "1d", user_name: str = "", gateway: str = "Pay Via UPI (INR)"):
+        """Record used UTR helper (alias for mark_utr_used)."""
+        return await self.mark_utr_used(utr=utr, user_id=user_id, amount=amount, plan=plan, user_name=user_name, order_id=order_id)
+
     async def get_user_pass_transactions(self, user_id: int, limit: int = 15) -> list:
         """Fetch only completed/paid pass orders and verified UTRs for user (no unpaid or pending orders)."""
         # Strictly query PAID orders only
