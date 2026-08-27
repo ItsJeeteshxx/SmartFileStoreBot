@@ -109,6 +109,36 @@ async def create_oxapay_pass_order(
 
         is_success = (status_int in (100, 200)) and bool(pay_link)
 
+        # Legacy fallback if v1 returned non-success
+        if not is_success:
+            legacy_payload = {
+                "merchant": key,
+                "amount": amount_usd,
+                "currency": "USD",
+                "lifeTime": 60,
+                "feePaidByPayer": 1,
+                "orderId": order_id,
+                "description": f"{dur_name} Unlimited Pass for {clean_name}"
+            }
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{base_url}/merchants/request",
+                        json=legacy_payload,
+                        timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp2:
+                        data2 = await resp2.json()
+                logger.info(f"[OxaPay] Legacy endpoint response: {data2}")
+                l_pay = data2.get("payLink") or data2.get("pay_link")
+                l_track = data2.get("trackId") or data2.get("track_id")
+                l_code = data2.get("result") or data2.get("status")
+                if l_code in (100, 200) and l_pay:
+                    pay_link = l_pay
+                    track_id = l_track
+                    is_success = True
+            except Exception as e:
+                logger.warning(f"OxaPay legacy request failed: {e}")
+
         if not is_success:
             err_msg = data.get("message") or data.get("description") or "Unknown OxaPay error"
             return {
@@ -161,19 +191,41 @@ async def verify_oxapay_pass_order(
     base_url = "https://api.oxapay.com"
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{base_url}/v1/payment/{track_id}",
-                headers={"merchant_api_key": key},
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
-                inquiry = await resp.json()
+        inq_status = ""
+        inq_data = {}
+        inquiry = {}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base_url}/v1/payment/{track_id}",
+                    headers={"merchant_api_key": key},
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    inquiry = await resp.json()
 
-        logger.info(f"[OxaPay] Inquiry response for {track_id}: {inquiry}")
+            logger.info(f"[OxaPay] Inquiry response for {track_id}: {inquiry}")
+            inq_data = inquiry.get("data") or {}
+            inq_status = str(inq_data.get("status") or inquiry.get("status") or "").lower()
+        except Exception:
+            pass
 
-        inq_data = inquiry.get("data") or {}
-        inq_status = str(inq_data.get("status") or inquiry.get("status") or "").lower()
-        is_paid = bool(inq_status == "paid")
+        if inq_status not in ("paid", "success", "confirmed"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{base_url}/merchants/inquiry",
+                        json={"merchant": key, "trackId": track_id},
+                        timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp2:
+                        inq2 = await resp2.json()
+                logger.info(f"[OxaPay] Legacy inquiry response: {inq2}")
+                s2 = str(inq2.get("status") or inq2.get("result") or "").lower()
+                if s2 in ("paid", "success", "100"):
+                    inq_status = "paid"
+            except Exception:
+                pass
+
+        is_paid = bool(inq_status in ("paid", "success", "confirmed"))
 
         return {
             "success": True,
