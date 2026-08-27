@@ -451,12 +451,13 @@ async def log_admin_dm(error_type: str, details: str) -> None:
 async def log_pass_purchased(
     user_id: int,
     user_name: str,
-    days: Union[int, float, str] = 1,
+    duration_str: str = "",
     amount: float = 0.0,
     order_id: str = "",
     expiry_ts: float = 0.0,
     log_channel: Optional[int] = None,
-    duration_str: Optional[str] = None
+    gateway: str = "Cashfree PG",
+    days: int = 1
 ) -> None:
     """Log when a user purchases an Unlimited Delivery Pass in Quoteblock format."""
     now_str = _ist_str()
@@ -480,7 +481,7 @@ async def log_pass_purchased(
         f"<b>User ID:</b> <code>{user_id}</code>\n"
         f"<b>Plan:</b> {plan_display} Unlimited Access\n"
         f"<b>Amount:</b> ₹{amount:.2f}\n"
-        f"<b>Gateway:</b> Cashfree PG\n"
+        f"<b>Gateway:</b> {_esc(gateway)}\n"
         f"<b>Order ID:</b> <code>{_esc(order_id)}</code>\n"
         f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
         f"<b>Purchased At:</b> <code>{now_str}</code></blockquote>"

@@ -183,6 +183,7 @@ class Database:
         self.delivery_hits = self.db.delivery_hits
         self.unlimited_passes = self.db.unlimited_passes
         self.pass_orders = self.db.delivery_pass_orders
+        self.used_utrs = self.db.used_utrs
         
         self._ban_status_cache = {}  # {user_id: (ban_status_dict, expiry)}
         self._bot_cfg_cache = {}     # {bot_id: (cfg_dict, expiry)}
@@ -1638,7 +1639,13 @@ class Database:
             'prices': {'1d': 15, '3d': 30, '7d': 50},
             'cashfree_app_id': '',
             'cashfree_secret_key': '',
-            'cashfree_env': 'production'
+            'cashfree_env': 'production',
+            'upi_id': '',
+            'upi_name': 'Arya Delivery Pass',
+            'gmail_user': '',
+            'gmail_app_password': '',
+            'oxapay_key': '',
+            'oxapay_env': 'production'
         }
         if not doc:
             return defaults
@@ -1655,7 +1662,12 @@ class Database:
 
     async def set_delivery_rate_limit_config(self, **kwargs) -> None:
         """Update delivery rate limit and pass config."""
-        _VALID = {'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel', 'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key', 'cashfree_env'}
+        _VALID = {
+            'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel',
+            'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key',
+            'cashfree_env', 'upi_id', 'upi_name', 'gmail_user', 'gmail_app_password',
+            'oxapay_key', 'oxapay_env'
+        }
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
             return
@@ -1667,6 +1679,26 @@ class Database:
         await self.stats.update_one(
             {'_id': 'delivery_rate_limit_config'},
             {'$set': filtered},
+            upsert=True
+        )
+
+    async def is_utr_used(self, utr: str) -> bool:
+        """Check if a UTR has already been claimed/used for pass activation."""
+        doc = await self.used_utrs.find_one({'utr': str(utr).strip()})
+        return bool(doc)
+
+    async def mark_utr_used(self, utr: str, user_id: int, amount: float, plan: str):
+        """Mark a UTR as consumed to prevent replay attacks."""
+        import time
+        await self.used_utrs.update_one(
+            {'utr': str(utr).strip()},
+            {'$set': {
+                'utr': str(utr).strip(),
+                'user_id': int(user_id),
+                'amount': float(amount),
+                'plan': str(plan),
+                'used_at': time.time()
+            }},
             upsert=True
         )
 

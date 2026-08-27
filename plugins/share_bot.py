@@ -1545,6 +1545,133 @@ async def _process_fsub_check(client, query):
 
 
 # ── Unlimited Delivery Pass Callback Handlers ─────────────────────────────────
+_pending_utr_users: dict = {}  # {user_id: {'dur_key': str, 'amount': float, 'ts': float}}
+
+
+async def _handle_share_bot_utr_message(client, message):
+    if not message.from_user or not message.text:
+        return
+    user_id = message.from_user.id
+    if user_id not in _pending_utr_users:
+        return
+
+    session_data = _pending_utr_users[user_id]
+    dur_key = session_data['dur_key']
+    expected_amount = session_data['amount']
+
+    raw_text = message.text.strip()
+    if raw_text.lower() in ("cancel", "/cancel", "back", "/back"):
+        _pending_utr_users.pop(user_id, None)
+        await message.reply_text("<i>UTR submission cancelled.</i>", quote=True)
+        return
+
+    import re
+    match = re.search(r'\b(\d{12})\b', raw_text)
+    if not match:
+        clean_digits = re.sub(r'\D', '', raw_text)
+        if len(clean_digits) == 12:
+            utr = clean_digits
+        else:
+            await message.reply_text(
+                "⚠️ <b>Invalid UTR Format</b>\n\n"
+                "Please enter a valid <b>12-digit UTR / Reference number</b> (e.g. <code>423456789012</code>).\n\n"
+                "<i>You can find this in your payment receipt from PhonePe, GPay, Paytm, Slice, etc. Type 'cancel' to cancel.</i>",
+                quote=True
+            )
+            return
+    else:
+        utr = match.group(1)
+
+    if await db.is_utr_used(utr):
+        await message.reply_text(
+            "❌ <b>UTR Already Redeemed</b>\n\n"
+            f"The UTR <code>{utr}</code> has already been claimed for another pass or order. "
+            "Each payment transaction can only be redeemed once.",
+            quote=True
+        )
+        return
+
+    sts = await message.reply_text(
+        f"🔄 <i>Verifying UTR <code>{utr}</code> via Automated Gmail IMAP... Please wait.</i>",
+        quote=True
+    )
+
+    from plugins.gmail_helper import verify_upi_payment_via_gmail
+    res = await verify_upi_payment_via_gmail(utr, expected_amount)
+
+    if res.get("success"):
+        _pending_utr_users.pop(user_id, None)
+        await db.mark_utr_used(utr, user_id, expected_amount, dur_key)
+        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
+
+        from database import format_duration_verbose, parse_duration_to_seconds
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+
+        import datetime
+        try:
+            import pytz
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+            exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+        except Exception:
+            exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+        u_name = message.from_user.first_name or "User"
+        success_text = (
+            f"🎉 <b>UPI Payment Verified Successfully!</b>\n\n"
+            f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+            f"<b>UTR / RRN:</b> <code>{utr}</code>\n"
+            f"<b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
+            f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+            f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+            f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+        )
+        await sts.edit(success_text)
+
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        log_ch = rl_cfg.get('log_channel')
+        from plugins.arya_logger import log_pass_purchased
+        asyncio.create_task(log_pass_purchased(
+            user_id=user_id,
+            user_name=u_name,
+            duration_str=dur_verbose.title(),
+            amount=expected_amount,
+            order_id=f"UPI_{utr}",
+            expiry_ts=new_expiry,
+            log_channel=log_ch,
+            gateway="UPI (Gmail Auto)"
+        ))
+    elif res.get("amount_mismatch"):
+        m_amt = res.get("mismatched_amount")
+        await sts.edit(
+            f"⚠️ <b>Payment Amount Mismatch</b>\n\n"
+            f"We found the transaction for UTR <code>{utr}</code>, but the received amount is "
+            f"<b>₹{m_amt:.2f}</b> while the expected plan price is <b>₹{expected_amount:.2f}</b>.\n\n"
+            f"<i>Please pay the exact plan amount to activate your pass, or contact support.</i>"
+        )
+    else:
+        retry_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Re-Verify UTR", callback_data=f"pass#upirecheck_{utr}_{dur_key}_{expected_amount}")],
+            [InlineKeyboardButton("❮ Back to Payment Methods", callback_data="pass#unlock_menu")]
+        ])
+        err_msg = res.get("error", "UTR not found in bank email notifications yet.")
+        await sts.edit(
+            f"⏳ <b>Payment Not Detected Yet</b>\n\n"
+            f"<b>UTR:</b> <code>{utr}</code>\n"
+            f"<b>Expected Amount:</b> <code>₹{expected_amount:.2f}</code>\n\n"
+            f"<i>{err_msg}</i>\n\n"
+            f"<b>Tip:</b> Bank emails can take 10 to 30 seconds to arrive. "
+            f"Please wait a few seconds and tap <b>'Re-Verify UTR'</b> below!",
+            reply_markup=retry_kb
+        )
+
+
+@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about", "support", "updates", "broadcast", "premium", "norestrictions"]), group=10)
+async def _main_bot_utr_interceptor(client, message):
+    await _handle_share_bot_utr_message(client, message)
+
+
 @Client.on_callback_query(filters.regex(r'^pass#'))
 async def _process_pass_callback(client, query):
     data = query.data
@@ -1552,9 +1679,26 @@ async def _process_pass_callback(client, query):
     user_name = query.from_user.first_name or "User"
 
     if data == "pass#unlock_menu":
+        methods_text = (
+            "💎 <b>Choose Payment Method</b>\n\n"
+            "<blockquote expandable>Select your preferred payment method to unlock Unlimited Access (No Cooldown & No Rate Limits):\n\n"
+            "• <b>UPI (INR):</b> GPay, PhonePe, Paytm, Slice, BHIM (Auto-Verified)\n"
+            "• <b>Cashfree:</b> Instant Payment Gateway (UPI / QR / Cards)\n"
+            "• <b>Crypto (Oxapay):</b> USDT, BTC, ETH, TRX, BNB & more</blockquote>\n\n"
+            "<i>Tap below to proceed with your preferred method:</i>"
+        )
+        methods_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")],
+            [InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")],
+            [InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")],
+            [InlineKeyboardButton("⸢ ❮ Back ⸥", callback_data="pass#back")]
+        ])
+        await query.message.edit_text(methods_text, reply_markup=methods_kb)
+
+    elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
-        from database import parse_duration_to_seconds, format_duration_friendly, format_duration_verbose
+        from database import parse_duration_to_seconds, format_duration_verbose
         
         plan_lines = []
         plan_buttons = []
@@ -1563,25 +1707,328 @@ async def _process_pass_callback(client, query):
         for dur_key, price in prices.items():
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
             verb_dur = format_duration_verbose(dur_sec)
-            friendly_tag = format_duration_friendly(dur_sec)
             p_val = int(price) if float(price).is_integer() else price
             icon = icons[idx % len(icons)]
             idx += 1
             plan_lines.append(f"» {verb_dur.title()} Pass — ₹{p_val}")
-            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#buy_{dur_key}_{p_val}")])
+            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#cfbuy_{dur_key}_{p_val}")])
 
         plan_lines_str = "\n".join(plan_lines)
         text = (
-            "<b>ᴜɴʟᴏᴄᴋ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ</b>\n\n"
-            "<blockquote expandable>सभी डिलीवरी लिमिट और कूलडाउन हटाने के लिए एक्सेस पास चुनें:\n"
-            "Select an access pass to completely remove all delivery limits & cooldowns:</blockquote>\n\n"
+            "⚡ <b>Pay Via Cashfree Gateway</b>\n\n"
+            "<blockquote expandable>Select an access pass to completely remove all delivery limits & cooldowns:</blockquote>\n\n"
             f"{plan_lines_str}\n\n"
             "<blockquote>Instant activation via Cashfree Payment Gateway (UPI / QR / Cards)!</blockquote>"
         )
-        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back ⸥", callback_data="pass#back")])
+        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back to Payment Methods ⸥", callback_data="pass#unlock_menu")])
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
-    elif data.startswith("pass#buy_"):
+    elif data == "pass#method_upi":
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+        from database import parse_duration_to_seconds, format_duration_verbose
+        
+        plan_lines = []
+        plan_buttons = []
+        icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
+        idx = 0
+        for dur_key, price in prices.items():
+            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+            verb_dur = format_duration_verbose(dur_sec)
+            p_val = int(price) if float(price).is_integer() else price
+            icon = icons[idx % len(icons)]
+            idx += 1
+            plan_lines.append(f"» {verb_dur.title()} Pass — ₹{p_val}")
+            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#upibuy_{dur_key}_{p_val}")])
+
+        plan_lines_str = "\n".join(plan_lines)
+        text = (
+            "💳 <b>Pay Via UPI (INR)</b>\n\n"
+            "<blockquote expandable>Select an access pass to completely remove all delivery limits & cooldowns:</blockquote>\n\n"
+            f"{plan_lines_str}\n\n"
+            "<blockquote>⚡ Instant automatic verification via Gmail IMAP after submitting 12-digit UTR!</blockquote>"
+        )
+        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back to Payment Methods ⸥", callback_data="pass#unlock_menu")])
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+
+    elif data == "pass#method_crypto":
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+        from database import parse_duration_to_seconds, format_duration_verbose
+        
+        plan_lines = []
+        plan_buttons = []
+        icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
+        idx = 0
+        for dur_key, price in prices.items():
+            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+            verb_dur = format_duration_verbose(dur_sec)
+            p_val = int(price) if float(price).is_integer() else price
+            usd_val = max(0.50, round(p_val / 85.0, 2))
+            icon = icons[idx % len(icons)]
+            idx += 1
+            plan_lines.append(f"» {verb_dur.title()} Pass — ${usd_val:.2f} USD (~₹{p_val})")
+            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ${usd_val:.2f} ) ⸥", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
+
+        plan_lines_str = "\n".join(plan_lines)
+        text = (
+            "🌐 <b>Pay Via Crypto (OxaPay)</b>\n\n"
+            "<blockquote expandable>Pay with Bitcoin, USDT (TRC20, BEP20, TON), Ethereum, TRX, and more.</blockquote>\n\n"
+            f"{plan_lines_str}\n\n"
+            "<blockquote>Instant activation upon blockchain confirmation!</blockquote>"
+        )
+        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back to Payment Methods ⸥", callback_data="pass#unlock_menu")])
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+
+    elif data.startswith("pass#upibuy_"):
+        parts = data.split("_")
+        dur_key = parts[1]
+        amount = float(parts[2])
+
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        from config import Config
+        raw_upi = rl_cfg.get("upi_id", "").strip() or getattr(Config, "UPI_ID", "").strip() or os.environ.get("UPI_ID", "").strip()
+        payee_name = rl_cfg.get("upi_name", "").strip() or "Arya Delivery Pass"
+
+        if not raw_upi:
+            err_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_upi")]
+            ])
+            return await query.message.edit_text(
+                "⚠️ <b>UPI Not Configured</b>\n\n"
+                "The bot administrator has not configured a UPI ID yet. "
+                "Please use <b>Cashfree</b> or <b>Crypto</b> instead!",
+                reply_markup=err_kb
+            )
+
+        import urllib.parse
+        upi_uri = f"upi://pay?pa={raw_upi}&pn={urllib.parse.quote_plus(payee_name)}&am={amount:.2f}&cu=INR&tn={urllib.parse.quote_plus(f'{dur_verbose.title()} Pass')}"
+
+        inv_text = (
+            f"🧾 <b>UPI Payment Invoice — Unlimited Delivery Pass</b>\n\n"
+            f"<b>Plan:</b> {dur_verbose.title()} Unlimited Access\n"
+            f"<b>Amount to Pay:</b> <code>₹{amount:.2f}</code>\n\n"
+            f"<b>UPI ID (Tap to Copy):</b>\n"
+            f"<code>{raw_upi}</code>\n\n"
+            f"<b>Payee Name:</b> <code>{payee_name}</code>\n\n"
+            f"<blockquote expandable>ℹ️ <b>HOW TO PAY & ACTIVATE:</b>\n"
+            f"1. Tap <b>'Open UPI App'</b> or copy the UPI ID above.\n"
+            f"2. Pay the exact amount: <b>₹{amount:.2f}</b> via GPay, PhonePe, Paytm, Slice, or CRED.\n"
+            f"3. After payment, copy the <b>12-digit UTR / Ref No / Transaction ID</b>.\n"
+            f"4. Tap <b>'✍️ Submit 12-Digit UTR'</b> below and send your UTR here for instant automated verification!</blockquote>"
+        )
+        inv_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📱 Open UPI App", url=upi_uri)],
+            [InlineKeyboardButton("✍️ Submit 12-Digit UTR", callback_data=f"pass#upisubmit_{dur_key}_{amount}")],
+            [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_upi")]
+        ])
+        await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+    elif data.startswith("pass#upisubmit_"):
+        parts = data.split("_")
+        dur_key = parts[1]
+        amount = float(parts[2])
+
+        _pending_utr_users[user_id] = {
+            'dur_key': dur_key,
+            'amount': amount,
+            'ts': time.time()
+        }
+
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+
+        prompt_text = (
+            f"✍️ <b>Submit 12-Digit UTR Number</b>\n\n"
+            f"<b>Plan:</b> {dur_verbose.title()} Unlimited Access\n"
+            f"<b>Expected Amount:</b> <code>₹{amount:.2f}</code>\n\n"
+            f"Please reply with your <b>12-digit UTR / Reference number</b> (e.g. <code>423456789012</code>) in this chat now.\n\n"
+            f"<i>Our automated Gmail verification engine will verify the credit and activate your pass within seconds!</i>"
+        )
+        cancel_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#upibuy_{dur_key}_{amount}")]
+        ])
+        await query.message.edit_text(prompt_text, reply_markup=cancel_kb)
+
+    elif data.startswith("pass#upirecheck_"):
+        parts = data.split("_")
+        utr = parts[1]
+        dur_key = parts[2]
+        expected_amount = float(parts[3])
+
+        try:
+            await query.answer("Re-checking bank notification emails...", show_alert=False)
+        except Exception:
+            pass
+
+        if await db.is_utr_used(utr):
+            return await query.answer("❌ This UTR has already been redeemed!", show_alert=True)
+
+        from plugins.gmail_helper import verify_upi_payment_via_gmail
+        res = await verify_upi_payment_via_gmail(utr, expected_amount)
+
+        if res.get("success"):
+            _pending_utr_users.pop(user_id, None)
+            await db.mark_utr_used(utr, user_id, expected_amount, dur_key)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
+            
+            from database import format_duration_verbose, parse_duration_to_seconds
+            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+            dur_verbose = format_duration_verbose(dur_sec)
+
+            import datetime
+            try:
+                import pytz
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+                exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+            except Exception:
+                exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+            success_text = (
+                f"🎉 <b>UPI Payment Verified Successfully!</b>\n\n"
+                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                f"<b>UTR / RRN:</b> <code>{utr}</code>\n"
+                f"<b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
+                f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+                f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+                f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+            )
+            await query.message.edit_text(success_text)
+
+            rl_cfg = await db.get_delivery_rate_limit_config()
+            log_ch = rl_cfg.get('log_channel')
+            from plugins.arya_logger import log_pass_purchased
+            asyncio.create_task(log_pass_purchased(
+                user_id=user_id,
+                user_name=user_name,
+                duration_str=dur_verbose.title(),
+                amount=expected_amount,
+                order_id=f"UPI_{utr}",
+                expiry_ts=new_expiry,
+                log_channel=log_ch,
+                gateway="UPI (Gmail Auto)"
+            ))
+        elif res.get("amount_mismatch"):
+            m_amt = res.get("mismatched_amount")
+            await query.message.edit_text(
+                f"⚠️ <b>Payment Amount Mismatch</b>\n\n"
+                f"Received amount is <b>₹{m_amt:.2f}</b>, but expected is <b>₹{expected_amount:.2f}</b>.\n\n"
+                f"<i>Please pay the exact plan amount to activate your pass, or contact support.</i>"
+            )
+        else:
+            await query.answer("⏳ Still not detected. Please wait 10-15 seconds and tap again.", show_alert=True)
+
+    elif data.startswith("pass#oxabuy_"):
+        parts = data.split("_")
+        dur_key = parts[1]
+        amount_inr = float(parts[2])
+
+        try:
+            await query.answer("Generating crypto invoice via OxaPay...", show_alert=False)
+        except Exception:
+            pass
+
+        from plugins.oxapay_helper import create_oxapay_pass_order
+        res = await create_oxapay_pass_order(user_id, user_name, dur_key, amount_inr)
+
+        if not res.get("success"):
+            err_text = res.get("error", "Failed to generate crypto invoice.")
+            err_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Retry", callback_data=data)],
+                [InlineKeyboardButton("❮ Back", callback_data="pass#method_crypto")]
+            ])
+            return await query.message.edit_text(
+                f"❌ <b>Crypto Invoice Failed</b>\n\n{err_text}",
+                reply_markup=err_kb
+            )
+
+        pay_link = res["pay_link"]
+        track_id = res["track_id"]
+        amount_usd = res["amount_usd"]
+        order_id = res["order_id"]
+        dur_name = res["dur_name"]
+
+        inv_text = (
+            f"🌐 <b>Crypto Payment Invoice — Unlimited Delivery Pass</b>\n\n"
+            f"<b>Plan:</b> {dur_name} Unlimited Access\n"
+            f"<b>Amount:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
+            f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
+            f"<blockquote>Tap the button below to pay using your preferred cryptocurrency (USDT, BTC, ETH, TRX, BNB, LTC, SOL, etc.) via OxaPay. After sending crypto, tap <b>'Verify Payment'</b> to activate!</blockquote>"
+        )
+        inv_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🌐 Pay ${amount_usd:.2f} Crypto ➟", url=pay_link)],
+            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
+            [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_crypto")]
+        ])
+        await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+    elif data.startswith("pass#oxaverify_"):
+        parts = data.split("_")
+        track_id = parts[1]
+        dur_key = parts[2]
+        amount_inr = float(parts[3])
+
+        try:
+            await query.answer("Checking blockchain payment status with OxaPay...", show_alert=False)
+        except Exception:
+            pass
+
+        from plugins.oxapay_helper import verify_oxapay_pass_order
+        v_res = await verify_oxapay_pass_order(track_id)
+
+        if v_res.get("paid"):
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
+            from database import format_duration_verbose, parse_duration_to_seconds
+            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+            dur_verbose = format_duration_verbose(dur_sec)
+
+            import datetime
+            try:
+                import pytz
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+                exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+            except Exception:
+                exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+            success_text = (
+                f"🎉 <b>Crypto Payment Verified Successfully!</b>\n\n"
+                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                f"<b>Track ID:</b> <code>{track_id}</code>\n"
+                f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+                f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+                f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+            )
+            await query.message.edit_text(success_text)
+
+            rl_cfg = await db.get_delivery_rate_limit_config()
+            log_ch = rl_cfg.get('log_channel')
+            from plugins.arya_logger import log_pass_purchased
+            asyncio.create_task(log_pass_purchased(
+                user_id=user_id,
+                user_name=user_name,
+                duration_str=dur_verbose.title(),
+                amount=amount_inr,
+                order_id=f"OXA_{track_id}",
+                expiry_ts=new_expiry,
+                log_channel=log_ch,
+                gateway="Crypto (OxaPay)"
+            ))
+        else:
+            await query.answer(
+                "⏳ Payment Pending: OxaPay has not confirmed the transaction on the blockchain yet. "
+                "If you recently sent the transaction, please wait 1-2 minutes for network confirmations and tap Verify again.",
+                show_alert=True
+            )
+
+    elif data.startswith("pass#cfbuy_") or data.startswith("pass#buy_"):
         parts = data.split("_")
         dur_key = parts[1]
         amount = float(parts[2])
@@ -1602,7 +2049,7 @@ async def _process_pass_callback(client, query):
             err_text = res.get('error', 'Failed to generate payment link')
             err_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Retry", callback_data=data)],
-                [InlineKeyboardButton("❮ Back", callback_data="pass#unlock_menu")]
+                [InlineKeyboardButton("❮ Back", callback_data="pass#method_cashfree")]
             ])
             return await query.message.edit_text(
                 f"❌ <b>Payment Order Failed</b>\n\n{err_text}",
@@ -1625,7 +2072,8 @@ async def _process_pass_callback(client, query):
         inv_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"Pay ₹{p_label} for {dur_verbose.title()}➟", url=checkout_pay_link)],
             [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")]
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
+            [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_cashfree")]
         ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
@@ -1680,7 +2128,8 @@ async def _process_pass_callback(client, query):
                 amount=amount,
                 order_id=order_id,
                 expiry_ts=new_expiry,
-                log_channel=log_ch
+                log_channel=log_ch,
+                gateway="Cashfree PG"
             ))
         else:
             try:
@@ -1693,6 +2142,7 @@ async def _process_pass_callback(client, query):
 
     elif data.startswith("pass#cancel_"):
         await query.message.edit_text("<i>Payment invoice cancelled.</i>")
+
 
     elif data == "pass#back":
         # Return to rate limit message
@@ -1877,6 +2327,10 @@ def register_share_handlers(app: Client):
         _process_pass_callback,
         filters.regex(r'^pass#')
     ))
+    app.add_handler(MessageHandler(
+        _handle_share_bot_utr_message,
+        filters.private & filters.text & ~filters.command(["start", "help", "about", "support", "updates", "broadcast", "premium", "norestrictions"])
+    ), group=10)
 
     # Add AI Enhancer support to Delivery Bot seamlessly
     try:

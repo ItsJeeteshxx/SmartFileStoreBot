@@ -1128,6 +1128,17 @@ async def settings_query(bot, query):
     hit_log_str  = str(hit_log_ch) if hit_log_ch else "None (Not Set)"
     toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
     status_icon  = "🟢" if enabled else "🔴"
+
+    upi_val = rl_cfg.get('upi_id', '').strip() or getattr(Config, 'UPI_ID', '').strip() or os.environ.get('UPI_ID', '').strip()
+    gmail_val = rl_cfg.get('gmail_user', '').strip() or getattr(Config, 'GMAIL_USER', '').strip() or os.environ.get('GMAIL_USER', '').strip()
+    from plugins.cashfree_helper import get_cashfree_credentials
+    cf_creds = await get_cashfree_credentials()
+    oxa_val = rl_cfg.get('oxapay_key', '').strip() or getattr(Config, 'OXAPAY_KEY', '').strip() or os.environ.get('OXAPAY_KEY', '').strip()
+
+    upi_status = '✅ Active' if (upi_val and gmail_val) else ('⚠️ UPI only' if upi_val else '❌ Not Set')
+    cf_status = '✅ Active' if (cf_creds.get('app_id') and cf_creds.get('secret_key')) else '❌ Not Set'
+    oxa_status = '✅ Active' if oxa_val else '❌ Not Set'
+
     buttons = [
         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
         [
@@ -1139,7 +1150,9 @@ async def settings_query(bot, query):
             InlineKeyboardButton(f"⚠️ Limit Logs: {hit_log_str}", callback_data="settings#sb_rl_hit_log_ch"),
         ],
         [InlineKeyboardButton(f"💰 Pricing ({pricing_str})", callback_data="settings#sb_rl_pricing")],
-        [InlineKeyboardButton("🔑 Cashfree Gateway Config", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton(f"💳 UPI & Gmail ({upi_status})", callback_data="settings#sb_rl_upi_menu")],
+        [InlineKeyboardButton(f"⚡ Cashfree Gateway ({cf_status})", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton(f"🌐 OxaPay Crypto ({oxa_status})", callback_data="settings#sb_rl_oxa_menu")],
         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
     ]
     await query.message.edit_text(
@@ -1151,12 +1164,16 @@ async def settings_query(bot, query):
         f"<b>Rate Limit Hit Logs:</b> <code>{hit_log_str}</code>\n"
         f"<b>Pass Plans:</b> {pricing_str}\n"
         f"────────────────────\n"
+        f"<b>Gateways:</b> UPI: <code>{upi_status}</code> | Cashfree: <code>{cf_status}</code> | OxaPay: <code>{oxa_status}</code>\n"
+        f"────────────────────\n"
         f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
         f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
-        f"cooldown message showing their live remaining time and an <b>'🔒 Unlock Access Via Payment'</b> button. "
-        f"A log message with complete user details is sent to your <b>Rate Limit Hit Logs Channel</b> in Quoteblock format. "
-        f"Pass purchases via Cashfree activate instantly and are logged to your <b>Pass Purchase Logs Channel</b> in Quoteblock format. "
-        f"Pass holders and Bot Owners are completely exempt from all limits.</blockquote>",
+        f"cooldown message showing their live remaining time and an <b>'🔒 Unlock Access Via Payment'</b> button.\n\n"
+        f"Users can choose from 3 payment methods:\n"
+        f"1. <b>UPI (INR):</b> Automated Gmail IMAP verification within seconds.\n"
+        f"2. <b>Cashfree:</b> Instant checkout gateway.\n"
+        f"3. <b>Crypto (Oxapay):</b> BTC, USDT, ETH & all major crypto.\n\n"
+        f"Pass purchases and rate limit hits are automatically logged to your dedicated channels in Quoteblock format.</blockquote>",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -1494,6 +1511,178 @@ async def settings_query(bot, query):
     try: await query.answer(f"Environment switched to: {new_env.upper()}!", show_alert=True)
     except Exception: pass
     query.data = "settings#sb_rl_cf_menu"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_upi_menu":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    upi_id = rl_cfg.get('upi_id', '').strip() or getattr(Config, 'UPI_ID', '').strip() or os.environ.get('UPI_ID', '').strip()
+    upi_name = rl_cfg.get('upi_name', '').strip() or "Arya Delivery Pass"
+    gmail_user = rl_cfg.get('gmail_user', '').strip() or getattr(Config, 'GMAIL_USER', '').strip() or os.environ.get('GMAIL_USER', '').strip()
+    gmail_pass = rl_cfg.get('gmail_app_password', '').strip() or getattr(Config, 'GMAIL_APP_PASSWORD', '').strip() or os.environ.get('GMAIL_APP_PASSWORD', '').strip()
+
+    upi_disp = upi_id if upi_id else "Not Configured ❌"
+    gmail_disp = gmail_user if gmail_user else "Not Configured ❌"
+    pass_disp = "Set ✅" if gmail_pass else "Not Configured ❌"
+
+    buttons = [
+        [InlineKeyboardButton("📱 Set UPI ID", callback_data="settings#sb_rl_upi_id")],
+        [InlineKeyboardButton("👤 Set Payee Name", callback_data="settings#sb_rl_upi_name")],
+        [InlineKeyboardButton("📧 Set Gmail Address", callback_data="settings#sb_rl_gmail_user")],
+        [InlineKeyboardButton("🔑 Set Gmail App Password", callback_data="settings#sb_rl_gmail_pass")],
+        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
+    ]
+    await query.message.edit_text(
+        f"<b>💳 UPI & GMAIL AUTO-VERIFICATION CONFIG</b>\n"
+        f"────────────────────\n"
+        f"<b>UPI ID:</b> <code>{upi_disp}</code>\n"
+        f"<b>Payee Name:</b> <code>{upi_name}</code>\n"
+        f"<b>Gmail Account:</b> <code>{gmail_disp}</code>\n"
+        f"<b>Gmail App Password:</b> <code>{pass_disp}</code>\n"
+        f"<b>Status:</b> {'🟢 Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '🟡 Incomplete'}\n"
+        f"────────────────────\n"
+        f"<blockquote expandable>ℹ️ <b>How Gmail Auto-Verification Works:</b>\n"
+        f"When users pay via UPI, they submit their 12-digit UTR.\n"
+        f"The bot connects via IMAP SSL to your Gmail account, searches for the transaction email, "
+        f"confirms the amount, and activates the pass within seconds!\n\n"
+        f"<b>Note:</b> For Gmail App Password, generate a 16-character App Password from Google Account → Security → 2-Step Verification → App Passwords.</blockquote>",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+  elif type == "sb_rl_upi_id":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>📱 Set UPI ID</b>\n\n"
+        "Enter your UPI ID (e.g. <code>username@okaxis</code>, <code>mobile@paytm</code>).\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        val = (resp.text or '').strip()
+        await db.set_delivery_rate_limit_config(upi_id=val)
+        await resp.delete()
+        await ask.edit_text(f"✅ UPI ID set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+
+  elif type == "sb_rl_upi_name":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>👤 Set Payee Name</b>\n\n"
+        "Enter payee display name for UPI (e.g. <code>Arya Store</code>).\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        val = (resp.text or '').strip()
+        await db.set_delivery_rate_limit_config(upi_name=val)
+        await resp.delete()
+        await ask.edit_text(f"✅ Payee name set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+
+  elif type == "sb_rl_gmail_user":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>📧 Set Gmail Address</b>\n\n"
+        "Enter the Gmail email address receiving your bank credit notifications (e.g. <code>yourname@gmail.com</code>).\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        val = (resp.text or '').strip().lower()
+        await db.set_delivery_rate_limit_config(gmail_user=val)
+        await resp.delete()
+        await ask.edit_text(f"✅ Gmail address set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+
+  elif type == "sb_rl_gmail_pass":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>🔑 Set Gmail App Password</b>\n\n"
+        "Enter your 16-character Google App Password (e.g. <code>abcd efgh ijkl mnop</code>).\n\n"
+        "<i>This is securely saved to database.</i>\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        val = (resp.text or '').replace(" ", "").strip()
+        await db.set_delivery_rate_limit_config(gmail_app_password=val)
+        await resp.delete()
+        await ask.edit_text("✅ Gmail App Password saved securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+
+  elif type == "sb_rl_oxa_menu":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    oxa_key = rl_cfg.get('oxapay_key', '').strip() or getattr(Config, 'OXAPAY_KEY', '').strip() or os.environ.get('OXAPAY_KEY', '').strip()
+    oxa_env = rl_cfg.get('oxapay_env', '').strip() or getattr(Config, 'OXAPAY_ENV', 'production') or os.environ.get('OXAPAY_ENV', 'production')
+    env_str = "Sandbox (Test)" if oxa_env.lower() == "sandbox" else "Production (Live)"
+    key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ("Set ✅" if oxa_key else "Not Configured ❌")
+
+    buttons = [
+        [InlineKeyboardButton("🔑 Set OxaPay Merchant Key", callback_data="settings#sb_rl_oxa_key")],
+        [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_oxa_env")],
+        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
+    ]
+    await query.message.edit_text(
+        f"<b>🌐 OXAPAY CRYPTO GATEWAY CONFIG</b>\n"
+        f"────────────────────\n"
+        f"<b>Merchant Key:</b> <code>{key_disp}</code>\n"
+        f"<b>Environment:</b> <code>{env_str}</code>\n"
+        f"<b>Status:</b> {'🟢 Ready & Active' if oxa_key else '🔴 Not Configured'}\n"
+        f"────────────────────\n"
+        f"<blockquote expandable>ℹ️ <b>How to get OxaPay Merchant Key:</b>\n"
+        f"1. Login to your OxaPay dashboard at https://oxapay.com\n"
+        f"2. Go to <b>Merchant → API Keys</b>\n"
+        f"3. Copy your <b>Merchant API Key</b> and set it here or in <code>.env</code>.</blockquote>",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+  elif type == "sb_rl_oxa_key":
+    await query.message.delete()
+    ask = await bot.send_message(
+        user_id,
+        "<b>🔑 Set OxaPay Merchant Key</b>\n\n"
+        "Send your OxaPay <b>Merchant API Key</b>.\n\n"
+        "Send /cancel to abort."
+    )
+    try:
+        resp = await _ask(bot, user_id, timeout=120)
+        if getattr(resp, 'text', None) and '/cancel' in resp.text:
+            await resp.delete()
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_oxa_menu")]]))
+        val = (resp.text or '').strip()
+        await db.set_delivery_rate_limit_config(oxapay_key=val)
+        await resp.delete()
+        await ask.edit_text("✅ OxaPay Merchant Key updated securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_oxa_menu")]]))
+    except Exception:
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_oxa_menu")]]))
+
+  elif type == "sb_rl_oxa_env":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_env = rl_cfg.get('oxapay_env', 'production').strip().lower()
+    new_env = "production" if cur_env == "sandbox" else "sandbox"
+    await db.set_delivery_rate_limit_config(oxapay_env=new_env)
+    try: await query.answer(f"OxaPay Environment switched to: {new_env.upper()}!", show_alert=True)
+    except Exception: pass
+    query.data = "settings#sb_rl_oxa_menu"
     return await settings_query(bot, query)
 
   elif type == "sbt_manage":
