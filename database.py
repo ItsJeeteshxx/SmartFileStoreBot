@@ -1896,6 +1896,10 @@ class Database:
         await self.set_user_unlimited_pass(user_id, new_expiry, user_name=user_name)
         return new_expiry
 
+    async def activate_user_unlimited_pass(self, user_id: int, duration_seconds: float, order_id: str = "", amount: float = 0.0, gateway: str = "", user_name: str = "") -> float:
+        """Helper to activate or extend user pass by duration seconds."""
+        return await self.grant_user_unlimited_pass(user_id=user_id, duration=duration_seconds, user_name=user_name)
+
     async def revoke_user_unlimited_pass(self, user_id: int):
         """Revoke user's unlimited pass."""
         await self.unlimited_passes.delete_one({'user_id': int(user_id)})
