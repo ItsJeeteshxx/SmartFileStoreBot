@@ -1654,7 +1654,8 @@ class Database:
             'gmail_user': '',
             'gmail_app_password': '',
             'oxapay_key': '',
-            'oxapay_env': 'production'
+            'oxapay_env': 'production',
+            'oxapay_enabled': True
         }
         if not doc:
             return defaults
@@ -1678,7 +1679,7 @@ class Database:
             'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel',
             'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key',
             'cashfree_env', 'upi_id', 'upi_name', 'gmail_user', 'gmail_app_password',
-            'oxapay_key', 'oxapay_env'
+            'oxapay_key', 'oxapay_env', 'oxapay_enabled'
         }
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
@@ -1699,18 +1700,21 @@ class Database:
         doc = await self.used_utrs.find_one({'utr': str(utr).strip()})
         return bool(doc)
 
-    async def mark_utr_used(self, utr: str, user_id: int, amount: float, plan: str):
+    async def mark_utr_used(self, utr: str, user_id: int, amount: float, plan: str, user_name: str = ""):
         """Mark a UTR as consumed to prevent replay attacks."""
         import time
+        doc = {
+            'utr': str(utr).strip(),
+            'user_id': int(user_id),
+            'amount': float(amount),
+            'plan': str(plan),
+            'used_at': time.time()
+        }
+        if user_name:
+            doc['user_name'] = str(user_name).strip()
         await self.used_utrs.update_one(
             {'utr': str(utr).strip()},
-            {'$set': {
-                'utr': str(utr).strip(),
-                'user_id': int(user_id),
-                'amount': float(amount),
-                'plan': str(plan),
-                'used_at': time.time()
-            }},
+            {'$set': doc},
             upsert=True
         )
 
@@ -1785,16 +1789,19 @@ class Database:
             'time_left_str': time_left_str
         }
 
-    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float):
+    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = ""):
         """Set or update unlimited pass expiry."""
         import time
+        doc = {'expires_at': float(expiry_timestamp), 'updated_at': time.time()}
+        if user_name:
+            doc['user_name'] = str(user_name).strip()
         await self.unlimited_passes.update_one(
             {'user_id': int(user_id)},
-            {'$set': {'expires_at': float(expiry_timestamp), 'updated_at': time.time()}},
+            {'$set': doc},
             upsert=True
         )
 
-    async def grant_user_unlimited_pass(self, user_id: int, duration) -> float:
+    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "") -> float:
         """Extend or activate unlimited pass for specified duration (days int or duration str like '30m', '2h', '7d') and return new expiry."""
         import time
         if isinstance(duration, (int, float)) and duration < 1000:
@@ -1808,7 +1815,7 @@ class Database:
         now = time.time()
         base_time = cur['expires_at'] if (cur['active'] and cur['expires_at'] > now) else now
         new_expiry = base_time + duration_seconds
-        await self.set_user_unlimited_pass(user_id, new_expiry)
+        await self.set_user_unlimited_pass(user_id, new_expiry, user_name=user_name)
         return new_expiry
 
     async def revoke_user_unlimited_pass(self, user_id: int):
@@ -1830,6 +1837,144 @@ class Database:
             {'order_id': order_id},
             {'$set': {'status': 'PAID', 'paid_at': time.time(), 'payment_details': payment_details or {}}}
         )
+
+
+    async def get_all_pass_customers(self) -> list:
+        """
+        Fetch all users who hold or ever held a pass, or have pass transactions.
+        Returns sorted list of dicts:
+        {
+            'user_id': int,
+            'name': str,
+            'active': bool,
+            'expires_at': float,
+            'days_left': float,
+            'time_left_str': str,
+            'updated_at': float
+        }
+        """
+        import time
+        now = time.time()
+        users_map = {}
+
+        # 1. Check unlimited_passes
+        async for doc in self.unlimited_passes.find({}):
+            uid = doc.get('user_id')
+            if not uid:
+                continue
+            uid = int(uid)
+            exp = float(doc.get('expires_at', 0))
+            u_name = doc.get('user_name', '')
+            users_map[uid] = {
+                'user_id': uid,
+                'name': u_name,
+                'expires_at': exp,
+                'updated_at': float(doc.get('updated_at', exp))
+            }
+
+        # 2. Check used_utrs
+        async for doc in self.used_utrs.find({}):
+            uid = doc.get('user_id')
+            if not uid:
+                continue
+            uid = int(uid)
+            u_name = doc.get('user_name', '')
+            if uid not in users_map:
+                users_map[uid] = {
+                    'user_id': uid,
+                    'name': u_name,
+                    'expires_at': 0.0,
+                    'updated_at': float(doc.get('used_at', 0))
+                }
+            elif not users_map[uid]['name'] and u_name:
+                users_map[uid]['name'] = u_name
+
+        # 3. Check pass_orders
+        async for doc in self.pass_orders.find({'status': 'PAID'}):
+            uid = doc.get('user_id')
+            if not uid:
+                continue
+            uid = int(uid)
+            u_name = doc.get('user_name') or doc.get('customer_name', '')
+            if uid not in users_map:
+                users_map[uid] = {
+                    'user_id': uid,
+                    'name': u_name,
+                    'expires_at': 0.0,
+                    'updated_at': float(doc.get('paid_at') or doc.get('created_at', 0))
+                }
+            elif not users_map[uid]['name'] and u_name:
+                users_map[uid]['name'] = u_name
+
+        # Resolve names for users who don't have one
+        results = []
+        for uid, data in users_map.items():
+            name = data.get('name')
+            if not name:
+                try:
+                    user_doc = await self.col.find_one({'id': uid})
+                    if user_doc and user_doc.get('name'):
+                        name = user_doc['name']
+                except Exception:
+                    pass
+            if not name:
+                name = f"User {uid}"
+            data['name'] = str(name)[:25]
+
+            exp = data['expires_at']
+            active = bool(exp > now)
+            rem_sec = int(exp - now) if active else 0
+            days_left = (exp - now) / 86400.0 if active else 0.0
+
+            if not active:
+                if exp > 0:
+                    time_left_str = "Expired"
+                else:
+                    time_left_str = "No Active Pass"
+            elif rem_sec < 3600:
+                time_left_str = f"{rem_sec // 60}m"
+            elif rem_sec < 86400:
+                time_left_str = f"{rem_sec // 3600}h {(rem_sec % 3600) // 60}m"
+            else:
+                time_left_str = f"{round(days_left, 1)}d"
+
+            data['active'] = active
+            data['days_left'] = round(days_left, 1)
+            data['rem_seconds'] = rem_sec
+            data['time_left_str'] = time_left_str
+            results.append(data)
+
+        # Sort: active first (descending by expires_at), then expired (descending by expires_at / updated_at)
+        results.sort(key=lambda x: (1 if x['active'] else 0, x['expires_at'], x['updated_at']), reverse=True)
+        return results
+
+    async def get_customer_full_details(self, user_id: int) -> dict:
+        """Fetch customer profile, pass status, and full transaction history."""
+        user_id = int(user_id)
+        pass_info = await self.get_user_unlimited_pass(user_id)
+        
+        name = ""
+        pass_doc = await self.unlimited_passes.find_one({'user_id': user_id})
+        if pass_doc and pass_doc.get('user_name'):
+            name = pass_doc['user_name']
+        if not name:
+            try:
+                u_doc = await self.col.find_one({'id': user_id})
+                if u_doc and u_doc.get('name'):
+                    name = u_doc['name']
+            except Exception:
+                pass
+        if not name:
+            name = f"User {user_id}"
+
+        txns = await self.get_user_pass_transactions(user_id, limit=25)
+
+        return {
+            'user_id': user_id,
+            'name': name,
+            'pass_info': pass_info,
+            'transactions': txns
+        }
 
     async def get_next_pass_order_number(self) -> int:
         """Atomically get next unique sequential order number."""

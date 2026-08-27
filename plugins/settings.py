@@ -1138,6 +1138,10 @@ async def settings_query(bot, query):
     toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
     status_icon  = "🟢" if enabled else "🔴"
 
+    all_custs    = await db.get_all_pass_customers()
+    total_cust   = len(all_custs)
+    active_cust  = sum(1 for c in all_custs if c.get('active'))
+
     upi_val = str(rl_cfg.get('upi_id') or getattr(Config, 'UPI_ID', '') or os.environ.get('UPI_ID', '') or '').strip()
     gmail_val = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
     from plugins.cashfree_helper import get_cashfree_credentials
@@ -1158,6 +1162,7 @@ async def settings_query(bot, query):
             InlineKeyboardButton(f"📋 Pass Logs: {pass_log_str}", callback_data="settings#sb_rl_log_ch"),
             InlineKeyboardButton(f"⚠️ Limit Logs: {hit_log_str}", callback_data="settings#sb_rl_hit_log_ch"),
         ],
+        [InlineKeyboardButton(f"👥 Pass Customers ({active_cust} Active / {total_cust} Total)", callback_data="settings#sb_rl_cust_0")],
         [InlineKeyboardButton(f"💰 Pricing ({pricing_str})", callback_data="settings#sb_rl_pricing")],
         [InlineKeyboardButton(f"💳 UPI & Gmail ({upi_status})", callback_data="settings#sb_rl_upi_menu")],
         [InlineKeyboardButton(f"⚡ Cashfree Gateway ({cf_status})", callback_data="settings#sb_rl_cf_menu")],
@@ -1645,7 +1650,10 @@ async def settings_query(bot, query):
     env_str = "Sandbox (Test)" if oxa_env.lower() == "sandbox" else "Production (Live)"
     key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ("Set ✅" if oxa_key else "Not Configured ❌")
 
+    oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
+    oxa_toggle_lbl = "🟢 OxaPay Gateway: ENABLED" if oxapay_enabled else "🔴 OxaPay Gateway: DISABLED"
     buttons = [
+        [InlineKeyboardButton(oxa_toggle_lbl, callback_data="settings#sb_rl_oxa_toggle")],
         [InlineKeyboardButton("🔑 Set OxaPay Merchant Key", callback_data="settings#sb_rl_oxa_key")],
         [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_oxa_env")],
         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
@@ -1690,6 +1698,166 @@ async def settings_query(bot, query):
     new_env = "production" if cur_env == "sandbox" else "sandbox"
     await db.set_delivery_rate_limit_config(oxapay_env=new_env)
     try: await query.answer(f"OxaPay Environment switched to: {new_env.upper()}!", show_alert=True)
+    except Exception: pass
+    query.data = "settings#sb_rl_oxa_menu"
+    return await settings_query(bot, query)
+
+
+  elif type.startswith("sb_rl_cust_"):
+    page = int(type.split('_')[-1])
+    all_custs = await db.get_all_pass_customers()
+    total_cust = len(all_custs)
+    active_cust = sum(1 for c in all_custs if c.get('active'))
+
+    per_page = 6
+    total_pages = max(1, (total_cust + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    slice_custs = all_custs[page * per_page : (page + 1) * per_page]
+
+    buttons = []
+    for c in slice_custs:
+        icon = "🟢" if c.get('active') else "🔴"
+        name = c.get('name', 'User')
+        uid = c.get('user_id')
+        t_left = f" ({c.get('time_left_str')})" if c.get('active') else ""
+        btn_text = f"{icon} {name} [{uid}]{t_left}"
+        buttons.append([InlineKeyboardButton(btn_text, callback_data=f"settings#sb_rl_u_{uid}_{page}")])
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"settings#sb_rl_cust_{page - 1}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page + 1} / {total_pages}", callback_data="settings#noop"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"settings#sb_rl_cust_{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")])
+
+    text = (
+        "<b>👥 PASS CUSTOMERS & SUBSCRIPTIONS</b>\n"
+        "────────────────────\n"
+        f"<b>Total Customers:</b> <code>{total_cust}</code> | <b>Active Passes:</b> <code>{active_cust}</code>\n"
+        f"<b>Page:</b> <code>{page + 1} of {total_pages}</code>\n"
+        "────────────────────\n"
+        "<i>Tap any customer below to view their active subscription details, live expiry countdown, and order transactions:</i>"
+    )
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+  elif type.startswith("sb_rl_u_"):
+    parts = type.split('_')
+    cust_uid = int(parts[3])
+    page = int(parts[4]) if len(parts) > 4 else 0
+
+    details = await db.get_customer_full_details(cust_uid)
+    name = details.get('name', f"User {cust_uid}")
+    pass_info = details.get('pass_info', {})
+    active = pass_info.get('active', False)
+    expires_at = pass_info.get('expires_at', 0)
+
+    import datetime
+    exp_str = "None"
+    if expires_at > 0:
+        try:
+            import pytz
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            exp_dt = datetime.datetime.fromtimestamp(expires_at, tz=ist_tz)
+            exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+        except Exception:
+            exp_str = datetime.datetime.fromtimestamp(expires_at).strftime('%d-%m-%Y %I:%M %p')
+
+    if active:
+        sub_status = (
+            f"<b>Status:</b> 🟢 <b>ACTIVE SUBSCRIPTION</b>\n"
+            f"• <b>Remaining Time:</b> <code>{pass_info.get('time_left_str', 'Active')}</code>\n"
+            f"• <b>Valid Until:</b> <code>{exp_str} IST</code>"
+        )
+    else:
+        sub_status = (
+            f"<b>Status:</b> 🔴 <b>EXPIRED / INACTIVE</b>\n"
+            f"• <b>Last Expiry:</b> <code>{exp_str} IST</code>"
+        )
+
+    txns = details.get('transactions', [])
+    txns_text = ""
+    if not txns:
+        txns_text = "<i>No recorded orders or UTR transactions.</i>\n"
+    else:
+        for idx, t in enumerate(txns[:8], 1):
+            t_time = t.get('time', 0)
+            t_str = "N/A"
+            if t_time > 0:
+                try:
+                    import pytz
+                    ist_tz = pytz.timezone('Asia/Kolkata')
+                    t_str = datetime.datetime.fromtimestamp(t_time, tz=ist_tz).strftime('%d-%m-%Y %I:%M %p')
+                except Exception:
+                    t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d-%m-%Y %I:%M %p')
+            
+            p_name = str(t.get('plan', 'N/A'))
+            amt = f"₹{float(t.get('amount', 0)):.2f}"
+            gw = t.get('gateway', 'UPI')
+            oid = t.get('id', 'N/A')
+            st_badge = "🟢 Active" if active else "🔴 Expired"
+            txns_text += (
+                f"<b>{idx}.</b> <code>{oid}</code>\n"
+                f"   • <b>Plan:</b> {p_name} | <b>Paid:</b> {amt} ({gw})\n"
+                f"   • <b>Date:</b> {t_str}\n"
+                f"   • <b>Subscription:</b> {st_badge}\n\n"
+            )
+
+    body = (
+        f"<b>👤 CUSTOMER SUBSCRIPTION & ORDERS</b>\n"
+        f"────────────────────\n"
+        f"• <b>Customer Name:</b> {name}\n"
+        f"• <b>Telegram ID:</b> <code>{cust_uid}</code>\n"
+        f"• <b>Profile Link:</b> <a href=\"tg://user?id={cust_uid}\">View Telegram Account</a>\n\n"
+        f"<b>📊 LIVE SUBSCRIPTION:</b>\n"
+        f"{sub_status}\n"
+        f"────────────────────\n"
+        f"<b>📜 ORDER & TRANSACTION HISTORY:</b>\n"
+        f"{txns_text}"
+    )
+
+    buttons = [
+        [
+            InlineKeyboardButton("➕ Grant 1 Day", callback_data=f"settings#sb_rl_g_{cust_uid}_1d_{page}"),
+            InlineKeyboardButton("➕ Grant 7 Days", callback_data=f"settings#sb_rl_g_{cust_uid}_7d_{page}")
+        ],
+        [
+            InlineKeyboardButton("❌ Revoke Pass", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
+            InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_rl_cust_{page}")
+        ]
+    ]
+    await query.message.edit_text(body, reply_markup=InlineKeyboardMarkup(buttons))
+
+  elif type.startswith("sb_rl_g_"):
+    parts = type.split('_')
+    cust_uid = int(parts[3])
+    dur = parts[4]
+    page = int(parts[5]) if len(parts) > 5 else 0
+    await db.grant_user_unlimited_pass(cust_uid, dur)
+    try: await query.answer(f"Pass extended by {dur} successfully!", show_alert=True)
+    except Exception: pass
+    query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+    return await settings_query(bot, query)
+
+  elif type.startswith("sb_rl_r_"):
+    parts = type.split('_')
+    cust_uid = int(parts[3])
+    page = int(parts[4]) if len(parts) > 4 else 0
+    await db.revoke_user_unlimited_pass(cust_uid)
+    try: await query.answer("Customer pass revoked!", show_alert=True)
+    except Exception: pass
+    query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_oxa_toggle":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_state = rl_cfg.get('oxapay_enabled', True)
+    new_state = not cur_state
+    await db.set_delivery_rate_limit_config(oxapay_enabled=new_state)
+    try: await query.answer(f"OxaPay Gateway {'ENABLED ✅' if new_state else 'DISABLED ❌'}!", show_alert=True)
     except Exception: pass
     query.data = "settings#sb_rl_oxa_menu"
     return await settings_query(bot, query)

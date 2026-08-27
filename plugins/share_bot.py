@@ -1774,16 +1774,22 @@ async def _process_pass_callback(client, query):
         about = (await db.get_share_bot_about(bot_id)) if bot_id else {}
         support_link = (about.get('support_link') if about else None) or SUPPORT_LINK or "https://t.me/telegram"
 
-        methods_kb = InlineKeyboardMarkup([
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
+
+        methods_buttons = [
             [InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")],
-            [InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")],
-            [InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")],
-            [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
-            [
-                InlineKeyboardButton("🔒 Support", url=support_link),
-                InlineKeyboardButton("← Back", callback_data="pass#close")
-            ]
+            [InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")]
+        ]
+        if oxapay_enabled:
+            methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")])
+
+        methods_buttons.append([InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")])
+        methods_buttons.append([
+            InlineKeyboardButton("🔒 Support", url=support_link),
+            InlineKeyboardButton("← Back", callback_data="pass#close")
         ])
+        methods_kb = InlineKeyboardMarkup(methods_buttons)
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
@@ -1841,21 +1847,38 @@ async def _process_pass_callback(client, query):
 
     elif data == "pass#method_crypto":
         rl_cfg = await db.get_delivery_rate_limit_config()
+        if not rl_cfg.get('oxapay_enabled', True):
+            return await query.answer("⚠️ Crypto payments are currently disabled by administrator.", show_alert=True)
+
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
         
         plan_buttons = []
         for dur_key, price in prices.items():
             p_val = int(price) if float(price).is_integer() else price
-            plan_buttons.append([InlineKeyboardButton(format_plan_button_label(dur_key, p_val), callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
+            usd_val = round(float(price) / 85.0, 2)
+            # OxaPay minimum is $0.50 USD
+            if usd_val >= 0.50:
+                plan_buttons.append([InlineKeyboardButton(f"{format_plan_button_label(dur_key, p_val)} [${usd_val:.2f}]", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
 
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
 
-        text = (
-            "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
-            "──────────────────────\n\n"
-            "Instant payment with USDT, BTC, SOL, TON.\n\n"
-            "Select your desired Pass plan:"
-        )
+        if len(plan_buttons) <= 1:
+            text = (
+                "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
+                "──────────────────────\n\n"
+                "⚠️ <b>No Eligible Crypto Plans Available</b>\n\n"
+                "OxaPay requires a minimum order amount of <b>$0.50 USD (~₹43)</b>.\n"
+                "None of the current configured plans meet this minimum.\n\n"
+                "👉 Please pay using <b>UPI (INR)</b> or <b>Cashfree</b> instead!"
+            )
+        else:
+            text = (
+                "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
+                "──────────────────────\n\n"
+                "Instant payment with USDT, BTC, SOL, TON.\n\n"
+                "<i>💡 Note: OxaPay has a minimum order limit of $0.50 USD (~₹43). Only eligible plans are displayed below:</i>\n\n"
+                "Select your desired Pass plan:"
+            )
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
@@ -2072,8 +2095,8 @@ async def _process_pass_callback(client, query):
 
         if res.get("success"):
             _pending_utr_users.pop(user_id, None)
-            await db.mark_utr_used(utr, user_id, expected_amount, dur_key)
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
+            await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
             
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -2126,6 +2149,10 @@ async def _process_pass_callback(client, query):
         parts = data.split("_")
         dur_key = parts[1]
         amount_inr = float(parts[2])
+
+        usd_check = round(float(amount_inr) / 85.0, 2)
+        if usd_check < 0.50:
+            return await query.answer("⚠️ Minimum crypto payment is $0.50 USD (~₹43). Please choose a larger plan or use UPI.", show_alert=True)
 
         try:
             await query.answer("Generating crypto invoice via OxaPay...", show_alert=False)
