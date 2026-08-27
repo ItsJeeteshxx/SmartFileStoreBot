@@ -1848,7 +1848,7 @@ PLAN_CUSTOM_EMOJIS = [
 ]
 
 def calculate_plan_savings(dur_key: str, price: float, prices: dict) -> str:
-    """Calculate automatic savings amount and percentage relative to base daily rate."""
+    """Calculate automatic savings amount relative to base daily rate."""
     from database import parse_duration_to_seconds
     try:
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -1872,13 +1872,103 @@ def calculate_plan_savings(dur_key: str, price: float, prices: dict) -> str:
             standard_cost = dur_days * base_rate_per_day
             if standard_cost > price:
                 save_amount = int(round(standard_cost - price))
-                save_pct = int(round(((standard_cost - price) / standard_cost) * 100))
-                if save_amount > 0 and save_pct > 0:
-                    return f" (Save ₹{save_amount} • {save_pct}% OFF)"
+                if save_amount > 0:
+                    return f" (Save ₹{save_amount})"
     except Exception:
         pass
     return ""
 
+
+
+# Active payment reminders cache
+_active_order_reminders = {}
+
+async def schedule_pass_payment_reminder(
+    client,
+    user_id: int,
+    order_id: str,
+    gateway_name: str,
+    amount_str: str,
+    dur_verbose: str,
+    pay_url: str = None,
+    delay_seconds: int = 180  # 3 minutes (under 5 minutes)
+):
+    """
+    Sends an automated payment reminder to the user under 5 minutes if their order remains unpaid.
+    """
+    task_key = f"{user_id}_{order_id}"
+    _active_order_reminders[task_key] = time.time()
+
+    async def _reminder_coro():
+        try:
+            await asyncio.sleep(delay_seconds)
+            if task_key not in _active_order_reminders:
+                return
+
+            # Check if user already activated pass or paid order
+            pass_info = await db.get_user_unlimited_pass(user_id)
+            if pass_info.get('active'):
+                _active_order_reminders.pop(task_key, None)
+                return
+
+            order_doc = await db.pass_orders.find_one({'order_id': order_id})
+            if order_doc and order_doc.get('status') == 'PAID':
+                _active_order_reminders.pop(task_key, None)
+                return
+
+            utr_doc = await db.used_utrs.find_one({'order_id': order_id})
+            if utr_doc:
+                _active_order_reminders.pop(task_key, None)
+                return
+
+            u_name = "there"
+            try:
+                chat_member = await client.get_chat(user_id)
+                if chat_member and chat_member.first_name:
+                    u_name = chat_member.first_name
+            except Exception:
+                pass
+
+            rem_text = (
+                f'<emoji id="6217487596486922033">⏰</emoji> <b>Payment Reminder — Complete Your Order</b>\n\n'
+                f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> order is waiting for payment!\n\n"
+                f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+                f"• <b>Amount Due:</b> <code>{amount_str}</code>\n"
+                f"• <b>Payment Method:</b> {gateway_name}\n\n"
+                f"<blockquote>⚡️ <i>Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</i></blockquote>\n\n"
+                f"<i>If you have already paid or need assistance, please submit your reference or contact support.</i>"
+            )
+
+            rem_buttons = []
+            rem_api_buttons = []
+            if pay_url:
+                rem_buttons.append([InlineKeyboardButton("💳 Complete Payment Now", url=pay_url)])
+                rem_api_buttons.append([{"text": "Complete Payment Now", "url": pay_url, "icon_custom_emoji_id": "5807527002374151568"}])
+            elif "UPI" in gateway_name:
+                rem_buttons.append([InlineKeyboardButton("✍️ Submit 12-Digit UTR", callback_data="pass#method_upi")])
+                rem_api_buttons.append([{"text": "Submit 12-Digit UTR", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5807800879553715710"}])
+
+            rem_buttons.append([InlineKeyboardButton("🔒 Support", url="https://t.me/AryaHelpTG")])
+            rem_api_buttons.append([{"text": "Support", "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}])
+
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=user_id,
+                text=rem_text,
+                inline_keyboard=rem_api_buttons
+            )
+            if not sent_ok:
+                await client.send_message(
+                    chat_id=user_id,
+                    text=rem_text,
+                    reply_markup=InlineKeyboardMarkup(rem_buttons)
+                )
+        except Exception as e:
+            logger.warning(f"Payment reminder error: {e}")
+        finally:
+            _active_order_reminders.pop(task_key, None)
+
+    asyncio.create_task(_reminder_coro())
 
 async def send_or_edit_with_custom_icons(
     client,
@@ -2001,17 +2091,16 @@ async def _process_pass_callback(client, query):
             p_val = int(price) if float(price).is_integer() else price
             usd_val = max(0.50, round(float(price) / 92.0, 2))
             savings_tag = calculate_plan_savings(dur_key, price, prices)
-            emoji_id, fallback = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
-            plan_lines.append(f'<emoji id="{emoji_id}">{fallback}</emoji> {num} {unit}: ₹{p_val} | ${usd_val:.2f}{savings_tag}')
+            plan_lines.append(f'→   {num} {unit}: ₹{p_val} | ${usd_val:.2f}{savings_tag}')
 
         plans_str = "\n".join(plan_lines)
 
         methods_text = (
-            '<emoji id="5773677501825945508">👑</emoji> <b>Premium Membership Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n'
-            "──────────────────────\n"
+            '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plan</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+            "──────────────────────\n\n"
             '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
-            "• 🚫 <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n"
-            "• ⚡️ <b>No Access Limits:</b> Unlimited link access without cooldown.\n\n"
+            '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
+            '• <emoji id="5805331990618053402">⚡️</emoji> <b>No Access Limits:</b> Unlimited link access without cooldown.\n\n'
             '<emoji id="6007983438294949171">💎</emoji> <b>Available Plans:</b>\n'
             f"{plans_str}\n\n"
             '<emoji id="6019224342666157570">💳</emoji> <b>Select your preferred payment method below:</b>'
@@ -2402,6 +2491,17 @@ async def _process_pass_callback(client, query):
             reply_markup=photo_kb
         )
 
+        # Schedule automatic reminder under 5 minutes (3 mins) if payment not completed
+        asyncio.create_task(schedule_pass_payment_reminder(
+            client=client,
+            user_id=user_id,
+            order_id=order_id,
+            gateway_name="Pay Via UPI (INR)",
+            amount_str=f"₹{dyn_amount:.2f}",
+            dur_verbose=f"{count} {unit}",
+            delay_seconds=180
+        ))
+
     elif data.startswith("pass#upisubmit_"):
         parts = data.split("_")
         dur_key = parts[1]
@@ -2547,6 +2647,18 @@ async def _process_pass_callback(client, query):
             [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
         ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+        # Schedule automatic reminder under 5 minutes (3 mins) if OxaPay crypto invoice not completed
+        asyncio.create_task(schedule_pass_payment_reminder(
+            client=client,
+            user_id=user_id,
+            order_id=order_id,
+            gateway_name="Pay Via Crypto (OxaPay)",
+            amount_str=f"${amount_usd:.2f} USD (~₹{amount_inr:.0f})",
+            dur_verbose=dur_name,
+            pay_url=pay_link,
+            delay_seconds=180
+        ))
 
     elif data.startswith("pass#oxaverify_"):
         parts = data.split("_")
