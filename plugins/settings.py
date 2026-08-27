@@ -1848,7 +1848,41 @@ async def settings_query(bot, query):
         u_name = f"User {target_uid}"
 
     new_expiry = await db.grant_user_unlimited_pass(target_uid, dur, user_name=u_name)
-    try: await query.answer(f"✅ Pass granted to {u_name} for {dur}!", show_alert=True)
+    
+    # Send activation success message to user via Delivery Bot
+    dur_verb = dur
+    try:
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_verb = format_duration_verbose(parse_duration_to_seconds(dur, default_unit='d'))
+    except Exception:
+        dur_verb = dur
+
+    cust_msg = (
+        f'<emoji id="6267118537752450044">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
+        f"• <b>Plan:</b> {str(dur_verb).title()} Unlimited Access Pass\n"
+        f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+        f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
+    )
+    sent = False
+    try:
+        from plugins.share_bot import _share_bot_clients
+        if _share_bot_clients:
+            for b_token, s_client in _share_bot_clients.items():
+                try:
+                    await s_client.send_message(chat_id=target_uid, text=cust_msg)
+                    sent = True
+                    break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if not sent:
+        try:
+            await bot.send_message(chat_id=target_uid, text=cust_msg)
+        except Exception:
+            pass
+
+    try: await query.answer(f"✅ Pass granted to {u_name} for {dur} & user notified!", show_alert=True)
     except Exception: pass
     query.data = f"settings#sb_rl_u_{target_uid}_0"
     return await settings_query(bot, query)
@@ -1948,7 +1982,41 @@ async def settings_query(bot, query):
     dur = parts[4]
     page = int(parts[5]) if len(parts) > 5 else 0
     await db.grant_user_unlimited_pass(cust_uid, dur)
-    try: await query.answer(f"Pass extended by {dur} successfully!", show_alert=True)
+
+    # Notify customer
+    dur_verb = dur
+    try:
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_verb = format_duration_verbose(parse_duration_to_seconds(dur, default_unit='d'))
+    except Exception:
+        dur_verb = dur
+
+    cust_msg = (
+        f'<emoji id="6267118537752450044">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
+        f"• <b>Plan:</b> {str(dur_verb).title()} Unlimited Access Pass\n"
+        f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+        f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
+    )
+    sent = False
+    try:
+        from plugins.share_bot import _share_bot_clients
+        if _share_bot_clients:
+            for b_token, s_client in _share_bot_clients.items():
+                try:
+                    await s_client.send_message(chat_id=cust_uid, text=cust_msg)
+                    sent = True
+                    break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if not sent:
+        try:
+            await bot.send_message(chat_id=cust_uid, text=cust_msg)
+        except Exception:
+            pass
+
+    try: await query.answer(f"Pass extended by {dur} & user notified!", show_alert=True)
     except Exception: pass
     query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
     return await settings_query(bot, query)

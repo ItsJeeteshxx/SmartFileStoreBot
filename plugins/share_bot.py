@@ -1728,7 +1728,7 @@ async def _poll_upi_payment(
                     f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
                     f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
                     f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
-                    f"<blockquote>🎉 <i>Thank you! Your Unlimited Access Pass has been activated. Enjoy unlimited instant downloads with zero limits!</i></blockquote>"
+                    f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
                 )
                 success_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
@@ -2847,7 +2847,7 @@ async def _process_pass_callback(client, query):
                 f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
                 f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
                 f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
-                f"<blockquote>🎉 <i>Thank you! Your Unlimited Access Pass has been activated. Enjoy unlimited instant downloads with zero limits!</i></blockquote>"
+                f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
             )
             success_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
