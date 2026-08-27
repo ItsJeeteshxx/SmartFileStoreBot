@@ -2168,14 +2168,16 @@ async def send_or_edit_with_custom_icons(
     parse_mode: str = "HTML",
     media_id: str = None,
     media_type: str = "photo",
-    is_media_edit: bool = False
-) -> bool:
+    is_media_edit: bool = False,
+    photo_bytes: bytes = None
+) -> any:
     """
     Sends or edits a message using Telegram Bot API HTTP endpoint.
     This enables `icon_custom_emoji_id` on inline keyboard buttons and
     custom animated emojis (<tg-emoji>) in text and captions across Photos/Animations/Videos.
     """
     import aiohttp
+    import json
     import re
     from config import Config
 
@@ -2196,6 +2198,25 @@ async def send_or_edit_with_custom_icons(
 
     # Convert Pyrogram <emoji id="..."> tags to Bot API <tg-emoji emoji-id="..."> tags
     api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+    url = f"https://api.telegram.org/bot{bot_token}/"
+
+    if photo_bytes:
+        try:
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(c_id))
+            form.add_field("caption", api_text)
+            form.add_field("parse_mode", parse_mode)
+            form.add_field("reply_markup", json.dumps({"inline_keyboard": inline_keyboard}))
+            form.add_field("photo", photo_bytes, filename="qr.png", content_type="image/png")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url + "sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        return data.get("result", True)
+                    logger.warning(f"Bot API sendPhoto bytes returned error: {data}")
+        except Exception as e:
+            logger.warning(f"Bot API sendPhoto bytes exception: {e}")
+        return False
 
     payload = {
         "chat_id": c_id,
@@ -2678,21 +2699,37 @@ async def _process_pass_callback(client, query):
             [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
+        photo_api_kb = [
+            [{"text": "Check Payment Status", "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": "← Back", "callback_data": "pass#method_upi"}]
+        ]
 
         # Generate QR buffer with dynamic amount and unified order ID
         qr_buf = generate_upi_qr_bytes(raw_upi, dyn_amount, payee_name, order_id)
+        qr_bytes = qr_buf.getvalue()
 
         try:
             await query.message.delete()
         except Exception:
             pass
 
-        sent_msg = await client.send_photo(
+        sent_res = await send_or_edit_with_custom_icons(
+            client=client,
             chat_id=query.message.chat.id,
-            photo=qr_buf,
-            caption=caption,
-            reply_markup=photo_kb
+            text=caption,
+            inline_keyboard=photo_api_kb,
+            photo_bytes=qr_bytes
         )
+
+        sent_msg_id = sent_res.get("message_id") if isinstance(sent_res, dict) else None
+        if not sent_res:
+            sent_msg = await client.send_photo(
+                chat_id=query.message.chat.id,
+                photo=qr_buf,
+                caption=caption,
+                reply_markup=photo_kb
+            )
+            sent_msg_id = sent_msg.id if sent_msg else None
 
         # Start real-time background polling for automated payment verification
         asyncio.create_task(_poll_upi_payment(
@@ -2703,7 +2740,7 @@ async def _process_pass_callback(client, query):
             dur_key=dur_key,
             count=count,
             unit=unit,
-            message_id=sent_msg.id if sent_msg else None,
+            message_id=sent_msg_id,
             chat_id=query.message.chat.id
         ))
 
