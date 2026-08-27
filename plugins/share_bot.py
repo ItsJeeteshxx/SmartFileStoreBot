@@ -1680,9 +1680,14 @@ async def _poll_upi_payment(
                 # Check if UTR was previously used
                 is_used = await db.is_utr_used(extracted_utr)
                 if is_used:
-                    logger.warning(f"Auto-verified UTR {extracted_utr} already claimed.")
-                    _active_upi_amounts.pop(dyn_amount, None)
-                    return
+                    # Self-healing: if UTR was recorded for THIS user but pass is not active, activate it!
+                    doc = await db.used_utrs.find_one({'utr': str(extracted_utr).strip()})
+                    p_info = await db.get_user_unlimited_pass(user_id)
+                    if doc and doc.get('user_id') == user_id and not p_info.get('active'):
+                        logger.info(f"Self-healing: activating pass for user {user_id} on previously pending UTR {extracted_utr}")
+                    else:
+                        logger.warning(f"Auto-verified UTR {extracted_utr} already claimed by another session. Continuing poll...")
+                        continue
 
                 # Record used UTR
                 await db.record_used_utr(
@@ -2784,7 +2789,12 @@ async def _process_pass_callback(client, query):
             # Check if UTR was previously used
             is_used = await db.is_utr_used(extracted_utr)
             if is_used:
-                return await query.answer("⚠️ This payment was already processed!", show_alert=True)
+                doc = await db.used_utrs.find_one({'utr': str(extracted_utr).strip()})
+                p_info = await db.get_user_unlimited_pass(user_id)
+                if doc and doc.get('user_id') == user_id and not p_info.get('active'):
+                    logger.info(f"Self-healing: activating pass on status check for user {user_id} on UTR {extracted_utr}")
+                else:
+                    return await query.answer("⚠️ This payment was already processed!", show_alert=True)
 
             await db.record_used_utr(
                 utr=extracted_utr,

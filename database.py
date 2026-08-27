@@ -1702,6 +1702,14 @@ class Database:
             upsert=True
         )
 
+    async def get_all_claimed_utrs(self) -> set:
+        """Returns set of all UTR strings that have already been recorded to prevent duplicate email matching."""
+        try:
+            docs = await self.used_utrs.find({}, {'utr': 1}).to_list(5000)
+            return {str(d.get('utr', '')).strip() for d in docs if d.get('utr')}
+        except Exception:
+            return set()
+
     async def is_utr_used(self, utr: str) -> bool:
         """Check if a UTR has already been claimed/used for pass activation."""
         doc = await self.used_utrs.find_one({'utr': str(utr).strip()})

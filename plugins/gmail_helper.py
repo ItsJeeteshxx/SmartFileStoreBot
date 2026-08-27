@@ -330,11 +330,22 @@ def _sync_imap_search_by_amount(
     gmail_password: str,
     expected_amount: float,
     order_time: float,
-    window_seconds: int = 360
+    window_seconds: int = 360,
+    claimed_utrs: set = None
 ) -> Dict[str, Any]:
-    """Blocking IMAP search by exact dynamic amount."""
+    """
+    Synchronous IMAP search for email matching dynamic amount.
+    Excludes any email that contains an already-claimed UTR.
+    """
+    import email
+    import imaplib
+    import time
+
+    if claimed_utrs is None:
+        claimed_utrs = set()
+
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(gmail_user, gmail_password)
         mail.select("INBOX")
 
@@ -386,6 +397,10 @@ def _sync_imap_search_by_amount(
 
                     if verify_amount_in_email(body, expected_amount):
                         utr = extract_utr_from_email(body)
+                        if utr and str(utr).strip() in claimed_utrs:
+                            logger.info(f"[Gmail IMAP] Skipping already-claimed UTR {utr} in email {mail_id}")
+                            continue
+
                         payer = extract_payer_name_from_email(body)
                         verified = True
                         extracted_utr = utr or f"AUTO-{int(_t.time())}"
@@ -399,6 +414,7 @@ def _sync_imap_search_by_amount(
         # If verified, archive email from INBOX
         if verified and matched_mail_id:
             try:
+                mail.store(matched_mail_id, '+FLAGS', '\\Seen')
                 _sync_archive_email(mail, matched_mail_id)
             except Exception:
                 pass
@@ -459,8 +475,8 @@ async def find_upi_payment_by_amount(
 
     clean_u = u.replace("\xa0", "").replace(" ", "").strip()
     clean_p = p.replace("\xa0", "").replace(" ", "").strip()
-
-    res = await asyncio.to_thread(_sync_imap_search_by_amount, clean_u, clean_p, expected_amount, order_time, window_seconds)
+    claimed_utrs = await db.get_all_claimed_utrs()
+    res = await asyncio.to_thread(_sync_imap_search_by_amount, clean_u, clean_p, expected_amount, order_time, window_seconds, claimed_utrs)
 
     if res.get("error"):
         return {
