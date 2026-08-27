@@ -652,7 +652,7 @@ async def workers_cb(bot, query):
 
 
 # ── Delivery Pass Admin Commands ──────────────────────────────────────────────
-@Client.on_message(filters.command(["grantpass"]) & filters.private)
+@Client.on_message(filters.command(["grantpass", "addpass", "addcustomer"]) & filters.private)
 async def cmd_grant_pass(client, message):
     from plugins.banned import _is_any_owner
     from database import format_duration_friendly, format_duration_verbose

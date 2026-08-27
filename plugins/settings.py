@@ -1748,6 +1748,7 @@ async def settings_query(bot, query):
     if nav_row:
         buttons.append(nav_row)
 
+    buttons.append([InlineKeyboardButton("➕ Add / Grant Customer Pass", callback_data="settings#sb_rl_add_cust")])
     buttons.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")])
 
     text = (
@@ -1759,6 +1760,67 @@ async def settings_query(bot, query):
         "<i>Tap any customer below to view their active subscription details, live expiry countdown, and order transactions:</i>"
     )
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+  elif type == "sb_rl_add_cust":
+    prompt_text = (
+        "<b>➕ GRANT / ADD CUSTOMER PASS</b>\n\n"
+        "Please send the <b>Telegram User ID</b> of the customer (e.g. <code>123456789</code>):\n"
+        "<i>Or send /cancel to abort.</i>"
+    )
+    cancel_btn = [[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cust_0")]]
+    msg = await query.message.edit_text(prompt_text, reply_markup=InlineKeyboardMarkup(cancel_btn))
+    resp = await _ask(bot, user_id, timeout=120)
+    if not resp or resp.text.strip() == "/cancel":
+        query.data = "settings#sb_rl_cust_0"
+        return await settings_query(bot, query)
+
+    raw_input = resp.text.strip()
+    try:
+        target_uid = int(raw_input)
+    except ValueError:
+        try: await resp.reply_text("❌ Invalid User ID. Must be numeric digits (e.g. <code>123456789</code>).", quote=True)
+        except Exception: pass
+        query.data = "settings#sb_rl_cust_0"
+        return await settings_query(bot, query)
+
+    dur_text = (
+        f"<b>⏱️ SELECT DURATION FOR USER</b> <code>{target_uid}</code>\n\n"
+        "Choose how long the Unlimited Access Pass should be valid for:"
+    )
+    dur_buttons = [
+        [
+            InlineKeyboardButton("1 Day", callback_data=f"settings#sb_rl_gdur_{target_uid}_1d"),
+            InlineKeyboardButton("3 Days", callback_data=f"settings#sb_rl_gdur_{target_uid}_3d")
+        ],
+        [
+            InlineKeyboardButton("7 Days", callback_data=f"settings#sb_rl_gdur_{target_uid}_7d"),
+            InlineKeyboardButton("1 Month", callback_data=f"settings#sb_rl_gdur_{target_uid}_1mo")
+        ],
+        [
+            InlineKeyboardButton("6 Months", callback_data=f"settings#sb_rl_gdur_{target_uid}_6mo"),
+            InlineKeyboardButton("1 Year", callback_data=f"settings#sb_rl_gdur_{target_uid}_365d")
+        ],
+        [InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data="settings#sb_rl_cust_0")]
+    ]
+    await query.message.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
+
+  elif type.startswith("sb_rl_gdur_"):
+    parts = type.split('_')
+    target_uid = int(parts[3])
+    dur = parts[4]
+
+    u_name = ""
+    try:
+        chat_obj = await bot.get_chat(target_uid)
+        u_name = chat_obj.first_name or f"User {target_uid}"
+    except Exception:
+        u_name = f"User {target_uid}"
+
+    new_expiry = await db.grant_user_unlimited_pass(target_uid, dur, user_name=u_name)
+    try: await query.answer(f"✅ Pass granted to {u_name} for {dur}!", show_alert=True)
+    except Exception: pass
+    query.data = f"settings#sb_rl_u_{target_uid}_0"
+    return await settings_query(bot, query)
 
   elif type.startswith("sb_rl_u_"):
     parts = type.split('_')

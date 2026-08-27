@@ -2125,7 +2125,7 @@ async def schedule_pass_payment_reminder(
                 f"• <b>Amount Due:</b> <code>{amount_str}</code>\n"
                 f"• <b>Payment Method:</b> {gateway_name}\n\n"
                 f'<blockquote><emoji id="5773677501825945508">⚡️</emoji> <i>Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</i></blockquote>\n\n'
-                f"<i>If you have already paid or need assistance, please submit your reference or contact support.</i>"
+                f"<i>If you have already paid or need assistance, please feel free to contact our support team.</i>"
             )
 
             rem_buttons = []
@@ -2134,8 +2134,8 @@ async def schedule_pass_payment_reminder(
                 rem_buttons.append([InlineKeyboardButton("💳 Complete Payment Now", url=pay_url)])
                 rem_api_buttons.append([{"text": "Complete Payment Now", "url": pay_url, "icon_custom_emoji_id": "5807527002374151568"}])
             elif "UPI" in gateway_name:
-                rem_buttons.append([InlineKeyboardButton("✍️ Submit 12-Digit UTR", callback_data="pass#method_upi")])
-                rem_api_buttons.append([{"text": "Submit 12-Digit UTR", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5807800879553715710"}])
+                rem_buttons.append([InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount if 'dyn_amount' in locals() else '15'}")])
+                rem_api_buttons.append([{"text": "Check Payment Status", "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount if 'dyn_amount' in locals() else '15'}", "icon_custom_emoji_id": "5807492110059838726"}])
 
             rem_buttons.append([InlineKeyboardButton("🔒 Support", url="https://t.me/AryaHelpTG")])
             rem_api_buttons.append([{"text": "Support", "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}])
