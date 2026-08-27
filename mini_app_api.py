@@ -3088,28 +3088,7 @@ async def verify_upi_utr(payload: dict):
                     if verified or amount_mismatch:
                         break
 
-            # If verified, archive/trash the email out of INBOX to prevent cross-bot double claims
-            if verified and 'mail_id' in locals():
-                try:
-                    # 1. Remove \Inbox label using Gmail IMAP syntax
-                    mail.store(mail_id, '-X-GM-LABELS', '(\\Inbox)')
-                except Exception as arch_err:
-                    logger.warning(f"[Gmail IMAP] Archive notice: {arch_err}")
 
-                # 2. Also move to Trash to guarantee 100% removal from INBOX
-                try:
-                    res, _ = mail.copy(mail_id, '[Gmail]/Trash')
-                    if res == 'OK':
-                        mail.store(mail_id, '+FLAGS', '(\\Deleted)')
-                        mail.expunge()
-                except Exception:
-                    try:
-                        res, _ = mail.copy(mail_id, 'Trash')
-                        if res == 'OK':
-                            mail.store(mail_id, '+FLAGS', '(\\Deleted)')
-                            mail.expunge()
-                    except Exception:
-                        pass
 
             mail.close()
             mail.logout()

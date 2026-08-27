@@ -1626,9 +1626,10 @@ async def _handle_share_bot_utr_message(client, message):
     res = await verify_upi_payment_via_gmail(utr, expected_amount)
 
     if res.get("success"):
-        _pending_utr_users.pop(user_id, None)
-        await db.mark_utr_used(utr, user_id, expected_amount, dur_key)
-        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
+        pending_info = _pending_utr_users.pop(user_id, {})
+        order_id = pending_info.get('order_id') or f"PASS-{user_id}-1D-1"
+        await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
+        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
 
         from database import format_duration_verbose, parse_duration_to_seconds
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -1663,7 +1664,7 @@ async def _handle_share_bot_utr_message(client, message):
             user_name=u_name,
             duration_str=dur_verbose.title(),
             amount=expected_amount,
-            order_id=f"UPI_{utr}",
+            order_id=order_id,
             expiry_ts=new_expiry,
             log_channel=log_ch,
             gateway="UPI (Gmail Auto)"
@@ -1734,6 +1735,19 @@ def generate_upi_qr_bytes(upi_id: str, amount: float, payee_name: str = "Merchan
         buf.name = "upi_qr.png"
         buf.seek(0)
         return buf
+
+
+def generate_dynamic_upi_amount(base_amount: float) -> float:
+    """
+    Generates a unique dynamic amount in [base_amount - 0.49, base_amount + 0.50]
+    with 2 decimal places (e.g. 14.51, 15.49, 15.23 for base 15.0).
+    Ensures payments are unique and prevent cross-bot collision.
+    """
+    import random
+    paise_choices = [p for p in range(-49, 51) if p != 0]
+    offset = random.choice(paise_choices) / 100.0
+    dyn_amt = round(float(base_amount) + offset, 2)
+    return max(1.0, dyn_amt)
 
 
 def format_plan_button_label(dur_key: str, price) -> str:
@@ -2217,8 +2231,16 @@ async def _process_pass_callback(client, query):
             count = dur_str
             unit = "Days"
 
-        p_val = int(amount) if float(amount).is_integer() else amount
-        order_id = f"UPI_{user_id}_{int(time.time())}"
+        base_amt = float(amount)
+        # Generate unique dynamic amount (e.g. 14.51 to 15.49 for base 15)
+        dyn_amount = generate_dynamic_upi_amount(base_amt)
+
+        # Generate unified sequential order ID: PASS-{user_id}-{dur_tag}-{order_num}
+        from database import parse_duration_to_seconds, format_duration_friendly
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_tag = format_duration_friendly(dur_sec).upper()
+        order_num = await db.get_next_pass_order_number()
+        order_id = f"PASS-{user_id}-{dur_tag}-{order_num}"
 
         rl_cfg = await db.get_delivery_rate_limit_config()
         from config import Config
@@ -2236,35 +2258,38 @@ async def _process_pass_callback(client, query):
                 reply_markup=err_kb
             )
 
-        # Register pending order session for automatic chat message verification
+        # Register pending order session with dynamic amount and unified order ID
         _pending_utr_users[user_id] = {
             'dur_key': dur_key,
-            'amount': amount,
+            'amount': dyn_amount,
+            'base_amount': base_amt,
             'order_id': order_id,
             'ts': time.time()
         }
 
-        # Build clean UPI payment URI and QR URL
+        # Build clean UPI payment URI and QR URL with dynamic amount
         import urllib.parse
         pn_clean = urllib.parse.quote_plus(payee_name or "Merchant")
         tn_clean = urllib.parse.quote_plus(order_id)
-        upi_payload = f"upi://pay?pa={raw_upi}&pn={pn_clean}&am={amount:.2f}&cu=INR&tn={tn_clean}"
+        upi_payload = f"upi://pay?pa={raw_upi}&pn={pn_clean}&am={dyn_amount:.2f}&cu=INR&tn={tn_clean}"
         encoded_upi = urllib.parse.quote(upi_payload)
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_upi}"
 
-        # Caption with updated UTR instruction and automated verification notice
+        # Caption with dynamic amount and unified order ID
         caption = (
             '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
             "──────────────────────\n"
-            f"• <b>Plan:</b>  ₹{p_val} ({count}  Days)\n"
-            f"• <b>Amount:</b> ₹{p_val}\n"
+            f"• <b>Plan:</b> {count} {unit}\n"
+            f"• <b>Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
             f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
             f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
-            '<emoji id="5807800879553715710">📲</emoji> <b>Instructions:</b>\n' 
+            '<emoji id="5807800879553715710">📲</emoji> <b>Instructions:</b>\n'
             "1. Save this QR code to your gallery (or copy the UPI ID above).\n"
             "2. Open your UPI app (GPay, PhonePe, Paytm, BHIM, etc.).\n"
             "3. Select Scan & Pay option and choose the saved QR from your gallery.\n"
-            "4. After payment, please send the 12-digit payment reference number in this chat.\n\n"
+            f"4. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
+            "5. After payment, please send the 12-digit payment reference number in this chat.\n\n"
+            f"⚠️ <i>Please pay the exact unique amount <b>₹{dyn_amount:.2f}</b> so your payment is verified instantly!</i>\n\n"
             "Please send your 12-digit UTR number here. After sending, payment will be verified automatically using our UTR verification system."
         )
 
@@ -2272,8 +2297,8 @@ async def _process_pass_callback(client, query):
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
 
-        # Generate QR buffer and send as photo so the QR code is prominently displayed AT THE TOP
-        qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
+        # Generate QR buffer with dynamic amount and unified order ID
+        qr_buf = generate_upi_qr_bytes(raw_upi, dyn_amount, payee_name, order_id)
 
         try:
             await query.message.delete()
@@ -2369,7 +2394,7 @@ async def _process_pass_callback(client, query):
                 user_name=user_name,
                 duration_str=dur_verbose.title(),
                 amount=expected_amount,
-                order_id=f"UPI_{utr}",
+                order_id=order_id,
                 expiry_ts=new_expiry,
                 log_channel=log_ch,
                 gateway="UPI (Gmail Auto)"
@@ -2427,7 +2452,7 @@ async def _process_pass_callback(client, query):
         )
         inv_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🌐 Pay ${amount_usd:.2f} Crypto ➟", url=pay_link)],
-            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}")],
+            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
             [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
             [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
         ])
@@ -2438,6 +2463,7 @@ async def _process_pass_callback(client, query):
         track_id = parts[1]
         dur_key = parts[2]
         amount_inr = float(parts[3])
+        order_id = parts[4] if len(parts) > 4 else f"PASS-{user_id}-1D-1"
 
         try:
             await query.answer("Checking blockchain payment status with OxaPay...", show_alert=False)
@@ -2480,7 +2506,7 @@ async def _process_pass_callback(client, query):
                 user_name=user_name,
                 duration_str=dur_verbose.title(),
                 amount=amount_inr,
-                order_id=f"OXA_{track_id}",
+                order_id=order_id,
                 expiry_ts=new_expiry,
                 log_channel=log_ch,
                 gateway="Crypto (OxaPay)"

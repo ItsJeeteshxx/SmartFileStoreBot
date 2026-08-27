@@ -53,10 +53,13 @@ async def create_oxapay_pass_order(
 
     # OxaPay expects USD with minimum $0.50 (0.50 USDT = ₹46 INR, rate: 92 INR/USD)
     amount_usd = max(0.50, round(float(amount_inr) / 92.0, 2))
-    order_id = f"pass_oxa_{user_id}_{int(time.time())}"
 
     dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
     dur_name = format_duration_verbose(dur_sec).title()
+    from database import format_duration_friendly
+    dur_tag = format_duration_friendly(dur_sec).upper()
+    order_num = await db.get_next_pass_order_number()
+    order_id = f"PASS-{user_id}-{dur_tag}-{order_num}"
     clean_name = (user_name.split()[0] if user_name.strip() else "User")[:30]
 
     payload = {
