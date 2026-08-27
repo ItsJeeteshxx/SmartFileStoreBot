@@ -1705,8 +1705,9 @@ async def _process_pass_callback(client, query):
             "💳 <b>Select your preferred payment method below:</b>"
         )
 
-        about = await db.get_share_bot_config()
-        support_link = (about.get('support_link') if about else None) or SUPPORT_LINK
+        bot_id = str(client.me.id) if (client and client.me) else None
+        about = (await db.get_share_bot_about(bot_id)) if bot_id else {}
+        support_link = (about.get('support_link') if about else None) or SUPPORT_LINK or "https://t.me/telegram"
 
         methods_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")],
@@ -2393,8 +2394,18 @@ def register_share_handlers(app: Client):
         _process_fsub_check,
         filters.regex(r'^fsub_chk_')
     ))
+    async def safe_process_pass(client, query):
+        try:
+            await _process_pass_callback(client, query)
+        except Exception as e:
+            logger.exception(f"Exception in _process_pass_callback: {e}")
+            try:
+                await query.answer("An error occurred. Please try again.", show_alert=True)
+            except Exception:
+                pass
+
     app.add_handler(CallbackQueryHandler(
-        _process_pass_callback,
+        safe_process_pass,
         filters.regex(r'^pass#')
     ))
     app.add_handler(MessageHandler(

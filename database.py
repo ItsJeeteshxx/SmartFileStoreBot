@@ -201,6 +201,13 @@ class Database:
         # Legacy
         doc = await self.stats.find_one({'_id': 'share_bot'})
         return doc.get('token') if doc else None
+
+    async def get_share_bot_config(self, bot_id: str = "") -> dict:
+        """Fetch share bot about/config dict."""
+        if bot_id:
+            return await self.get_share_bot_about(bot_id)
+        doc = await self.stats.find_one({'_id': 'share_config'})
+        return doc or {}
         
     async def get_share_bots(self) -> list:
         """Returns list of all configured share bots from DB."""
