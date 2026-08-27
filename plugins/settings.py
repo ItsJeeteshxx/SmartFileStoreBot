@@ -499,8 +499,15 @@ async def owners_cb(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^settings#(?!lang$|cleanmsg$|enhancer$|enh#|protected|owners|prot_|owner_|limits_)'))
 async def settings_query(bot, query):
+  import os
+  from config import Config
   user_id = query.from_user.id
   i, type = query.data.split("#")
+
+  # Strict security guard: only owners/co-owners can configure share bots & rate limit/pass
+  if type == "sharebot" or type.startswith("sb_") or type.startswith("sbt_"):
+      if not await is_any_owner(user_id):
+          return await query.answer("⛔ Access Denied! Only Bot Owners and Co-Owners can configure Delivery Bots & Rate Limit settings.", show_alert=True)
   buttons = [[InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#main")]]
   
   if type=="main":
@@ -1129,11 +1136,11 @@ async def settings_query(bot, query):
     toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
     status_icon  = "🟢" if enabled else "🔴"
 
-    upi_val = rl_cfg.get('upi_id', '').strip() or getattr(Config, 'UPI_ID', '').strip() or os.environ.get('UPI_ID', '').strip()
-    gmail_val = rl_cfg.get('gmail_user', '').strip() or getattr(Config, 'GMAIL_USER', '').strip() or os.environ.get('GMAIL_USER', '').strip()
+    upi_val = str(rl_cfg.get('upi_id') or getattr(Config, 'UPI_ID', '') or os.environ.get('UPI_ID', '') or '').strip()
+    gmail_val = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
     from plugins.cashfree_helper import get_cashfree_credentials
     cf_creds = await get_cashfree_credentials()
-    oxa_val = rl_cfg.get('oxapay_key', '').strip() or getattr(Config, 'OXAPAY_KEY', '').strip() or os.environ.get('OXAPAY_KEY', '').strip()
+    oxa_val = str(rl_cfg.get('oxapay_key') or getattr(Config, 'OXAPAY_KEY', '') or os.environ.get('OXAPAY_KEY', '') or '').strip()
 
     upi_status = '✅ Active' if (upi_val and gmail_val) else ('⚠️ UPI only' if upi_val else '❌ Not Set')
     cf_status = '✅ Active' if (cf_creds.get('app_id') and cf_creds.get('secret_key')) else '❌ Not Set'
@@ -1515,10 +1522,10 @@ async def settings_query(bot, query):
 
   elif type == "sb_rl_upi_menu":
     rl_cfg = await db.get_delivery_rate_limit_config()
-    upi_id = rl_cfg.get('upi_id', '').strip() or getattr(Config, 'UPI_ID', '').strip() or os.environ.get('UPI_ID', '').strip()
-    upi_name = rl_cfg.get('upi_name', '').strip() or "Arya Delivery Pass"
-    gmail_user = rl_cfg.get('gmail_user', '').strip() or getattr(Config, 'GMAIL_USER', '').strip() or os.environ.get('GMAIL_USER', '').strip()
-    gmail_pass = rl_cfg.get('gmail_app_password', '').strip() or getattr(Config, 'GMAIL_APP_PASSWORD', '').strip() or os.environ.get('GMAIL_APP_PASSWORD', '').strip()
+    upi_id = str(rl_cfg.get('upi_id') or getattr(Config, 'UPI_ID', '') or os.environ.get('UPI_ID', '') or '').strip()
+    upi_name = str(rl_cfg.get('upi_name') or "Arya Delivery Pass").strip()
+    gmail_user = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
+    gmail_pass = str(rl_cfg.get('gmail_app_password') or getattr(Config, 'GMAIL_APP_PASSWORD', '') or os.environ.get('GMAIL_APP_PASSWORD', '') or '').strip()
 
     upi_disp = upi_id if upi_id else "Not Configured ❌"
     gmail_disp = gmail_user if gmail_user else "Not Configured ❌"
@@ -1631,8 +1638,8 @@ async def settings_query(bot, query):
 
   elif type == "sb_rl_oxa_menu":
     rl_cfg = await db.get_delivery_rate_limit_config()
-    oxa_key = rl_cfg.get('oxapay_key', '').strip() or getattr(Config, 'OXAPAY_KEY', '').strip() or os.environ.get('OXAPAY_KEY', '').strip()
-    oxa_env = rl_cfg.get('oxapay_env', '').strip() or getattr(Config, 'OXAPAY_ENV', 'production') or os.environ.get('OXAPAY_ENV', 'production')
+    oxa_key = str(rl_cfg.get('oxapay_key') or getattr(Config, 'OXAPAY_KEY', '') or os.environ.get('OXAPAY_KEY', '') or '').strip()
+    oxa_env = str(rl_cfg.get('oxapay_env') or getattr(Config, 'OXAPAY_ENV', 'production') or os.environ.get('OXAPAY_ENV', 'production') or 'production').strip()
     env_str = "Sandbox (Test)" if oxa_env.lower() == "sandbox" else "Production (Live)"
     key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ("Set ✅" if oxa_key else "Not Configured ❌")
 
@@ -1677,7 +1684,7 @@ async def settings_query(bot, query):
 
   elif type == "sb_rl_oxa_env":
     rl_cfg = await db.get_delivery_rate_limit_config()
-    cur_env = rl_cfg.get('oxapay_env', 'production').strip().lower()
+    cur_env = str(rl_cfg.get('oxapay_env') or 'production').strip().lower()
     new_env = "production" if cur_env == "sandbox" else "sandbox"
     await db.set_delivery_rate_limit_config(oxapay_env=new_env)
     try: await query.answer(f"OxaPay Environment switched to: {new_env.upper()}!", show_alert=True)
@@ -4073,55 +4080,65 @@ async def main_buttons(user_id=None):
       except Exception:
           pass
 
+  is_admin = await is_any_owner(user_id)
+
   if mode == 'merger':
       #  MERGER MODE: Clean separate menu
-      buttons = [[
-           InlineKeyboardButton('• Accounts •',
-                        callback_data='settings#accounts'),
-           InlineKeyboardButton('• Channels •',
-                        callback_data='settings#channels')
-           ],[
-           InlineKeyboardButton('• Audio Merge •',
-                        callback_data='mg#audio_list')
-           ],[
-           InlineKeyboardButton('• Dlvr Bot Setup •',
-                        callback_data='settings#sharebot'),
-           InlineKeyboardButton('• Stats •',
-                        callback_data='settings#stats')
-           ],[
-           InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
-           ]]
+      buttons = [
+          [
+              InlineKeyboardButton('• Accounts •', callback_data='settings#accounts'),
+              InlineKeyboardButton('• Channels •', callback_data='settings#channels')
+          ],
+          [
+              InlineKeyboardButton('• Audio Merge •', callback_data='mg#audio_list')
+          ]
+      ]
+      if is_admin:
+          buttons.append([
+              InlineKeyboardButton('• Dlvr Bot Setup •', callback_data='settings#sharebot'),
+              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
+          ])
+      else:
+          buttons.append([
+              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
+          ])
+      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')])
 
   else:
       #  FORWARD MODE: Full original menu
-      buttons = [[
-           InlineKeyboardButton('• Accounts •',
-                        callback_data='settings#accounts'),
-           InlineKeyboardButton('• Channels •',
-                        callback_data='settings#channels')
-           ],[
-           InlineKeyboardButton('• Filters •',
-                        callback_data='settings#filters'),
-           InlineKeyboardButton('• Ex Settings •',
-                        callback_data='settings#nextfilters')
-           ],[
-           InlineKeyboardButton('• Dlvr Bot Setup •',
-                        callback_data='settings#sharebot'),
-           InlineKeyboardButton('• Let\'s Enhance •',
-                        callback_data='settings#enhancer')
-           ],[
-           InlineKeyboardButton('• Lang •',
-                        callback_data='settings#lang'),
-           InlineKeyboardButton('• Shorteners •',
-                        callback_data='settings#shorteners')
-           ],[
-           InlineKeyboardButton('• Owner Panel •',
-                        callback_data='settings#owners'),
-           InlineKeyboardButton('• Stats •',
-                        callback_data='settings#stats')
-           ],[
-           InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
-           ]]
+      buttons = [
+          [
+              InlineKeyboardButton('• Accounts •', callback_data='settings#accounts'),
+              InlineKeyboardButton('• Channels •', callback_data='settings#channels')
+          ],
+          [
+              InlineKeyboardButton('• Filters •', callback_data='settings#filters'),
+              InlineKeyboardButton('• Ex Settings •', callback_data='settings#nextfilters')
+          ]
+      ]
+      if is_admin:
+          buttons.append([
+              InlineKeyboardButton('• Dlvr Bot Setup •', callback_data='settings#sharebot'),
+              InlineKeyboardButton('• Let\'s Enhance •', callback_data='settings#enhancer')
+          ])
+      else:
+          buttons.append([
+              InlineKeyboardButton('• Let\'s Enhance •', callback_data='settings#enhancer')
+          ])
+      buttons.append([
+          InlineKeyboardButton('• Lang •', callback_data='settings#lang'),
+          InlineKeyboardButton('• Shorteners •', callback_data='settings#shorteners')
+      ])
+      if is_admin:
+          buttons.append([
+              InlineKeyboardButton('• Owner Panel •', callback_data='settings#owners'),
+              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
+          ])
+      else:
+          buttons.append([
+              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
+          ])
+      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')])
 
   return InlineKeyboardMarkup(buttons)
 

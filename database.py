@@ -1661,7 +1661,7 @@ class Database:
         res = {**defaults}
         for k, v in doc.items():
             if k != '_id':
-                res[k] = v
+                res[k] = v if v is not None else defaults.get(k, '')
         # Upgrade old 3-plan default to 5-plan default
         if 'prices' in doc and list(doc['prices'].keys()) == ['1d', '3d', '7d']:
             res['prices'] = {'1d': doc['prices'].get('1d', 15), '3d': doc['prices'].get('3d', 30), '7d': doc['prices'].get('7d', 50), '15d': 99, '30d': 149}
