@@ -632,10 +632,26 @@ async def _process_start(client, message):
                         f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
                         f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
                     )
-                    unlock_kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔓 Unlock Access Via Payment", callback_data="pass#unlock_menu")
-                    ]])
-                    await message.reply_text(limit_text, reply_markup=unlock_kb)
+                    limit_api_kb = [
+                        [
+                            {
+                                "text": "Unlock Access Via Payment",
+                                "callback_data": "pass#unlock_menu",
+                                "icon_custom_emoji_id": "6019568309417023812"
+                            }
+                        ]
+                    ]
+                    sent_ok = await send_or_edit_with_custom_icons(
+                        client=client,
+                        chat_id=message.chat.id,
+                        text=limit_text,
+                        inline_keyboard=limit_api_kb
+                    )
+                    if not sent_ok:
+                        unlock_kb = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔓 Unlock Access Via Payment", callback_data="pass#unlock_menu")
+                        ]])
+                        await message.reply_text(limit_text, reply_markup=unlock_kb)
                     return
 
     # 2. Force-Subscribe check (per-bot fsub)
@@ -1739,6 +1755,63 @@ def format_plan_button_label(dur_key: str, price) -> str:
     return f"💰 {num} {unit} (₹{p_val})"
 
 
+async def send_or_edit_with_custom_icons(
+    client,
+    chat_id: int,
+    text: str,
+    inline_keyboard: list,
+    message_id: int = None,
+    parse_mode: str = "HTML"
+) -> bool:
+    """
+    Sends or edits a message using Telegram Bot API HTTP endpoint.
+    This enables `icon_custom_emoji_id` on inline keyboard buttons,
+    which Pyrogram's MTProto layer does not support.
+    """
+    import aiohttp
+    import re
+    from config import Config
+
+    bot_token = getattr(client, "bot_token", None) or getattr(Config, "BOT_TOKEN", "")
+    if not bot_token:
+        return False
+
+    try:
+        c_id = int(chat_id)
+        m_id = int(message_id) if message_id is not None else None
+    except (ValueError, TypeError):
+        return False
+
+    # Convert Pyrogram <emoji id="..."> tags to Bot API <tg-emoji emoji-id="..."> tags
+    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+
+    payload = {
+        "chat_id": c_id,
+        "text": api_text,
+        "parse_mode": parse_mode,
+        "reply_markup": {
+            "inline_keyboard": inline_keyboard
+        }
+    }
+
+    url = f"https://api.telegram.org/bot{bot_token}/"
+    method = "editMessageText" if m_id else "sendMessage"
+    if m_id:
+        payload["message_id"] = m_id
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return True
+                logger.warning(f"Bot API {method} returned error: {data}")
+    except Exception as e:
+        logger.warning(f"Bot API {method} exception: {e}")
+
+    return False
+
+
 @Client.on_callback_query(filters.regex(r'^pass#'))
 async def _process_pass_callback(client, query):
     data = query.data
@@ -1805,12 +1878,40 @@ async def _process_pass_callback(client, query):
             InlineKeyboardButton("← Back", callback_data="pass#close")
         ])
         methods_kb = InlineKeyboardMarkup(methods_buttons)
+        methods_api_kb = [
+            [{"text": "Pay Via UPI ( INR )", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}],
+            [{"text": "Pay Via Cashfree", "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "5920332557466997677"}]
+        ]
+        if oxapay_enabled:
+            methods_api_kb.append([{"text": "Pay Via Crypto (Oxapay)", "callback_data": "pass#method_crypto", "icon_custom_emoji_id": "5283232570660634549"}])
+
+        methods_api_kb.append([{"text": "My Transactions", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
+        methods_api_kb.append([
+            {"text": "Support", "url": support_link, "icon_custom_emoji_id": "6030833407339008632"},
+            {"text": "← Back", "callback_data": "pass#close"}
+        ])
+
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
-            await client.send_message(chat_id=query.message.chat.id, text=methods_text, reply_markup=methods_kb)
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=methods_text,
+                inline_keyboard=methods_api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=methods_text, reply_markup=methods_kb)
         else:
-            await query.message.edit_text(methods_text, reply_markup=methods_kb)
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=methods_text,
+                inline_keyboard=methods_api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(methods_text, reply_markup=methods_kb)
 
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
@@ -2402,10 +2503,27 @@ async def _process_pass_callback(client, query):
             f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
             f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
         )
-        unlock_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔓 Unlock Access Via Payment", callback_data="pass#unlock_menu")
-        ]])
-        await query.message.edit_text(limit_text, reply_markup=unlock_kb)
+        limit_api_kb = [
+            [
+                {
+                    "text": "Unlock Access Via Payment",
+                    "callback_data": "pass#unlock_menu",
+                    "icon_custom_emoji_id": "6019568309417023812"
+                }
+            ]
+        ]
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=query.message.chat.id,
+            text=limit_text,
+            inline_keyboard=limit_api_kb,
+            message_id=query.message.id
+        )
+        if not sent_ok:
+            unlock_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔓 Unlock Access Via Payment", callback_data="pass#unlock_menu")
+            ]])
+            await query.message.edit_text(limit_text, reply_markup=unlock_kb)
 
 
 # 
