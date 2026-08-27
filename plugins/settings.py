@@ -1889,6 +1889,24 @@ async def settings_query(bot, query):
         except Exception:
             pass
 
+    # Send log to configured payment log channel
+    try:
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        log_ch = rl_cfg.get('log_channel')
+        from plugins.arya_logger import log_pass_purchased
+        asyncio.create_task(log_pass_purchased(
+            user_id=target_uid,
+            user_name=u_name,
+            duration_str=str(dur_verb).title(),
+            amount=0.0,
+            order_id=f"MANUAL_GRANT_{int(time.time())}",
+            expiry_ts=new_expiry,
+            log_channel=log_ch,
+            gateway="Admin Manual Grant (Settings)"
+        ))
+    except Exception as l_err:
+        pass
+
     try: await query.answer(f"✅ Pass granted to {u_name} for {dur} & user notified!", show_alert=True)
     except Exception: pass
     query.data = f"settings#sb_rl_u_{target_uid}_0"
@@ -2049,6 +2067,24 @@ async def settings_query(bot, query):
             await bot.send_message(chat_id=cust_uid, text=cust_msg)
         except Exception:
             pass
+
+    # Send log to configured payment log channel
+    try:
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        log_ch = rl_cfg.get('log_channel')
+        from plugins.arya_logger import log_pass_purchased
+        asyncio.create_task(log_pass_purchased(
+            user_id=cust_uid,
+            user_name=f"User {cust_uid}",
+            duration_str=str(dur_verb).title(),
+            amount=0.0,
+            order_id=f"MANUAL_EXTEND_{int(time.time())}",
+            expiry_ts=time.time() + 86400,
+            log_channel=log_ch,
+            gateway="Admin Manual Extend (Settings)"
+        ))
+    except Exception as l_err:
+        pass
 
     try: await query.answer(f"Pass extended by {dur} & user notified!", show_alert=True)
     except Exception: pass

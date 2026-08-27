@@ -1773,6 +1773,24 @@ async def _poll_upi_payment(
                     except Exception as ex:
                         logger.error(f"Send success message error: {ex}")
 
+                # Send log to configured payment log channel
+                try:
+                    rl_cfg = await db.get_delivery_rate_limit_config()
+                    log_ch = rl_cfg.get('log_channel')
+                    from plugins.arya_logger import log_pass_purchased
+                    asyncio.create_task(log_pass_purchased(
+                        user_id=user_id,
+                        user_name=payer_name,
+                        duration_str=f"{count} {unit}".title(),
+                        amount=dyn_amount,
+                        order_id=order_id,
+                        expiry_ts=time.time() + dur_sec,
+                        log_channel=log_ch,
+                        gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
+                    ))
+                except Exception as l_err:
+                    logger.debug(f"Payment log dispatch error: {l_err}")
+
                 # Notify bot owners
                 from config import Config
                 admin_id = Config.BOT_OWNER_ID[0] if Config.BOT_OWNER_ID else None
