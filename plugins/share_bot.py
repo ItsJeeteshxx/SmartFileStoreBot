@@ -1916,10 +1916,12 @@ async def _process_pass_callback(client, query):
                 
                 from database import parse_duration_to_seconds, format_duration_verbose
                 dur_verbose = format_duration_verbose(parse_duration_to_seconds(t['plan'], default_unit='d')) if t['plan'] else "Pass"
+                oid = t.get('id', 'N/A')
+                gw = t.get('gateway', 'Pay Via UPI (INR)')
+                st = "Paid & Active" if pass_info.get('active') else "Completed"
                 txn_lines.append(
-                    f"• <b>{dur_verbose.title()}</b> — ₹{t['amount']:.2f}\n"
-                    f"  Status: <code>{t['status']}</code> | Method: <i>{t['gateway']}</i>\n"
-                    f"  Date: <code>{t_str}</code>"
+                    f"<b>Order :-</b> <code>{oid}</code>\n"
+                    f"<b>Plan:</b> {dur_verbose.title()} , ({gw}) | <b>Status -</b> {st} , <code>{t_str}</code>"
                 )
             txns_body = "\n\n".join(txn_lines)
         else:
@@ -2094,8 +2096,9 @@ async def _process_pass_callback(client, query):
         res = await verify_upi_payment_via_gmail(utr, expected_amount)
 
         if res.get("success"):
-            _pending_utr_users.pop(user_id, None)
-            await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name)
+            pending = _pending_utr_users.pop(user_id, {})
+            order_id = pending.get('order_id') or f"UPI_{user_id}_{int(time.time())}"
+            await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
             new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
             
             from database import format_duration_verbose, parse_duration_to_seconds

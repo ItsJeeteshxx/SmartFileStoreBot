@@ -1798,15 +1798,14 @@ async def settings_query(bot, query):
                     t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d-%m-%Y %I:%M %p')
             
             p_name = str(t.get('plan', 'N/A'))
+            from database import parse_duration_to_seconds, format_duration_verbose
+            dur_verb = format_duration_verbose(parse_duration_to_seconds(p_name, default_unit='d')) if p_name != 'N/A' else "Pass"
             amt = f"₹{float(t.get('amount', 0)):.2f}"
             gw = t.get('gateway', 'Pay Via UPI (INR)')
             oid = t.get('id', 'N/A')
             txns_text += (
-                f"<b>{idx}.</b> <code>{oid}</code>\n"
-                f"   • <b>Plan:</b> {p_name} | <b>Amount Paid:</b> {amt}\n"
-                f"   • <b>Payment Method:</b> {gw}\n"
-                f"   • <b>Payment Date:</b> {t_str} IST\n"
-                f"   • <b>Payment Status:</b> ✅ Paid & Verified\n\n"
+                f"<b>{idx}. Order :-</b> <code>{oid}</code>\n"
+                f"   • <b>Plan:</b> {dur_verb.title()} ({amt}) , ({gw}) | <b>Status -</b> ✅ Paid , <code>{t_str} IST</code>\n\n"
             )
 
     body = (

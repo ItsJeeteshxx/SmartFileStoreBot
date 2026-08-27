@@ -1700,7 +1700,7 @@ class Database:
         doc = await self.used_utrs.find_one({'utr': str(utr).strip()})
         return bool(doc)
 
-    async def mark_utr_used(self, utr: str, user_id: int, amount: float, plan: str, user_name: str = ""):
+    async def mark_utr_used(self, utr: str, user_id: int, amount: float, plan: str, user_name: str = "", order_id: str = ""):
         """Mark a UTR as consumed to prevent replay attacks."""
         import time
         doc = {
@@ -1712,6 +1712,8 @@ class Database:
         }
         if user_name:
             doc['user_name'] = str(user_name).strip()
+        if order_id:
+            doc['order_id'] = str(order_id).strip()
         await self.used_utrs.update_one(
             {'utr': str(utr).strip()},
             {'$set': doc},
@@ -1745,8 +1747,10 @@ class Database:
                 'gateway': gw_display
             })
         for u in utrs:
+            oid = u.get('order_id') or f"UPI_{user_id}_{int(u.get('used_at', 0))}"
             results.append({
-                'id': f"UTR: {u.get('utr', '')}",
+                'id': oid,
+                'utr': u.get('utr', ''),
                 'amount': u.get('amount', 0.0),
                 'plan': u.get('plan', ''),
                 'status': 'PAID',
