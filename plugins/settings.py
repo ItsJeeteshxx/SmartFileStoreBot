@@ -520,11 +520,23 @@ async def settings_query(bot, query):
      user_id = query.from_user.id
      text = await t(user_id, 'settings_title')
      markup = await main_buttons(user_id)
-     if getattr(query.message, "photo", None):
-         await query.message.delete()
-         await bot.send_message(chat_id=query.message.chat.id, text=text, reply_markup=markup)
+     msg = query.message
+     is_media = bool(getattr(msg, "photo", None) or getattr(msg, "animation", None) or getattr(msg, "video", None) or getattr(msg, "document", None))
+     if is_media:
+         try:
+             await msg.delete()
+         except Exception:
+             pass
+         await bot.send_message(chat_id=msg.chat.id, text=text, reply_markup=markup)
      else:
-         await query.message.edit_text(text, reply_markup=markup)
+         try:
+             await msg.edit_text(text, reply_markup=markup)
+         except Exception:
+             try:
+                 await msg.delete()
+             except Exception:
+                 pass
+             await bot.send_message(chat_id=msg.chat.id, text=text, reply_markup=markup)
           
   elif type=="stats":
      # Find active Live Jobs (which forward messages) for all accounts of this user
