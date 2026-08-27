@@ -1645,12 +1645,12 @@ async def _handle_share_bot_utr_message(client, message):
 
         u_name = message.from_user.first_name or "User"
         success_text = (
-            f"🎉 <b>UPI Payment Verified Successfully!</b>\n\n"
+            f'<emoji id="5224607267797606837">🎉</emoji> <b>UPI Payment Verified Successfully!</b>\n\n'
             f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
             f"• <b>UTR / Ref No:</b> <code>{utr}</code>\n"
             f"• <b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
             f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
-            f"• <b>Status:</b> 🟢 Unlimited Access (No Cooldown)\n\n"
+            f'• <b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
             f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
         )
         await sts.edit(success_text)
@@ -1901,9 +1901,7 @@ async def _process_pass_callback(client, query):
             '<emoji id="6019224342666157570">💳</emoji> <b>Select your preferred payment method below:</b>'
         )
 
-        bot_id = str(client.me.id) if (client and client.me) else None
-        about = (await db.get_share_bot_about(bot_id)) if bot_id else {}
-        support_link = (about.get('support_link') if about else None) or SUPPORT_LINK or "https://t.me/telegram"
+        pass_support_link = "https://t.me/AryaHelpTG"
 
         rl_cfg = await db.get_delivery_rate_limit_config()
         oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
@@ -1917,7 +1915,7 @@ async def _process_pass_callback(client, query):
 
         methods_buttons.append([InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")])
         methods_buttons.append([
-            InlineKeyboardButton("🔒 Support", url=support_link),
+            InlineKeyboardButton("🔒 Support", url=pass_support_link),
             InlineKeyboardButton("← Back", callback_data="pass#close")
         ])
         methods_kb = InlineKeyboardMarkup(methods_buttons)
@@ -1930,7 +1928,7 @@ async def _process_pass_callback(client, query):
 
         methods_api_kb.append([{"text": "My Transactions", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
         methods_api_kb.append([
-            {"text": "Support", "url": support_link, "icon_custom_emoji_id": "6030833407339008632"},
+            {"text": "Support", "url": pass_support_link, "icon_custom_emoji_id": "6030833407339008632"},
             {"text": "← Back", "callback_data": "pass#close"}
         ])
 
@@ -2272,12 +2270,12 @@ async def _process_pass_callback(client, query):
                 exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
             success_text = (
-                f"🎉 <b>UPI Payment Verified Successfully!</b>\n\n"
+                f'<emoji id="5224607267797606837">🎉</emoji> <b>UPI Payment Verified Successfully!</b>\n\n'
                 f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
                 f"<b>UTR / RRN:</b> <code>{utr}</code>\n"
                 f"<b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-                f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+                f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
                 f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
             )
             await query.message.edit_text(success_text)
@@ -2384,11 +2382,11 @@ async def _process_pass_callback(client, query):
                 exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
             success_text = (
-                f"🎉 <b>Crypto Payment Verified Successfully!</b>\n\n"
+                f'<emoji id="5224607267797606837">🎉</emoji> <b>Crypto Payment Verified Successfully!</b>\n\n'
                 f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
                 f"<b>Track ID:</b> <code>{track_id}</code>\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-                f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+                f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
                 f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
             )
             await query.message.edit_text(success_text)
@@ -2508,10 +2506,10 @@ async def _process_pass_callback(client, query):
                 exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
             success_text = (
-                f"🎉 <b>Unlimited Pass Activated Successfully!</b>\n\n"
+                f'<emoji id="5224607267797606837">🎉</emoji> <b>Unlimited Pass Activated Successfully!</b>\n\n'
                 f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-                f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+                f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
                 f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
             )
             await query.message.edit_text(success_text)
