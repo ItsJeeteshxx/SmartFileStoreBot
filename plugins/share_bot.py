@@ -1957,9 +1957,6 @@ async def _process_pass_callback(client, query):
                 reply_markup=err_kb
             )
 
-        # Generate QR code image buffer
-        qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
-
         # Register pending order session for automatic chat message verification
         _pending_utr_users[user_id] = {
             'dur_key': dur_key,
@@ -1968,36 +1965,66 @@ async def _process_pass_callback(client, query):
             'ts': time.time()
         }
 
-        # Format exact caption as specified by user
+        # Build clean UPI payment URI and QR URL
+        import urllib.parse
+        pn_clean = urllib.parse.quote_plus(payee_name or "Merchant")
+        tn_clean = urllib.parse.quote_plus(order_id)
+        upi_payload = f"upi://pay?pa={raw_upi}&pn={pn_clean}&am={amount:.2f}&cu=INR&tn={tn_clean}"
+        encoded_upi = urllib.parse.quote(upi_payload)
+        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_upi}"
+
+        # Exact layout in 100% pure English
         caption = (
             "<b>⚡️ UPI Payment Order Created!</b>\n\n"
             "──────────────────────\n"
             f"• <b>Plan:</b>  ₹{p_val} ({count}  Days)\n"
             f"• <b>Amount:</b> ₹{p_val}\n"
+            f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
             f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
             "📲 <b>Instructions:</b>\n"
-            "1. Save this QR code to your gallery.\n"
+            "1. Save this QR code to your gallery (or copy the UPI ID above).\n"
             "2. Open your UPI app (GPay, PhonePe, Paytm, BHIM, etc.).\n"
             "3. Select Scan & Pay option and choose the saved QR from your gallery.\n"
-            "4. After Payment please send 12 digit number payment refference number .\n\n"
-            "Payment automatically verify ho jayga with utr verification system."
+            "4. After payment, please send the 12-digit payment reference number.\n\n"
+            "Payment will be verified automatically using our UTR verification system."
         )
 
         photo_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
 
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
+        # If message was already a photo, edit media in-place
+        if getattr(query.message, "photo", None):
+            try:
+                from pyrogram.types import InputMediaPhoto
+                qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
+                await query.message.edit_media(
+                    media=InputMediaPhoto(qr_buf, caption=caption),
+                    reply_markup=photo_kb
+                )
+                return
+            except Exception:
+                pass
 
-        await client.send_photo(
-            chat_id=query.message.chat.id,
-            photo=qr_buf,
-            caption=caption,
-            reply_markup=photo_kb
-        )
+        # Otherwise edit text in-place with embedded QR preview in the SAME message (no separate message!)
+        full_text = f'<a href="{qr_url}">&#8205;</a>' + caption
+        try:
+            await query.message.edit_text(
+                full_text,
+                reply_markup=photo_kb,
+                disable_web_page_preview=False
+            )
+        except Exception as _e:
+            logger.warning(f"In-place edit_text fallback to send_photo: {_e}")
+            try: await query.message.delete()
+            except Exception: pass
+            qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
+            await client.send_photo(
+                chat_id=query.message.chat.id,
+                photo=qr_buf,
+                caption=caption,
+                reply_markup=photo_kb
+            )
 
     elif data.startswith("pass#upisubmit_"):
         parts = data.split("_")
