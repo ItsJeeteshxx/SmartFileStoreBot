@@ -1710,6 +1710,49 @@ class Database:
         except Exception:
             return set()
 
+    async def is_utr_claimed_by_other(self, utr: str, user_id: int, order_id: str = "") -> bool:
+        """
+        Check if a UTR has already been claimed by a DIFFERENT user or for an already active pass.
+        Returns False if the UTR was used by THIS user for this pending order or if the user's pass is inactive.
+        """
+        if not utr:
+            return False
+        clean_utr = str(utr).strip()
+        doc = await self.used_utrs.find_one({'utr': clean_utr})
+        if not doc:
+            return False
+        
+        doc_uid = doc.get('user_id')
+        doc_oid = doc.get('order_id', '')
+        
+        # If it was recorded for the same user
+        if int(doc_uid) == int(user_id):
+            p_info = await self.get_user_unlimited_pass(user_id)
+            # If user pass is inactive OR same order, allow claim/re-activation
+            if not p_info.get('active') or (order_id and doc_oid == order_id):
+                return False
+        
+        # Otherwise it belongs to another user
+        return True
+
+    async def get_other_claimed_utrs(self, user_id: int = None, order_id: str = "") -> set:
+        """
+        Returns set of UTRs claimed by OTHER users.
+        Does NOT exclude the current user's UTR so their legitimate payment is never skipped.
+        """
+        try:
+            if not user_id:
+                docs = await self.used_utrs.find({}, {'utr': 1}).to_list(5000)
+                return {str(d.get('utr', '')).strip() for d in docs if d.get('utr')}
+
+            docs = await self.used_utrs.find({
+                'user_id': {'$ne': int(user_id)}
+            }, {'utr': 1, 'user_id': 1}).to_list(5000)
+            
+            return {str(d.get('utr', '')).strip() for d in docs if d.get('utr')}
+        except Exception:
+            return set()
+
     async def is_utr_used(self, utr: str) -> bool:
         """Check if a UTR has already been claimed/used for pass activation."""
         doc = await self.used_utrs.find_one({'utr': str(utr).strip()})

@@ -442,7 +442,9 @@ async def find_upi_payment_by_amount(
     order_time: float = None,
     window_seconds: int = 360,
     gmail_user: str = "",
-    gmail_password: str = ""
+    gmail_password: str = "",
+    user_id: int = None,
+    order_id: str = ""
 ) -> Dict[str, Any]:
     """
     Asynchronously checks Gmail IMAP for an incoming UPI payment matching the unique dynamic amount.
@@ -475,7 +477,7 @@ async def find_upi_payment_by_amount(
 
     clean_u = u.replace("\xa0", "").replace(" ", "").strip()
     clean_p = p.replace("\xa0", "").replace(" ", "").strip()
-    claimed_utrs = await db.get_all_claimed_utrs()
+    claimed_utrs = await db.get_other_claimed_utrs(user_id=user_id, order_id=order_id) if hasattr(db, "get_other_claimed_utrs") else set()
     res = await asyncio.to_thread(_sync_imap_search_by_amount, clean_u, clean_p, expected_amount, order_time, window_seconds, claimed_utrs)
 
     if res.get("error"):

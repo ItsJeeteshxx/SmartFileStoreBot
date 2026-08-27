@@ -1672,22 +1672,22 @@ async def _poll_upi_payment(
 
         # Check Gmail IMAP for payment matching this unique dynamic amount
         try:
-            res = await find_upi_payment_by_amount(dyn_amount, order_time=start_time, window_seconds=360)
+            res = await find_upi_payment_by_amount(
+                expected_amount=dyn_amount,
+                order_time=start_time,
+                window_seconds=360,
+                user_id=user_id,
+                order_id=order_id
+            )
             if res.get('success'):
                 extracted_utr = res.get('utr') or f"AUTO-{int(time.time())}"
                 payer_name = res.get('payer_name') or "UPI Payer"
 
-                # Check if UTR was previously used
-                is_used = await db.is_utr_used(extracted_utr)
-                if is_used:
-                    # Self-healing: if UTR was recorded for THIS user but pass is not active, activate it!
-                    doc = await db.used_utrs.find_one({'utr': str(extracted_utr).strip()})
-                    p_info = await db.get_user_unlimited_pass(user_id)
-                    if doc and doc.get('user_id') == user_id and not p_info.get('active'):
-                        logger.info(f"Self-healing: activating pass for user {user_id} on previously pending UTR {extracted_utr}")
-                    else:
-                        logger.warning(f"Auto-verified UTR {extracted_utr} already claimed by another session. Continuing poll...")
-                        continue
+                # Check if claimed by another user
+                is_claimed_by_other = await db.is_utr_claimed_by_other(extracted_utr, user_id=user_id, order_id=order_id)
+                if is_claimed_by_other:
+                    logger.warning(f"Auto-verified UTR {extracted_utr} already claimed by another user. Continuing poll...")
+                    continue
 
                 # Record used UTR
                 await db.record_used_utr(
@@ -1695,6 +1695,7 @@ async def _poll_upi_payment(
                     user_id=user_id,
                     amount=dyn_amount,
                     order_id=order_id,
+                    user_name=payer_name,
                     gateway="Pay Via UPI (INR)"
                 )
 
@@ -1738,22 +1739,39 @@ async def _poll_upi_payment(
                     [{"text": "Support", "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}]
                 ]
 
-                try:
-                    sent = await send_or_edit_with_custom_icons(
-                        client=client,
-                        chat_id=chat_id,
-                        text=success_text,
-                        inline_keyboard=success_api_kb,
-                        message_id=message_id,
-                        is_media_edit=True
-                    )
-                    if not sent:
-                        await client.send_message(chat_id=chat_id, text=success_text, reply_markup=success_kb)
-                except Exception:
+                ui_updated = False
+                if message_id:
+                    try:
+                        sent = await send_or_edit_with_custom_icons(
+                            client=client,
+                            chat_id=chat_id,
+                            text=success_text,
+                            inline_keyboard=success_api_kb,
+                            message_id=message_id,
+                            is_media_edit=True
+                        )
+                        if sent:
+                            ui_updated = True
+                    except Exception as ex:
+                        logger.debug(f"HTTP edit error: {ex}")
+
+                    if not ui_updated:
+                        try:
+                            await client.edit_message_caption(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                caption=success_text,
+                                reply_markup=success_kb
+                            )
+                            ui_updated = True
+                        except Exception as ex:
+                            logger.debug(f"Pyrogram caption edit error: {ex}")
+
+                if not ui_updated:
                     try:
                         await client.send_message(chat_id=chat_id, text=success_text, reply_markup=success_kb)
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        logger.error(f"Send success message error: {ex}")
 
                 # Notify bot owners
                 from config import Config
@@ -2781,26 +2799,26 @@ async def _process_pass_callback(client, query):
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
         dur_verbose = format_duration_verbose(dur_sec)
 
-        res = await find_upi_payment_by_amount(dyn_amount)
+        res = await find_upi_payment_by_amount(
+            expected_amount=dyn_amount,
+            user_id=user_id,
+            order_id=order_id
+        )
         if res.get('success'):
             extracted_utr = res.get('utr') or f"AUTO-{int(time.time())}"
             payer_name = res.get('payer_name') or "UPI Payer"
 
-            # Check if UTR was previously used
-            is_used = await db.is_utr_used(extracted_utr)
-            if is_used:
-                doc = await db.used_utrs.find_one({'utr': str(extracted_utr).strip()})
-                p_info = await db.get_user_unlimited_pass(user_id)
-                if doc and doc.get('user_id') == user_id and not p_info.get('active'):
-                    logger.info(f"Self-healing: activating pass on status check for user {user_id} on UTR {extracted_utr}")
-                else:
-                    return await query.answer("⚠️ This payment was already processed!", show_alert=True)
+            # Check if claimed by another user
+            is_claimed_by_other = await db.is_utr_claimed_by_other(extracted_utr, user_id=user_id, order_id=order_id)
+            if is_claimed_by_other:
+                return await query.answer("⚠️ This payment was already processed for another pass!", show_alert=True)
 
             await db.record_used_utr(
                 utr=extracted_utr,
                 user_id=user_id,
                 amount=dyn_amount,
                 order_id=order_id,
+                user_name=payer_name,
                 gateway="Pay Via UPI (INR)"
             )
             await db.activate_user_unlimited_pass(
