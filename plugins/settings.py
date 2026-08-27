@@ -1153,7 +1153,7 @@ async def settings_query(bot, query):
         f"────────────────────\n"
         f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
         f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
-        f"cooldown message showing their live remaining time and a <b>'🔒 Unlock Access for ₹'</b> button. "
+        f"cooldown message showing their live remaining time and an <b>'🔒 Unlock Access Via Payment'</b> button. "
         f"A log message with complete user details is sent to your <b>Rate Limit Hit Logs Channel</b> in Quoteblock format. "
         f"Pass purchases via Cashfree activate instantly and are logged to your <b>Pass Purchase Logs Channel</b> in Quoteblock format. "
         f"Pass holders and Bot Owners are completely exempt from all limits.</blockquote>",

@@ -625,14 +625,15 @@ async def _process_start(client, message):
                         logger.warning(f"Failed to schedule rate limit log: {_log_e}")
 
                     limit_text = (
-                        f"⏳ <b>Rate Limit Reached</b>\n\n"
-                        f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. 🎬\n\n"
-                        f"The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n"
-                        f"⏰ <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n"
-                        f"<i>Please try again later or unlock unlimited access below! 👇</i>"
+                        f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
+                        f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                        f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
+                        f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
+                        f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>\n\n'
+                        f'<emoji id="6019568309417023812">🔒</emoji> <b>Unlock Access Via Payment:</b>'
                     )
                     unlock_kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔒 Unlock Access for ₹", callback_data="pass#unlock_menu")
+                        InlineKeyboardButton("🔒 Unlock Access Via Payment", callback_data="pass#unlock_menu")
                     ]])
                     await message.reply_text(limit_text, reply_markup=unlock_kb)
                     return
@@ -1721,14 +1722,15 @@ async def _process_pass_callback(client, query):
         win_verbose = format_duration_verbose(window_seconds)
 
         limit_text = (
-            f"⏳ <b>Rate Limit Reached</b>\n\n"
-            f"You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. 🎬\n\n"
-            f"The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n"
-            f"⏰ <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n"
-            f"<i>Please try again later or unlock unlimited access below! 👇</i>"
+            f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
+            f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
+            f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
+            f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
+            f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>\n\n'
+            f'<emoji id="6019568309417023812">🔒</emoji> <b>Unlock Access Via Payment:</b>'
         )
         unlock_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔒 Unlock Access for ₹", callback_data="pass#unlock_menu")
+            InlineKeyboardButton("🔒 Unlock Access Via Payment", callback_data="pass#unlock_menu")
         ]])
         await query.message.edit_text(limit_text, reply_markup=unlock_kb)
 
