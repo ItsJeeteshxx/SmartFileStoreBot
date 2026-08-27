@@ -214,7 +214,7 @@ def _get_welcome_text(user, bot_name, custom_wel=None) -> str:
     first = user.first_name or "User"
     return (
         # Block 1: Greeting with first name only
-        f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a>❣️</blockquote>\n"
+        f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a><emoji id=\"6041919344995209164\">❣️</emoji></blockquote>\n"
         # Block 2: Welcome line
         f"<blockquote expandable><b>»  {_sc('Welcome to')} {bot_name}!</b></blockquote>\n"
         # Block 3: Description
@@ -733,7 +733,7 @@ async def _process_start(client, message):
     # Show configurable fetching media (GIF / Photo / Video) or fallback to text
     fetching_media = await db.get_bot_fetching_media(bot_id) if bot_id else []
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cᴀɴᴄᴇʟ", callback_data=f"cancel_dl_{uuid_str}")]])
-    fetch_text = "<i>»  Fᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs sᴇᴄᴜʀᴇʟʏ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>"
+    fetch_text = '<i><emoji id="6215133834149629990">⏳</emoji>  Fᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs sᴇᴄᴜʀᴇʟʏ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>'
     sts = None
 
     if fetching_media:
@@ -1083,6 +1083,17 @@ async def _send_welcome(client, message, bot_id: str = None):
     ]
     markup = InlineKeyboardMarkup(buttons)
 
+    welcome_api_kb = [
+        [
+            {"text": "»  " + _sc("Arya Premium"), "callback_data": "sbd#premium"}
+        ],
+        [
+            {"text": _sc("Help"), "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
+            {"text": _sc("About"), "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
+        ],
+        [{"text": "»  " + _sc("Update Channel"), "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}]
+    ]
+
     try:
         if welcome_img:
             wid  = welcome_img.get('file_id') if isinstance(welcome_img, dict) else welcome_img
@@ -1112,7 +1123,14 @@ async def _send_welcome(client, message, bot_id: str = None):
                 except Exception:
                     pass
 
-        await message.reply_text(txt, reply_markup=markup)
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=user.id,
+            text=txt,
+            inline_keyboard=welcome_api_kb
+        )
+        if not sent_ok:
+            await message.reply_text(txt, reply_markup=markup)
     except Exception as _wel_err:
         logger.warning(f"[Welcome] Text fallback also failed: {_wel_err}")
         pass
@@ -1472,15 +1490,39 @@ async def _process_delivery_button(client, query):
         
         buttons = [
             [
+                InlineKeyboardButton("»  " + _sc("Arya Premium"), callback_data="sbd#premium"),
+            ],
+            [
                 InlineKeyboardButton(_sc("Help"), callback_data="sbd#help"),
                 InlineKeyboardButton(_sc("About"), callback_data="sbd#about"),
             ],
             [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
         ]
         markup = InlineKeyboardMarkup(buttons)
+
+        welcome_api_kb = [
+            [
+                {"text": "»  " + _sc("Arya Premium"), "callback_data": "sbd#premium"}
+            ],
+            [
+                {"text": _sc("Help"), "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
+                {"text": _sc("About"), "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
+            ],
+            [{"text": "»  " + _sc("Update Channel"), "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}]
+        ]
         try:
-            if is_media_msg: await msg.edit_caption(caption=txt, reply_markup=markup)
-            else: await msg.edit_text(txt, reply_markup=markup)
+            if is_media_msg:
+                await msg.edit_caption(caption=txt, reply_markup=markup)
+            else:
+                sent_ok = await send_or_edit_with_custom_icons(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=txt,
+                    inline_keyboard=welcome_api_kb,
+                    message_id=msg.id
+                )
+                if not sent_ok:
+                    await msg.edit_text(txt, reply_markup=markup)
         except Exception:
             pass
     else:
