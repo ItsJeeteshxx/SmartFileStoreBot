@@ -117,12 +117,14 @@ def parse_pricing_input(text: str) -> dict:
 
     if all(re.match(r'^\d+(?:\.\d+)?$', t) for t in tokens):
         nums = [float(t) for t in tokens]
-        if len(nums) == 3:
+        if len(nums) == 5:
+            return {'1d': nums[0], '3d': nums[1], '7d': nums[2], '15d': nums[3], '30d': nums[4]}
+        elif len(nums) == 3:
             return {'1d': nums[0], '3d': nums[1], '7d': nums[2]}
         elif len(nums) == 1:
             return {'1d': nums[0]}
         else:
-            default_keys = ['1d', '3d', '7d', '14d', '30d']
+            default_keys = ['1d', '3d', '7d', '15d', '30d']
             return {default_keys[i] if i < len(default_keys) else f"{i+1}d": n for i, n in enumerate(nums)}
 
     res = {}
@@ -1636,7 +1638,7 @@ class Database:
             'window_hours': 12,
             'log_channel': None,               # Pass purchase log channel
             'rate_limit_log_channel': None,    # Rate limit hit log channel
-            'prices': {'1d': 15, '3d': 30, '7d': 50},
+            'prices': {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149},
             'cashfree_app_id': '',
             'cashfree_secret_key': '',
             'cashfree_env': 'production',
@@ -1653,6 +1655,9 @@ class Database:
         for k, v in doc.items():
             if k != '_id':
                 res[k] = v
+        # Upgrade old 3-plan default to 5-plan default
+        if 'prices' in doc and list(doc['prices'].keys()) == ['1d', '3d', '7d']:
+            res['prices'] = {'1d': doc['prices'].get('1d', 15), '3d': doc['prices'].get('3d', 30), '7d': doc['prices'].get('7d', 50), '15d': 99, '30d': 149}
         # Ensure window_seconds is properly initialized and synced
         if 'window_seconds' not in doc and 'window_hours' in doc:
             res['window_seconds'] = int(float(doc['window_hours']) * 3600)
@@ -1701,6 +1706,32 @@ class Database:
             }},
             upsert=True
         )
+
+    async def get_user_pass_transactions(self, user_id: int, limit: int = 5) -> list:
+        """Fetch recent pass orders and UTRs for user."""
+        orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit).to_list(limit)
+        utrs = await self.used_utrs.find({'user_id': int(user_id)}).sort('used_at', -1).limit(limit).to_list(limit)
+        results = []
+        for o in orders:
+            results.append({
+                'id': o.get('order_id', ''),
+                'amount': o.get('amount', 0.0),
+                'plan': o.get('duration_key', ''),
+                'status': o.get('status', 'PENDING'),
+                'time': o.get('paid_at') or o.get('created_at', 0),
+                'gateway': 'Cashfree' if 'order_' in o.get('order_id', '') else 'Online'
+            })
+        for u in utrs:
+            results.append({
+                'id': f"UTR {u.get('utr', '')}",
+                'amount': u.get('amount', 0.0),
+                'plan': u.get('plan', ''),
+                'status': 'PAID',
+                'time': u.get('used_at', 0),
+                'gateway': 'UPI (Manual)'
+            })
+        results.sort(key=lambda x: x.get('time', 0), reverse=True)
+        return results[:limit]
 
     async def record_user_delivery_hit(self, user_id: int):
         """Record a successful delivery hit with timestamp."""

@@ -1679,28 +1679,52 @@ async def _process_pass_callback(client, query):
     user_name = query.from_user.first_name or "User"
 
     if data == "pass#unlock_menu":
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
+        from database import parse_duration_to_seconds, format_duration_verbose
+        
+        plan_lines = []
+        for dur_key, price in prices.items():
+            dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+            verb_dur = format_duration_verbose(dur_sec)
+            p_val = int(price) if float(price).is_integer() else price
+            usd_val = max(0.50, round(float(price) / 85.0, 2))
+            plan_lines.append(f"• {verb_dur.title()}: ₹{p_val} | ${usd_val:.2f}")
+
+        plans_str = "\n".join(plan_lines)
+
         methods_text = (
-            "💎 <b>Choose Payment Method</b>\n\n"
-            "<blockquote expandable>Select your preferred payment method to unlock Unlimited Access (No Cooldown & No Rate Limits):\n\n"
-            "• <b>UPI (INR):</b> GPay, PhonePe, Paytm, Slice, BHIM (Auto-Verified)\n"
-            "• <b>Cashfree:</b> Instant Payment Gateway (UPI / QR / Cards)\n"
-            "• <b>Crypto (Oxapay):</b> USDT, BTC, ETH, TRX, BNB & more</blockquote>\n\n"
-            "<i>Tap below to proceed with your preferred method:</i>"
+            "👑 <b>Premium Membership Plans</b> ❤️\n"
+            "──────────────────────\n"
+            "⭐️ <b>Pass Benefits:</b>\n"
+            "• ⚡️ <b>Multi-Source Caller Engine:</b> Deep identity search with up to 20 alternate name records\n"
+            "• 🚀 <b>High Daily Search Limits (30 searches / day)</b>\n"
+            "• 🚫 <b>100% Ad-Free Experience</b>\n\n"
+            "💎 <b>Available Plans:</b>\n"
+            f"{plans_str}\n\n"
+            "💳 <b>Select your preferred payment method below:</b>"
         )
+
+        about = await db.get_share_bot_config()
+        support_link = (about.get('support_link') if about else None) or SUPPORT_LINK
+
         methods_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")],
             [InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")],
             [InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")],
-            [InlineKeyboardButton("⸢ ❮ Back ⸥", callback_data="pass#back")]
+            [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
+            [
+                InlineKeyboardButton("🔒 Support", url=support_link),
+                InlineKeyboardButton("← Back", callback_data="pass#back")
+            ]
         ])
         await query.message.edit_text(methods_text, reply_markup=methods_kb)
 
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
         from database import parse_duration_to_seconds, format_duration_verbose
         
-        plan_lines = []
         plan_buttons = []
         icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
         idx = 0
@@ -1710,25 +1734,23 @@ async def _process_pass_callback(client, query):
             p_val = int(price) if float(price).is_integer() else price
             icon = icons[idx % len(icons)]
             idx += 1
-            plan_lines.append(f"» {verb_dur.title()} Pass — ₹{p_val}")
             plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#cfbuy_{dur_key}_{p_val}")])
 
-        plan_lines_str = "\n".join(plan_lines)
+        plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
+
         text = (
-            "⚡ <b>Pay Via Cashfree Gateway</b>\n\n"
-            "<blockquote expandable>Select an access pass to completely remove all delivery limits & cooldowns:</blockquote>\n\n"
-            f"{plan_lines_str}\n\n"
-            "<blockquote>Instant activation via Cashfree Payment Gateway (UPI / QR / Cards)!</blockquote>"
+            "<b>⚡ Pay with Cashfree</b>\n"
+            "──────────────────────\n\n"
+            "Instant payment with UPI, Cards, NetBanking.\n\n"
+            "Select your desired Pass plan:"
         )
-        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back to Payment Methods ⸥", callback_data="pass#unlock_menu")])
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#method_upi":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
         from database import parse_duration_to_seconds, format_duration_verbose
         
-        plan_lines = []
         plan_buttons = []
         icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
         idx = 0
@@ -1738,25 +1760,23 @@ async def _process_pass_callback(client, query):
             p_val = int(price) if float(price).is_integer() else price
             icon = icons[idx % len(icons)]
             idx += 1
-            plan_lines.append(f"» {verb_dur.title()} Pass — ₹{p_val}")
             plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ₹{p_val} ) ⸥", callback_data=f"pass#upibuy_{dur_key}_{p_val}")])
 
-        plan_lines_str = "\n".join(plan_lines)
+        plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
+
         text = (
-            "💳 <b>Pay Via UPI (INR)</b>\n\n"
-            "<blockquote expandable>Select an access pass to completely remove all delivery limits & cooldowns:</blockquote>\n\n"
-            f"{plan_lines_str}\n\n"
-            "<blockquote>⚡ Instant automatic verification via Gmail IMAP after submitting 12-digit UTR!</blockquote>"
+            "<b>🇮🇳 Pay with UPI ( Manual )</b>\n"
+            "──────────────────────\n\n"
+            "Instant payment with Paytm, PhonePe, Gpay , BHIM, or any UPI app.\n\n"
+            "Select your desired Pass plan:"
         )
-        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back to Payment Methods ⸥", callback_data="pass#unlock_menu")])
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#method_crypto":
         rl_cfg = await db.get_delivery_rate_limit_config()
-        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50})
+        prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
         from database import parse_duration_to_seconds, format_duration_verbose
         
-        plan_lines = []
         plan_buttons = []
         icons = ['✷', '✺', '♞', '👑', '⚡', '🔥', '💎', '🚀']
         idx = 0
@@ -1764,21 +1784,71 @@ async def _process_pass_callback(client, query):
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
             verb_dur = format_duration_verbose(dur_sec)
             p_val = int(price) if float(price).is_integer() else price
-            usd_val = max(0.50, round(p_val / 85.0, 2))
+            usd_val = max(0.50, round(float(price) / 85.0, 2))
             icon = icons[idx % len(icons)]
             idx += 1
-            plan_lines.append(f"» {verb_dur.title()} Pass — ${usd_val:.2f} USD (~₹{p_val})")
-            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ${usd_val:.2f} ) ⸥", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
+            plan_buttons.append([InlineKeyboardButton(f"⸢ {icon} {verb_dur.title()} ( ${usd_val:.2f} | ₹{p_val} ) ⸥", callback_data=f"pass#oxabuy_{dur_key}_{p_val}")])
 
-        plan_lines_str = "\n".join(plan_lines)
+        plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
+
         text = (
-            "🌐 <b>Pay Via Crypto (OxaPay)</b>\n\n"
-            "<blockquote expandable>Pay with Bitcoin, USDT (TRC20, BEP20, TON), Ethereum, TRX, and more.</blockquote>\n\n"
-            f"{plan_lines_str}\n\n"
-            "<blockquote>Instant activation upon blockchain confirmation!</blockquote>"
+            "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
+            "──────────────────────\n\n"
+            "Instant payment with USDT, BTC, SOL, TON.\n\n"
+            "Select your desired Pass plan:"
         )
-        plan_buttons.append([InlineKeyboardButton("⸢ ❮ Back to Payment Methods ⸥", callback_data="pass#unlock_menu")])
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+
+    elif data == "pass#my_transactions":
+        pass_info = await db.get_user_unlimited_pass(user_id)
+        if pass_info.get('active'):
+            import datetime
+            try:
+                import pytz
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                exp_dt = datetime.datetime.fromtimestamp(pass_info['expires_at'], tz=ist_tz)
+                exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+            except Exception:
+                exp_str = datetime.datetime.fromtimestamp(pass_info['expires_at']).strftime('%d-%m-%Y %I:%M %p')
+            status_line = f"🟢 <b>Active</b> (Valid until: <code>{exp_str}</code>)"
+        else:
+            status_line = "⚪ <b>No Active Pass</b>"
+
+        txns = await db.get_user_pass_transactions(user_id, limit=5)
+        if txns:
+            txn_lines = []
+            for t in txns:
+                import datetime
+                try:
+                    import pytz
+                    ist_tz = pytz.timezone('Asia/Kolkata')
+                    t_dt = datetime.datetime.fromtimestamp(t['time'], tz=ist_tz)
+                    t_str = t_dt.strftime('%d-%m-%Y %I:%M %p')
+                except Exception:
+                    t_str = datetime.datetime.fromtimestamp(t['time']).strftime('%d-%m-%Y %I:%M %p') if t['time'] else "N/A"
+                
+                from database import parse_duration_to_seconds, format_duration_verbose
+                dur_verbose = format_duration_verbose(parse_duration_to_seconds(t['plan'], default_unit='d')) if t['plan'] else "Pass"
+                txn_lines.append(
+                    f"• <b>{dur_verbose.title()}</b> — ₹{t['amount']:.2f}\n"
+                    f"  Status: <code>{t['status']}</code> | Gateway: <i>{t['gateway']}</i>\n"
+                    f"  Date: <code>{t_str}</code>"
+                )
+            txns_body = "\n\n".join(txn_lines)
+        else:
+            txns_body = "<i>No previous transactions found on your account.</i>"
+
+        text = (
+            "📜 <b>My Transactions & Pass Status</b>\n"
+            "──────────────────────\n"
+            f"<b>User:</b> {user_name} (<code>{user_id}</code>)\n"
+            f"<b>Pass Status:</b> {status_line}\n"
+            "──────────────────────\n"
+            "<b>Recent Purchases:</b>\n\n"
+            f"{txns_body}"
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")]])
+        await query.message.edit_text(text, reply_markup=kb)
 
     elif data.startswith("pass#upibuy_"):
         parts = data.split("_")
@@ -1796,7 +1866,7 @@ async def _process_pass_callback(client, query):
 
         if not raw_upi:
             err_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_upi")]
+                [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
             ])
             return await query.message.edit_text(
                 "⚠️ <b>UPI Not Configured</b>\n\n"
@@ -1824,7 +1894,7 @@ async def _process_pass_callback(client, query):
         inv_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📱 Open UPI App", url=upi_uri)],
             [InlineKeyboardButton("✍️ Submit 12-Digit UTR", callback_data=f"pass#upisubmit_{dur_key}_{amount}")],
-            [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_upi")]
+            [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
@@ -1851,7 +1921,7 @@ async def _process_pass_callback(client, query):
             f"<i>Our automated Gmail verification engine will verify the credit and activate your pass within seconds!</i>"
         )
         cancel_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#upibuy_{dur_key}_{amount}")]
+            [InlineKeyboardButton("← Back", callback_data=f"pass#upibuy_{dur_key}_{amount}")]
         ])
         await query.message.edit_text(prompt_text, reply_markup=cancel_kb)
 
@@ -1941,7 +2011,7 @@ async def _process_pass_callback(client, query):
             err_text = res.get("error", "Failed to generate crypto invoice.")
             err_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Retry", callback_data=data)],
-                [InlineKeyboardButton("❮ Back", callback_data="pass#method_crypto")]
+                [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
             ])
             return await query.message.edit_text(
                 f"❌ <b>Crypto Invoice Failed</b>\n\n{err_text}",
@@ -1965,7 +2035,7 @@ async def _process_pass_callback(client, query):
             [InlineKeyboardButton(f"🌐 Pay ${amount_usd:.2f} Crypto ➟", url=pay_link)],
             [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}")],
             [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
-            [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_crypto")]
+            [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
         ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
@@ -2049,7 +2119,7 @@ async def _process_pass_callback(client, query):
             err_text = res.get('error', 'Failed to generate payment link')
             err_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Retry", callback_data=data)],
-                [InlineKeyboardButton("❮ Back", callback_data="pass#method_cashfree")]
+                [InlineKeyboardButton("← Back", callback_data="pass#method_cashfree")]
             ])
             return await query.message.edit_text(
                 f"❌ <b>Payment Order Failed</b>\n\n{err_text}",
@@ -2073,7 +2143,7 @@ async def _process_pass_callback(client, query):
             [InlineKeyboardButton(f"Pay ₹{p_label} for {dur_verbose.title()}➟", url=checkout_pay_link)],
             [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
             [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
-            [InlineKeyboardButton("❮ Back to Plans", callback_data="pass#method_cashfree")]
+            [InlineKeyboardButton("← Back", callback_data="pass#method_cashfree")]
         ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
