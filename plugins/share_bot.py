@@ -1557,18 +1557,30 @@ async def _handle_share_bot_utr_message(client, message):
         return
 
     session_data = _pending_utr_users[user_id]
+    
+    # Auto-expire session if 5 minutes (300 seconds) have passed
+    if time.time() - session_data.get('ts', 0) > 300:
+        _pending_utr_users.pop(user_id, None)
+        return
+
     dur_key = session_data['dur_key']
     expected_amount = session_data['amount']
 
-    raw_text = message.text.strip()
+    raw_text = (message.text or "").strip()
     if raw_text.lower() in ("cancel", "/cancel", "back", "/back"):
         _pending_utr_users.pop(user_id, None)
         await message.reply_text("<i>Payment order cancelled.</i>", quote=True)
         return
 
-    # Strictly accept only 12-digit reference number:
     clean_digits = raw_text.replace(" ", "").replace("-", "").strip()
-    if not (len(clean_digits) == 12 and clean_digits.isdigit()):
+    
+    # If message contains non-numeric text (like English words, queries), DO NOT intercept!
+    # Only process if user is actually typing numbers
+    if not clean_digits.isdigit():
+        return
+
+    # Strictly accept only 12-digit reference number:
+    if len(clean_digits) != 12:
         await message.reply_text(
             "⚠️ <b>Invalid Reference Number</b>\n\n"
             "Please send only the <b>12-digit payment reference / UTR number</b>.\n"
@@ -1733,6 +1745,10 @@ async def _process_pass_callback(client, query):
     user_id = query.from_user.id
     user_name = query.from_user.first_name or "User"
 
+    # Clear pending UTR session if user navigates to any other menu/back
+    if not data.startswith("pass#upibuy_") and not data.startswith("pass#upirecheck_"):
+        _pending_utr_users.pop(user_id, None)
+
     if data == "pass#unlock_menu":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
@@ -1762,9 +1778,8 @@ async def _process_pass_callback(client, query):
             "👑 <b>Premium Membership Plans</b> ❤️\n"
             "──────────────────────\n"
             "⭐️ <b>Pass Benefits:</b>\n"
-            "• ⚡️ <b>Multi-Source Caller Engine:</b> Deep identity search with up to 20 alternate name records\n"
-            "• 🚀 <b>High Daily Search Limits (30 searches / day)</b>\n"
-            "• 🚫 <b>100% Ad-Free Experience</b>\n\n"
+            "• 🚫 <b>No Donation & Extra Messages:</b> 100% clean experience without any ads, promotions, or extra messages.\n"
+            "• ⚡️ <b>No Download Limits:</b> Unlimited file deliveries without any cooldown or rate limits during your pass duration.\n\n"
             "💎 <b>Available Plans:</b>\n"
             f"{plans_str}\n\n"
             "💳 <b>Select your preferred payment method below:</b>"
@@ -1998,7 +2013,7 @@ async def _process_pass_callback(client, query):
         encoded_upi = urllib.parse.quote(upi_payload)
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_upi}"
 
-        # Exact layout in 100% pure English
+        # Caption with updated UTR instruction and automated verification notice
         caption = (
             "<b>⚡️ UPI Payment Order Created!</b>\n\n"
             "──────────────────────\n"
@@ -2010,46 +2025,28 @@ async def _process_pass_callback(client, query):
             "1. Save this QR code to your gallery (or copy the UPI ID above).\n"
             "2. Open your UPI app (GPay, PhonePe, Paytm, BHIM, etc.).\n"
             "3. Select Scan & Pay option and choose the saved QR from your gallery.\n"
-            "4. After payment, please send the 12-digit payment reference number.\n\n"
-            "Payment will be verified automatically using our UTR verification system."
+            "4. After payment, please send the 12-digit payment reference number in this chat.\n\n"
+            "Please send your 12-digit UTR number here. After sending, payment will be verified automatically using our UTR verification system."
         )
 
         photo_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
 
-        # If message was already a photo, edit media in-place
-        if getattr(query.message, "photo", None):
-            try:
-                from pyrogram.types import InputMediaPhoto
-                qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
-                await query.message.edit_media(
-                    media=InputMediaPhoto(qr_buf, caption=caption),
-                    reply_markup=photo_kb
-                )
-                return
-            except Exception:
-                pass
+        # Generate QR buffer and send as photo so the QR code is prominently displayed AT THE TOP
+        qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
 
-        # Otherwise edit text in-place with embedded QR preview in the SAME message (no separate message!)
-        full_text = f'<a href="{qr_url}">&#8205;</a>' + caption
         try:
-            await query.message.edit_text(
-                full_text,
-                reply_markup=photo_kb,
-                disable_web_page_preview=False
-            )
-        except Exception as _e:
-            logger.warning(f"In-place edit_text fallback to send_photo: {_e}")
-            try: await query.message.delete()
-            except Exception: pass
-            qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
-            await client.send_photo(
-                chat_id=query.message.chat.id,
-                photo=qr_buf,
-                caption=caption,
-                reply_markup=photo_kb
-            )
+            await query.message.delete()
+        except Exception:
+            pass
+
+        await client.send_photo(
+            chat_id=query.message.chat.id,
+            photo=qr_buf,
+            caption=caption,
+            reply_markup=photo_kb
+        )
 
     elif data.startswith("pass#upisubmit_"):
         parts = data.split("_")
