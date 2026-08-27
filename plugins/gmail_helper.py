@@ -203,6 +203,18 @@ def _sync_imap_search(gmail_user: str, gmail_password: str, utr: str, expected_a
             if verified or amount_mismatch:
                 break
 
+        # If verified, archive the email out of INBOX to prevent cross-bot double claims
+        if verified and 'mail_id' in locals():
+            try:
+                mail.store(mail_id, '-X-GM-LABELS', '\\Inbox')
+            except Exception as arch_err:
+                try:
+                    mail.store(mail_id, '+FLAGS', '\\Deleted')
+                    mail.expunge()
+                except Exception:
+                    pass
+                logger.warning(f"[Gmail IMAP] Archive notice: {arch_err}")
+
         try:
             mail.close()
             mail.logout()
