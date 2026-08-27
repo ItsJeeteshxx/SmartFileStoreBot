@@ -1814,6 +1814,9 @@ async def settings_query(bot, query):
         query.data = "settings#sb_rl_cust_0"
         return await settings_query(bot, query)
 
+    try: await resp.delete()
+    except Exception: pass
+
     dur_text = (
         f"<b>⏱️ SELECT DURATION FOR USER</b> <code>{target_uid}</code>\n\n"
         "Choose how long the Unlimited Access Pass should be valid for:"
@@ -1833,7 +1836,11 @@ async def settings_query(bot, query):
         ],
         [InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data="settings#sb_rl_cust_0")]
     ]
-    await query.message.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
+    try:
+        await msg.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
+    except Exception:
+        try: await query.message.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
+        except Exception: await bot.send_message(user_id, dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
 
   elif type.startswith("sb_rl_gdur_"):
     parts = type.split('_')
@@ -1892,7 +1899,11 @@ async def settings_query(bot, query):
     cust_uid = int(parts[3])
     page = int(parts[4]) if len(parts) > 4 else 0
 
-    details = await db.get_customer_full_details(cust_uid)
+    try:
+        details = await db.get_customer_full_details(cust_uid)
+    except Exception as ex:
+        details = {'name': f"User {cust_uid}", 'pass_info': {}, 'transactions': []}
+
     name = details.get('name', f"User {cust_uid}")
     pass_info = details.get('pass_info', {})
     active = pass_info.get('active', False)
@@ -1907,7 +1918,8 @@ async def settings_query(bot, query):
             exp_dt = datetime.datetime.fromtimestamp(expires_at, tz=ist_tz)
             exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
         except Exception:
-            exp_str = datetime.datetime.fromtimestamp(expires_at).strftime('%d-%m-%Y %I:%M %p')
+            try: exp_str = datetime.datetime.fromtimestamp(expires_at).strftime('%d-%m-%Y %I:%M %p')
+            except Exception: exp_str = "N/A"
 
     if active:
         sub_status = (
@@ -1938,17 +1950,25 @@ async def settings_query(bot, query):
                     ist_tz = pytz.timezone('Asia/Kolkata')
                     t_str = datetime.datetime.fromtimestamp(t_time, tz=ist_tz).strftime('%d-%m-%Y %I:%M %p')
                 except Exception:
-                    t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d-%m-%Y %I:%M %p')
+                    try: t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d-%m-%Y %I:%M %p')
+                    except Exception: t_str = "N/A"
             
-            p_name = str(txn.get('plan', 'N/A'))
-            from database import parse_duration_to_seconds, format_duration_verbose
-            dur_verb = format_duration_verbose(parse_duration_to_seconds(p_name, default_unit='d')) if p_name != 'N/A' else "Pass"
-            amt = f"₹{float(txn.get('amount', 0)):.2f}"
+            p_name = str(txn.get('plan') or 'Pass')
+            dur_verb = p_name
+            try:
+                from database import parse_duration_to_seconds, format_duration_verbose
+                dur_verb = format_duration_verbose(parse_duration_to_seconds(p_name, default_unit='d'))
+            except Exception:
+                dur_verb = p_name
+
+            try: amt = f"₹{float(txn.get('amount', 0)):.2f}"
+            except Exception: amt = "₹0.00"
+
             gw = txn.get('gateway', 'Pay Via UPI (INR)')
             oid = txn.get('id', 'N/A')
             txns_text += (
                 f"<b>{idx}. Order :-</b> <code>{oid}</code>\n"
-                f"   • <b>Plan:</b> {dur_verb.title()} ({amt}) , ({gw}) | <b>Status -</b> ✅ Paid , <code>{t_str} IST</code>\n\n"
+                f"   • <b>Plan:</b> {str(dur_verb).title()} ({amt}) , ({gw}) | <b>Status -</b> ✅ Paid , <code>{t_str} IST</code>\n\n"
             )
 
     body = (
@@ -1967,14 +1987,28 @@ async def settings_query(bot, query):
     buttons = [
         [
             InlineKeyboardButton("➕ Grant 1 Day", callback_data=f"settings#sb_rl_g_{cust_uid}_1d_{page}"),
+            InlineKeyboardButton("➕ Grant 3 Days", callback_data=f"settings#sb_rl_g_{cust_uid}_3d_{page}"),
             InlineKeyboardButton("➕ Grant 7 Days", callback_data=f"settings#sb_rl_g_{cust_uid}_7d_{page}")
         ],
         [
+            InlineKeyboardButton("➕ Grant 1 Month", callback_data=f"settings#sb_rl_g_{cust_uid}_1mo_{page}"),
+            InlineKeyboardButton("➕ Grant 1 Year", callback_data=f"settings#sb_rl_g_{cust_uid}_365d_{page}")
+        ],
+        [
             InlineKeyboardButton("❌ Revoke Pass", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
-            InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_rl_cust_{page}")
+            InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data=f"settings#sb_rl_cust_{page}")
         ]
     ]
-    await query.message.edit_text(body, reply_markup=InlineKeyboardMarkup(buttons))
+    try:
+        await query.message.edit_text(body, reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception as ex:
+        try:
+            await query.message.edit_text(
+                f"<b>👤 CUSTOMER PROFILE</b>\n\n• <b>ID:</b> <code>{cust_uid}</code>\n• <b>Name:</b> {name}\n\n{sub_status}",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception:
+            pass
 
   elif type.startswith("sb_rl_g_"):
     parts = type.split('_')
