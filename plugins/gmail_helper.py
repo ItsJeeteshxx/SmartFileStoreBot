@@ -291,3 +291,193 @@ async def verify_upi_payment_via_gmail(
         "success": False,
         "error": "Payment could not be verified. Please verify your UTR and try again."
     }
+
+
+def extract_utr_from_email(body: str) -> Optional[str]:
+    """Helper to extract 12-digit UTR/RRN number from email notification body."""
+    if not body:
+        return None
+    body_clean = re.sub(r'<[^>]+>', ' ', body)
+    
+    # Priority patterns (explicit reference/UTR identifiers)
+    patterns = [
+        r'(?:upi\s*(?:ref(?:erence)?|rrn|txn|trans(?:action)?|payment)?(?:\s*(?:no|num|number|id))?|rrn|utr|ref(?:erence)?(?:\s*(?:no|num|number))?)[\s\:\.\-\/]+(\d{12})\b',
+        r'UPI\/(\d{12})\b',
+        r'\/(\d{12})\b',
+        r'\b(\d{12})\b'
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, body_clean, re.IGNORECASE):
+            candidate = match.group(1).strip()
+            if len(candidate) == 12 and candidate.isdigit():
+                return candidate
+    return None
+
+
+def _sync_archive_email(mail, mail_id: bytes):
+    """Safely archive email from INBOX so it is not processed repeatedly."""
+    try:
+        # Mark as read first
+        mail.store(mail_id, '+FLAGS', '\Seen')
+        # Remove INBOX label in Gmail IMAP
+        mail.store(mail_id, '-X-GM-LABELS', '\Inbox')
+    except Exception as e:
+        logger.debug(f"[Gmail IMAP] Archive notice: {e}")
+
+
+def _sync_imap_search_by_amount(
+    gmail_user: str,
+    gmail_password: str,
+    expected_amount: float,
+    order_time: float,
+    window_seconds: int = 360
+) -> Dict[str, Any]:
+    """Blocking IMAP search by exact dynamic amount."""
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail.login(gmail_user, gmail_password)
+        mail.select("INBOX")
+
+        amt_str1 = f"{expected_amount:.2f}"
+        amt_str2 = f"{int(expected_amount)}" if expected_amount.is_integer() else f"{expected_amount:.1f}"
+
+        # 1. Search for amount text
+        status, messages = mail.search(None, 'TEXT', f'"{amt_str1}"')
+        mail_ids = []
+        if status == "OK" and messages[0]:
+            mail_ids = messages[0].split()
+
+        # 2. If not found by TEXT, fallback to UNSEEN
+        if not mail_ids:
+            status, messages = mail.search(None, 'UNSEEN')
+            if status == "OK" and messages[0]:
+                mail_ids = messages[0].split()
+
+        # 3. Fallback to last 25 messages in INBOX
+        if not mail_ids:
+            status, messages = mail.search(None, 'ALL')
+            if status == "OK" and messages[0]:
+                mail_ids = messages[0].split()[-25:]
+
+        if not mail_ids:
+            try:
+                mail.close()
+                mail.logout()
+            except Exception:
+                pass
+            return {"found": False, "verified": False}
+
+        verified = False
+        extracted_utr = ""
+        payer_name = ""
+        matched_mail_id = None
+
+        import time as _t
+        now = _t.time()
+
+        for mail_id in reversed(mail_ids):
+            res_status, msg_data = mail.fetch(mail_id, "(RFC822)")
+            if res_status != "OK":
+                continue
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    body = get_email_body(msg)
+
+                    if verify_amount_in_email(body, expected_amount):
+                        utr = extract_utr_from_email(body)
+                        payer = extract_payer_name_from_email(body)
+                        verified = True
+                        extracted_utr = utr or f"AUTO-{int(_t.time())}"
+                        payer_name = payer or "UPI Payer"
+                        matched_mail_id = mail_id
+                        break
+
+            if verified:
+                break
+
+        # If verified, archive email from INBOX
+        if verified and matched_mail_id:
+            try:
+                _sync_archive_email(mail, matched_mail_id)
+            except Exception:
+                pass
+
+        try:
+            mail.close()
+            mail.logout()
+        except Exception:
+            pass
+
+        return {
+            "found": verified,
+            "verified": verified,
+            "utr": extracted_utr,
+            "payer_name": payer_name,
+            "amount": expected_amount
+        }
+    except Exception as e:
+        logger.error(f"[Gmail IMAP] Sync search by amount error: {e}")
+        return {"found": False, "verified": False, "error": str(e)}
+
+
+async def find_upi_payment_by_amount(
+    expected_amount: float,
+    order_time: float = None,
+    window_seconds: int = 360,
+    gmail_user: str = "",
+    gmail_password: str = ""
+) -> Dict[str, Any]:
+    """
+    Asynchronously checks Gmail IMAP for an incoming UPI payment matching the unique dynamic amount.
+    Returns success=True with extracted UTR and payer name when verified.
+    """
+    import time
+    from config import Config
+    from database import db
+
+    if order_time is None:
+        order_time = time.time()
+
+    u = str(gmail_user or "").strip()
+    p = str(gmail_password or "").strip()
+
+    if not u or not p:
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        u = str(rl_cfg.get("gmail_user") or u or "").strip()
+        p = str(rl_cfg.get("gmail_app_password") or p or "").strip()
+
+    if not u or not p:
+        u = str(getattr(Config, "GMAIL_USER", "") or os.environ.get("GMAIL_USER", "") or u or "").strip()
+        p = str(getattr(Config, "GMAIL_APP_PASSWORD", "") or os.environ.get("GMAIL_APP_PASSWORD", "") or p or "").strip()
+
+    if not u or not p:
+        return {
+            "success": False,
+            "error": "Gmail credentials (GMAIL_USER / GMAIL_APP_PASSWORD) not configured."
+        }
+
+    clean_u = u.replace("\xa0", "").replace(" ", "").strip()
+    clean_p = p.replace("\xa0", "").replace(" ", "").strip()
+
+    res = await asyncio.to_thread(_sync_imap_search_by_amount, clean_u, clean_p, expected_amount, order_time, window_seconds)
+
+    if res.get("error"):
+        return {
+            "success": False,
+            "error": res["error"]
+        }
+
+    if res.get("verified"):
+        return {
+            "success": True,
+            "utr": res.get("utr", ""),
+            "payer_name": res.get("payer_name", "UPI Payer"),
+            "amount": expected_amount
+        }
+
+    return {
+        "success": False,
+        "not_found": True,
+        "error": "Payment not detected in Gmail inbox yet."
+    }

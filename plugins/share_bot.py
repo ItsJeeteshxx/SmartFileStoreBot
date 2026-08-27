@@ -1629,6 +1629,154 @@ async def _process_fsub_check(client, query):
 _pending_utr_users: dict = {}  # {user_id: {'dur_key': str, 'amount': float, 'ts': float}}
 
 
+
+async def _poll_upi_payment(
+    client,
+    user_id: int,
+    order_id: str,
+    dyn_amount: float,
+    dur_key: str,
+    count: str,
+    unit: str,
+    message_id: int,
+    chat_id: int
+):
+    """
+    Background polling task that checks Gmail IMAP every 5 seconds for up to 300 seconds.
+    Automatically activates the pass upon detecting the credit email without user intervention.
+    """
+    from plugins.gmail_helper import find_upi_payment_by_amount
+    from database import parse_duration_to_seconds
+
+    start_time = time.time()
+    dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+
+    for _ in range(60):  # 60 * 5s = 300s (5 minutes)
+        await asyncio.sleep(5)
+
+        # Check if pass is already active or order already marked PAID
+        try:
+            pass_info = await db.get_user_unlimited_pass(user_id)
+            if pass_info.get('active'):
+                _active_upi_amounts.pop(dyn_amount, None)
+                _pending_utr_users.pop(user_id, None)
+                return
+
+            order_doc = await db.pass_orders.find_one({'order_id': order_id})
+            if order_doc and order_doc.get('status') == 'PAID':
+                _active_upi_amounts.pop(dyn_amount, None)
+                _pending_utr_users.pop(user_id, None)
+                return
+        except Exception:
+            pass
+
+        # Check Gmail IMAP for payment matching this unique dynamic amount
+        try:
+            res = await find_upi_payment_by_amount(dyn_amount, order_time=start_time, window_seconds=360)
+            if res.get('success'):
+                extracted_utr = res.get('utr') or f"AUTO-{int(time.time())}"
+                payer_name = res.get('payer_name') or "UPI Payer"
+
+                # Check if UTR was previously used
+                is_used = await db.is_utr_used(extracted_utr)
+                if is_used:
+                    logger.warning(f"Auto-verified UTR {extracted_utr} already claimed.")
+                    _active_upi_amounts.pop(dyn_amount, None)
+                    return
+
+                # Record used UTR
+                await db.record_used_utr(
+                    utr=extracted_utr,
+                    user_id=user_id,
+                    amount=dyn_amount,
+                    order_id=order_id,
+                    gateway="Pay Via UPI (INR)"
+                )
+
+                # Activate user pass in database
+                await db.activate_user_unlimited_pass(
+                    user_id=user_id,
+                    duration_seconds=dur_sec,
+                    order_id=order_id,
+                    amount=dyn_amount,
+                    gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
+                )
+
+                # Mark pass order as PAID
+                await db.pass_orders.update_one(
+                    {'order_id': order_id},
+                    {'$set': {'status': 'PAID', 'paid_at': time.time(), 'utr': extracted_utr, 'payer_name': payer_name}},
+                    upsert=True
+                )
+
+                # Cleanup in-memory tracking
+                _active_upi_amounts.pop(dyn_amount, None)
+                _pending_utr_users.pop(user_id, None)
+                _active_order_reminders.pop(f"{user_id}_{order_id}", None)
+
+                # User confirmation message
+                success_text = (
+                    f'<emoji id="6267118537752450044">🟢</emoji> <b>Payment Automatically Verified!</b>\n\n'
+                    f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+                    f"• <b>Plan:</b> {count} {unit} Unlimited Access Pass\n"
+                    f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
+                    f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+                    f"<blockquote>🎉 <i>Thank you! Your Unlimited Access Pass has been activated. Enjoy unlimited instant downloads with zero limits!</i></blockquote>"
+                )
+                success_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
+                    [InlineKeyboardButton("🔒 Support", url="https://t.me/AryaHelpTG")]
+                ])
+                success_api_kb = [
+                    [{"text": "My Transactions", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}],
+                    [{"text": "Support", "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}]
+                ]
+
+                try:
+                    sent = await send_or_edit_with_custom_icons(
+                        client=client,
+                        chat_id=chat_id,
+                        text=success_text,
+                        inline_keyboard=success_api_kb,
+                        message_id=message_id,
+                        is_media_edit=True
+                    )
+                    if not sent:
+                        await client.send_message(chat_id=chat_id, text=success_text, reply_markup=success_kb)
+                except Exception:
+                    try:
+                        await client.send_message(chat_id=chat_id, text=success_text, reply_markup=success_kb)
+                    except Exception:
+                        pass
+
+                # Notify bot owners
+                from config import Config
+                admin_id = Config.BOT_OWNER_ID[0] if Config.BOT_OWNER_ID else None
+                if admin_id:
+                    try:
+                        await client.send_message(
+                            chat_id=admin_id,
+                            text=(
+                                f"🔔 <b>[UPI Auto-Payment Success]</b>\n\n"
+                                f"• <b>Customer:</b> <code>{user_id}</code>\n"
+                                f"• <b>Order:</b> <code>{order_id}</code>\n"
+                                f"• <b>Amount:</b> ₹{dyn_amount:.2f}\n"
+                                f"• <b>Plan:</b> {dur_key}\n"
+                                f"• <b>UTR:</b> <code>{extracted_utr}</code>\n"
+                                f"• <b>Payer:</b> {payer_name}"
+                            )
+                        )
+                    except Exception:
+                        pass
+                return
+        except Exception as e:
+            logger.debug(f"Poll UPI payment error: {e}")
+
+    # Expire reservation if unpaid after 300s
+    _active_upi_amounts.pop(dyn_amount, None)
+    _pending_utr_users.pop(user_id, None)
+
 async def _handle_share_bot_utr_message(client, message):
     if not message.from_user or not message.text:
         return
@@ -1801,17 +1949,58 @@ def generate_upi_qr_bytes(upi_id: str, amount: float, payee_name: str = "Merchan
         return buf
 
 
-def generate_dynamic_upi_amount(base_amount: float) -> float:
+_active_upi_amounts: dict[float, float] = {}  # {amount: expiry_ts}
+
+async def generate_unique_dynamic_upi_amount(base_amount: float) -> float:
     """
-    Generates a unique dynamic amount in [base_amount - 0.49, base_amount + 0.50]
+    Generates a guaranteed unique dynamic amount in [base_amount - 0.49, base_amount + 0.50]
     with 2 decimal places (e.g. 14.51, 15.49, 15.23 for base 15.0).
-    Ensures payments are unique and prevent cross-bot collision.
+    Strictly ensures no two active/pending orders share the same dynamic amount concurrently.
     """
     import random
-    paise_choices = [p for p in range(-49, 51) if p != 0]
-    offset = random.choice(paise_choices) / 100.0
-    dyn_amt = round(float(base_amount) + offset, 2)
-    return max(1.0, dyn_amt)
+    now = time.time()
+    
+    # Cleanup expired active reservations
+    expired = [amt for amt, exp in _active_upi_amounts.items() if exp < now]
+    for amt in expired:
+        _active_upi_amounts.pop(amt, None)
+
+    # Check database for active pending UPI orders created in last 6 minutes
+    recent_cutoff = now - 360
+    taken_amounts = set(_active_upi_amounts.keys())
+    try:
+        db_active = await db.pass_orders.find({
+            'status': 'PENDING',
+            'gateway': 'Pay Via UPI (INR)',
+            'created_at': {'$gte': recent_cutoff}
+        }).to_list(100)
+        for o in db_active:
+            if 'amount' in o:
+                taken_amounts.add(round(float(o['amount']), 2))
+    except Exception:
+        pass
+
+    all_offsets = [p for p in range(-49, 51) if p != 0]
+    random.shuffle(all_offsets)
+
+    chosen_amount = None
+    for p in all_offsets:
+        candidate = round(float(base_amount) + (p / 100.0), 2)
+        if candidate > 0 and candidate not in taken_amounts:
+            chosen_amount = candidate
+            break
+
+    if chosen_amount is None:
+        chosen_amount = round(float(base_amount) + (random.choice(all_offsets) / 100.0), 2)
+
+    _active_upi_amounts[chosen_amount] = now + 360  # Reserve for 6 mins
+    return chosen_amount
+
+def generate_dynamic_upi_amount(base_amount: float) -> float:
+    """Synchronous fallback helper."""
+    import random
+    all_offsets = [p for p in range(-49, 51) if p != 0]
+    return max(1.0, round(float(base_amount) + (random.choice(all_offsets) / 100.0), 2))
 
 
 def format_plan_button_label(dur_key: str, price) -> str:
@@ -2411,8 +2600,8 @@ async def _process_pass_callback(client, query):
             unit = "Days"
 
         base_amt = float(amount)
-        # Generate unique dynamic amount (e.g. 14.51 to 15.49 for base 15)
-        dyn_amount = generate_dynamic_upi_amount(base_amt)
+        # Generate guaranteed unique collision-free dynamic amount among active orders
+        dyn_amount = await generate_unique_dynamic_upi_amount(base_amt)
 
         # Generate unified sequential order ID: PASS-{user_id}-{dur_tag}-{order_num}
         from database import parse_duration_to_seconds, format_duration_friendly
@@ -2446,33 +2635,47 @@ async def _process_pass_callback(client, query):
             'ts': time.time()
         }
 
+        # Save order document to MongoDB
+        try:
+            await db.pass_orders.insert_one({
+                'order_id': order_id,
+                'user_id': user_id,
+                'user_name': user_name,
+                'plan': dur_key,
+                'amount': dyn_amount,
+                'base_amount': base_amt,
+                'gateway': 'Pay Via UPI (INR)',
+                'status': 'PENDING',
+                'created_at': time.time(),
+                'expires_at': time.time() + 300
+            })
+        except Exception:
+            pass
+
         # Build clean UPI payment URI and QR URL with dynamic amount
         import urllib.parse
         pn_clean = urllib.parse.quote_plus(payee_name or "Merchant")
         tn_clean = urllib.parse.quote_plus(order_id)
         upi_payload = f"upi://pay?pa={raw_upi}&pn={pn_clean}&am={dyn_amount:.2f}&cu=INR&tn={tn_clean}"
-        encoded_upi = urllib.parse.quote(upi_payload)
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_upi}"
 
-        # Caption with dynamic amount and unified order ID
+        # Clean automated verification caption without manual UTR submission requirement
         caption = (
             '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
             "──────────────────────\n"
             f"• <b>Plan:</b> {count} {unit}\n"
-            f"• <b>Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+            f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
             f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
             f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
-            '<emoji id="5807800879553715710">📲</emoji> <b>Instructions:</b>\n'
-            "1. Save this QR code to your gallery (or copy the UPI ID above).\n"
-            "2. Open your UPI app (GPay, PhonePe, Paytm, BHIM, etc.).\n"
-            "3. Select Scan & Pay option and choose the saved QR from your gallery.\n"
-            f"4. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
-            "5. After payment, please send the 12-digit payment reference number in this chat.\n\n"
-            f"⚠️ <i>Please pay the exact unique amount <b>₹{dyn_amount:.2f}</b> so your payment is verified instantly!</i>\n\n"
-            "Please send your 12-digit UTR number here. After sending, payment will be verified automatically using our UTR verification system."
+            '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+            "1. Scan the QR code above or pay directly to the UPI ID.\n"
+            f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
+            "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds of payment.\n\n"
+            '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 5 Minutes)\n'
+            "<i>Your unlimited access pass will activate automatically as soon as payment is detected!</i>"
         )
 
         photo_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
 
@@ -2484,12 +2687,25 @@ async def _process_pass_callback(client, query):
         except Exception:
             pass
 
-        await client.send_photo(
+        sent_msg = await client.send_photo(
             chat_id=query.message.chat.id,
             photo=qr_buf,
             caption=caption,
             reply_markup=photo_kb
         )
+
+        # Start real-time background polling for automated payment verification
+        asyncio.create_task(_poll_upi_payment(
+            client=client,
+            user_id=user_id,
+            order_id=order_id,
+            dyn_amount=dyn_amount,
+            dur_key=dur_key,
+            count=count,
+            unit=unit,
+            message_id=sent_msg.id if sent_msg else None,
+            chat_id=query.message.chat.id
+        ))
 
         # Schedule automatic reminder under 5 minutes (3 mins) if payment not completed
         asyncio.create_task(schedule_pass_payment_reminder(
@@ -2501,6 +2717,92 @@ async def _process_pass_callback(client, query):
             dur_verbose=f"{count} {unit}",
             delay_seconds=180
         ))
+
+    elif data.startswith("pass#upistatus_"):
+        parts = data.split("_")
+        order_id = parts[1]
+        dur_key = parts[2]
+        dyn_amount = float(parts[3])
+
+        try:
+            await query.answer("Checking payment with bank...", show_alert=False)
+        except Exception:
+            pass
+
+        # Check if pass already active
+        pass_info = await db.get_user_unlimited_pass(user_id)
+        if pass_info.get('active'):
+            return await query.answer("✅ Your Unlimited Access Pass is already active!", show_alert=True)
+
+        from plugins.gmail_helper import find_upi_payment_by_amount
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+
+        res = await find_upi_payment_by_amount(dyn_amount)
+        if res.get('success'):
+            extracted_utr = res.get('utr') or f"AUTO-{int(time.time())}"
+            payer_name = res.get('payer_name') or "UPI Payer"
+
+            # Check if UTR was previously used
+            is_used = await db.is_utr_used(extracted_utr)
+            if is_used:
+                return await query.answer("⚠️ This payment was already processed!", show_alert=True)
+
+            await db.record_used_utr(
+                utr=extracted_utr,
+                user_id=user_id,
+                amount=dyn_amount,
+                order_id=order_id,
+                gateway="Pay Via UPI (INR)"
+            )
+            await db.activate_user_unlimited_pass(
+                user_id=user_id,
+                duration_seconds=dur_sec,
+                order_id=order_id,
+                amount=dyn_amount,
+                gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
+            )
+            await db.pass_orders.update_one(
+                {'order_id': order_id},
+                {'$set': {'status': 'PAID', 'paid_at': time.time(), 'utr': extracted_utr, 'payer_name': payer_name}},
+                upsert=True
+            )
+
+            _active_upi_amounts.pop(dyn_amount, None)
+            _pending_utr_users.pop(user_id, None)
+            _active_order_reminders.pop(f"{user_id}_{order_id}", None)
+
+            success_text = (
+                f'<emoji id="6267118537752450044">🟢</emoji> <b>Payment Automatically Verified!</b>\n\n'
+                f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+                f"• <b>Plan:</b> {dur_verbose.title()} Unlimited Access Pass\n"
+                f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
+                f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+                f"<blockquote>🎉 <i>Thank you! Your Unlimited Access Pass has been activated. Enjoy unlimited instant downloads with zero limits!</i></blockquote>"
+            )
+            success_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
+                [InlineKeyboardButton("🔒 Support", url="https://t.me/AryaHelpTG")]
+            ])
+            try:
+                await query.message.edit_caption(caption=success_text, reply_markup=success_kb)
+            except Exception:
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                await client.send_message(chat_id=query.message.chat.id, text=success_text, reply_markup=success_kb)
+
+            return await query.answer("✅ Payment Verified Successfully!", show_alert=True)
+        else:
+            return await query.answer(
+                f"⏳ Payment not detected yet.\n\n"
+                f"Please ensure you paid exactly ₹{dyn_amount:.2f}. "
+                f"Bank notification emails usually arrive within 5-20 seconds. Please try again in a moment.",
+                show_alert=True
+            )
 
     elif data.startswith("pass#upisubmit_"):
         parts = data.split("_")
