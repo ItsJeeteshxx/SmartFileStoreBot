@@ -1755,6 +1755,47 @@ def format_plan_button_label(dur_key: str, price) -> str:
     return f"💰 {num} {unit} (₹{p_val})"
 
 
+PLAN_CUSTOM_EMOJIS = [
+    ("5219943216781995020", "🔹"),  # 1st Plan
+    ("6021577980449396555", "🔸"),  # 2nd Plan
+    ("6129783634158163466", "⚡"),  # 3rd Plan
+    ("6269048584386122161", "💎"),  # 4th Plan
+    ("6156730271858169904", "👑"),  # 5th Plan
+]
+
+def calculate_plan_savings(dur_key: str, price: float, prices: dict) -> str:
+    """Calculate automatic savings amount and percentage relative to base daily rate."""
+    from database import parse_duration_to_seconds
+    try:
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_days = dur_sec / 86400.0
+
+        # Find base daily rate from shortest plan >= 1 day
+        day_rates = []
+        for k, p in prices.items():
+            s = parse_duration_to_seconds(k, default_unit='d')
+            d = s / 86400.0
+            if d >= 1.0:
+                day_rates.append((d, float(p) / d, float(p)))
+
+        if not day_rates:
+            return ""
+
+        day_rates.sort(key=lambda x: x[0])
+        base_rate_per_day = day_rates[0][1]
+
+        if dur_days > 1.0 and base_rate_per_day > 0:
+            standard_cost = dur_days * base_rate_per_day
+            if standard_cost > price:
+                save_amount = int(round(standard_cost - price))
+                save_pct = int(round(((standard_cost - price) / standard_cost) * 100))
+                if save_amount > 0 and save_pct > 0:
+                    return f" (Save ₹{save_amount} • {save_pct}% OFF)"
+    except Exception:
+        pass
+    return ""
+
+
 async def send_or_edit_with_custom_icons(
     client,
     chat_id: int,
@@ -1827,7 +1868,7 @@ async def _process_pass_callback(client, query):
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
         
         plan_lines = []
-        for dur_key, price in prices.items():
+        for idx, (dur_key, price) in enumerate(prices.items()):
             dur_str = str(dur_key).lower().strip()
             if dur_str.endswith('d'):
                 num = dur_str[:-1]
@@ -1843,7 +1884,9 @@ async def _process_pass_callback(client, query):
                 unit = "Days"
             p_val = int(price) if float(price).is_integer() else price
             usd_val = max(0.50, round(float(price) / 92.0, 2))
-            plan_lines.append(f"• {num} {unit}: ₹{p_val} | ${usd_val:.2f}")
+            savings_tag = calculate_plan_savings(dur_key, price, prices)
+            emoji_id, fallback = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+            plan_lines.append(f'<emoji id="{emoji_id}">{fallback}</emoji> {num} {unit}: ₹{p_val} | ${usd_val:.2f}{savings_tag}')
 
         plans_str = "\n".join(plan_lines)
 
@@ -1851,8 +1894,8 @@ async def _process_pass_callback(client, query):
             '<emoji id="5773677501825945508">👑</emoji> <b>Premium Membership Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n'
             "──────────────────────\n"
             '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
-            "• 🚫 <b>No Donation & Extra Messages:</b> 100% clean experience without any ads, promotions, or extra messages.\n"
-            "• ⚡️ <b>No Download Limits:</b> Unlimited file deliveries without any cooldown or rate limits during your pass duration.\n\n"
+            "• 🚫 <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n"
+            "• ⚡️ <b>No Access Limits:</b> Unlimited link access without cooldown.\n\n"
             '<emoji id="6007983438294949171">💎</emoji> <b>Available Plans:</b>\n'
             f"{plans_str}\n\n"
             '<emoji id="6019224342666157570">💳</emoji> <b>Select your preferred payment method below:</b>'
@@ -1925,7 +1968,7 @@ async def _process_pass_callback(client, query):
         plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
 
         text = (
-            "<b>⚡ Pay with Cashfree</b>\n"
+            '<emoji id="5920332557466997677">⚡</emoji> <b>Pay with Cashfree</b>\n'
             "──────────────────────\n\n"
             "Instant payment with UPI, Cards, NetBanking.\n\n"
             "Select your desired Pass plan:"
@@ -1980,7 +2023,7 @@ async def _process_pass_callback(client, query):
 
         if len(plan_buttons) <= 1:
             text = (
-                "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
+                '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
                 "──────────────────────\n\n"
                 "⚠️ <b>No Eligible Crypto Plans Available</b>\n\n"
                 "OxaPay requires a minimum order amount of <b>$0.50 USD (~₹46)</b>.\n"
@@ -1989,10 +2032,10 @@ async def _process_pass_callback(client, query):
             )
         else:
             text = (
-                "<b>🌐 Pay with Crypto ( OxaPay )</b>\n"
+                '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
                 "──────────────────────\n\n"
                 "Instant payment with USDT, BTC, SOL, TON.\n\n"
-                "<i>💡 Note: OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:</i>\n\n"
+                '<emoji id="6026080811277621020">💡</emoji> <i>Note: OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:</i>\n\n'
                 "Select your desired Pass plan:"
             )
         if getattr(query.message, "photo", None):
@@ -2013,9 +2056,9 @@ async def _process_pass_callback(client, query):
                 exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
             except Exception:
                 exp_str = datetime.datetime.fromtimestamp(pass_info['expires_at']).strftime('%d-%m-%Y %I:%M %p')
-            status_line = f"🟢 <b>Active</b> (Valid until: <code>{exp_str}</code>)"
+            status_line = f'<emoji id="6267118537752450044">🟢</emoji> <b>Active</b> (Valid until: <code>{exp_str}</code>)'
         else:
-            status_line = "⚪ <b>No Active Pass</b>"
+            status_line = '<emoji id="6264989883241076562">⚪</emoji> <b>No Active Pass</b>' 
 
         txns = await db.get_user_pass_transactions(user_id, limit=5)
         if txns:
@@ -2044,7 +2087,7 @@ async def _process_pass_callback(client, query):
             txns_body = "<i>No previous transactions found on your account.</i>"
 
         text = (
-            "📜 <b>My Transactions & Pass Status</b>\n"
+            '<emoji id="6021487472603568286">📜</emoji> <b>My Transactions & Pass Status</b>\n'
             "──────────────────────\n"
             f"<b>User:</b> {user_name} (<code>{user_id}</code>)\n"
             f"<b>Pass Status:</b> {status_line}\n"
@@ -2053,12 +2096,28 @@ async def _process_pass_callback(client, query):
             f"{txns_body}"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")]])
+        api_kb = [[{"text": "← Back", "callback_data": "pass#unlock_menu"}]]
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
-            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
         else:
-            await query.message.edit_text(text, reply_markup=kb)
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=text,
+                inline_keyboard=api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(text, reply_markup=kb)
 
     elif data.startswith("pass#upibuy_"):
         parts = data.split("_")
@@ -2116,13 +2175,13 @@ async def _process_pass_callback(client, query):
 
         # Caption with updated UTR instruction and automated verification notice
         caption = (
-            "<b>⚡️ UPI Payment Order Created!</b>\n\n"
+            '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
             "──────────────────────\n"
             f"• <b>Plan:</b>  ₹{p_val} ({count}  Days)\n"
             f"• <b>Amount:</b> ₹{p_val}\n"
             f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
             f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
-            "📲 <b>Instructions:</b>\n"
+            '<emoji id="5807800879553715710">📲</emoji> <b>Instructions:</b>\n' 
             "1. Save this QR code to your gallery (or copy the UPI ID above).\n"
             "2. Open your UPI app (GPay, PhonePe, Paytm, BHIM, etc.).\n"
             "3. Select Scan & Pay option and choose the saved QR from your gallery.\n"
@@ -2281,7 +2340,7 @@ async def _process_pass_callback(client, query):
         dur_name = res["dur_name"]
 
         inv_text = (
-            f"🌐 <b>Crypto Payment Invoice — Unlimited Delivery Pass</b>\n\n"
+            f'<emoji id="5283232570660634549">🌐</emoji> <b>Crypto Payment Invoice — Unlimited Delivery Pass</b>\n\n'
             f"<b>Plan:</b> {dur_name} Unlimited Access\n"
             f"<b>Amount:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
             f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
@@ -2387,21 +2446,35 @@ async def _process_pass_callback(client, query):
         p_label = int(amount) if float(amount).is_integer() else amount
 
         inv_text = (
-            f"🧾 <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n"
+            f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n'
             f"<b>Name:</b> {user_name}\n"
             f"<b>User ID:</b> <code>{user_id}</code>\n"
             f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass\n"
             f"<b>Amount:</b> ₹{amount:.2f}\n"
             f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
-            f"<blockquote>𝑻𝒂𝒑 𝒕𝒉𝒆 𝒃𝒖𝒕𝒕𝒐𝒏 𝒃𝒆𝒍𝒐𝒘 𝒕𝒐 𝒄𝒐𝒎𝒑𝒍𝒆𝒕𝒆 𝒑𝒂𝒚𝒎𝒆𝒏𝒕 𝒗𝒊𝒂 𝑼𝑷𝑰, 𝑮𝒐𝒐𝒈𝒍𝒆 𝑷𝒂𝒚, 𝑷𝒉𝒐𝒏𝒆𝑷𝒆, 𝑷𝒂𝒚𝒕𝒎, 𝑸𝑹, 𝒐𝒓 𝑪𝒂𝒓𝒅. 𝑨𝒇𝒕𝒆𝒓 𝒑𝒂𝒚𝒎𝒆𝒏𝒕, 𝒕𝒂𝒑 𝑽𝒆𝒓𝒊𝒇𝒚 𝑷𝒂𝒚𝒎𝒆𝒏𝒕 𝒕𝒐 𝒂𝒄𝒕𝒊𝒗𝒂𝒕𝒆!</blockquote>"
+            f"<blockquote>Tap the button below to complete payment via UPI, Google Pay, PhonePe, Paytm, QR, or Card. After payment, tap Verify Payment to activate!</blockquote>"
         )
+        inv_api_kb = [
+            [{"text": f"Pay Now ( ₹{p_label} )", "url": checkout_pay_link, "icon_custom_emoji_id": "5807527002374151568"}],
+            [{"text": "🔄 Verify Payment", "callback_data": f"pass#verify_{order_id}_{dur_key}_{amount}"}],
+            [{"text": "❌ Cancel", "callback_data": f"pass#cancel_{order_id}"}],
+            [{"text": "← Back", "callback_data": "pass#method_cashfree"}]
+        ]
         inv_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Pay ₹{p_label} for {dur_verbose.title()}➟", url=checkout_pay_link)],
+            [InlineKeyboardButton(f"Pay Now ( ₹{p_label} )", url=checkout_pay_link)],
             [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
             [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
             [InlineKeyboardButton("← Back", callback_data="pass#method_cashfree")]
         ])
-        await query.message.edit_text(inv_text, reply_markup=inv_kb)
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=query.message.chat.id,
+            text=inv_text,
+            inline_keyboard=inv_api_kb,
+            message_id=query.message.id
+        )
+        if not sent_ok:
+            await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
     elif data.startswith("pass#verify_"):
         parts = data.split("_")
