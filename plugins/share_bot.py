@@ -629,11 +629,10 @@ async def _process_start(client, message):
                         f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
                         f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
                         f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
-                        f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>\n\n'
-                        f'<emoji id="6019568309417023812">🔒</emoji> <b>Unlock Access Via Payment:</b>'
+                        f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
                     )
                     unlock_kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔒 Unlock Access Via Payment", callback_data="pass#unlock_menu")
+                        InlineKeyboardButton('<emoji id="6019568309417023812">🔒</emoji> Unlock Access Via Payment', callback_data="pass#unlock_menu")
                     ]])
                     await message.reply_text(limit_text, reply_markup=unlock_kb)
                     return
@@ -1726,11 +1725,10 @@ async def _process_pass_callback(client, query):
             f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
             f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
             f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
-            f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>\n\n'
-            f'<emoji id="6019568309417023812">🔒</emoji> <b>Unlock Access Via Payment:</b>'
+            f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
         )
         unlock_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔒 Unlock Access Via Payment", callback_data="pass#unlock_menu")
+            InlineKeyboardButton('<emoji id="6019568309417023812">🔒</emoji> Unlock Access Via Payment', callback_data="pass#unlock_menu")
         ]])
         await query.message.edit_text(limit_text, reply_markup=unlock_kb)
 
