@@ -1563,37 +1563,34 @@ async def _handle_share_bot_utr_message(client, message):
     raw_text = message.text.strip()
     if raw_text.lower() in ("cancel", "/cancel", "back", "/back"):
         _pending_utr_users.pop(user_id, None)
-        await message.reply_text("<i>UTR submission cancelled.</i>", quote=True)
+        await message.reply_text("<i>Payment order cancelled.</i>", quote=True)
         return
 
-    import re
-    match = re.search(r'\b(\d{12})\b', raw_text)
-    if not match:
-        clean_digits = re.sub(r'\D', '', raw_text)
-        if len(clean_digits) == 12:
-            utr = clean_digits
-        else:
-            await message.reply_text(
-                "⚠️ <b>Invalid UTR Format</b>\n\n"
-                "Please enter a valid <b>12-digit UTR / Reference number</b> (e.g. <code>423456789012</code>).\n\n"
-                "<i>You can find this in your payment receipt from PhonePe, GPay, Paytm, Slice, etc. Type 'cancel' to cancel.</i>",
-                quote=True
-            )
-            return
-    else:
-        utr = match.group(1)
+    # Strictly accept only 12-digit reference number:
+    clean_digits = raw_text.replace(" ", "").replace("-", "").strip()
+    if not (len(clean_digits) == 12 and clean_digits.isdigit()):
+        await message.reply_text(
+            "⚠️ <b>Invalid Reference Number</b>\n\n"
+            "Please send only the <b>12-digit payment reference / UTR number</b>.\n"
+            "Example: <code>423456789012</code>\n\n"
+            "<i>Note: Only 12-digit numbers are accepted. Type 'cancel' to abort.</i>",
+            quote=True
+        )
+        return
+
+    utr = clean_digits
 
     if await db.is_utr_used(utr):
         await message.reply_text(
-            "❌ <b>UTR Already Redeemed</b>\n\n"
-            f"The UTR <code>{utr}</code> has already been claimed for another pass or order. "
+            "❌ <b>Reference Number Already Used</b>\n\n"
+            f"The reference number <code>{utr}</code> has already been claimed for another pass.\n"
             "Each payment transaction can only be redeemed once.",
             quote=True
         )
         return
 
     sts = await message.reply_text(
-        f"🔄 <i>Verifying UTR <code>{utr}</code> via Automated Gmail IMAP... Please wait.</i>",
+        f"🔄 <i>Verifying Payment Reference <code>{utr}</code> via Automated Gmail IMAP... Please wait.</i>",
         quote=True
     )
 
@@ -1622,10 +1619,10 @@ async def _handle_share_bot_utr_message(client, message):
         success_text = (
             f"🎉 <b>UPI Payment Verified Successfully!</b>\n\n"
             f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
-            f"<b>UTR / RRN:</b> <code>{utr}</code>\n"
-            f"<b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
-            f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-            f"<b>Status:</b> Unlimited Access (No Cooldown)\n\n"
+            f"• <b>UTR / Ref No:</b> <code>{utr}</code>\n"
+            f"• <b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
+            f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
+            f"• <b>Status:</b> 🟢 Unlimited Access (No Cooldown)\n\n"
             f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
         )
         await sts.edit(success_text)
@@ -1647,23 +1644,23 @@ async def _handle_share_bot_utr_message(client, message):
         m_amt = res.get("mismatched_amount")
         await sts.edit(
             f"⚠️ <b>Payment Amount Mismatch</b>\n\n"
-            f"We found the transaction for UTR <code>{utr}</code>, but the received amount is "
+            f"We found the transaction for reference <code>{utr}</code>, but the received amount is "
             f"<b>₹{m_amt:.2f}</b> while the expected plan price is <b>₹{expected_amount:.2f}</b>.\n\n"
             f"<i>Please pay the exact plan amount to activate your pass, or contact support.</i>"
         )
     else:
         retry_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Re-Verify UTR", callback_data=f"pass#upirecheck_{utr}_{dur_key}_{expected_amount}")],
+            [InlineKeyboardButton("🔄 Re-Verify Reference", callback_data=f"pass#upirecheck_{utr}_{dur_key}_{expected_amount}")],
             [InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")]
         ])
-        err_msg = res.get("error", "UTR not found in bank email notifications yet.")
+        err_msg = res.get("error", "Payment reference number not found in bank email notifications yet.")
         await sts.edit(
             f"⏳ <b>Payment Not Detected Yet</b>\n\n"
-            f"<b>UTR:</b> <code>{utr}</code>\n"
-            f"<b>Expected Amount:</b> <code>₹{expected_amount:.2f}</code>\n\n"
+            f"• <b>Reference / UTR:</b> <code>{utr}</code>\n"
+            f"• <b>Expected Amount:</b> <code>₹{expected_amount:.2f}</code>\n\n"
             f"<i>{err_msg}</i>\n\n"
             f"<b>Tip:</b> Bank emails can take 10 to 30 seconds to arrive. "
-            f"Please wait a few seconds and tap <b>'Re-Verify UTR'</b> below!",
+            f"Please wait a few seconds and tap <b>'Re-Verify Reference'</b> below!",
             reply_markup=retry_kb
         )
 
@@ -1671,6 +1668,44 @@ async def _handle_share_bot_utr_message(client, message):
 @Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "about", "support", "updates", "broadcast", "premium", "norestrictions"]), group=10)
 async def _main_bot_utr_interceptor(client, message):
     await _handle_share_bot_utr_message(client, message)
+
+
+def generate_upi_qr_bytes(upi_id: str, amount: float, payee_name: str = "Merchant", order_id: str = ""):
+    """
+    Generates a high-quality QR code image buffer for UPI payment.
+    Falls back to HTTP QR service if local qrcode library encounters any issue.
+    """
+    import io
+    import urllib.parse
+    pn_clean = urllib.parse.quote_plus(payee_name or "Merchant")
+    tn_clean = urllib.parse.quote_plus(order_id or "Delivery Pass")
+    upi_payload = f"upi://pay?pa={upi_id}&pn={pn_clean}&am={amount:.2f}&cu=INR&tn={tn_clean}"
+
+    try:
+        import qrcode
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=2
+        )
+        qr.add_data(upi_payload)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        buf = io.BytesIO()
+        buf.name = "upi_qr.png"
+        img.save(buf, "PNG")
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        logger.warning(f"Local QR generation fallback: {e}")
+        import requests
+        encoded = urllib.parse.quote(upi_payload)
+        resp = requests.get(f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={encoded}", timeout=10)
+        buf = io.BytesIO(resp.content)
+        buf.name = "upi_qr.png"
+        buf.seek(0)
+        return buf
 
 
 def format_plan_button_label(dur_key: str, price) -> str:
@@ -1701,7 +1736,6 @@ async def _process_pass_callback(client, query):
     if data == "pass#unlock_menu":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 50, '15d': 99, '30d': 149})
-        from database import parse_duration_to_seconds, format_duration_verbose
         
         plan_lines = []
         for dur_key, price in prices.items():
@@ -1747,10 +1781,15 @@ async def _process_pass_callback(client, query):
             [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
             [
                 InlineKeyboardButton("🔒 Support", url=support_link),
-                InlineKeyboardButton("← Back", callback_data="pass#back")
+                InlineKeyboardButton("← Back", callback_data="pass#close")
             ]
         ])
-        await query.message.edit_text(methods_text, reply_markup=methods_kb)
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            await client.send_message(chat_id=query.message.chat.id, text=methods_text, reply_markup=methods_kb)
+        else:
+            await query.message.edit_text(methods_text, reply_markup=methods_kb)
 
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
@@ -1769,7 +1808,12 @@ async def _process_pass_callback(client, query):
             "Instant payment with UPI, Cards, NetBanking.\n\n"
             "Select your desired Pass plan:"
         )
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        else:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#method_upi":
         rl_cfg = await db.get_delivery_rate_limit_config()
@@ -1788,7 +1832,12 @@ async def _process_pass_callback(client, query):
             "Instant payment with Paytm, PhonePe, Gpay , BHIM, or any UPI app.\n\n"
             "Select your desired Pass plan:"
         )
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        else:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#method_crypto":
         rl_cfg = await db.get_delivery_rate_limit_config()
@@ -1807,7 +1856,12 @@ async def _process_pass_callback(client, query):
             "Instant payment with USDT, BTC, SOL, TON.\n\n"
             "Select your desired Pass plan:"
         )
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        else:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#my_transactions":
         pass_info = await db.get_user_unlimited_pass(user_id)
@@ -1858,16 +1912,34 @@ async def _process_pass_callback(client, query):
             f"{txns_body}"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")]])
-        await query.message.edit_text(text, reply_markup=kb)
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            await client.send_message(chat_id=query.message.chat.id, text=text, reply_markup=kb)
+        else:
+            await query.message.edit_text(text, reply_markup=kb)
 
     elif data.startswith("pass#upibuy_"):
         parts = data.split("_")
         dur_key = parts[1]
         amount = float(parts[2])
 
-        from database import parse_duration_to_seconds, format_duration_verbose
-        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
-        dur_verbose = format_duration_verbose(dur_sec)
+        dur_str = str(dur_key).lower().strip()
+        if dur_str.endswith('d'):
+            count = dur_str[:-1]
+            unit = "Days"
+        elif dur_str.endswith('h'):
+            count = dur_str[:-1]
+            unit = "Hours"
+        elif dur_str.endswith('m'):
+            count = dur_str[:-1]
+            unit = "Minutes"
+        else:
+            count = dur_str
+            unit = "Days"
+
+        p_val = int(amount) if float(amount).is_integer() else amount
+        order_id = f"UPI_{user_id}_{int(time.time())}"
 
         rl_cfg = await db.get_delivery_rate_limit_config()
         from config import Config
@@ -1885,25 +1957,47 @@ async def _process_pass_callback(client, query):
                 reply_markup=err_kb
             )
 
-        inv_text = (
-            f"🧾 <b>UPI Payment Invoice — Unlimited Delivery Pass</b>\n\n"
-            f"<b>Plan:</b> {dur_verbose.title()} Unlimited Access\n"
-            f"<b>Amount to Pay:</b> <code>₹{amount:.2f}</code>\n\n"
-            f"<b>UPI ID (Tap to Copy):</b>\n"
-            f"<code>{raw_upi}</code>\n\n"
-            f"<b>Payee Name:</b> <code>{payee_name}</code>\n\n"
-            f"<blockquote expandable>ℹ️ <b>HOW TO PAY & ACTIVATE:</b>\n"
-            f"1. Tap the UPI ID above to copy it: <code>{raw_upi}</code>\n"
-            f"2. Pay the exact amount: <b>₹{amount:.2f}</b> via GPay, PhonePe, Paytm, Slice, or BHIM.\n"
-            f"3. After payment, copy the <b>12-digit UTR / Ref No / Transaction ID</b>.\n"
-            f"4. Tap <b>'✍️ Submit 12-Digit UTR'</b> below and send your UTR here for instant automated verification!</blockquote>"
+        # Generate QR code image buffer
+        qr_buf = generate_upi_qr_bytes(raw_upi, amount, payee_name, order_id)
+
+        # Register pending order session for automatic chat message verification
+        _pending_utr_users[user_id] = {
+            'dur_key': dur_key,
+            'amount': amount,
+            'order_id': order_id,
+            'ts': time.time()
+        }
+
+        # Format exact caption as specified by user
+        caption = (
+            "<b>⚡️ UPI Payment Order Created!</b>\n\n"
+            "──────────────────────\n"
+            f"• <b>Plan:</b>  ₹{p_val} ({count}  Days)\n"
+            f"• <b>Amount:</b> ₹{p_val}\n"
+            f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+            "📲 <b>Instructions:</b>\n"
+            "1. Save this QR code to your gallery.\n"
+            "2. Open your UPI app (GPay, PhonePe, Paytm, BHIM, etc.).\n"
+            "3. Select Scan & Pay option and choose the saved QR from your gallery.\n"
+            "4. After Payment please send 12 digit number payment refference number .\n\n"
+            "Payment automatically verify ho jayga with utr verification system."
         )
-        # Note: Do NOT use upi:// url on InlineKeyboardButton as Telegram rejects it with BUTTON_URL_INVALID
-        inv_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✍️ Submit 12-Digit UTR", callback_data=f"pass#upisubmit_{dur_key}_{amount}")],
+
+        photo_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
         ])
-        await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        await client.send_photo(
+            chat_id=query.message.chat.id,
+            photo=qr_buf,
+            caption=caption,
+            reply_markup=photo_kb
+        )
 
     elif data.startswith("pass#upisubmit_"):
         parts = data.split("_")
