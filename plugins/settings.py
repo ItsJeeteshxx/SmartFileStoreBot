@@ -1872,9 +1872,9 @@ async def settings_query(bot, query):
     )
     sent = False
     try:
-        from plugins.share_bot import _share_bot_clients
-        if _share_bot_clients:
-            for b_token, s_client in _share_bot_clients.items():
+        from plugins.share_bot import share_clients
+        if share_clients:
+            for s_client in list(share_clients.values()):
                 try:
                     await s_client.send_message(chat_id=target_uid, text=cust_msg)
                     sent = True
@@ -2033,9 +2033,9 @@ async def settings_query(bot, query):
     )
     sent = False
     try:
-        from plugins.share_bot import _share_bot_clients
-        if _share_bot_clients:
-            for b_token, s_client in _share_bot_clients.items():
+        from plugins.share_bot import share_clients
+        if share_clients:
+            for s_client in list(share_clients.values()):
                 try:
                     await s_client.send_message(chat_id=cust_uid, text=cust_msg)
                     sent = True
