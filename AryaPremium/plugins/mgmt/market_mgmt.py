@@ -4174,20 +4174,52 @@ async def mgmt_sync_all_stories(client, message):
     if await _deny_if_not_owner(client, user_id):
         return
     
+    import time
+    start_time = time.time()
+    last_edit_time = 0
+
     status_msg = await message.reply_text(
-        "<b>🔄 Starting Bulk Story File Indexing...</b>\n\n"
-        "<i>Scanning channel messages for all stories in background. Updates will be shown below.</i>",
+        "<b>🔄 Initializing Bulk Story File Indexing...</b>\n\n"
+        "<i>Scanning channel messages for all stories in background. Updates will be shown live here.</i>",
         parse_mode=enums.ParseMode.HTML
     )
     
     async def on_progress(idx, total, name, valid_count, ok):
-        if idx % 10 == 0 or idx == total or idx == 1:
+        nonlocal last_edit_time
+        curr_time = time.time()
+        # Update every 3 seconds or on first/last
+        if curr_time - last_edit_time >= 3.0 or idx == total or idx == 1:
+            last_edit_time = curr_time
+            elapsed = int(curr_time - start_time)
+            el_m, el_s = divmod(elapsed, 60)
+            
+            # ETA calculation
+            if idx > 0 and total > 0:
+                pct = (idx / total) * 100
+                rate = idx / max(1, elapsed)
+                remaining_items = total - idx
+                eta_seconds = int(remaining_items / rate) if rate > 0 else 0
+                eta_m, eta_s = divmod(eta_seconds, 60)
+                eta_str = f"{eta_m}m {eta_s}s" if eta_m > 0 else f"{eta_s}s"
+            else:
+                pct = 0
+                eta_str = "Calculating..."
+                
+            # Progress bar [████████░░░░]
+            bar_len = 10
+            filled = int(round(bar_len * (pct / 100)))
+            prog_bar = "█" * filled + "░" * (bar_len - filled)
+            
+            status_symbol = "✅" if ok else "⚠️"
             try:
                 await status_msg.edit_text(
-                    f"<b>🔄 Indexing Stories... ({idx}/{total})</b>\n\n"
-                    f"<b>Last Story:</b> {name}\n"
-                    f"<b>Valid Files:</b> {valid_count}\n\n"
-                    f"<i>Please wait while all channels are scanned...</i>",
+                    f"<b>🔄 Bulk Story Indexing in Progress</b>\n\n"
+                    f"<code>[{prog_bar}] {pct:.1f}%</code> ({idx}/{total})\n\n"
+                    f"<b>{status_symbol} Current:</b> {name[:35]}\n"
+                    f"<b>📦 Valid Files:</b> {valid_count}\n\n"
+                    f"⏱️ <b>Elapsed:</b> {el_m}m {el_s}s\n"
+                    f"⏳ <b>Estimated Remaining:</b> {eta_str}\n\n"
+                    f"<i>Please do not restart the bot while indexing is running.</i>",
                     parse_mode=enums.ParseMode.HTML
                 )
             except Exception:
@@ -4197,12 +4229,16 @@ async def mgmt_sync_all_stories(client, message):
     async def _run_bg():
         try:
             res = await scan_and_index_all_stories(client, db=db, progress_cb=on_progress)
+            total_elapsed = int(time.time() - start_time)
+            tot_m, tot_s = divmod(total_elapsed, 60)
+            time_taken = f"{tot_m}m {tot_s}s" if tot_m > 0 else f"{tot_s}s"
             await status_msg.edit_text(
                 f"<b>✅ Bulk Story File Indexing Complete!</b>\n\n"
                 f"• Total Stories: <b>{res['total']}</b>\n"
                 f"• Successfully Synced: <b>{res['success']}</b>\n"
-                f"• Failed: <b>{res['failed']}</b>\n\n"
-                f"<i>All dead file IDs have been removed from chunk selection and file counts are updated!</i>",
+                f"• Failed: <b>{res['failed']}</b>\n"
+                f"• Time Taken: <b>{time_taken}</b>\n\n"
+                f"<i>All dead file IDs have been removed from chunk selection and file counts are 100% accurate!</i>",
                 parse_mode=enums.ParseMode.HTML
             )
         except Exception as e:
