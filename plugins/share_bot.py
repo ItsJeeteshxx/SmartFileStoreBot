@@ -628,13 +628,25 @@ async def _process_start(client, message):
                     except Exception as _log_e:
                         logger.warning(f"Failed to schedule rate limit log: {_log_e}")
 
-                    limit_text = (
-                        f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
-                        f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
-                        f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
-                        f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
-                        f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
-                    )
+                    user_lang = await db.get_language(user_id)
+                    if user_lang == 'hi':
+                        limit_text = (
+                            f'<emoji id="6215133834149629990">⏳</emoji> <b>रेट लिमिट पूरी हो गई है</b>\n\n'
+                            f'आपने पिछले <b>{win_verbose}</b> में <b>{len(hits)} / {max_limit} लिंक्स</b> एक्सेस कर लिए हैं। <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                            f'सभी यूजर्स के लिए लिमिट <b>{max_limit} लिंक्स प्रति {win_verbose}</b> निर्धारित है।\n\n'
+                            f'<emoji id="6217487596486922033">⏰</emoji> <b>कूलडाउन रीसेट होने में समय:</b> <code>{rem_time_str}</code>\n\n'
+                            f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड एक्सेस अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
+                        )
+                        btn_txt = "एक्सेस अनलॉक करें (Payment)"
+                    else:
+                        limit_text = (
+                            f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
+                            f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                            f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
+                            f'<b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
+                            f'Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji>'
+                        )
+                        btn_txt = "Unlock Access Via Payment"
                     limit_api_kb = [
                         [
                             {
@@ -1728,7 +1740,7 @@ async def _poll_upi_payment(
                     f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
                     f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
                     f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
-                    f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
+                    f'<blockquote><emoji id="5850176641803753392">🎉</emoji> ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</blockquote>'
                 )
                 success_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
@@ -1905,7 +1917,7 @@ async def _handle_share_bot_utr_message(client, message):
             f"• <b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
             f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
             f'• <b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
-            f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+            f"You can now access any batch and story links without cooldown. Enjoy!"
         )
         await sts.edit(success_text)
 
@@ -1928,7 +1940,7 @@ async def _handle_share_bot_utr_message(client, message):
             f"⚠️ <b>Payment Amount Mismatch</b>\n\n"
             f"We found the transaction for reference <code>{utr}</code>, but the received amount is "
             f"<b>₹{m_amt:.2f}</b> while the expected plan price is <b>₹{expected_amount:.2f}</b>.\n\n"
-            f"<i>Please pay the exact plan amount to activate your pass, or contact support.</i>"
+            f"Please pay the exact plan amount to activate your pass, or contact support."
         )
     else:
         retry_kb = InlineKeyboardMarkup([
@@ -2184,8 +2196,8 @@ async def schedule_pass_payment_reminder(
                 f"• <b>Order ID:</b> <code>{order_id}</code>\n"
                 f"• <b>Amount Due:</b> <code>{amount_str}</code>\n"
                 f"• <b>Payment Method:</b> {gateway_name}\n\n"
-                f'<blockquote><emoji id="5773677501825945508">⚡️</emoji> <i>Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</i></blockquote>\n\n'
-                f"<i>If you have already paid or need assistance, please feel free to contact our support team.</i>"
+                f'<blockquote><emoji id="5773677501825945508">⚡️</emoji> Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</blockquote>\n\n'
+                f"If you have already paid or need assistance, please feel free to contact our support team."
             )
 
             rem_buttons = []
@@ -2345,21 +2357,22 @@ async def _process_pass_callback(client, query):
 
     if data == "pass#lang_menu":
         user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
         lang_text = (
             '<emoji id="6030768072296502910">🌐</emoji> <b>Select Language / भाषा चुनें</b>\n'
             "──────────────────────\n\n"
-            "<i>Please choose your preferred language for Delivery Bot & Pass Subscription:\n"
-            "डिलीवरी बॉट और पास सब्सक्रिप्शन के लिए अपनी पसंदीदा भाषा चुनें:</i>\n\n"
-            f"<b>Current Language:</b> {'🇮🇳 हिन्दी (Hindi)' if user_lang == 'hi' else '🇬🇧 English'}"
+            "Please choose your preferred language for Delivery Bot & Pass Subscription:\n"
+            "डिलीवरी बॉट और पास सब्सक्रिप्शन के लिए अपनी पसंदीदा भाषा चुनें:\n\n"
+            f"<b>Current Language:</b> {'🇮🇳 हिन्दी (Hindi)' if is_hi else '🇬🇧 English'}"
         )
         lang_buttons = [
-            [InlineKeyboardButton("🇮🇳 हिन्दी (Hindi)" + ("  ✅" if user_lang == 'hi' else ""), callback_data="pass#setlang_hi")],
-            [InlineKeyboardButton("🇬🇧 English" + ("  ✅" if user_lang != 'hi' else ""), callback_data="pass#setlang_en")],
+            [InlineKeyboardButton("🇮🇳 हिन्दी (Hindi)" + ("  ✅" if is_hi else ""), callback_data="pass#setlang_hi")],
+            [InlineKeyboardButton("🇬🇧 English" + ("  ✅" if not is_hi else ""), callback_data="pass#setlang_en")],
             [InlineKeyboardButton("← Back / वापस", callback_data="pass#unlock_menu")]
         ]
         lang_api_kb = [
-            [{"text": "🇮🇳 हिन्दी (Hindi)" + ("  ✅" if user_lang == 'hi' else ""), "callback_data": "pass#setlang_hi"}],
-            [{"text": "🇬🇧 English" + ("  ✅" if user_lang != 'hi' else ""), "callback_data": "pass#setlang_en"}],
+            [{"text": "हिन्दी (Hindi)" + ("  ✅" if is_hi else ""), "callback_data": "pass#setlang_hi", "icon_custom_emoji_id": "5291933173674957761"}],
+            [{"text": "English" + ("  ✅" if not is_hi else ""), "callback_data": "pass#setlang_en", "icon_custom_emoji_id": "5293993521026453119"}],
             [{"text": "← Back / वापस", "callback_data": "pass#unlock_menu"}]
         ]
         if getattr(query.message, "photo", None):
@@ -2394,7 +2407,8 @@ async def _process_pass_callback(client, query):
         pass_support_link = "https://t.me/AryaHelpTG"
 
         if is_hi:
-            title_header = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स V2 पेज</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
             benefits_sec = (
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>पास के मुख्य फायदे:</b>\n'
                 '• <emoji id="5774077015388852135">🚫</emoji> <b>कोई डोनेशन मैसेज नहीं:</b> बिना किसी डोनेशन मैसेज के 100% क्लीन एक्सपीरियंस।\n'
@@ -2405,7 +2419,8 @@ async def _process_pass_callback(client, query):
             lbl_support = "सहायता (Support)"
             lbl_back = "← वापस"
         else:
-            title_header = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans V2 Page</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
             benefits_sec = (
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
                 '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
@@ -2418,11 +2433,12 @@ async def _process_pass_callback(client, query):
 
         if uiver == 'v2':
             # V2 (Direct Cashfree Flow):
-            # Pass Benefits ONLY + Subtitle (Instant Payment with UPI...) + Direct Plan Buttons
+            # Title V2 + Pass Benefits ONLY + Plan Selection Prompt + Direct Plan Buttons (No italics)
+            v2_prompt = '<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा पास प्लान चुनें:</b>' if is_hi else '<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass plan below:</b>'
             methods_text = (
-                f"{title_header}"
+                f"{title_header_v2}"
                 f"{benefits_sec}"
-                '<emoji id="6019224342666157570">💳</emoji> <b>Instant Payment with UPI ( Paytm , Bhim , Phone Pe and Gpay  ) , Cards ( Debit card, credit card ) and NetBanking.</b>'
+                f"{v2_prompt}"
             )
 
             plan_buttons = []
@@ -2486,7 +2502,7 @@ async def _process_pass_callback(client, query):
             avail_title = '<emoji id="6007983438294949171">💎</emoji> <b>उपलब्ध प्लान्स:</b>' if is_hi else '<emoji id="6007983438294949171">💎</emoji> <b>Available Plans:</b>'
 
             methods_text = (
-                f"{title_header}"
+                f"{title_header_v1}"
                 f"{benefits_sec}"
                 f"{avail_title}\n"
                 f"{plans_str}\n\n"
@@ -2743,7 +2759,7 @@ async def _process_pass_callback(client, query):
                 )
             txns_body = "\n\n".join(txn_lines)
         else:
-            txns_body = "<i>No previous transactions found on your account.</i>"
+            txns_body = "No previous transactions found on your account."
 
         text = (
             '<emoji id="6021487472603568286">📜</emoji> <b>My Transactions & Pass Status</b>\n'
@@ -2875,7 +2891,7 @@ async def _process_pass_callback(client, query):
             f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
             "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds of payment.\n\n"
             '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 5 Minutes)\n'
-            "<i>Your unlimited access pass will activate automatically as soon as payment is detected!</i>"
+            "Your unlimited access pass will activate automatically as soon as payment is detected!"
         )
 
         photo_kb = InlineKeyboardMarkup([
@@ -3005,7 +3021,7 @@ async def _process_pass_callback(client, query):
                 f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
                 f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
                 f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
-                f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
+                f'<blockquote><emoji id="5850176641803753392">🎉</emoji> ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</blockquote>'
             )
             success_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
@@ -3099,7 +3115,7 @@ async def _process_pass_callback(client, query):
                 f"<b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
                 f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
-                f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+                f"You can now access any batch and story links without cooldown. Enjoy!"
             )
             await query.message.edit_text(success_text)
 
@@ -3121,7 +3137,7 @@ async def _process_pass_callback(client, query):
             await query.message.edit_text(
                 f"⚠️ <b>Payment Amount Mismatch</b>\n\n"
                 f"Received amount is <b>₹{m_amt:.2f}</b>, but expected is <b>₹{expected_amount:.2f}</b>.\n\n"
-                f"<i>Please pay the exact plan amount to activate your pass, or contact support.</i>"
+                f"Please pay the exact plan amount to activate your pass, or contact support."
             )
         else:
             await query.answer("⏳ Still not detected. Please wait 10-15 seconds and tap again.", show_alert=True)
@@ -3223,7 +3239,7 @@ async def _process_pass_callback(client, query):
                 f"<b>Track ID:</b> <code>{track_id}</code>\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
                 f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
-                f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+                f"You can now access any batch and story links without cooldown. Enjoy!"
             )
             await query.message.edit_text(success_text)
 
@@ -3278,27 +3294,49 @@ async def _process_pass_callback(client, query):
         order_id = res["order_id"]
         checkout_pay_link = res["checkout_pay_link"]
         p_label = int(amount) if float(amount).is_integer() else amount
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
 
-        inv_text = (
-            f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n'
-            f"<b>Name:</b> {user_name}\n"
-            f"<b>User ID:</b> <code>{user_id}</code>\n"
-            f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass\n"
-            f"<b>Amount:</b> ₹{amount:.2f}\n"
-            f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
-            f"<blockquote>Tap the button below to complete payment via UPI, Google Pay, PhonePe, Paytm, QR, or Card. After payment, tap Verify Payment to activate!</blockquote>"
-        )
+        if is_hi:
+            inv_text = (
+                f'<emoji id="5920332557466997677">⚡</emoji> <b>पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n\n'
+                f"<b>नाम:</b> {user_name}\n"
+                f"<b>यूजर आईडी:</b> <code>{user_id}</code>\n"
+                f"<b>प्लान:</b> {dur_verbose.title()} अनलिमिटेड डिलीवरी पास\n"
+                f"<b>राशि:</b> ₹{amount:.2f}\n"
+                f"<b>ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
+                f"<blockquote>UPI ( Paytm GPay, PhonePe ), Cards ( Visa Rupay and MasterCard ) या NetBanking से पेमेंट पूरा करने के लिए नीचे दिए गए <b>Pay Now</b> बटन पर टैप करें। पेमेंट करने के बाद, एक्टिवेट करने के लिए <b>Verify Payment</b> पर टैप करें!</blockquote>"
+            )
+            btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
+            btn_verify_lbl = "Verify Payment"
+            btn_cancel_lbl = "Cancel your order"
+            btn_back_lbl = "← Back"
+        else:
+            inv_text = (
+                f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n'
+                f"<b>Name:</b> {user_name}\n"
+                f"<b>User ID:</b> <code>{user_id}</code>\n"
+                f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass\n"
+                f"<b>Amount:</b> ₹{amount:.2f}\n"
+                f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
+                f"<blockquote>Tap the button <b>Pay Now</b> below to complete payment via UPI ( Paytm GPay, PhonePe ), Cards ( Visa Rupay and MasterCard ) , or NetBanking. After payment, tap <b>Verify Payment</b> to activate!</blockquote>"
+            )
+            btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
+            btn_verify_lbl = "Verify Payment"
+            btn_cancel_lbl = "Cancel your order"
+            btn_back_lbl = "← Back"
+
         inv_api_kb = [
-            [{"text": f"Pay Now ( ₹{p_label} )", "url": checkout_pay_link, "icon_custom_emoji_id": "5807527002374151568"}],
-            [{"text": "🔄 Verify Payment", "callback_data": f"pass#verify_{order_id}_{dur_key}_{amount}"}],
-            [{"text": "❌ Cancel", "callback_data": f"pass#cancel_{order_id}"}],
-            [{"text": "← Back", "callback_data": "pass#method_cashfree"}]
+            [{"text": btn_pay_lbl, "url": checkout_pay_link, "icon_custom_emoji_id": "5807527002374151568"}],
+            [{"text": btn_verify_lbl, "callback_data": f"pass#verify_{order_id}_{dur_key}_{amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_cancel_lbl, "callback_data": f"pass#cancel_{order_id}", "icon_custom_emoji_id": "5774077015388852135"}],
+            [{"text": btn_back_lbl, "callback_data": "pass#unlock_menu"}]
         ]
         inv_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Pay Now ( ₹{p_label} )", url=checkout_pay_link)],
-            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
-            [InlineKeyboardButton("← Back", callback_data="pass#method_cashfree")]
+            [InlineKeyboardButton(btn_pay_lbl, url=checkout_pay_link)],
+            [InlineKeyboardButton(btn_verify_lbl, callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
+            [InlineKeyboardButton(btn_cancel_lbl, callback_data=f"pass#cancel_{order_id}")],
+            [InlineKeyboardButton(btn_back_lbl, callback_data="pass#unlock_menu")]
         ])
         sent_ok = await send_or_edit_with_custom_icons(
             client=client,
@@ -3346,7 +3384,7 @@ async def _process_pass_callback(client, query):
                 f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
                 f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
-                f"<i>You can now access any batch and story links without cooldown. Enjoy!</i>"
+                f"You can now access any batch and story links without cooldown. Enjoy!"
             )
             await query.message.edit_text(success_text)
 
