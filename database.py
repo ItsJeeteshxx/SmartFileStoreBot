@@ -197,6 +197,7 @@ class Database:
         self._bot_cfg_cache = {}     # {bot_id: (cfg_dict, expiry)}
         self._share_cfg_cache = None  # (cfg_dict, expiry)
         self._user_cache = {}        # {user_id: (user_doc, expiry)}
+        self._rl_cfg_cache = None    # (cfg_dict, expiry)
 
         
     async def set_share_bot_token(self, token: str):
@@ -1642,7 +1643,14 @@ class Database:
 
     # ── Delivery Rate Limit & Pass Methods ────────────────────────────────────
     async def get_delivery_rate_limit_config(self) -> dict:
-        """Returns delivery rate limit and pass config."""
+        """Returns delivery rate limit and pass config (cached for 15s)."""
+        import time as _t
+        now = _t.time()
+        if hasattr(self, '_rl_cfg_cache') and self._rl_cfg_cache is not None:
+            cached_val, expiry = self._rl_cfg_cache
+            if now < expiry:
+                return dict(cached_val)
+
         doc = await self.stats.find_one({'_id': 'delivery_rate_limit_config'})
         defaults = {
             'enabled': True,
@@ -1681,6 +1689,8 @@ class Database:
             res['window_seconds'] = int(float(doc['window_hours']) * 3600)
         elif 'window_seconds' in doc:
             res['window_hours'] = round(float(doc['window_seconds']) / 3600.0, 2)
+        if hasattr(self, '_rl_cfg_cache'):
+            self._rl_cfg_cache = (dict(res), now + 15)  # Cache for 15s
         return res
 
     async def set_delivery_rate_limit_config(self, **kwargs) -> None:
@@ -1700,6 +1710,8 @@ class Database:
         elif 'window_hours' in filtered and 'window_seconds' not in filtered:
             filtered['window_seconds'] = int(float(filtered['window_hours']) * 3600)
             
+        if hasattr(self, '_rl_cfg_cache'):
+            self._rl_cfg_cache = None
         await self.stats.update_one(
             {'_id': 'delivery_rate_limit_config'},
             {'$set': filtered},

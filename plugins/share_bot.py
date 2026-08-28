@@ -1,4 +1,18 @@
 _share_bot_token_cache = {}
+_shared_bot_api_session = None
+
+def _get_shared_bot_api_session():
+    global _shared_bot_api_session
+    import aiohttp
+    if _shared_bot_api_session is None or _shared_bot_api_session.closed:
+        connector = aiohttp.TCPConnector(
+            limit=100,
+            ttl_dns_cache=300,
+            keepalive_timeout=60,
+            enable_cleanup_closed=True
+        )
+        _shared_bot_api_session = aiohttp.ClientSession(connector=connector)
+    return _shared_bot_api_session
 """
 Share Bot — Delivery Agent
 ==========================
@@ -533,29 +547,13 @@ async def _fsub_record_jr(client, request):
 async def _process_start(client, message):
     """Handle /start [uuid] deep-link — deliver files to user."""
     user_id = message.from_user.id
-    
-    # Strict ban check double-guard to prevent any delivery bot bypasses
-    try:
-        ban_status = await db.get_ban_status(user_id)
-        if ban_status.get('is_banned'):
-            reason = str(ban_status.get('reason', '')).lower()
-            if 'rapid' in reason or 'strike' in reason:
-                await db.unban_user(user_id)
-                ban_status = {'is_banned': False}
-            else:
-                logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
-                return
-    except Exception:
-        pass
-        
     args = message.command
     bot_id = str(client.me.id) if client.me else None
 
-    # Track user for stats and broadcast; detect first-ever start for new-user log in background
+    # Non-blocking background user tracking
     async def _track_user_background():
         try:
             _was_new_user = await db.add_share_bot_seen_user(bot_id, user_id)
-            # Also record user usage stats
             await db.add_share_bot_user(bot_id, user_id)
             if _was_new_user:
                 import plugins.arya_logger as _log
@@ -567,8 +565,16 @@ async def _process_start(client, message):
 
     asyncio.create_task(_track_user_background())
 
-    # Plain /start — show welcome
+    # Plain /start — instant welcome screen
     if len(args) < 2:
+        # Check ban status concurrently
+        ban_status = await db.get_ban_status(user_id)
+        if ban_status.get('is_banned'):
+            reason = str(ban_status.get('reason', '')).lower()
+            if 'rapid' in reason or 'strike' in reason:
+                await db.unban_user(user_id)
+            else:
+                return
         await _send_welcome(client, message, bot_id)
         return
 
@@ -579,8 +585,34 @@ async def _process_start(client, message):
         await _send_help(client, message, bot_id)
         return
 
-    # 1. Fetch link record from DB
-    link_data = await db.get_share_link(uuid_str)
+    # ── High-Speed Parallel Pre-Flight Gather (Single Round-Trip) ───
+    from plugins.banned import _is_any_owner
+    (
+        ban_status,
+        link_data,
+        is_owner,
+        is_wl,
+        pass_data,
+        rl_cfg,
+        protect_flag
+    ) = await asyncio.gather(
+        db.get_ban_status(user_id),
+        db.get_share_link(uuid_str),
+        _is_any_owner(user_id),
+        db.is_whitelisted(user_id),
+        db.get_user_unlimited_pass(user_id),
+        db.get_delivery_rate_limit_config(),
+        db.get_share_protect_global()
+    )
+
+    if ban_status.get('is_banned'):
+        reason = str(ban_status.get('reason', '')).lower()
+        if 'rapid' in reason or 'strike' in reason:
+            await db.unban_user(user_id)
+        else:
+            logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
+            return
+
     if not link_data:
         await message.reply_text(
             "<b>‣  Link Expired or Invalid</b>\n\n"
@@ -590,21 +622,13 @@ async def _process_start(client, message):
 
     msg_ids     = link_data.get('message_ids', [])
     source_chat = link_data.get('source_chat')
-    protect_flag = await db.get_share_protect_global()
 
     if not msg_ids or not source_chat:
         await message.reply_text("<b>‣  Database Error:</b> Missing file references.")
         return
 
-    # ── Delivery Rate Limit & Cooldown Check (Concurrent Fetch for speed) ───
-    from plugins.banned import _is_any_owner
-    is_owner = await _is_any_owner(user_id)
+    # ── Delivery Rate Limit & Cooldown Check ───
     if not is_owner:
-        is_wl, pass_data, rl_cfg = await asyncio.gather(
-            db.is_whitelisted(user_id),
-            db.get_user_unlimited_pass(user_id),
-            db.get_delivery_rate_limit_config()
-        )
         if not is_wl and not pass_data.get('active', False):
             if rl_cfg.get('enabled', True):
                 import time as _t
@@ -1124,25 +1148,21 @@ async def _process_start(client, message):
         logger.warning(f"[ThankYou] send failed: {e}")
 
 async def _send_welcome(client, message, bot_id: str = None):
-    """Send the welcome message + Help/About buttons."""
+    """Send the welcome message + Help/About buttons (sub-second response)."""
     user = message.from_user
     bot_name = client.me.first_name if client.me else "Delivery Bot"
 
-    # Fetch DB info concurrently to save time
-    custom_wel_task = asyncio.create_task(db.get_share_bot_text(bot_id, "welcome_msg") if bot_id else asyncio.sleep(0))
-    global_wel_task = asyncio.create_task(db.get_share_text("welcome_msg", ""))
-    about_task = asyncio.create_task(db.get_share_bot_about(bot_id) if bot_id else asyncio.sleep(0))
-    
-    custom_wel = await custom_wel_task
-    if not custom_wel:
-        global_wel = await global_wel_task
-        custom_wel = global_wel
-
-    user_lang = await db.get_language(user.id)
+    # Concurrently gather all welcome info in parallel
+    custom_wel, global_wel, bot_about, user_lang = await asyncio.gather(
+        db.get_share_bot_text(bot_id, "welcome_msg") if bot_id else asyncio.sleep(0, result=""),
+        db.get_share_text("welcome_msg", ""),
+        db.get_share_bot_about(bot_id) if bot_id else asyncio.sleep(0, result={}),
+        db.get_language(user.id)
+    )
+    custom_wel = custom_wel or global_wel
     is_hi = bool(user_lang == 'hi')
     txt = _get_welcome_text(user, bot_name, custom_wel, lang=user_lang)
-
-    bot_about = await about_task or {}
+    bot_about = bot_about or {}
     welcome_img = random.choice(bot_about.get('menu_image_ids', [])) if bot_about and bot_about.get('menu_image_ids') else None
 
     lbl_prem = "Arya Premium" if not is_hi else "आर्या प्रीमियम"
@@ -3141,12 +3161,12 @@ async def send_or_edit_with_custom_icons(
             form.add_field("parse_mode", parse_mode)
             form.add_field("reply_markup", json.dumps({"inline_keyboard": inline_keyboard}))
             form.add_field("photo", photo_bytes, filename="qr.png", content_type="image/png")
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url + "sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                    data = await resp.json()
-                    if data.get("ok"):
-                        return data.get("result", True)
-                    logger.warning(f"Bot API sendPhoto bytes returned error: {data}")
+            session = _get_shared_bot_api_session()
+            async with session.post(url + "sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return data.get("result", True)
+                logger.warning(f"Bot API sendPhoto bytes returned error: {data}")
         except Exception as e:
             logger.warning(f"Bot API sendPhoto bytes exception: {e}")
         return False
@@ -3184,12 +3204,12 @@ async def send_or_edit_with_custom_icons(
         payload["text"] = api_text
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    return True
-                logger.warning(f"Bot API {method} returned error: {data}")
+        session = _get_shared_bot_api_session()
+        async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+            data = await resp.json()
+            if data.get("ok"):
+                return True
+            logger.warning(f"Bot API {method} returned error: {data}")
     except Exception as e:
         logger.warning(f"Bot API {method} exception: {e}")
 
