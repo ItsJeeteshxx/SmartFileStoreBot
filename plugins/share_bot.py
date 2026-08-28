@@ -2044,29 +2044,48 @@ def generate_dynamic_upi_amount(base_amount: float) -> float:
     return max(1.0, round(float(base_amount) + (random.choice(all_offsets) / 100.0), 2))
 
 
-def format_plan_button_label(dur_key: str, price) -> str:
-    """Returns clean label: '💰 1 Days (₹15)' without extra unicode decorations."""
+def format_plan_button_label(dur_key: str, price, lang: str = 'en') -> str:
+    """Returns clean label: '1 Day - ₹15' or '1 दिन - ₹15'."""
     dur_str = str(dur_key).lower().strip()
-    if dur_str.endswith('mo'):
-        num = dur_str[:-2]
-        unit = "Month" if num == "1" else "Months"
-    elif dur_str.endswith('month') or dur_str.endswith('months'):
-        num = dur_str.replace('months', '').replace('month', '').strip()
-        unit = "Month" if num == "1" else "Months"
-    elif dur_str.endswith('d'):
-        num = dur_str[:-1]
-        unit = "Day" if num == "1" else "Days"
-    elif dur_str.endswith('h'):
-        num = dur_str[:-1]
-        unit = "Hour" if num == "1" else "Hours"
-    elif dur_str.endswith('m'):
-        num = dur_str[:-1]
-        unit = "Minute" if num == "1" else "Minutes"
-    else:
-        num = dur_str
-        unit = "Days"
     p_val = int(price) if float(price).is_integer() else price
-    return f"{num} {unit} (₹{p_val})"
+    if lang == 'hi':
+        if dur_str.endswith('mo'):
+            num = dur_str[:-2]
+            return f"{num} {'महीना' if num == '1' else 'महीने'} - ₹{p_val}"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            num = dur_str.replace('months', '').replace('month', '').strip()
+            return f"{num} {'महीना' if num == '1' else 'महीने'} - ₹{p_val}"
+        elif dur_str.endswith('d'):
+            num = dur_str[:-1]
+            return f"{num} {'दिन' if num == '1' else 'दिन'} - ₹{p_val}"
+        elif dur_str.endswith('h'):
+            num = dur_str[:-1]
+            return f"{num} घंटे - ₹{p_val}"
+        elif dur_str.endswith('m'):
+            num = dur_str[:-1]
+            return f"{num} मिनट - ₹{p_val}"
+        elif dur_str.endswith('y') or dur_str.endswith('yr') or dur_str == '365d':
+            return f"1 साल - ₹{p_val}"
+        else:
+            return f"{dur_str} - ₹{p_val}"
+    else:
+        if dur_str.endswith('mo'):
+            num = dur_str[:-2]
+            return f"{num} {'Month' if num == '1' else 'Months'} - ₹{p_val}"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            num = dur_str.replace('months', '').replace('month', '').strip()
+            return f"{num} {'Month' if num == '1' else 'Months'} - ₹{p_val}"
+        elif dur_str.endswith('d'):
+            num = dur_str[:-1]
+            return f"{num} {'Day' if num == '1' else 'Days'} - ₹{p_val}"
+        elif dur_str.endswith('h'):
+            num = dur_str[:-1]
+            return f"{num} Hours - ₹{p_val}"
+        elif dur_str.endswith('m'):
+            num = dur_str[:-1]
+            return f"{num} Minutes - ₹{p_val}"
+        else:
+            return f"{dur_str.title()} - ₹{p_val}"
 
 
 PLAN_CUSTOM_EMOJIS = [
@@ -2314,79 +2333,197 @@ async def _process_pass_callback(client, query):
     if not data.startswith("pass#upibuy_") and not data.startswith("pass#upirecheck_"):
         _pending_utr_users.pop(user_id, None)
 
-    if data == "pass#unlock_menu":
+    if data in ("pass#setlang_hi", "pass#setlang_en"):
+        new_lang = "hi" if data == "pass#setlang_hi" else "en"
+        await db.set_language(user_id, new_lang)
+        alert_msg = "✅ भाषा बदलकर हिंदी कर दी गई है!" if new_lang == "hi" else "✅ Language switched to English!"
+        try:
+            await query.answer(alert_msg, show_alert=True)
+        except Exception:
+            pass
+        data = "pass#unlock_menu"
+
+    if data == "pass#lang_menu":
+        user_lang = await db.get_language(user_id)
+        lang_text = (
+            '<emoji id="6030768072296502910">🌐</emoji> <b>Select Language / भाषा चुनें</b>\n'
+            "──────────────────────\n\n"
+            "<i>Please choose your preferred language for Delivery Bot & Pass Subscription:\n"
+            "डिलीवरी बॉट और पास सब्सक्रिप्शन के लिए अपनी पसंदीदा भाषा चुनें:</i>\n\n"
+            f"<b>Current Language:</b> {'🇮🇳 हिन्दी (Hindi)' if user_lang == 'hi' else '🇬🇧 English'}"
+        )
+        lang_buttons = [
+            [InlineKeyboardButton("🇮🇳 हिन्दी (Hindi)" + ("  ✅" if user_lang == 'hi' else ""), callback_data="pass#setlang_hi")],
+            [InlineKeyboardButton("🇬🇧 English" + ("  ✅" if user_lang != 'hi' else ""), callback_data="pass#setlang_en")],
+            [InlineKeyboardButton("← Back / वापस", callback_data="pass#unlock_menu")]
+        ]
+        lang_api_kb = [
+            [{"text": "🇮🇳 हिन्दी (Hindi)" + ("  ✅" if user_lang == 'hi' else ""), "callback_data": "pass#setlang_hi"}],
+            [{"text": "🇬🇧 English" + ("  ✅" if user_lang != 'hi' else ""), "callback_data": "pass#setlang_en"}],
+            [{"text": "← Back / वापस", "callback_data": "pass#unlock_menu"}]
+        ]
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=lang_text,
+                inline_keyboard=lang_api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=lang_text, reply_markup=InlineKeyboardMarkup(lang_buttons))
+        else:
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=lang_text,
+                inline_keyboard=lang_api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(lang_text, reply_markup=InlineKeyboardMarkup(lang_buttons))
+
+    elif data == "pass#unlock_menu":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
-        
-        plan_lines = []
-        for idx, (dur_key, price) in enumerate(prices.items()):
-            dur_str = str(dur_key).lower().strip()
-            if dur_str.endswith('mo'):
-                num = dur_str[:-2]
-                unit = "Month" if num == "1" else "Months"
-            elif dur_str.endswith('month') or dur_str.endswith('months'):
-                num = dur_str.replace('months', '').replace('month', '').strip()
-                unit = "Month" if num == "1" else "Months"
-            elif dur_str.endswith('d'):
-                num = dur_str[:-1]
-                unit = "Day" if num == "1" else "Days"
-            elif dur_str.endswith('h'):
-                num = dur_str[:-1]
-                unit = "Hours"
-            elif dur_str.endswith('m'):
-                num = dur_str[:-1]
-                unit = "Minutes"
-            else:
-                num = dur_str
-                unit = "Days"
-            p_val = int(price) if float(price).is_integer() else price
-            usd_val = max(0.50, round(float(price) / 92.0, 2))
-            savings_tag = calculate_plan_savings(dur_key, price, prices)
-            plan_lines.append(f'→   {num} {unit}: ₹{p_val} | ${usd_val:.2f}{savings_tag}')
-
-        plans_str = "\n".join(plan_lines)
-
-        methods_text = (
-            '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n'
-            "──────────────────────\n\n"
-            '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
-            '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
-            '• <emoji id="5805331990618053402">⚡️</emoji> <b>No Access Limits:</b> Unlimited link access without cooldown.\n\n'
-            '<emoji id="6007983438294949171">💎</emoji> <b>Available Plans:</b>\n'
-            f"{plans_str}\n\n"
-            '<emoji id="6019224342666157570">💳</emoji> <b>Select your preferred payment method below:</b>'
-        )
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
 
         pass_support_link = "https://t.me/AryaHelpTG"
 
-        rl_cfg = await db.get_delivery_rate_limit_config()
-        oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
+        if is_hi:
+            title_header = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            benefits_sec = (
+                '<emoji id="5881806211195605908">⭐️</emoji> <b>पास के मुख्य फायदे:</b>\n'
+                '• <emoji id="5774077015388852135">🚫</emoji> <b>कोई डोनेशन मैसेज नहीं:</b> बिना किसी डोनेशन मैसेज के 100% क्लीन एक्सपीरियंस।\n'
+                '• <emoji id="5805331990618053402">⚡️</emoji> <b>कोई एक्सेस लिमिट नहीं:</b> बिना किसी कूलडाउन के अनलिमिटेड फाइल्स डाउनलोड करें।\n\n'
+            )
+            lbl_txns = "📜 मेरे ट्रांसक्शन्स"
+            lbl_lang = "Language / भाषा"
+            lbl_support = "सहायता (Support)"
+            lbl_back = "← वापस"
+        else:
+            title_header = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            benefits_sec = (
+                '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
+                '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
+                '• <emoji id="5805331990618053402">⚡️</emoji> <b>No Access Limits:</b> Unlimited link access without cooldown.\n\n'
+            )
+            lbl_txns = "📜 My Transactions"
+            lbl_lang = "Language"
+            lbl_support = "Support"
+            lbl_back = "← Back"
 
-        methods_buttons = [
-            [InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")],
-            [InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")]
-        ]
-        if oxapay_enabled:
-            methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")])
+        if uiver == 'v2':
+            # V2 (Direct Cashfree Flow):
+            # Pass Benefits ONLY + Subtitle (Instant Payment with UPI...) + Direct Plan Buttons
+            methods_text = (
+                f"{title_header}"
+                f"{benefits_sec}"
+                '<emoji id="6019224342666157570">💳</emoji> <b>Instant Payment with UPI ( Paytm , Bhim , Phone Pe and Gpay  ) , Cards ( Debit card, credit card ) and NetBanking.</b>'
+            )
 
-        methods_buttons.append([InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")])
-        methods_buttons.append([
-            InlineKeyboardButton("🔒 Support", url=pass_support_link),
-            InlineKeyboardButton("← Back", callback_data="pass#close")
-        ])
+            plan_buttons = []
+            plan_api_kb = []
+            for idx, (dur_key, price) in enumerate(prices.items()):
+                p_val = int(price) if float(price).is_integer() else price
+                label = format_plan_button_label(dur_key, p_val, lang=user_lang)
+                emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+                cb = f"pass#cfbuy_{dur_key}_{p_val}"
+                plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+                plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
+
+            methods_buttons = list(plan_buttons)
+            methods_buttons.append([InlineKeyboardButton(lbl_txns, callback_data="pass#my_transactions")])
+            methods_buttons.append([InlineKeyboardButton(f"🌐 {lbl_lang}", callback_data="pass#lang_menu")])
+            methods_buttons.append([
+                InlineKeyboardButton(f"🔒 {lbl_support}", url=pass_support_link),
+                InlineKeyboardButton(lbl_back, callback_data="pass#close")
+            ])
+
+            methods_api_kb = list(plan_api_kb)
+            methods_api_kb.append([{"text": "My Transactions" if not is_hi else "मेरे ट्रांसक्शन्स", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
+            methods_api_kb.append([{"text": "Language" if not is_hi else "भाषा (Language)", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}])
+            methods_api_kb.append([
+                {"text": lbl_support, "url": pass_support_link, "icon_custom_emoji_id": "6030833407339008632"},
+                {"text": lbl_back, "callback_data": "pass#close"}
+            ])
+
+        else:
+            # V1 (Multi-Gateway Flow):
+            # Pass Benefits + Available Plans Text + Select preferred method + Gateway Buttons
+            plan_lines = []
+            for idx, (dur_key, price) in enumerate(prices.items()):
+                dur_str = str(dur_key).lower().strip()
+                if dur_str.endswith('mo'):
+                    num = dur_str[:-2]
+                    unit = ("महीना" if num == "1" else "महीने") if is_hi else ("Month" if num == "1" else "Months")
+                elif dur_str.endswith('month') or dur_str.endswith('months'):
+                    num = dur_str.replace('months', '').replace('month', '').strip()
+                    unit = ("महीना" if num == "1" else "महीने") if is_hi else ("Month" if num == "1" else "Months")
+                elif dur_str.endswith('d'):
+                    num = dur_str[:-1]
+                    unit = ("दिन" if num == "1" else "दिन") if is_hi else ("Day" if num == "1" else "Days")
+                elif dur_str.endswith('h'):
+                    num = dur_str[:-1]
+                    unit = "घंटे" if is_hi else "Hours"
+                elif dur_str.endswith('m'):
+                    num = dur_str[:-1]
+                    unit = "मिनट" if is_hi else "Minutes"
+                else:
+                    num = dur_str
+                    unit = "दिन" if is_hi else "Days"
+                p_val = int(price) if float(price).is_integer() else price
+                usd_val = max(0.50, round(float(price) / 92.0, 2))
+                savings_tag = calculate_plan_savings(dur_key, price, prices)
+                plan_lines.append(f'→   {num} {unit}: ₹{p_val} | ${usd_val:.2f}{savings_tag}')
+
+            plans_str = "\n".join(plan_lines)
+
+            sub_header = '<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा पेमेंट मेथड चुनें:</b>' if is_hi else '<emoji id="6019224342666157570">💳</emoji> <b>Select your preferred payment method below:</b>'
+            avail_title = '<emoji id="6007983438294949171">💎</emoji> <b>उपलब्ध प्लान्स:</b>' if is_hi else '<emoji id="6007983438294949171">💎</emoji> <b>Available Plans:</b>'
+
+            methods_text = (
+                f"{title_header}"
+                f"{benefits_sec}"
+                f"{avail_title}\n"
+                f"{plans_str}\n\n"
+                f"{sub_header}"
+            )
+
+            oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
+            upi_enabled = rl_cfg.get('upi_enabled', True)
+
+            methods_buttons = []
+            methods_api_kb = []
+            if upi_enabled:
+                methods_buttons.append([InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")])
+                methods_api_kb.append([{"text": "Pay Via UPI ( INR )", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}])
+
+            methods_buttons.append([InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")])
+            methods_api_kb.append([{"text": "Pay Via Cashfree", "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "5920332557466997677"}])
+
+            if oxapay_enabled:
+                methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")])
+                methods_api_kb.append([{"text": "Pay Via Crypto (Oxapay)", "callback_data": "pass#method_crypto", "icon_custom_emoji_id": "5283232570660634549"}])
+
+            methods_buttons.append([InlineKeyboardButton(lbl_txns, callback_data="pass#my_transactions")])
+            methods_buttons.append([InlineKeyboardButton(f"🌐 {lbl_lang}", callback_data="pass#lang_menu")])
+            methods_buttons.append([
+                InlineKeyboardButton(f"🔒 {lbl_support}", url=pass_support_link),
+                InlineKeyboardButton(lbl_back, callback_data="pass#close")
+            ])
+
+            methods_api_kb.append([{"text": "My Transactions" if not is_hi else "मेरे ट्रांसक्शन्स", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
+            methods_api_kb.append([{"text": "Language" if not is_hi else "भाषा (Language)", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}])
+            methods_api_kb.append([
+                {"text": lbl_support, "url": pass_support_link, "icon_custom_emoji_id": "6030833407339008632"},
+                {"text": lbl_back, "callback_data": "pass#close"}
+            ])
+
         methods_kb = InlineKeyboardMarkup(methods_buttons)
-        methods_api_kb = [
-            [{"text": "Pay Via UPI ( INR )", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}],
-            [{"text": "Pay Via Cashfree", "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "5920332557466997677"}]
-        ]
-        if oxapay_enabled:
-            methods_api_kb.append([{"text": "Pay Via Crypto (Oxapay)", "callback_data": "pass#method_crypto", "icon_custom_emoji_id": "5283232570660634549"}])
-
-        methods_api_kb.append([{"text": "My Transactions", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
-        methods_api_kb.append([
-            {"text": "Support", "url": pass_support_link, "icon_custom_emoji_id": "6030833407339008632"},
-            {"text": "← Back", "callback_data": "pass#close"}
-        ])
 
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
@@ -2413,12 +2550,13 @@ async def _process_pass_callback(client, query):
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+        user_lang = await db.get_language(user_id)
         
         plan_buttons = []
         plan_api_kb = []
         for idx, (dur_key, price) in enumerate(prices.items()):
             p_val = int(price) if float(price).is_integer() else price
-            label = format_plan_button_label(dur_key, p_val)
+            label = format_plan_button_label(dur_key, p_val, lang=user_lang)
             emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
             cb = f"pass#cfbuy_{dur_key}_{p_val}"
             plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
@@ -2460,12 +2598,13 @@ async def _process_pass_callback(client, query):
         if not rl_cfg.get('upi_enabled', True):
             return await query.answer("⚠️ Pay Via UPI is currently disabled by administrator.", show_alert=True)
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+        user_lang = await db.get_language(user_id)
         
         plan_buttons = []
         plan_api_kb = []
         for idx, (dur_key, price) in enumerate(prices.items()):
             p_val = int(price) if float(price).is_integer() else price
-            label = format_plan_button_label(dur_key, p_val)
+            label = format_plan_button_label(dur_key, p_val, lang=user_lang)
             emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
             cb = f"pass#upibuy_{dur_key}_{p_val}"
             plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
@@ -2508,6 +2647,7 @@ async def _process_pass_callback(client, query):
             return await query.answer("⚠️ Crypto payments are currently disabled by administrator.", show_alert=True)
 
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+        user_lang = await db.get_language(user_id)
         
         plan_buttons = []
         plan_api_kb = []
@@ -2516,7 +2656,7 @@ async def _process_pass_callback(client, query):
             usd_val = round(float(price) / 92.0, 2)
             # OxaPay minimum is $0.50 USD (0.50 USDT = ₹46 INR)
             if usd_val >= 0.50:
-                label = f"{format_plan_button_label(dur_key, p_val)} [${usd_val:.2f}]"
+                label = f"{format_plan_button_label(dur_key, p_val, lang=user_lang)} [${usd_val:.2f}]"
                 emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
                 cb = f"pass#oxabuy_{dur_key}_{p_val}"
                 plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
