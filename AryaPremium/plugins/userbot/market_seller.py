@@ -4895,10 +4895,11 @@ async def _process_callback(client, query):
 
     if bot_mode == "miniapp":
         is_allowed = (
-            cmd in ("my_buys", "main_close", "close", "feedback", "noop", "cancel_dm") or
+            cmd in ("my_buys", "main_close", "close", "feedback", "noop", "cancel_dm", "deliver_dm", "deliver_channel") or
             cmd.startswith("my_buys_page_") or
             cmd.startswith("purchased_view_") or
             cmd.startswith("access_") or
+            cmd.startswith("deliver_") or
             cmd.startswith("dm_") or
             cmd.startswith("channel_") or
             cmd.startswith("my_story_") or
@@ -7704,8 +7705,17 @@ async def _process_callback(client, query):
         s_id = data[2]
 
         from bson.objectid import ObjectId
+        from bson.errors import InvalidId
 
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        story = None
+        try:
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        except Exception:
+            pass
+        if not story:
+            story = await db.db.premium_stories.find_one({"_id": s_id})
+        if not story:
+            story = await db.db.premium_stories.find_one({"story_id": s_id})
 
         if not story: return await query.answer("Story not found!", show_alert=True)
 
