@@ -1236,7 +1236,7 @@ def _format_story(s: dict) -> dict | None:
         "totalEpisodes":s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":         s.get("total_size") or s.get("size") or None,
         "isCompleted":  status_val == "Completed",
-        "fileCount":    s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
+        "fileCount":    s.get("file_count") or (len(s.get("valid_file_ids")) if s.get("valid_file_ids") else None) or s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "enable_parts": enable_parts_bool,
         "parts":        cleaned_parts,
         "is_must_have":  bool(s.get("is_must_have", False)),

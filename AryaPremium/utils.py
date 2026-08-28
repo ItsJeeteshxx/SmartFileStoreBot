@@ -664,8 +664,18 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
         
     if save_to_db and db and hasattr(db, "db") and story_doc.get("_id"):
         from bson.objectid import ObjectId
-        s_oid = story_doc["_id"] if isinstance(story_doc["_id"], ObjectId) else ObjectId(str(story_doc["_id"]))
-        await db.db.premium_stories.update_one({"_id": s_oid}, {"$set": updates})
+        raw_id = story_doc["_id"]
+        q_or = [{"_id": raw_id}]
+        try:
+            if not isinstance(raw_id, ObjectId) and ObjectId.is_valid(str(raw_id)):
+                q_or.append({"_id": ObjectId(str(raw_id))})
+            elif isinstance(raw_id, ObjectId):
+                q_or.append({"_id": str(raw_id)})
+        except Exception:
+            pass
+        if story_doc.get("story_id"):
+            q_or.append({"story_id": str(story_doc["story_id"])})
+        await db.db.premium_stories.update_one({"$or": q_or}, {"$set": updates})
         
     return valid_ids
 
