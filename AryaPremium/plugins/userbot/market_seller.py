@@ -8673,6 +8673,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
         sent_count = 0
         failed_count = 0
         sent_ids = []
+        deleted_ids = []
         cap_tpl = bt_cfg.get("caption", "")
         
         aborted = False
@@ -8729,11 +8730,29 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                 err_str = str(e).lower()
                 if "message_id_invalid" in err_str or "message_empty" in err_str or "message not found" in err_str:
                     logger.debug(f"DM Delivery skipped deleted/empty msg {msg_id}")
+                    deleted_ids.append(msg_id)
                 else:
                     logger.warning(f"DM Delivery failed msg {msg_id}: {e}")
                     failed_count += 1
 
             await asyncio.sleep(0.08)
+
+        # Real-time background self-healing: remove discovered dead IDs from valid_file_ids in MongoDB
+        if deleted_ids and story_id_str:
+            async def _heal_dead_ids():
+                try:
+                    from bson.objectid import ObjectId
+                    s_oid = ObjectId(story_id_str)
+                    st_doc = await db.db.premium_stories.find_one({"_id": s_oid})
+                    if st_doc and st_doc.get("valid_file_ids"):
+                        updated_valid = [x for x in st_doc["valid_file_ids"] if x not in deleted_ids]
+                        await db.db.premium_stories.update_one(
+                            {"_id": s_oid},
+                            {"$set": {"valid_file_ids": updated_valid, "file_count": len(updated_valid)}}
+                        )
+                except Exception:
+                    pass
+            asyncio.create_task(_heal_dead_ids())
 
 
 
