@@ -218,7 +218,7 @@ def _get_welcome_text(user, bot_name, custom_wel=None, lang='en') -> str:
             f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a><emoji id=\"6041919344995209164\">❣️</emoji></blockquote>\n"
             f"<blockquote expandable><b>»  {bot_name} में आपका स्वागत है!</b></blockquote>\n"
             f"<blockquote expandable>मैं एक फ़ाइल डिलीवरी बॉट हूँ। चैनल से किसी भी लिंक बटन पर टैप करें और मैं आपको फ़ाइलें सीधे यहाँ भेज दूंगा।</blockquote>\n"
-            f"<blockquote expandable>अधिक जानकारी के लिए सहायता (Help) पर क्लिक करें।</blockquote>"
+            f"<blockquote expandable>अधिक जानकारी के लिए सहायता पर क्लिक करें।</blockquote>"
         )
     return (
         # Block 1: Greeting with first name only
@@ -236,7 +236,7 @@ def _get_help_text(user, lang='en') -> str:
     if lang == 'hi':
         return (
             _get_base_header(user) +
-            "<b>सहायता मेनू (Help Menu)</b>\n\n"
+            "<b>सहायता मेनू</b>\n\n"
             "मैं एक फ़ाइल डिलीवरी बॉट हूँ। आप चैनल में दिए गए शेयर करने योग्य लिंक का उपयोग करके फ़ाइलों तक पहुँच सकते हैं।\n\n"
             "<b>फ़ाइलें कैसे प्राप्त करें:</b>\n"
             "➲  चैनल खोलें और लिंक बटन पर टैप करें\n"
@@ -653,15 +653,27 @@ async def _process_start(client, message):
                         logger.warning(f"Failed to schedule rate limit log: {_log_e}")
 
                     user_lang = await db.get_language(user_id)
-                    if user_lang == 'hi':
+                    is_hi = bool(user_lang == 'hi')
+                    if is_hi:
                         limit_text = (
                             f'<emoji id="6215133834149629990">⏳</emoji> <b>रेट लिमिट पूरी हो गई है</b>\n\n'
                             f'आपने पिछले <b>{win_verbose}</b> में <b>{len(hits)} / {max_limit} लिंक्स</b> एक्सेस कर लिए हैं। <emoji id="6266794310671275367">🎬</emoji>\n\n'
                             f'सभी यूजर्स के लिए लिमिट <b>{max_limit} लिंक्स प्रति {win_verbose}</b> निर्धारित है।\n\n'
                             f'<emoji id="6217487596486922033">⏰</emoji> <b>कूलडाउन रीसेट होने में समय:</b> <code>{rem_time_str}</code>\n\n'
-                            f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड एक्सेस अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
+                            f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड पास अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
                         )
-                        btn_txt = "एक्सेस अनलॉक करें (Payment)"
+                        limit_api_kb = [
+                            [
+                                {
+                                    "text": "पास अनलॉक करें",
+                                    "callback_data": "pass#unlock_menu",
+                                    "icon_custom_emoji_id": "6030443364178992166"
+                                }
+                            ]
+                        ]
+                        unlock_kb = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔓 पास अनलॉक करें", callback_data="pass#unlock_menu")
+                        ]])
                     else:
                         limit_text = (
                             f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
@@ -670,16 +682,18 @@ async def _process_start(client, message):
                             f'<b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
                             f'Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji>'
                         )
-                        btn_txt = "Unlock Access Via Payment"
-                    limit_api_kb = [
-                        [
-                            {
-                                "text": "Unlock Access Via Payment",
-                                "callback_data": "pass#unlock_menu",
-                                "icon_custom_emoji_id": "6030443364178992166"
-                            }
+                        limit_api_kb = [
+                            [
+                                {
+                                    "text": "Unlock Unlimited Pass",
+                                    "callback_data": "pass#unlock_menu",
+                                    "icon_custom_emoji_id": "6030443364178992166"
+                                }
+                            ]
                         ]
-                    ]
+                        unlock_kb = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔓 Unlock Unlimited Pass", callback_data="pass#unlock_menu")
+                        ]])
                     sent_ok = await send_or_edit_with_custom_icons(
                         client=client,
                         chat_id=message.chat.id,
@@ -687,9 +701,6 @@ async def _process_start(client, message):
                         inline_keyboard=limit_api_kb
                     )
                     if not sent_ok:
-                        unlock_kb = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔓 Unlock Access Via Payment", callback_data="pass#unlock_menu")
-                        ]])
                         await message.reply_text(limit_text, reply_markup=unlock_kb)
 
                     # Trigger intelligent Cooldown Reminders (Max 2 reminders)
