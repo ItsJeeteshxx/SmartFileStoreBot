@@ -1149,6 +1149,7 @@ async def _send_welcome(client, message, bot_id: str = None):
     lbl_help = _sc("Help") if not is_hi else "सहायता"
     lbl_about = _sc("About") if not is_hi else "बारे में"
     lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
+    lbl_settings = _sc("Settings") if not is_hi else "सेटिंग्स"
 
     buttons = [
         [
@@ -1160,7 +1161,9 @@ async def _send_welcome(client, message, bot_id: str = None):
         ],
         [
             InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
-            InlineKeyboardButton("⚙️", callback_data="sbd#settings")
+        ],
+        [
+            InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings")
         ]
     ]
     markup = InlineKeyboardMarkup(buttons)
@@ -1174,8 +1177,10 @@ async def _send_welcome(client, message, bot_id: str = None):
             {"text": lbl_about, "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
         ],
         [
-            {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"},
-            {"text": "\u200b", "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+            {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}
+        ],
+        [
+            {"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
         ]
     ]
 
@@ -1341,15 +1346,45 @@ async def _process_delivery_button(client, query):
     if cmd == "help":
         await query.answer()
         txt = _get_help_text(query.from_user)
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+        lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
+        lbl_settings = _sc("Settings") if not is_hi else "सेटिंग्स"
         buttons = [
             [InlineKeyboardButton("»  " + _sc("Support"), url=SUPPORT_LINK)],
             [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
-            [InlineKeyboardButton(_sc("Update Channel"), url=UPDATE_LINK), InlineKeyboardButton("⚙️", callback_data="sbd#settings")]
+            [InlineKeyboardButton(lbl_upd, url=UPDATE_LINK)],
+            [InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings")]
+        ]
+        help_api_kb = [
+            [{"text": "»  " + _sc("Support"), "url": SUPPORT_LINK, "icon_custom_emoji_id": "6030833407339008632"}],
+            [{"text": "«  " + _sc("Back"), "callback_data": "sbd#back"}],
+            [{"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}],
+            [{"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}]
         ]
         markup = InlineKeyboardMarkup(buttons)
         try:
-            if is_media_msg: await msg.edit_caption(caption=txt, reply_markup=markup)
-            else: await msg.edit_text(txt, reply_markup=markup)
+            if is_media_msg:
+                sent_ok = await send_or_edit_with_custom_icons(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=txt,
+                    inline_keyboard=help_api_kb,
+                    message_id=msg.id,
+                    is_media_edit=True
+                )
+                if not sent_ok:
+                    await msg.edit_caption(caption=txt, reply_markup=markup)
+            else:
+                sent_ok = await send_or_edit_with_custom_icons(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=txt,
+                    inline_keyboard=help_api_kb,
+                    message_id=msg.id
+                )
+                if not sent_ok:
+                    await msg.edit_text(txt, reply_markup=markup)
         except Exception: pass
 
     elif cmd == "settings":
@@ -1649,6 +1684,7 @@ async def _process_delivery_button(client, query):
         lbl_help = _sc("Help") if not is_hi else "सहायता"
         lbl_about = _sc("About") if not is_hi else "बारे में"
         lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
+        lbl_settings = _sc("Settings") if not is_hi else "सेटिंग्स"
 
         buttons = [
             [
@@ -1660,7 +1696,9 @@ async def _process_delivery_button(client, query):
             ],
             [
                 InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
-                InlineKeyboardButton("⚙️", callback_data="sbd#settings")
+            ],
+            [
+                InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings")
             ]
         ]
         markup = InlineKeyboardMarkup(buttons)
@@ -1674,8 +1712,10 @@ async def _process_delivery_button(client, query):
                 {"text": lbl_about, "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
             ],
             [
-                {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"},
-                {"text": "⚙️", "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+                {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}
+            ],
+            [
+                {"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
             ]
         ]
         try:
