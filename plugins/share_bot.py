@@ -2445,30 +2445,44 @@ async def _poll_upi_payment(
                     logger.warning(f"Auto-verified UTR {extracted_utr} already claimed by another user. Continuing poll...")
                     continue
 
-                # Record used UTR
+                # Look up Telegram user name from order_doc or Telegram user database
+                order_doc_paid = await db.pass_orders.find_one({'order_id': order_id})
+                tg_user_name = "User"
+                if order_doc_paid and order_doc_paid.get('user_name'):
+                    tg_user_name = order_doc_paid.get('user_name')
+                else:
+                    try:
+                        udoc = await db.col.find_one({'id': int(user_id)}, {'name': 1})
+                        if udoc and udoc.get('name'):
+                            tg_user_name = udoc.get('name')
+                    except Exception:
+                        pass
+
+                # Record used UTR with Telegram user name
                 await db.record_used_utr(
                     utr=extracted_utr,
                     user_id=user_id,
                     amount=dyn_amount,
                     order_id=order_id,
-                    user_name=payer_name,
+                    user_name=tg_user_name,
                     gateway="Pay Via UPI (INR)"
                 )
 
-                # Activate user pass in database
+                # Activate user pass in database with Telegram user name
                 _cancel_cooldown_reminders(user_id)
                 await db.activate_user_unlimited_pass(
                     user_id=user_id,
                     duration_seconds=dur_sec,
                     order_id=order_id,
                     amount=dyn_amount,
+                    user_name=tg_user_name,
                     gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
                 )
 
-                # Mark pass order as PAID
+                # Mark pass order as PAID with bank_payer_name kept separate
                 await db.pass_orders.update_one(
                     {'order_id': order_id},
-                    {'$set': {'status': 'PAID', 'paid_at': time.time(), 'utr': extracted_utr, 'payer_name': payer_name}},
+                    {'$set': {'status': 'PAID', 'paid_at': time.time(), 'utr': extracted_utr, 'bank_payer_name': payer_name}},
                     upsert=True
                 )
 
@@ -3996,12 +4010,17 @@ async def _process_pass_callback(client, query):
             if is_claimed_by_other:
                 return await query.answer("⚠️ यह पेमेंट पहले ही किसी अन्य पास के लिए प्रोसेस किया जा चुका है!" if is_hi else "⚠️ This payment was already processed for another pass!", show_alert=True)
 
+            tg_user_name = query.from_user.first_name if query.from_user else "User"
+            order_doc_paid = await db.pass_orders.find_one({'order_id': order_id})
+            if order_doc_paid and order_doc_paid.get('user_name'):
+                tg_user_name = order_doc_paid.get('user_name')
+
             await db.record_used_utr(
                 utr=extracted_utr,
                 user_id=user_id,
                 amount=dyn_amount,
                 order_id=order_id,
-                user_name=payer_name,
+                user_name=tg_user_name,
                 gateway="Pay Via UPI (INR)"
             )
             _cancel_cooldown_reminders(user_id)
@@ -4010,11 +4029,12 @@ async def _process_pass_callback(client, query):
                 duration_seconds=dur_sec,
                 order_id=order_id,
                 amount=dyn_amount,
+                user_name=tg_user_name,
                 gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
             )
             await db.pass_orders.update_one(
                 {'order_id': order_id},
-                {'$set': {'status': 'PAID', 'paid_at': time.time(), 'utr': extracted_utr, 'payer_name': payer_name}},
+                {'$set': {'status': 'PAID', 'paid_at': time.time(), 'utr': extracted_utr, 'bank_payer_name': payer_name}},
                 upsert=True
             )
 

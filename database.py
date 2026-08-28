@@ -2004,15 +2004,16 @@ class Database:
             elif not users_map[uid]['name'] and u_name:
                 users_map[uid]['name'] = u_name
 
-        # Bulk resolve missing names in a single fast query
-        missing_name_uids = [uid for uid, data in users_map.items() if not data.get('name')]
-        if missing_name_uids:
+        # Priority: ALWAYS resolve Telegram user names for ALL customer IDs from Telegram users collection (self.col)
+        all_uids = list(users_map.keys())
+        if all_uids:
             try:
-                cursor = self.col.find({'id': {'$in': missing_name_uids}}, {'id': 1, 'name': 1})
+                cursor = self.col.find({'id': {'$in': all_uids}}, {'id': 1, 'name': 1})
                 async for udoc in cursor:
                     u_id = udoc.get('id')
-                    if u_id in users_map and udoc.get('name'):
-                        users_map[u_id]['name'] = udoc['name']
+                    tg_name = udoc.get('name')
+                    if u_id in users_map and tg_name:
+                        users_map[u_id]['name'] = tg_name
             except Exception:
                 pass
 
@@ -2049,21 +2050,31 @@ class Database:
         return results
 
     async def get_customer_full_details(self, user_id: int) -> dict:
-        """Fetch customer profile, pass status, and full transaction history."""
+        """Fetch customer profile, pass status, and full transaction history (Telegram name prioritized)."""
         user_id = int(user_id)
         pass_info = await self.get_user_unlimited_pass(user_id)
         
         name = ""
-        pass_doc = await self.unlimited_passes.find_one({'user_id': user_id})
-        if pass_doc and pass_doc.get('user_name'):
-            name = pass_doc['user_name']
+        # Priority 1: Check Telegram users collection (self.col)
+        try:
+            u_doc = await self.col.find_one({'id': user_id})
+            if u_doc and u_doc.get('name'):
+                name = u_doc['name']
+        except Exception:
+            pass
+
+        # Priority 2: Check unlimited_passes
         if not name:
-            try:
-                u_doc = await self.col.find_one({'id': user_id})
-                if u_doc and u_doc.get('name'):
-                    name = u_doc['name']
-            except Exception:
-                pass
+            pass_doc = await self.unlimited_passes.find_one({'user_id': user_id})
+            if pass_doc and pass_doc.get('user_name'):
+                name = pass_doc['user_name']
+
+        # Priority 3: Check pass_orders
+        if not name:
+            order_doc = await self.pass_orders.find_one({'user_id': user_id, 'user_name': {'$exists': True, '$ne': ''}})
+            if order_doc and order_doc.get('user_name'):
+                name = order_doc['user_name']
+
         if not name:
             name = f"User {user_id}"
 
