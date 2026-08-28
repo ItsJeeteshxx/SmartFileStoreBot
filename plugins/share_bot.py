@@ -2093,12 +2093,12 @@ async def _send_random_cooldown_reminder(
     else:
         cooldown_str = f"{rem_sec}s" if user_lang != 'hi' else f"{rem_sec} सेकंड"
 
-    # Select random kawaii custom emojis
+    # Select random single kawaii custom emoji
     def _re():
         emo, eid = random.choice(KAWAII_REMINDER_EMOJIS)
         return f'<emoji id="{eid}">{emo}</emoji>'
 
-    # Determine language: strict if user set preference, random Hindi/English if default
+    # Determine language strictly: if 'hi' -> pure Hindi, if 'en' -> pure English, else random pure language
     if user_lang == 'hi':
         is_hi = True
     elif user_lang == 'en':
@@ -2111,76 +2111,100 @@ async def _send_random_cooldown_reminder(
 
     if is_hi:
         templates = [
-            # 1. Flirting & Cute (रोमांटिक / फ्लर्टी / क्यूट)
+            # 1. Flirting & Romantic Tone (रोमांटिक / फ्लर्टी)
             (
-                f"अरे <a href='tg://user?id={user_id}'>{user_name}</a> जी! {_re()}💘\n\n"
-                f"आपका इंटरनेट स्लो है या फिर आप हमारे अनलिमिटेड पास के प्यार में पड़ रहे हैं? {_re()}\n\n"
-                f"इस बोरिंग <b>{cooldown_str}</b> के कूलडाउन टाइमर को भूल जाइए और सिर्फ <b>₹15</b> में अनलिमिटेड सुपरफास्ट स्पीड का आनंद लीजिए! {_re()}✨"
+                f"अरे <a href='tg://user?id={user_id}'>{user_name}</a> जी! {_re()}\n\n"
+                f"आपका इंटरनेट धीमा है या फिर आप हमारे अनलिमिटेड पास के प्यार में पड़ रहे हैं? {_re()}\n\n"
+                f"इस बोरिंग <b>{cooldown_str}</b> के कूलडाउन टाइमर को भूल जाइए और सिर्फ <b>₹15</b> में अनलिमिटेड सुपरफास्ट स्पीड का मज़ा लीजिए! {_re()}"
             ),
-            # 2. Playful & Sarcastic (मजेदार / व्यंग्य)
+            # 2. Sarcastic & Witty (मजेदार / व्यंग्य)
             (
-                f"सुनो <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}☕️\n\n"
-                f"क्या आप सच में <b>{cooldown_str}</b> तक सिर्फ टाइमर देखने वाले हैं? {_re()}\n\n"
-                f"इतना सब्र तो कोई नहीं करता! एक चाय के खर्चे (सिर्फ ₹15) में पूरे दिन का अनलिमिटेड पास मिल रहा है, फिर इंतज़ार कैसा? तुरंत पास अनलॉक करें! {_re()}🚀"
+                f"सुनो <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}\n\n"
+                f"क्या आप सच में अगले <b>{cooldown_str}</b> तक सिर्फ स्क्रीन को घूरने वाले हैं? {_re()}\n\n"
+                f"इतना सब्र तो कोई नहीं करता! एक चाय के खर्चे (सिर्फ ₹15) में पूरे दिन का अनलिमिटेड पास मिल रहा है, फिर इंतज़ार कैसा? तुरंत पास अनलॉक करें! {_re()}"
             ),
-            # 3. Professional (प्रोफेशनल व सटीक)
+            # 3. Professional & Direct Value (प्रोफेशनल व सटीक)
             (
                 f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
-                f"आपकी फ्री डाउनलोड लिमिट पूरी हो चुकी है और अगला रीसेट <b>{cooldown_str}</b> बाद होगा। {_re()}\n\n"
-                f"बिना किसी लिमिट और बिना किसी डोनेशन मैसेज के 24/7 नॉन-स्टॉप एक्सेस के लिए अभी <b>पास सब्सक्रिप्शन</b> अनलॉक करें। {_re()}⚡️"
+                f"आपकी फ्री डाउनलोड लिमिट पूरी हो चुकी है और अगला रीसेट <b>{cooldown_str}</b> बाद होगा।\n\n"
+                f"बिना किसी लिमिट और बिना किसी डोनेशन मैसेज के 24/7 नॉन-स्टॉप एक्सेस के लिए अभी <b>पास सब्सक्रिप्शन</b> अनलॉक करें। {_re()}"
             ),
-            # 4. Love & Caring (केयरिंग व सपोर्टिव)
+            # 4. Cute & Caring (केयरिंग व सपोर्टिव)
             (
-                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
-                f"हम नहीं चाहते कि आपको अपनी पसंदीदा फाइल्स के लिए घंटों इंतज़ार करना पड़े। {_re()}\n\n"
-                f"आपके लिए बेहद किफायती पास उपलब्ध है — इसे अभी एक्टिवेट करें और अनलिमिटेड फास्ट डाउनलोड्स का आनंद लें! {_re()}🎁"
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"हम नहीं चाहते कि आपको अपनी पसंदीदा फाइल्स के लिए घंटों इंतज़ार करना पड़े।\n\n"
+                f"आपके लिए बेहद किफायती पास उपलब्ध है — इसे अभी एक्टिवेट करें और अनलिमिटेड फास्ट डाउनलोड्स का आनंद लें! {_re()}"
+            ),
+            # 5. Playful Curiosity (मजेदार उत्सुकता)
+            (
+                f"हेलो <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}\n\n"
+                f"टाइमर अभी भी <b>{cooldown_str}</b> दिखा रहा है! क्या आप वाकई इतना लंबा इंतज़ार करेंगे? {_re()}\n\n"
+                f"सिर्फ ₹15 में अनलिमिटेड पास लेकर अभी अपनी सारी पसंदीदा फाइल्स तुरंत डाउनलोड करें! {_re()}"
+            ),
+            # 6. Ultra-Affordable Snack Comparison (चाय / समोसा कम्पेरिजन)
+            (
+                f"सुनिए <a href='tg://user?id={user_id}'>{user_name}</a> जी {_re()}\n\n"
+                f"जितने में एक चाय-समोसा आता है, उतने में आपको पूरे दिन का <b>अनलिमिटेड एक्सेस पास</b> मिल रहा है! {_re()}\n\n"
+                f"फिर <b>{cooldown_str}</b> तक इंतज़ार करने की क्या ज़रूरत? नीचे क्लिक करें और तुरंत शुरू करें! {_re()}"
             )
         ]
         if fest_hi:
             templates.append(
-                f"🎉 <b>{fest_hi}</b> 🎉\n\n"
-                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}🎁\n\n"
+                f"🎉 <b>{fest_hi}</b> {_re()}\n\n"
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a>!\n\n"
                 f"त्योहारों के इस खास मौके पर इंतज़ार कैसा? जब सिर्फ ₹15 में मिल रहा है <b>अनलिमिटेड एक्सेस पास</b>, तो <b>{cooldown_str}</b> तक कूलडाउन में क्यों रुकना? {_re()}\n\n"
-                f"नीचे दिए गए बटन पर टैप करें और तुरंत सुपरफास्ट फाइल्स डाउनलोड करें! {_re()}✨"
+                f"नीचे दिए गए बटन पर टैप करें और तुरंत सुपरफास्ट फाइल्स डाउनलोड करें! {_re()}"
             )
-        btn_unlock = "🔓 पास अभी अनलॉक करें"
-        btn_supp = "🔒 सहायता"
+        btn_unlock = "पास अभी अनलॉक करें"
+        btn_supp = "सहायता"
     else:
         templates = [
             # 1. Flirting & Cute
             (
-                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💘\n\n"
+                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
                 f"Is your network slow or are you just falling for our Unlimited Pass? {_re()}\n\n"
-                f"Stop waiting on this boring <b>{cooldown_str}</b> cooldown timer! Treat yourself to unlimited high-speed downloads for just ₹15. You know you want it! {_re()}✨"
+                f"Stop waiting on this boring <b>{cooldown_str}</b> cooldown timer! Treat yourself to unlimited high-speed downloads for just ₹15. You know you want it! {_re()}"
             ),
             # 2. Playful & Sarcastic
             (
-                f"Yo <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}☕️\n\n"
-                f"Are you seriously waiting <b>{cooldown_str}</b> just to download a file? {_re()}\n\n"
-                f"That timer is older than ancient history! Skip the whole wait for less than the price of a chai with an <b>Unlimited Pass</b> and enjoy instant uninterrupted streaming right now! {_re()}🚀"
+                f"Yo <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}\n\n"
+                f"Are you seriously waiting <b>{cooldown_str}</b> just to download another file? {_re()}\n\n"
+                f"That timer is older than ancient history! Skip the whole wait for less than the price of a chai with an <b>Unlimited Pass</b> and enjoy instant uninterrupted downloads right now! {_re()}"
             ),
             # 3. Professional
             (
                 f"Hello <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
-                f"Your download quota is currently paused for <b>{cooldown_str}</b> under our fair usage policy. {_re()}\n\n"
-                f"To bypass all cooldowns, eliminate donation messages, and unlock unlimited downloads 24/7, activate your <b>Unlimited Pass</b> now at subsidized pricing! {_re()}⚡️"
+                f"Your download quota is currently paused for <b>{cooldown_str}</b> under our fair usage policy.\n\n"
+                f"To bypass all cooldowns, eliminate donation messages, and unlock unlimited downloads 24/7, activate your <b>Unlimited Pass</b> now at subsidized pricing! {_re()}"
             ),
-            # 4. Love & Caring
+            # 4. Caring & Supportive
             (
-                f"Dear <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
-                f"We hate seeing you wait on cooldown! You deserve smooth, instant downloads without any pause or interruptions. {_re()}\n\n"
-                f"Unlock unlimited high-speed access today with our affordable Pass — zero limits, zero ads, pure speed! {_re()}🎁"
+                f"Dear <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"We hate seeing you wait on cooldown! You deserve smooth, instant downloads without any pause or interruptions.\n\n"
+                f"Unlock unlimited high-speed access today with our affordable <b>Unlimited Pass</b> — zero limits, zero ads, pure speed! {_re()}"
+            ),
+            # 5. Playful Curiosity
+            (
+                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}\n\n"
+                f"Your timer is still ticking down at <b>{cooldown_str}</b>! Why stare at the countdown? {_re()}\n\n"
+                f"Grab an Unlimited Access Pass starting at just ₹15 and binge all your content with zero interruptions! {_re()}"
+            ),
+            # 6. Coffee / Snack Comparison
+            (
+                f"Listen up <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"For less than the price of a quick snack, you can get 24 hours of non-stop unlimited downloads! {_re()}\n\n"
+                f"Why stay stuck on a <b>{cooldown_str}</b> timer? Tap below and get your Unlimited Pass now! {_re()}"
             )
         ]
         if fest_en:
             templates.append(
-                f"🎉 <b>{fest_en}</b> 🎉\n\n"
-                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}🎁\n\n"
+                f"🎉 <b>{fest_en}</b> {_re()}\n\n"
+                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a>!\\n\\n"
                 f"Celebrate this festive season with zero limits and zero waiting! Why wait <b>{cooldown_str}</b> on cooldown when you can grab our festive <b>Unlimited Access Pass</b> at super cheap rates? {_re()}\n\n"
-                f"Tap below and enjoy unlimited instant downloads right away! {_re()}✨"
+                f"Tap below and enjoy unlimited instant downloads right away! {_re()}"
             )
-        btn_unlock = "🔓 Unlock Unlimited Pass"
-        btn_supp = "🔒 Support"
+        btn_unlock = "Unlock Unlimited Pass"
+        btn_supp = "Support"
 
     text = random.choice(templates)
     
@@ -2189,8 +2213,8 @@ async def _send_random_cooldown_reminder(
         [{"text": btn_supp, "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}]
     ]
     pyrogram_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(btn_unlock, callback_data="pass#unlock_menu")],
-        [InlineKeyboardButton(btn_supp, url="https://t.me/AryaHelpTG")]
+        [InlineKeyboardButton(f"🔓 {btn_unlock}", callback_data="pass#unlock_menu")],
+        [InlineKeyboardButton(f"🔒 {btn_supp}", url="https://t.me/AryaHelpTG")]
     ])
 
     try:
@@ -2215,17 +2239,27 @@ async def schedule_rate_limit_reminders(
 ):
     """
     Schedules max 2 witty / sarcastic / love / professional reminders during the user's cooldown.
+    Spaced out intelligently across hours (e.g. 3-4 hours apart) instead of instantly.
     Automatically aborts if user activates an Unlimited Pass before or during the interval.
     """
     _cancel_cooldown_reminders(user_id)
 
     async def _reminder_coro():
         try:
-            if rem_sec < 60:
+            # If cooldown is under 10 minutes, do not send any reminder
+            if rem_sec < 600:
                 return
 
-            delay_1 = min(300, max(45, rem_sec // 3))
-            delay_2 = min(1800, max(120, (rem_sec * 2) // 3))
+            # Calculate sensible spaced-out delays based on cooldown duration
+            if rem_sec >= 14400:  # 4 hours or more (e.g. 6h, 12h, 24h)
+                delay_1 = int(rem_sec * 0.30)  # e.g., ~3.6 hours for 12h
+                delay_2 = int(rem_sec * 0.70)  # e.g., ~8.4 hours for 12h
+            elif rem_sec >= 3600:  # 1 to 4 hours
+                delay_1 = int(rem_sec * 0.35)  # e.g., ~42 mins for 2h
+                delay_2 = int(rem_sec * 0.75)  # e.g., ~1.5 hours for 2h
+            else:  # 10 mins to 1 hour
+                delay_1 = int(rem_sec * 0.40)
+                delay_2 = int(rem_sec * 0.80)
 
             # --- REMINDER 1 ---
             await asyncio.sleep(delay_1)
@@ -2245,7 +2279,7 @@ async def schedule_rate_limit_reminders(
 
             # --- REMINDER 2 ---
             remaining_sleep = delay_2 - delay_1
-            if remaining_sleep > 30 and (rem_sec - delay_2) > 30:
+            if remaining_sleep > 300 and (rem_sec - delay_2) > 60:
                 await asyncio.sleep(remaining_sleep)
 
                 pass_info = await db.get_user_unlimited_pass(user_id)
