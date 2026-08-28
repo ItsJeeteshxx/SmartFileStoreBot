@@ -2709,12 +2709,12 @@ def generate_dynamic_upi_amount(base_amount: float) -> float:
 
 
 def format_plan_button_label(dur_key: str, price, lang: str = 'en') -> str:
-    """Returns clean label: '1 Day - ₹15' or '1 दिन - ₹15', with 5415825426633202840 on 7 days."""
+    """Returns clean label: '1 Day - ₹15' or '1 दिन - ₹15'."""
     dur_str = str(dur_key).lower().strip()
     p_val = int(price) if float(price).is_integer() else price
     if lang == 'hi':
         if dur_str in ('7d', '7days', '7day', '7'):
-            return f"7 दिन - ₹{p_val} <emoji id=\"5415825426633202840\">⚡️</emoji>"
+            return f"7 दिन - ₹{p_val}"
         elif dur_str.endswith('mo'):
             num = dur_str[:-2]
             return f"{num} {'महीना' if num == '1' else 'महीने'} - ₹{p_val}"
@@ -2736,7 +2736,7 @@ def format_plan_button_label(dur_key: str, price, lang: str = 'en') -> str:
             return f"{dur_str} - ₹{p_val}"
     else:
         if dur_str in ('7d', '7days', '7day', '7'):
-            return f"7 Days - ₹{p_val} <emoji id=\"5415825426633202840\">⚡️</emoji>"
+            return f"7 Days - ₹{p_val}"
         elif dur_str.endswith('mo'):
             num = dur_str[:-2]
             return f"{num} {'Month' if num == '1' else 'Months'} - ₹{p_val}"
@@ -2759,7 +2759,7 @@ def format_plan_button_label(dur_key: str, price, lang: str = 'en') -> str:
 PLAN_CUSTOM_EMOJIS = [
     ("5219943216781995020", "🔹"),  # 1st Plan
     ("6021577980449396555", "🔸"),  # 2nd Plan
-    ("6129783634158163466", "⚡"),  # 3rd Plan
+    ("5415825426633202840", "⚡"),  # 3rd Plan (7 Days)
     ("6269048584386122161", "💎"),  # 4th Plan
     ("6156730271858169904", "👑"),  # 5th Plan
 ]
@@ -3174,10 +3174,10 @@ async def _process_pass_callback(client, query):
                 methods_buttons.append([InlineKeyboardButton("💳 Pay Via UPI ( QR )" if not is_hi else "💳 UPI ( QR ) द्वारा भुगतान करें", callback_data="pass#method_upi")])
                 methods_api_kb.append([{"text": "Pay Via UPI ( QR )" if not is_hi else "UPI ( QR ) द्वारा भुगतान करें", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}])
 
-            cf_lbl_en = "Pay Via Cashfree <emoji id=\"6271408183583969564\">✨</emoji>"
-            cf_lbl_hi = "Cashfree द्वारा भुगतान करें <emoji id=\"6271408183583969564\">✨</emoji>"
+            cf_lbl_en = "Pay Via Cashfree"
+            cf_lbl_hi = "Cashfree द्वारा भुगतान करें"
             methods_buttons.append([InlineKeyboardButton("⚡ Pay Via Cashfree" if not is_hi else "⚡ Cashfree द्वारा भुगतान करें", callback_data="pass#method_cashfree")])
-            methods_api_kb.append([{"text": cf_lbl_hi if is_hi else cf_lbl_en, "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "5920332557466997677"}])
+            methods_api_kb.append([{"text": cf_lbl_hi if is_hi else cf_lbl_en, "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "6271408183583969564"}])
 
             if oxapay_enabled:
                 methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)" if not is_hi else "🌐 Crypto द्वारा भुगतान करें", callback_data="pass#method_crypto")])
