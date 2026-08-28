@@ -2415,8 +2415,8 @@ async def _process_pass_callback(client, query):
                 '• <emoji id="5805331990618053402">⚡️</emoji> <b>कोई एक्सेस लिमिट नहीं:</b> बिना किसी कूलडाउन के अनलिमिटेड फाइल्स डाउनलोड करें।\n\n'
             )
             lbl_txns = "📜 मेरे ट्रांसक्शन्स"
-            lbl_lang = "Language / भाषा"
-            lbl_support = "सहायता (Support)"
+            lbl_lang = "भाषा"
+            lbl_support = "सहायता"
             lbl_back = "← वापस"
         else:
             title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
@@ -2460,8 +2460,8 @@ async def _process_pass_callback(client, query):
             ])
 
             methods_api_kb = list(plan_api_kb)
-            methods_api_kb.append([{"text": "My Transactions" if not is_hi else "मेरे ट्रांसक्शन्स", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
-            methods_api_kb.append([{"text": "Language" if not is_hi else "भाषा (Language)", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}])
+            methods_api_kb.append([{"text": lbl_txns.replace("📜 ", ""), "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
+            methods_api_kb.append([{"text": lbl_lang, "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}])
             methods_api_kb.append([
                 {"text": lbl_support, "url": pass_support_link, "icon_custom_emoji_id": "6030833407339008632"},
                 {"text": lbl_back, "callback_data": "pass#close"}
@@ -2515,15 +2515,15 @@ async def _process_pass_callback(client, query):
             methods_buttons = []
             methods_api_kb = []
             if upi_enabled:
-                methods_buttons.append([InlineKeyboardButton("💳 Pay Via UPI ( INR )", callback_data="pass#method_upi")])
-                methods_api_kb.append([{"text": "Pay Via UPI ( INR )", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}])
+                methods_buttons.append([InlineKeyboardButton("💳 Pay Via UPI ( INR )" if not is_hi else "💳 UPI द्वारा भुगतान करें", callback_data="pass#method_upi")])
+                methods_api_kb.append([{"text": "Pay Via UPI ( INR )" if not is_hi else "UPI द्वारा भुगतान करें", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}])
 
-            methods_buttons.append([InlineKeyboardButton("⚡ Pay Via Cashfree", callback_data="pass#method_cashfree")])
-            methods_api_kb.append([{"text": "Pay Via Cashfree", "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "5920332557466997677"}])
+            methods_buttons.append([InlineKeyboardButton("⚡ Pay Via Cashfree" if not is_hi else "⚡ Cashfree द्वारा भुगतान करें", callback_data="pass#method_cashfree")])
+            methods_api_kb.append([{"text": "Pay Via Cashfree" if not is_hi else "Cashfree द्वारा भुगतान करें", "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "5920332557466997677"}])
 
             if oxapay_enabled:
-                methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)", callback_data="pass#method_crypto")])
-                methods_api_kb.append([{"text": "Pay Via Crypto (Oxapay)", "callback_data": "pass#method_crypto", "icon_custom_emoji_id": "5283232570660634549"}])
+                methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)" if not is_hi else "🌐 Crypto द्वारा भुगतान करें", callback_data="pass#method_crypto")])
+                methods_api_kb.append([{"text": "Pay Via Crypto (Oxapay)" if not is_hi else "Crypto द्वारा भुगतान करें", "callback_data": "pass#method_crypto", "icon_custom_emoji_id": "5283232570660634549"}])
 
             methods_buttons.append([InlineKeyboardButton(lbl_txns, callback_data="pass#my_transactions")])
             methods_buttons.append([InlineKeyboardButton(f"🌐 {lbl_lang}", callback_data="pass#lang_menu")])
@@ -2532,8 +2532,8 @@ async def _process_pass_callback(client, query):
                 InlineKeyboardButton(lbl_back, callback_data="pass#close")
             ])
 
-            methods_api_kb.append([{"text": "My Transactions" if not is_hi else "मेरे ट्रांसक्शन्स", "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
-            methods_api_kb.append([{"text": "Language" if not is_hi else "भाषा (Language)", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}])
+            methods_api_kb.append([{"text": lbl_txns.replace("📜 ", ""), "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}])
+            methods_api_kb.append([{"text": lbl_lang, "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}])
             methods_api_kb.append([
                 {"text": lbl_support, "url": pass_support_link, "icon_custom_emoji_id": "6030833407339008632"},
                 {"text": lbl_back, "callback_data": "pass#close"}
@@ -2567,6 +2567,7 @@ async def _process_pass_callback(client, query):
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
         
         plan_buttons = []
         plan_api_kb = []
@@ -2578,15 +2579,24 @@ async def _process_pass_callback(client, query):
             plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
             plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 
-        plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
-        plan_api_kb.append([{"text": "← Back", "callback_data": "pass#unlock_menu"}])
+        back_lbl = "← वापस" if is_hi else "← Back"
+        plan_buttons.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
 
-        text = (
-            '<emoji id="5920332557466997677">⚡</emoji> <b>Pay with Cashfree</b>\n'
-            "──────────────────────\n\n"
-            "Instant payment with UPI, Cards, NetBanking.\n\n"
-            "Select your desired Pass plan:"
-        )
+        if is_hi:
+            text = (
+                '<emoji id="5920332557466997677">⚡</emoji> <b>Cashfree द्वारा भुगतान करें</b>\n'
+                "──────────────────────\n\n"
+                "UPI, Cards, NetBanking से तुरंत भुगतान।\n\n"
+                "अपना पसंदीदा पास प्लान चुनें:"
+            )
+        else:
+            text = (
+                '<emoji id="5920332557466997677">⚡</emoji> <b>Pay with Cashfree</b>\n'
+                "──────────────────────\n\n"
+                "Instant payment with UPI, Cards, NetBanking.\n\n"
+                "Select your desired Pass plan:"
+            )
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
@@ -2615,6 +2625,7 @@ async def _process_pass_callback(client, query):
             return await query.answer("⚠️ Pay Via UPI is currently disabled by administrator.", show_alert=True)
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
         
         plan_buttons = []
         plan_api_kb = []
@@ -2626,15 +2637,24 @@ async def _process_pass_callback(client, query):
             plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
             plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 
-        plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
-        plan_api_kb.append([{"text": "← Back", "callback_data": "pass#unlock_menu"}])
+        back_lbl = "← वापस" if is_hi else "← Back"
+        plan_buttons.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
 
-        text = (
-            '<emoji id="5766975922620076409">💳</emoji> <b>Pay with UPI ( Manual )</b>\n'
-            "──────────────────────\n\n"
-            "Instant payment with Paytm, PhonePe, Gpay, BHIM, or any UPI app.\n\n"
-            "Select your desired Pass plan:"
-        )
+        if is_hi:
+            text = (
+                '<emoji id="5766975922620076409">💳</emoji> <b>UPI द्वारा भुगतान करें (Manual)</b>\n'
+                "──────────────────────\n\n"
+                "Paytm, PhonePe, Gpay, BHIM या किसी भी UPI ऐप से तुरंत भुगतान।\n\n"
+                "अपना पसंदीदा पास प्लान चुनें:"
+            )
+        else:
+            text = (
+                '<emoji id="5766975922620076409">💳</emoji> <b>Pay with UPI ( Manual )</b>\n'
+                "──────────────────────\n\n"
+                "Instant payment with Paytm, PhonePe, Gpay, BHIM, or any UPI app.\n\n"
+                "Select your desired Pass plan:"
+            )
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
@@ -2664,6 +2684,7 @@ async def _process_pass_callback(client, query):
 
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
         
         plan_buttons = []
         plan_api_kb = []
@@ -2678,8 +2699,9 @@ async def _process_pass_callback(client, query):
                 plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
                 plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 
-        plan_buttons.append([InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")])
-        plan_api_kb.append([{"text": "← Back", "callback_data": "pass#unlock_menu"}])
+        back_lbl = "← वापस" if is_hi else "← Back"
+        plan_buttons.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
 
         if len(plan_buttons) <= 1:
             text = (
@@ -2695,7 +2717,7 @@ async def _process_pass_callback(client, query):
                 '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
                 "──────────────────────\n\n"
                 "Instant payment with USDT, BTC, SOL, TON.\n\n"
-                '<emoji id="6026080811277621020">💡</emoji> <i>Note: OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:</i>\n\n'
+                '<emoji id="6026080811277621020">💡</emoji> Note: OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:\n\n'
                 "Select your desired Pass plan:"
             )
         if getattr(query.message, "photo", None):
@@ -2722,6 +2744,9 @@ async def _process_pass_callback(client, query):
 
     elif data == "pass#my_transactions":
         pass_info = await db.get_user_unlimited_pass(user_id)
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
         if pass_info.get('active'):
             import datetime
             try:
@@ -2731,9 +2756,9 @@ async def _process_pass_callback(client, query):
                 exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
             except Exception:
                 exp_str = datetime.datetime.fromtimestamp(pass_info['expires_at']).strftime('%d-%m-%Y %I:%M %p')
-            status_line = f'<emoji id="6267118537752450044">🟢</emoji> <b>Active</b> (Valid until: <code>{exp_str}</code>)'
+            status_line = f'<emoji id="6267118537752450044">🟢</emoji> <b>{"सक्रिय" if is_hi else "Active"}</b> ({"वैधता" if is_hi else "Valid until"}: <code>{exp_str}</code>)'
         else:
-            status_line = '<emoji id="6264989883241076562">⚪</emoji> <b>No Active Pass</b>' 
+            status_line = f'<emoji id="6264989883241076562">⚪</emoji> <b>{"कोई एक्टिव पास नहीं" if is_hi else "No Active Pass"}</b>' 
 
         txns = await db.get_user_pass_transactions(user_id, limit=5)
         if txns:
@@ -2752,26 +2777,38 @@ async def _process_pass_callback(client, query):
                 dur_verbose = format_duration_verbose(parse_duration_to_seconds(t['plan'], default_unit='d')) if t['plan'] else "Pass"
                 oid = t.get('id', 'N/A')
                 gw = t.get('gateway', 'Pay Via UPI (INR)')
-                st = "Paid & Active" if pass_info.get('active') else "Completed"
+                st = ("सक्रिय" if is_hi else "Paid & Active") if pass_info.get('active') else ("पूर्ण" if is_hi else "Completed")
                 txn_lines.append(
-                    f"<b>Order :-</b> <code>{oid}</code>\n"
-                    f"<b>Plan:</b> {dur_verbose.title()} , ({gw}) | <b>Status -</b> {st} , <code>{t_str}</code>"
+                    f"<b>{'ऑर्डर' if is_hi else 'Order'} :-</b> <code>{oid}</code>\n"
+                    f"<b>{'प्लान' if is_hi else 'Plan'}:</b> {dur_verbose.title()} , ({gw}) | <b>{'स्थिति' if is_hi else 'Status'} -</b> {st} , <code>{t_str}</code>"
                 )
             txns_body = "\n\n".join(txn_lines)
         else:
-            txns_body = "No previous transactions found on your account."
+            txns_body = "आपके खाते पर कोई पिछला लेनदेन नहीं मिला।" if is_hi else "No previous transactions found on your account."
 
-        text = (
-            '<emoji id="6021487472603568286">📜</emoji> <b>My Transactions & Pass Status</b>\n'
-            "──────────────────────\n"
-            f"<b>User:</b> {user_name} (<code>{user_id}</code>)\n"
-            f"<b>Pass Status:</b> {status_line}\n"
-            "──────────────────────\n"
-            "<b>Recent Purchases:</b>\n\n"
-            f"{txns_body}"
-        )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="pass#unlock_menu")]])
-        api_kb = [[{"text": "← Back", "callback_data": "pass#unlock_menu"}]]
+        back_lbl = "← वापस" if is_hi else "← Back"
+        if is_hi:
+            text = (
+                '<emoji id="6021487472603568286">📜</emoji> <b>मेरे ट्रांसक्शन्स और पास स्थिति</b>\n'
+                "──────────────────────\n"
+                f"<b>यूजर:</b> {user_name} (<code>{user_id}</code>)\n"
+                f"<b>पास स्थिति:</b> {status_line}\n"
+                "──────────────────────\n"
+                "<b>हाल की खरीदारी:</b>\n\n"
+                f"{txns_body}"
+            )
+        else:
+            text = (
+                '<emoji id="6021487472603568286">📜</emoji> <b>My Transactions & Pass Status</b>\n'
+                "──────────────────────\n"
+                f"<b>User:</b> {user_name} (<code>{user_id}</code>)\n"
+                f"<b>Pass Status:</b> {status_line}\n"
+                "──────────────────────\n"
+                "<b>Recent Purchases:</b>\n\n"
+                f"{txns_body}"
+            )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")]])
+        api_kb = [[{"text": back_lbl, "callback_data": "pass#unlock_menu"}]]
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
