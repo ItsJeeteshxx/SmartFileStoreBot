@@ -3269,7 +3269,7 @@ async def _process_pass_callback(client, query):
 
         if is_hi:
             title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
-            title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स V2 पेज</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>पास सब्सक्रिप्शन प्लान्स V2</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
             benefits_sec = (
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>पास के मुख्य फायदे:</b>\n'
                 '• <emoji id="5774077015388852135">🚫</emoji> <b>कोई डोनेशन मैसेज नहीं:</b> बिना किसी डोनेशन मैसेज के 100% क्लीन एक्सपीरियंस।\n'
@@ -3281,7 +3281,7 @@ async def _process_pass_callback(client, query):
             lbl_back = "← वापस"
         else:
             title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
-            title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans V2 Page</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
+            title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans V2</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
             benefits_sec = (
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
                 '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
