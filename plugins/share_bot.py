@@ -660,39 +660,39 @@ async def _process_start(client, message):
                             f'आपने पिछले <b>{win_verbose}</b> में <b>{len(hits)} / {max_limit} लिंक्स</b> एक्सेस कर लिए हैं। <emoji id="6266794310671275367">🎬</emoji>\n\n'
                             f'सभी यूजर्स के लिए लिमिट <b>{max_limit} लिंक्स प्रति {win_verbose}</b> निर्धारित है।\n\n'
                             f'<emoji id="6217487596486922033">⏰</emoji> <b>कूलडाउन रीसेट होने में समय:</b> <code>{rem_time_str}</code>\n\n'
-                            f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड पास अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
+                            f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड एक्सेस अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
                         )
                         limit_api_kb = [
                             [
                                 {
-                                    "text": "पास अनलॉक करें",
+                                    "text": "अनलिमिटेड एक्सेस अनलॉक करें",
                                     "callback_data": "pass#unlock_menu",
                                     "icon_custom_emoji_id": "6030443364178992166"
                                 }
                             ]
                         ]
                         unlock_kb = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔓 पास अनलॉक करें", callback_data="pass#unlock_menu")
+                            InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")
                         ]])
                     else:
                         limit_text = (
                             f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
                             f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
                             f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
-                            f'<b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
+                            f'<emoji id="6217487596486922033">⏳</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
                             f'Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji>'
                         )
                         limit_api_kb = [
                             [
                                 {
-                                    "text": "Unlock Unlimited Pass",
+                                    "text": "Unlock Unlimited Access",
                                     "callback_data": "pass#unlock_menu",
                                     "icon_custom_emoji_id": "6030443364178992166"
                                 }
                             ]
                         ]
                         unlock_kb = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔓 Unlock Unlimited Pass", callback_data="pass#unlock_menu")
+                            InlineKeyboardButton("🔓 Unlock Unlimited Access", callback_data="pass#unlock_menu")
                         ]])
                     sent_ok = await send_or_edit_with_custom_icons(
                         client=client,
@@ -2173,7 +2173,7 @@ async def _send_random_cooldown_reminder(
                 f"त्योहारों के इस खास मौके पर इंतज़ार कैसा? जब सिर्फ ₹15 में मिल रहा है <b>अनलिमिटेड एक्सेस पास</b>, तो <b>{cooldown_str}</b> तक कूलडाउन में क्यों रुकना? {_re()}\n\n"
                 f"नीचे दिए गए बटन पर टैप करें और तुरंत सुपरफास्ट फाइल्स डाउनलोड करें! {_re()}"
             )
-        btn_unlock = "पास अभी अनलॉक करें"
+        btn_unlock = "अनलिमिटेड एक्सेस अनलॉक करें"
         btn_supp = "सहायता"
     else:
         templates = [
@@ -2221,7 +2221,7 @@ async def _send_random_cooldown_reminder(
                 f"Celebrate this festive season with zero limits and zero waiting! Why wait <b>{cooldown_str}</b> on cooldown when you can grab our festive <b>Unlimited Access Pass</b> at super cheap rates? {_re()}\n\n"
                 f"Tap below and enjoy unlimited instant downloads right away! {_re()}"
             )
-        btn_unlock = "Unlock Unlimited Pass"
+        btn_unlock = "Unlock Unlimited Access"
         btn_supp = "Support"
 
     text = random.choice(templates)
@@ -4519,39 +4519,39 @@ async def _process_pass_callback(client, query):
                 f'आपने पिछले <b>{win_verbose}</b> में <b>{len(hits)} / {max_limit} लिंक्स</b> एक्सेस कर लिए हैं। <emoji id="6266794310671275367">🎬</emoji>\n\n'
                 f'सभी यूजर्स के लिए लिमिट <b>{max_limit} लिंक्स प्रति {win_verbose}</b> निर्धारित है।\n\n'
                 f'<emoji id="6217487596486922033">⏰</emoji> <b>कूलडाउन रीसेट होने में समय:</b> <code>{rem_time_str}</code>\n\n'
-                f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड पास अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
+                f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड एक्सेस अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
             )
             limit_api_kb = [
                 [
                     {
-                        "text": "पास अनलॉक करें",
+                        "text": "अनलिमिटेड एक्सेस अनलॉक करें",
                         "callback_data": "pass#unlock_menu",
                         "icon_custom_emoji_id": "6030443364178992166"
                     }
                 ]
             ]
             unlock_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔓 पास अनलॉक करें", callback_data="pass#unlock_menu")
+                InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")
             ]])
         else:
             limit_text = (
                 f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
                 f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
                 f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
-                f'<b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
+                f'<emoji id="6217487596486922033">⏳</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
                 f'Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji>'
             )
             limit_api_kb = [
                 [
                     {
-                        "text": "Unlock Unlimited Pass",
+                        "text": "Unlock Unlimited Access",
                         "callback_data": "pass#unlock_menu",
                         "icon_custom_emoji_id": "6030443364178992166"
                     }
                 ]
             ]
             unlock_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔓 Unlock Unlimited Pass", callback_data="pass#unlock_menu")
+                InlineKeyboardButton("🔓 Unlock Unlimited Access", callback_data="pass#unlock_menu")
             ]])
         sent_ok = await send_or_edit_with_custom_icons(
             client=client,
