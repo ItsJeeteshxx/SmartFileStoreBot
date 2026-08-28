@@ -2889,80 +2889,146 @@ async def schedule_pass_payment_reminder(
     amount_str: str,
     dur_verbose: str,
     pay_url: str = None,
-    delay_seconds: int = 180  # 3 minutes (under 5 minutes)
+    dur_key: str = "1d",
+    dyn_amount: float = 15.0
 ):
     """
-    Sends an automated payment reminder to the user under 5 minutes if their order remains unpaid.
+    Schedules max 2 payment completion reminders under 10 minutes (at 3 mins and 7 mins).
+    After 10 minutes, the order reminder task expires and ceases completely.
+    Aborts immediately if user completes payment, verifies, cancels, or buys a pass.
     """
     task_key = f"{user_id}_{order_id}"
     _active_order_reminders[task_key] = time.time()
 
+    async def _send_single_rem(rem_idx: int):
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+        u_name = "there"
+        try:
+            chat_member = await client.get_chat(user_id)
+            if chat_member and chat_member.first_name:
+                u_name = chat_member.first_name
+        except Exception:
+            pass
+
+        if is_hi:
+            plan_name = format_plan_name_friendly(dur_key, lang='hi')
+            if rem_idx == 1:
+                header = '<emoji id="6034898821517940846">⏰</emoji> <b>पेमेंट रिमाइंडर (1/2) — अपना ऑर्डर पूरा करें</b>'
+                note = "आपका पेमेंट इनवॉइस पेंडिंग है। कृपया समय रहते पेमेंट पूरा करें।"
+            else:
+                header = '<emoji id="6034898821517940846">⏳</emoji> <b>अंतिम पेमेंट रिमाइंडर (2/2) — इनवॉइस समाप्त होने वाला है</b>'
+                note = "आपका पेमेंट इनवॉइस अगले 3 मिनट में समाप्त (Expire) हो जाएगा।"
+
+            rem_text = (
+                f"{header}\n\n"
+                f"नमस्ते <b>{u_name}</b>, आपका <b>{plan_name} अनलिमिटेड एक्सेस पास</b> पेमेंट की प्रतीक्षा कर रहा है!\n\n"
+                f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n"
+                f"• <b>बकाया राशि:</b> <code>{amount_str}</code>\n"
+                f"• <b>पेमेंट मेथड:</b> {gateway_name}\n\n"
+                f"<blockquote><emoji id=\"5773677501825945508\">⚡️</emoji> {note} बिना किसी रुकावट व लिमिट के अनलिमिटेड डाउनलोड्स का आनंद लें!</blockquote>\n\n"
+                f"यदि आप पहले ही भुगतान कर चुके हैं या कोई सहायता चाहिए, तो कृपया सपोर्ट से संपर्क करें।"
+            )
+            btn_pay_text = "Pay Now"
+            btn_status_text = "पेमेंट स्टेटस चेक करें"
+            btn_supp_text = "सहायता"
+        else:
+            plan_name = format_plan_name_friendly(dur_key, lang='en')
+            if rem_idx == 1:
+                header = '<emoji id="6034898821517940846">⏰</emoji> <b>Payment Reminder (1/2) — Complete Your Order</b>'
+                note = "Your payment invoice is pending. Please complete the payment to activate."
+            else:
+                header = '<emoji id="6034898821517940846">⏳</emoji> <b>Final Reminder (2/2) — Invoice Expiring Soon</b>'
+                note = "Your payment invoice will expire in 3 minutes."
+
+            rem_text = (
+                f"{header}\n\n"
+                f"Hey <b>{u_name}</b>, your <b>{plan_name} Unlimited Access Pass</b> order is waiting for payment!\n\n"
+                f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+                f"• <b>Amount Due:</b> <code>{amount_str}</code>\n"
+                f"• <b>Payment Method:</b> {gateway_name}\n\n"
+                f'<blockquote><emoji id=\"5773677501825945508\">⚡️</emoji> {note} Activate your pass now to enjoy uninterrupted downloads with zero limits!</blockquote>\n\n'
+                f"If you have already paid or need assistance, please feel free to contact our support team."
+            )
+            btn_pay_text = "Pay Now"
+            btn_status_text = "Check Payment Status"
+            btn_supp_text = "Support"
+
+        rem_buttons = []
+        rem_api_buttons = []
+        if pay_url:
+            rem_buttons.append([InlineKeyboardButton(btn_pay_text, url=pay_url)])
+            rem_api_buttons.append([{"text": btn_pay_text, "url": pay_url, "icon_custom_emoji_id": "5807527002374151568"}])
+        elif "UPI" in gateway_name:
+            rem_buttons.append([InlineKeyboardButton(btn_status_text, callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")])
+            rem_api_buttons.append([{"text": btn_status_text, "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}])
+
+        rem_buttons.append([InlineKeyboardButton(btn_supp_text, url="https://t.me/AryaHelpTG")])
+        rem_api_buttons.append([{"text": btn_supp_text, "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}])
+
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=user_id,
+            text=rem_text,
+            inline_keyboard=rem_api_buttons
+        )
+        if not sent_ok:
+            await client.send_message(
+                chat_id=user_id,
+                text=rem_text,
+                reply_markup=InlineKeyboardMarkup(rem_buttons)
+            )
+
     async def _reminder_coro():
         try:
-            await asyncio.sleep(delay_seconds)
+            # --- REMINDER 1: At 3 minutes (180 seconds) ---
+            await asyncio.sleep(180)
             if task_key not in _active_order_reminders:
                 return
 
-            # Check if user already activated pass or paid order
             pass_info = await db.get_user_unlimited_pass(user_id)
             if pass_info.get('active'):
-                _active_order_reminders.pop(task_key, None)
                 return
 
             order_doc = await db.pass_orders.find_one({'order_id': order_id})
-            if order_doc and order_doc.get('status') == 'PAID':
-                _active_order_reminders.pop(task_key, None)
+            if order_doc and order_doc.get('status') in ('PAID', 'CANCELLED', 'EXPIRED'):
                 return
 
             utr_doc = await db.used_utrs.find_one({'order_id': order_id})
             if utr_doc:
-                _active_order_reminders.pop(task_key, None)
                 return
 
-            u_name = "there"
-            try:
-                chat_member = await client.get_chat(user_id)
-                if chat_member and chat_member.first_name:
-                    u_name = chat_member.first_name
-            except Exception:
-                pass
+            await _send_single_rem(1)
 
-            rem_text = (
-                f'<emoji id="6034898821517940846">⏰</emoji> <b>Payment Reminder — Complete Your Order</b>\n\n'
-                f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> order is waiting for payment!\n\n"
-                f"• <b>Order ID:</b> <code>{order_id}</code>\n"
-                f"• <b>Amount Due:</b> <code>{amount_str}</code>\n"
-                f"• <b>Payment Method:</b> {gateway_name}\n\n"
-                f'<blockquote><emoji id="5773677501825945508">⚡️</emoji> Activate your unlimited pass now to enjoy uninterrupted downloads with zero limits and no donation messages!</blockquote>\n\n'
-                f"If you have already paid or need assistance, please feel free to contact our support team."
+            # --- REMINDER 2: At 7 minutes (240 seconds more = 420s total, under 10 mins) ---
+            await asyncio.sleep(240)
+            if task_key not in _active_order_reminders:
+                return
+
+            pass_info = await db.get_user_unlimited_pass(user_id)
+            if pass_info.get('active'):
+                return
+
+            order_doc = await db.pass_orders.find_one({'order_id': order_id})
+            if order_doc and order_doc.get('status') in ('PAID', 'CANCELLED', 'EXPIRED'):
+                return
+
+            utr_doc = await db.used_utrs.find_one({'order_id': order_id})
+            if utr_doc:
+                return
+
+            await _send_single_rem(2)
+
+            # --- EXPIRE AT 10 MINUTES (180 seconds more = 600s total) ---
+            await asyncio.sleep(180)
+            await db.pass_orders.update_one(
+                {'order_id': order_id, 'status': 'PENDING'},
+                {'$set': {'status': 'EXPIRED'}}
             )
-
-            rem_buttons = []
-            rem_api_buttons = []
-            if pay_url:
-                rem_buttons.append([InlineKeyboardButton("💳 Complete Payment Now", url=pay_url)])
-                rem_api_buttons.append([{"text": "Complete Payment Now", "url": pay_url, "icon_custom_emoji_id": "5807527002374151568"}])
-            elif "UPI" in gateway_name:
-                rem_buttons.append([InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount if 'dyn_amount' in locals() else '15'}")])
-                rem_api_buttons.append([{"text": "Check Payment Status", "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount if 'dyn_amount' in locals() else '15'}", "icon_custom_emoji_id": "5807492110059838726"}])
-
-            rem_buttons.append([InlineKeyboardButton("🔒 Support", url="https://t.me/AryaHelpTG")])
-            rem_api_buttons.append([{"text": "Support", "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}])
-
-            sent_ok = await send_or_edit_with_custom_icons(
-                client=client,
-                chat_id=user_id,
-                text=rem_text,
-                inline_keyboard=rem_api_buttons
-            )
-            if not sent_ok:
-                await client.send_message(
-                    chat_id=user_id,
-                    text=rem_text,
-                    reply_markup=InlineKeyboardMarkup(rem_buttons)
-                )
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.warning(f"Payment reminder error: {e}")
+            logger.warning(f"Payment reminder error for order {order_id}: {e}")
         finally:
             _active_order_reminders.pop(task_key, None)
 
@@ -3772,7 +3838,8 @@ async def _process_pass_callback(client, query):
             gateway_name="Pay Via UPI (INR)",
             amount_str=f"₹{dyn_amount:.2f}",
             dur_verbose=f"{count} {unit}",
-            delay_seconds=180
+            dur_key=dur_key,
+            dyn_amount=dyn_amount
         ))
 
     elif data.startswith("pass#upistatus_"):
@@ -4034,6 +4101,10 @@ async def _process_pass_callback(client, query):
         order_id = res["order_id"]
         dur_name = res["dur_name"]
         dur_name_hi = format_plan_name_friendly(dur_key, lang='hi')
+        btn_pay_lbl = f"Pay Now ( ${amount_usd:.2f} )"
+        btn_verify_lbl = "पेमेंट वेरीफाई करें" if is_hi else "Verify Payment"
+        btn_cancel_lbl = "अपना ऑर्डर कैंसिल करें" if is_hi else "Cancel your order"
+        btn_back_lbl = "← वापस" if is_hi else "← Back"
 
         if is_hi:
             inv_text = (
@@ -4041,31 +4112,40 @@ async def _process_pass_callback(client, query):
                 f"• <b>प्लान:</b> {dur_name_hi} अनलिमिटेड एक्सेस\n"
                 f"• <b>राशि:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
                 f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
-                f"<blockquote>नीचे दिए गए बटन पर टैप करके OxaPay के ज़रिए अपनी पसंदीदा क्रिप्टोकरेंसी (USDT, BTC, ETH, TRX, BNB, LTC, SOL आदि) से भुगतान करें। पेमेंट भेजने के बाद <b>'पेमेंट वेरीफाई करें'</b> पर टैप करें!</blockquote>"
+                f"<blockquote>नीचे दिए गए <b>Pay Now</b> बटन पर टैप करके OxaPay के ज़रिए अपनी पसंदीदा क्रिप्टोकरेंसी (USDT, BTC, ETH, TRX, BNB, LTC, SOL आदि) से भुगतान करें। पेमेंट भेजने के बाद <b>Verify Payment</b> पर टैप करें!</blockquote>"
             )
-            inv_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"🌐 ${amount_usd:.2f} क्रिप्टो पे करें ➟", url=pay_link)],
-                [InlineKeyboardButton("🔄 पेमेंट वेरीफाई करें", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
-                [InlineKeyboardButton("❌ अपना ऑर्डर कैंसिल करें", callback_data=f"pass#cancel_{order_id}")],
-                [InlineKeyboardButton("← वापस", callback_data="pass#method_crypto")]
-            ])
         else:
             inv_text = (
                 f'<emoji id="5283232570660634549">🌐</emoji> <b>Crypto Payment Invoice — Unlimited Delivery Pass</b>\n\n'
                 f"• <b>Plan:</b> {dur_name} Unlimited Access\n"
                 f"• <b>Amount:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
                 f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
-                f"<blockquote>Tap the button below to pay using your preferred cryptocurrency (USDT, BTC, ETH, TRX, BNB, LTC, SOL, etc.) via OxaPay. After sending crypto, tap <b>'Verify Payment'</b> to activate!</blockquote>"
+                f"<blockquote>Tap the button <b>Pay Now</b> below to pay using your preferred cryptocurrency (USDT, BTC, ETH, TRX, BNB, LTC, SOL, etc.) via OxaPay. After sending crypto, tap <b>Verify Payment</b> to activate!</blockquote>"
             )
-            inv_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"🌐 Pay ${amount_usd:.2f} Crypto ➟", url=pay_link)],
-                [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
-                [InlineKeyboardButton("❌ Cancel your order", callback_data=f"pass#cancel_{order_id}")],
-                [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
-            ])
-        await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
-        # Schedule automatic reminder under 5 minutes (3 mins) if OxaPay crypto invoice not completed
+        inv_api_kb = [
+            [{"text": btn_pay_lbl, "url": pay_link, "icon_custom_emoji_id": "5807527002374151568"}],
+            [{"text": btn_verify_lbl, "callback_data": f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_cancel_lbl, "callback_data": f"pass#cancel_{order_id}", "icon_custom_emoji_id": "5774077015388852135"}],
+            [{"text": btn_back_lbl, "callback_data": "pass#method_crypto"}]
+        ]
+        inv_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(btn_pay_lbl, url=pay_link)],
+            [InlineKeyboardButton(btn_verify_lbl, callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
+            [InlineKeyboardButton(btn_cancel_lbl, callback_data=f"pass#cancel_{order_id}")],
+            [InlineKeyboardButton(btn_back_lbl, callback_data="pass#method_crypto")]
+        ])
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=query.message.chat.id,
+            text=inv_text,
+            inline_keyboard=inv_api_kb,
+            message_id=query.message.id
+        )
+        if not sent_ok:
+            await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+        # Schedule automatic reminder (max 2 times under 10 minutes) if OxaPay crypto invoice not completed
         asyncio.create_task(schedule_pass_payment_reminder(
             client=client,
             user_id=user_id,
@@ -4074,7 +4154,8 @@ async def _process_pass_callback(client, query):
             amount_str=f"${amount_usd:.2f} USD (~₹{amount_inr:.0f})",
             dur_verbose=dur_name,
             pay_url=pay_link,
-            delay_seconds=180
+            dur_key=dur_key,
+            dyn_amount=amount_inr
         ))
 
     elif data.startswith("pass#oxaverify_"):
@@ -4237,6 +4318,19 @@ async def _process_pass_callback(client, query):
         )
         if not sent_ok:
             await query.message.edit_text(inv_text, reply_markup=inv_kb)
+
+        # Schedule automatic reminder (max 2 times under 10 minutes) if Cashfree invoice not completed
+        asyncio.create_task(schedule_pass_payment_reminder(
+            client=client,
+            user_id=user_id,
+            order_id=order_id,
+            gateway_name="⚡ Cashfree Payments",
+            amount_str=f"₹{amount:.2f}",
+            dur_verbose=dur_verbose,
+            pay_url=checkout_pay_link,
+            dur_key=dur_key,
+            dyn_amount=amount
+        ))
 
     elif data.startswith("pass#verify_"):
         parts = data.split("_")
