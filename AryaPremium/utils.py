@@ -572,3 +572,142 @@ async def upload_to_catbox(file_path):
             if resp.status == 200:
                 return await resp.text()
     return None
+
+
+async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True, db=None) -> list:
+    """
+    Scans the source channel for the story between start_id and end_id in batches of 200.
+    Filters out empty/deleted messages and identifies all valid media/content messages.
+    Updates `valid_file_ids`, `file_count`, and each part's `valid_file_ids` and `file_count`.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if db is None:
+        try:
+            from database import db as default_db
+            db = default_db
+        except Exception:
+            pass
+            
+    src = story_doc.get('source')
+    start_id = story_doc.get('start_id')
+    end_id = story_doc.get('end_id')
+    
+    if not src or not start_id or not end_id:
+        return story_doc.get("valid_file_ids") or []
+        
+    s = min(int(start_id), int(end_id))
+    e = max(int(start_id), int(end_id))
+    
+    all_ids = list(range(s, e + 1))
+    valid_ids = []
+    batch_size = 200
+    
+    for i in range(0, len(all_ids), batch_size):
+        chunk = all_ids[i:i + batch_size]
+        try:
+            msgs = await client.get_messages(int(src), chunk)
+            if not isinstance(msgs, list):
+                msgs = [msgs]
+            for m in msgs:
+                if not m or getattr(m, "empty", False) or getattr(m, "service", False):
+                    continue
+                # Check if message has media or content
+                has_content = bool(
+                    getattr(m, "document", None) or
+                    getattr(m, "video", None) or
+                    getattr(m, "audio", None) or
+                    getattr(m, "voice", None) or
+                    getattr(m, "photo", None) or
+                    getattr(m, "animation", None) or
+                    getattr(m, "text", None)
+                )
+                if has_content:
+                    valid_ids.append(m.id)
+        except Exception as err:
+            logger.warning(f"Scan batch {chunk[0]}-{chunk[-1]} in {src} failed: {err}")
+            await asyncio.sleep(0.5)
+        await asyncio.sleep(0.04) # pause to prevent Telegram flood wait
+        
+    valid_ids = sorted(list(set(valid_ids)))
+    
+    # Process parts if present
+    parts = story_doc.get("parts") or []
+    updated_parts = []
+    for p in parts:
+        if isinstance(p, dict):
+            p_start = int(p.get("start_id") or 0)
+            p_end = int(p.get("end_id") or 0)
+            if p_start and p_end:
+                ps = min(p_start, p_end)
+                pe = max(p_start, p_end)
+                p_val_ids = [mid for mid in valid_ids if ps <= mid <= pe]
+            else:
+                p_val_ids = []
+            p_copy = dict(p)
+            p_copy["valid_file_ids"] = p_val_ids
+            p_copy["file_count"] = len(p_val_ids)
+            updated_parts.append(p_copy)
+            
+    updates = {
+        "valid_file_ids": valid_ids,
+        "file_count": len(valid_ids),
+    }
+    if updated_parts:
+        updates["parts"] = updated_parts
+        
+    story_doc["valid_file_ids"] = valid_ids
+    story_doc["file_count"] = len(valid_ids)
+    if updated_parts:
+        story_doc["parts"] = updated_parts
+        
+    if save_to_db and db and hasattr(db, "db") and story_doc.get("_id"):
+        from bson.objectid import ObjectId
+        s_oid = story_doc["_id"] if isinstance(story_doc["_id"], ObjectId) else ObjectId(str(story_doc["_id"]))
+        await db.db.premium_stories.update_one({"_id": s_oid}, {"$set": updates})
+        
+    return valid_ids
+
+
+async def scan_and_index_all_stories(client, db=None, progress_cb=None):
+    """
+    Iterates over all stories in MongoDB and scans/indexes their valid files from Telegram DB channel.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if db is None:
+        try:
+            from database import db as default_db
+            db = default_db
+        except Exception:
+            pass
+            
+    if not db or not hasattr(db, "db"):
+        return {"total": 0, "success": 0, "failed": 0}
+        
+    stories = await db.db.premium_stories.find({}).to_list(length=None)
+    total = len(stories)
+    success = 0
+    failed = 0
+    
+    logger.info(f"Starting bulk sync for {total} stories...")
+    
+    for idx, story in enumerate(stories, 1):
+        s_name = story.get("story_name_en") or str(story.get("_id"))
+        try:
+            valid_ids = await scan_and_index_story(client, story, save_to_db=True, db=db)
+            success += 1
+            logger.info(f"[{idx}/{total}] Indexed '{s_name}': {len(valid_ids)} valid files.")
+            if progress_cb:
+                await progress_cb(idx, total, s_name, len(valid_ids), True)
+        except Exception as e:
+            failed += 1
+            logger.error(f"[{idx}/{total}] Failed to index '{s_name}': {e}")
+            if progress_cb:
+                await progress_cb(idx, total, s_name, 0, False)
+        await asyncio.sleep(0.08)
+        
+    return {"total": total, "success": success, "failed": failed}
+

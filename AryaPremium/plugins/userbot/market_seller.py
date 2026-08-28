@@ -1812,7 +1812,7 @@ async def _show_story_preview(client, user_id, story, lang):
 
     name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
 
-    ep_count = abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?"
+    ep_count = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None) or (abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?")
 
     platform = story.get('platform', 'Other')
 
@@ -2922,7 +2922,17 @@ async def _process_start(client, message):
         else:
             start_id = story.get('start_id')
             end_id   = story.get('end_id')
-        total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
+
+        valid_file_ids = None
+        if part_info and part_info.get("valid_file_ids"):
+            valid_file_ids = part_info["valid_file_ids"]
+        elif story.get("valid_file_ids"):
+            if part_info and start_id and end_id:
+                valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
+            else:
+                valid_file_ids = story["valid_file_ids"]
+
+        total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
         s_id_str = str(story['_id'])
 
         if total_files > 40:
@@ -3736,20 +3746,54 @@ async def _process_text(client, message):
             story = await db.db.premium_stories.find_one({"story_id": pending_s_id})
         
         if story:
-            start_id = story.get("start_id")
-            end_id = story.get("end_id")
-            c_start, c_end = start_id, end_id
-            
+            # Check for part purchase
+            part_info = None
+            user_order = await db.db.orders.find_one({
+                "user_id": {"$in": [user_id, str(user_id)]},
+                "story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]},
+                "status": {"$in": ["paid", "delivered"]}
+            }, sort=[("created_at", -1)])
+            if user_order and user_order.get("items"):
+                for itm in user_order["items"]:
+                    if (itm.get("story_id") == pending_s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
+                        part_info = itm
+                        break
+
+            start_id = int(part_info["start_id"]) if (part_info and part_info.get("start_id")) else story.get("start_id")
+            end_id = int(part_info["end_id"]) if (part_info and part_info.get("end_id")) else story.get("end_id")
+
+            valid_list = None
+            if part_info and part_info.get("valid_file_ids"):
+                valid_list = part_info["valid_file_ids"]
+            elif story.get("valid_file_ids"):
+                if part_info and start_id and end_id:
+                    valid_list = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
+                else:
+                    valid_list = story["valid_file_ids"]
+
             import re
             match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
-            fs, fe = 1, "All"
+            custom_msg_ids = None
             if match:
                 fs, fe = int(match.group(1)), int(match.group(2))
-                c_start = start_id + fs - 1
-                c_end = min(start_id + fe - 1, end_id)
-            
+                if valid_list:
+                    custom_msg_ids = valid_list[fs - 1 : fe]
+                else:
+                    c_start = start_id + fs - 1
+                    c_end = min(start_id + fe - 1, end_id)
+            else:
+                # Full Delivery
+                fs, fe = 1, len(valid_list) if valid_list else ((end_id - start_id) + 1 if (start_id and end_id) else "All")
+                if valid_list:
+                    custom_msg_ids = valid_list
+                else:
+                    c_start, c_end = start_id, end_id
+
             m = await message.reply_text(f"<i>⏳ Initializing DM Delivery (Files {fs}-{fe})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
-            return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
+            if custom_msg_ids is not None:
+                return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, custom_msg_ids=custom_msg_ids))
+            else:
+                return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
         else:
             return await message.reply_text("❌ <i>Story not found.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
@@ -6094,7 +6138,7 @@ async def _process_callback(client, query):
 
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en'))
 
-            ep_count = abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?"
+            ep_count = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None) or (abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?")
 
 
 
@@ -7721,13 +7765,35 @@ async def _process_callback(client, query):
 
         
 
-        start_id = story.get('start_id')
+        part_info = None
+        user_order = await db.db.orders.find_one({
+            "user_id": {"$in": [user_id, str(user_id)]},
+            "story_ids": {"$in": [s_id, str(story.get('_id', ''))]},
+            "status": {"$in": ["paid", "delivered"]}
+        }, sort=[("created_at", -1)])
+        if user_order and user_order.get("items"):
+            for itm in user_order["items"]:
+                if (itm.get("story_id") == s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
+                    part_info = itm
+                    break
 
-        end_id = story.get('end_id')
+        if part_info and part_info.get("start_id") and part_info.get("end_id"):
+            start_id = int(part_info["start_id"])
+            end_id   = int(part_info["end_id"])
+        else:
+            start_id = story.get('start_id')
+            end_id   = story.get('end_id')
 
-        total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
+        valid_file_ids = None
+        if part_info and part_info.get("valid_file_ids"):
+            valid_file_ids = part_info["valid_file_ids"]
+        elif story.get("valid_file_ids"):
+            if part_info and start_id and end_id:
+                valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
+            else:
+                valid_file_ids = story["valid_file_ids"]
 
-
+        total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
 
         parts_data = len(data) > 3
 
@@ -8530,7 +8596,7 @@ async def _send_demo_files(client, user_id, story, lang):
 
 
 
-async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=None, part_end=None):
+async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=None, part_end=None, custom_msg_ids=None):
     try:
         dm_aborts.discard(user_id)
         bt = await db.db.premium_bots.find_one({"id": client.me.id})
@@ -8541,11 +8607,25 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
         end = part_end if part_end else story.get('end_id')
         story_id_str = str(story['_id'])
         
-        if not src or not start or not end:
-            await client.send_message(user_id, "❌ Story file range is not configured correctly. Please contact admin.")
-            return
+        if custom_msg_ids is not None:
+            msg_range = custom_msg_ids
+        elif story.get('valid_file_ids'):
+            val_ids = story['valid_file_ids']
+            if part_start and part_end:
+                ps = min(int(part_start), int(part_end))
+                pe = max(int(part_start), int(part_end))
+                msg_range = [mid for mid in val_ids if ps <= mid <= pe]
+            else:
+                msg_range = val_ids
+        else:
+            if not src or not start or not end:
+                await client.send_message(user_id, "❌ Story file range is not configured correctly. Please contact admin.")
+                return
+            msg_range = list(range(int(start), int(end) + 1))
 
-        msg_range = range(int(start), int(end) + 1)
+        if not msg_range:
+            await client.send_message(user_id, "❌ No valid files found in this selection. Please contact support.")
+            return
 
         # Fetching Message with Media & Cancel Button
         fetch_config = bt_cfg.get("fetching_media")

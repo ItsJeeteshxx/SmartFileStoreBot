@@ -2938,6 +2938,11 @@ async def _add_story_flow(client, user_id):
         sj.setdefault("forwarding_enabled", True)
         result = await db.db.premium_stories.insert_one(sj)
         story_id = str(result.inserted_id)
+        try:
+            from utils import scan_and_index_story
+            asyncio.create_task(scan_and_index_story(store_cli or client, sj, save_to_db=True, db=db))
+        except Exception: pass
+        story_id = str(result.inserted_id)
         bt_doc = await db.db.premium_bots.find_one({"id": int(sj.get("bot_id", 0))}) if sj.get("bot_id") else None
         bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
         _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
@@ -4162,4 +4167,91 @@ async def _msg_all_buyers_flow(client, admin_id: int):
         await client.send_message(admin_id, "<i>⏰ Timed out.</i>", parse_mode=enums.ParseMode.HTML)
     except Exception as e:
         await client.send_message(admin_id, f"❌ Error during broadcast: {e}", parse_mode=enums.ParseMode.HTML)
+
+@Client.on_message(filters.command(["sync_all_stories", "sync_stories"]) & filters.private)
+async def mgmt_sync_all_stories(client, message):
+    user_id = message.from_user.id
+    if await _deny_if_not_owner(client, user_id):
+        return
+    
+    status_msg = await message.reply_text(
+        "<b>🔄 Starting Bulk Story File Indexing...</b>\n\n"
+        "<i>Scanning channel messages for all stories in background. Updates will be shown below.</i>",
+        parse_mode=enums.ParseMode.HTML
+    )
+    
+    async def on_progress(idx, total, name, valid_count, ok):
+        if idx % 10 == 0 or idx == total or idx == 1:
+            try:
+                await status_msg.edit_text(
+                    f"<b>🔄 Indexing Stories... ({idx}/{total})</b>\n\n"
+                    f"<b>Last Story:</b> {name}\n"
+                    f"<b>Valid Files:</b> {valid_count}\n\n"
+                    f"<i>Please wait while all channels are scanned...</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                pass
+                
+    from utils import scan_and_index_all_stories
+    async def _run_bg():
+        try:
+            res = await scan_and_index_all_stories(client, db=db, progress_cb=on_progress)
+            await status_msg.edit_text(
+                f"<b>✅ Bulk Story File Indexing Complete!</b>\n\n"
+                f"• Total Stories: <b>{res['total']}</b>\n"
+                f"• Successfully Synced: <b>{res['success']}</b>\n"
+                f"• Failed: <b>{res['failed']}</b>\n\n"
+                f"<i>All dead file IDs have been removed from chunk selection and file counts are updated!</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception as e:
+            try:
+                await status_msg.edit_text(f"❌ <b>Sync failed:</b> {e}", parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
+                
+    asyncio.create_task(_run_bg())
+
+
+@Client.on_message(filters.command(["sync_story", "resync_story"]) & filters.private)
+async def mgmt_sync_story(client, message):
+    user_id = message.from_user.id
+    if await _deny_if_not_owner(client, user_id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply_text("<b>Usage:</b> <code>/sync_story &lt;story_id&gt;</code>", parse_mode=enums.ParseMode.HTML)
+        
+    s_id_input = args[1].strip()
+    from bson.objectid import ObjectId
+    story = None
+    try:
+        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id_input)})
+    except Exception:
+        pass
+    if not story:
+        story = await db.db.premium_stories.find_one({"_id": s_id_input})
+    if not story:
+        story = await db.db.premium_stories.find_one({"story_id": s_id_input})
+        
+    if not story:
+        return await message.reply_text("❌ <b>Story not found!</b>", parse_mode=enums.ParseMode.HTML)
+        
+    wait_msg = await message.reply_text("<i>⏳ Scanning and indexing story files...</i>", parse_mode=enums.ParseMode.HTML)
+    from utils import scan_and_index_story
+    try:
+        valid_ids = await scan_and_index_story(client, story, save_to_db=True, db=db)
+        name = story.get('story_name_en', 'Story')
+        s_id = story.get('start_id', '?')
+        e_id = story.get('end_id', '?')
+        await wait_msg.edit_text(
+            f"<b>✅ Story Synced Successfully!</b>\n\n"
+            f"<b>Story:</b> {name}\n"
+            f"<b>Message Range:</b> {s_id} - {e_id}\n"
+            f"<b>Valid Active Files:</b> <b>{len(valid_ids)}</b>",
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ <b>Error syncing story:</b> {e}", parse_mode=enums.ParseMode.HTML)
 
