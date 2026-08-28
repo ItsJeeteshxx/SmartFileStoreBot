@@ -3585,9 +3585,27 @@ async def _process_pass_callback(client, query):
                 await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(plan_buttons))
 
     elif data == "pass#my_transactions":
-        pass_info = await db.get_user_unlimited_pass(user_id)
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
+
+        # Show instant loading message with custom animated emoji 5220046725493828505
+        load_text = (
+            '<emoji id="5220046725493828505">⏳</emoji> <b>ट्रांसक्शन्स लोड हो रहे हैं, कृपया प्रतीक्षा करें...</b>'
+            if is_hi else
+            '<emoji id="5220046725493828505">⏳</emoji> <b>Loading transactions, please wait...</b>'
+        )
+        try:
+            await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=load_text,
+                inline_keyboard=[],
+                message_id=query.message.id
+            )
+        except Exception:
+            pass
+
+        pass_info = await db.get_user_unlimited_pass(user_id)
 
         if pass_info.get('active'):
             import datetime
@@ -3677,6 +3695,26 @@ async def _process_pass_callback(client, query):
         parts = data.split("_")
         dur_key = parts[1]
         amount = float(parts[2])
+
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
+        # Show instant loading message with custom animated emoji 5220046725493828505
+        load_text = (
+            '<emoji id="5220046725493828505">⏳</emoji> <b>UPI QR कोड लोड हो रहा है, कृपया प्रतीक्षा करें...</b>'
+            if is_hi else
+            '<emoji id="5220046725493828505">⏳</emoji> <b>Loading UPI QR Code, please wait...</b>'
+        )
+        try:
+            await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=load_text,
+                inline_keyboard=[],
+                message_id=query.message.id
+            )
+        except Exception:
+            pass
 
         dur_str = str(dur_key).lower().strip()
         if dur_str.endswith('mo'):
@@ -4094,8 +4132,20 @@ async def _process_pass_callback(client, query):
                 show_alert=True
             )
 
+        # Show instant loading message with custom animated emoji 5220046725493828505
+        load_text = (
+            '<emoji id="5220046725493828505">⏳</emoji> <b>क्रिप्टो इनवॉइस बनाई जा रही है, कृपया प्रतीक्षा करें...</b>'
+            if is_hi else
+            '<emoji id="5220046725493828505">⏳</emoji> <b>Generating Crypto Invoice, please wait...</b>'
+        )
         try:
-            await query.answer("OxaPay के माध्यम से क्रिप्टो इनवॉइस बनाया जा रहा है..." if is_hi else "Generating crypto invoice via OxaPay...", show_alert=False)
+            await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=load_text,
+                inline_keyboard=[],
+                message_id=query.message.id
+            )
         except Exception:
             pass
 
@@ -4257,8 +4307,23 @@ async def _process_pass_callback(client, query):
         dur_key = parts[1]
         amount = float(parts[2])
 
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
+        # Show instant loading message with custom animated emoji 5220046725493828505
+        load_text = (
+            '<emoji id="5220046725493828505">⏳</emoji> <b>पेमेंट इनवॉइस बनाई जा रही है, कृपया प्रतीक्षा करें...</b>'
+            if is_hi else
+            '<emoji id="5220046725493828505">⏳</emoji> <b>Creating Payment Invoice, please wait...</b>'
+        )
         try:
-            await query.answer("Creating payment order...")
+            await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=load_text,
+                inline_keyboard=[],
+                message_id=query.message.id
+            )
         except Exception:
             pass
 
