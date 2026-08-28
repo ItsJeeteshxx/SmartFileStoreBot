@@ -1953,6 +1953,47 @@ def _cancel_cooldown_reminders(user_id: int):
         except Exception:
             pass
 
+def get_current_festival(lang='en') -> str:
+    """Returns Indian festival season greeting if active, else None."""
+    import datetime
+    try:
+        import pytz
+        now = datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
+    except Exception:
+        now = datetime.datetime.now()
+
+    month = now.month
+    day = now.day
+
+    # 1. Raksha Bandhan & Independence Season (August)
+    if month == 8:
+        if lang == 'hi':
+            return "रक्षाबंधन और आज़ादी स्पेशल महा-ऑफर"
+        return "Raksha Bandhan & Festive Special Offer"
+    # 2. Ganesh Chaturthi & Janmashtami Season (September)
+    elif month == 9:
+        if lang == 'hi':
+            return "गणेश चतुर्थी और जन्माष्टमी स्पेशल ऑफर"
+        return "Festive Season Special Offer"
+    # 3. Navratri, Dussehra & Diwali (October - November)
+    elif month in (10, 11):
+        if lang == 'hi':
+            return "दीपावली और दशहरा महा-ऑफर"
+        return "Diwali & Festive Mega Offer"
+    # 4. Christmas & New Year (December 20 - January 5)
+    elif (month == 12 and day >= 20) or (month == 1 and day <= 5):
+        if lang == 'hi':
+            return "क्रिसमस और नए साल का स्पेशल ऑफर"
+        return "Christmas & New Year Special Offer"
+    # 5. Holi Season (March)
+    elif month == 3:
+        if lang == 'hi':
+            return "होली महा-धमाका ऑफर"
+        return "Holi Festive Mega Offer"
+
+    return None
+
+
 async def _send_random_cooldown_reminder(
     client,
     user_id: int,
@@ -1988,62 +2029,79 @@ async def _send_random_cooldown_reminder(
     else:
         is_hi = random.choice([True, False])
 
+    fest_hi = get_current_festival(lang='hi')
+    fest_en = get_current_festival(lang='en')
+
     if is_hi:
         templates = [
-            # Sarcastic & Witty 1
+            # 1. Flirting & Cute (रोमांटिक / फ्लर्टी / क्यूट)
             (
-                f"अरे <a href='tg://user?id={user_id}'>{user_name}</a> जी! {_re()}\n\n"
-                f"क्या आप अभी भी <b>{cooldown_str}</b> के टाइमर खत्म होने का इंतज़ार कर रहे हैं? {_re()}\n"
-                f"इतना सब्र तो कोई नहीं करता! सिर्फ <b>₹15</b> से शुरू होने वाला <b>अनलिमिटेड पास</b> लें और बिना किसी रोक-टोक के सारी फाइल्स तुरंत पाएं! {_re()}"
+                f"अरे <a href='tg://user?id={user_id}'>{user_name}</a> जी! {_re()}💘\n\n"
+                f"आपका इंटरनेट स्लो है या फिर आप हमारे अनलिमिटेड पास के प्यार में पड़ रहे हैं? {_re()}\n\n"
+                f"इस बोरिंग <b>{cooldown_str}</b> के कूलडाउन टाइमर को भूल जाइए और सिर्फ <b>₹15</b> में अनलिमिटेड सुपरफास्ट स्पीड का आनंद लीजिए! {_re()}✨"
             ),
-            # Love & Caring 2
-            (
-                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
-                f"हम नहीं चाहते कि आपको अपनी पसंदीदा फाइल्स के लिए घंटों इंतज़ार करना पड़े। {_re()}\n"
-                f"आपके लिए बेहद सस्ता और सुपरफास्ट पास उपलब्ध है — इसे अभी अनलॉक करें और अनलिमिटेड डाउनलोड्स का आनंद लें! {_re()}🎁"
-            ),
-            # Professional 3
-            (
-                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
-                f"आपकी डाउनलोड लिमिट समाप्त है और अगला रीसेट <b>{cooldown_str}</b> बाद होगा। {_re()}\n"
-                f"बिना किसी लिमिट और बिना डोनेशन मैसेज के 24/7 नॉन-स्टॉप एक्सेस के लिए अभी <b>पास सब्सक्रिप्शन</b> अनलॉक करें। {_re()}⚡️"
-            ),
-            # Playful / Chai 4
+            # 2. Playful & Sarcastic (मजेदार / व्यंग्य)
             (
                 f"सुनो <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}☕️\n\n"
-                f"एक चाय के खर्चे में पूरे दिन का अनलिमिटेड पास मिल रहा है, फिर टाइमर गिनने की क्या जरूरत? {_re()}\n"
-                f"नीचे दिए गए बटन पर टैप करें और तुरंत सुपरफास्ट स्पीड अनलॉक करें! {_re()}🚀"
+                f"क्या आप सच में <b>{cooldown_str}</b> तक सिर्फ टाइमर देखने वाले हैं? {_re()}\n\n"
+                f"इतना सब्र तो कोई नहीं करता! एक चाय के खर्चे (सिर्फ ₹15) में पूरे दिन का अनलिमिटेड पास मिल रहा है, फिर इंतज़ार कैसा? तुरंत पास अनलॉक करें! {_re()}🚀"
+            ),
+            # 3. Professional (प्रोफेशनल व सटीक)
+            (
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"आपकी फ्री डाउनलोड लिमिट पूरी हो चुकी है और अगला रीसेट <b>{cooldown_str}</b> बाद होगा। {_re()}\n\n"
+                f"बिना किसी लिमिट और बिना किसी डोनेशन मैसेज के 24/7 नॉन-स्टॉप एक्सेस के लिए अभी <b>पास सब्सक्रिप्शन</b> अनलॉक करें। {_re()}⚡️"
+            ),
+            # 4. Love & Caring (केयरिंग व सपोर्टिव)
+            (
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
+                f"हम नहीं चाहते कि आपको अपनी पसंदीदा फाइल्स के लिए घंटों इंतज़ार करना पड़े। {_re()}\n\n"
+                f"आपके लिए बेहद किफायती पास उपलब्ध है — इसे अभी एक्टिवेट करें और अनलिमिटेड फास्ट डाउनलोड्स का आनंद लें! {_re()}🎁"
             )
         ]
+        if fest_hi:
+            templates.append(
+                f"🎉 <b>{fest_hi}</b> 🎉\n\n"
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}🎁\n\n"
+                f"त्योहारों के इस खास मौके पर इंतज़ार कैसा? जब सिर्फ ₹15 में मिल रहा है <b>अनलिमिटेड एक्सेस पास</b>, तो <b>{cooldown_str}</b> तक कूलडाउन में क्यों रुकना? {_re()}\n\n"
+                f"नीचे दिए गए बटन पर टैप करें और तुरंत सुपरफास्ट फाइल्स डाउनलोड करें! {_re()}✨"
+            )
         btn_unlock = "🔓 पास अभी अनलॉक करें"
         btn_supp = "🔒 सहायता"
     else:
         templates = [
-            # Sarcastic & Witty 1
+            # 1. Flirting & Cute
             (
-                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
-                f"Still waiting <b>{cooldown_str}</b> in cooldown just to download another file? {_re()}\n"
-                f"Life is too short for timers! Grab our dirt-cheap <b>Unlimited Access Pass</b> starting at just ₹15 and say goodbye to limits forever! {_re()}"
+                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💘\n\n"
+                f"Is your network slow or are you just falling for our Unlimited Pass? {_re()}\n\n"
+                f"Stop waiting on this boring <b>{cooldown_str}</b> cooldown timer! Treat yourself to unlimited high-speed downloads for just ₹15. You know you want it! {_re()}✨"
             ),
-            # Love & Caring 2
-            (
-                f"Dear <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
-                f"We hate seeing you wait on cooldown! You deserve smooth, instant downloads without any pause or interruptions. {_re()}\n"
-                f"Unlock unlimited high-speed access today with our affordable Pass — zero limits, zero ads, pure speed! {_re()}🎁"
-            ),
-            # Professional 3
-            (
-                f"Hello <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
-                f"Your download quota is currently on pause for <b>{cooldown_str}</b> due to fair usage limits. {_re()}\n"
-                f"To bypass all cooldowns and enjoy instant unlimited downloads 24/7, upgrade to an <b>Unlimited Pass</b> now at discounted rates! {_re()}⚡️"
-            ),
-            # Playful / Chai 4
+            # 2. Playful & Sarcastic
             (
                 f"Yo <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}☕️\n\n"
-                f"Still staring at the clock counting down the seconds? {_re()}\n"
-                f"Skip the wait for less than the price of a chai! Get the Unlimited Pass and binge all your favorite files instantly! {_re()}🚀"
+                f"Are you seriously waiting <b>{cooldown_str}</b> just to download a file? {_re()}\n\n"
+                f"That timer is older than ancient history! Skip the whole wait for less than the price of a chai and enjoy instant uninterrupted streaming right now! {_re()}🚀"
+            ),
+            # 3. Professional
+            (
+                f"Hello <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"Your download quota is currently paused for <b>{cooldown_str}</b> under our fair usage policy. {_re()}\n\n"
+                f"To bypass all cooldowns, eliminate donation messages, and unlock unlimited downloads 24/7, activate your <b>Unlimited Pass</b> now at subsidized pricing! {_re()}⚡️"
+            ),
+            # 4. Love & Caring
+            (
+                f"Dear <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
+                f"We hate seeing you wait on cooldown! You deserve smooth, instant downloads without any pause or interruptions. {_re()}\n\n"
+                f"Unlock unlimited high-speed access today with our affordable Pass — zero limits, zero ads, pure speed! {_re()}🎁"
             )
         ]
+        if fest_en:
+            templates.append(
+                f"🎉 <b>{fest_en}</b> 🎉\n\n"
+                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}🎁\n\n"
+                f"Celebrate this festive season with zero limits and zero waiting! Why wait <b>{cooldown_str}</b> on cooldown when you can grab our festive <b>Unlimited Access Pass</b> at super cheap rates? {_re()}\n\n"
+                f"Tap below and enjoy unlimited instant downloads right away! {_re()}✨"
+            )
         btn_unlock = "🔓 Unlock Unlimited Pass"
         btn_supp = "🔒 Support"
 
@@ -2953,8 +3011,8 @@ async def _process_pass_callback(client, query):
             lbl_back = "← Back"
 
         if uiver == 'v2':
-            # V2 (Direct Cashfree Flow):
-            # Title V2 + Pass Benefits ONLY + Plan Selection Prompt + Direct Plan Buttons (No italics)
+            # V2 (Single Gateway Flow - Cashfree or UPI based on settings):
+            v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
             v2_prompt = '<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा पास प्लान चुनें:</b>' if is_hi else '<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass plan below:</b>'
             methods_text = (
                 f"{title_header_v2}"
@@ -2968,7 +3026,7 @@ async def _process_pass_callback(client, query):
                 p_val = int(price) if float(price).is_integer() else price
                 label = format_plan_button_label(dur_key, p_val, lang=user_lang)
                 emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
-                cb = f"pass#cfbuy_{dur_key}_{p_val}"
+                cb = f"pass#upibuy_{dur_key}_{p_val}" if v2_gw == 'upi' else f"pass#cfbuy_{dur_key}_{p_val}"
                 plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
                 plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
 

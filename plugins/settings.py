@@ -1169,11 +1169,17 @@ async def settings_query(bot, query):
     oxa_status = '✅ Active' if oxa_val else '❌ Not Set'
 
     uiver = rl_cfg.get('pass_ui_version', 'v1')
-    uiver_lbl = "💎 Pass UI: V1 (Multi-Gateway)" if uiver == 'v1' else "⚡ Pass UI: V2 (Direct Cashfree)"
+    v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
+    v2_gw_str = "⚡ Cashfree" if v2_gw == 'cashfree' else "💳 Pay Via UPI"
+    uiver_lbl = "💎 Pass UI: V1 (Multi-Gateway)" if uiver == 'v1' else f"⚡ Pass UI: V2 ({v2_gw_str})"
+    v2_gw_btn_lbl = f"⚙️ V2 Default: {v2_gw_str}"
 
     buttons = [
         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
-        [InlineKeyboardButton(uiver_lbl, callback_data="settings#sb_rl_toggle_uiver")],
+        [
+            InlineKeyboardButton(uiver_lbl, callback_data="settings#sb_rl_toggle_uiver"),
+            InlineKeyboardButton(v2_gw_btn_lbl, callback_data="settings#sb_rl_toggle_v2gw")
+        ],
         [
             InlineKeyboardButton(f"🔢 Limit: {max_limit} Links", callback_data="settings#sb_rl_limit"),
             InlineKeyboardButton(f"⏱ Window: {win_friendly}",     callback_data="settings#sb_rl_window"),
@@ -1193,7 +1199,8 @@ async def settings_query(bot, query):
         f"<b>⏳ DELIVERY RATE LIMIT & PASS CONFIG</b>\n"
         f"────────────────────\n"
         f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
-        f"<b>Pass UI Version:</b> <code>{'V1 (Multi-Gateway)' if uiver == 'v1' else 'V2 (Direct Cashfree)'}</code>\n"
+        f"<b>Pass UI Version:</b> <code>{'V1 (Multi-Gateway)' if uiver == 'v1' else f'V2 (Direct {v2_gw_str})'}</code>\n"
+        f"<b>V2 Single Gateway:</b> <code>{v2_gw_str}</code>\n"
         f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{win_verbose}</code>\n"
         f"<b>Pass Purchase Logs:</b> <code>{pass_log_str}</code>\n"
         f"<b>Rate Limit Hit Logs:</b> <code>{hit_log_str}</code>\n"
@@ -1205,7 +1212,7 @@ async def settings_query(bot, query):
         f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
         f"cooldown message showing their live remaining time and an <b>'🔒 Unlock Access Via Payment'</b> button.\n\n"
         f"• <b>V1 (Multi-Gateway):</b> UPI QR Auto-Verification, Cashfree Checkout & OxaPay Crypto.\n"
-        f"• <b>V2 (Direct Cashfree):</b> Simplified single-screen plan selection with instant UPI/Card/NetBanking checkout.\n\n"
+        f"• <b>V2 (Single Gateway):</b> Simplified single-screen plan selection via {v2_gw_str}.\n\n"
         f"Pass purchases and rate limit hits are automatically logged to your dedicated channels in Quoteblock format.</blockquote>",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -1215,9 +1222,22 @@ async def settings_query(bot, query):
     cur_ver = rl_cfg.get('pass_ui_version', 'v1')
     new_ver = 'v2' if cur_ver == 'v1' else 'v1'
     await db.set_delivery_rate_limit_config(pass_ui_version=new_ver)
-    ver_name = "V2 (Direct Cashfree Flow)" if new_ver == 'v2' else "V1 (Multi-Gateway Flow)"
+    ver_name = "V2 (Single Gateway Direct Flow)" if new_ver == 'v2' else "V1 (Multi-Gateway Flow)"
     try:
         await query.answer(f"Pass UI Version switched to: {ver_name}!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_ratelimit"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_toggle_v2gw":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_gw = rl_cfg.get('v2_gateway', 'cashfree')
+    new_gw = 'upi' if cur_gw == 'cashfree' else 'cashfree'
+    await db.set_delivery_rate_limit_config(v2_gateway=new_gw)
+    gw_name = "💳 Pay Via UPI (Direct QR)" if new_gw == 'upi' else "⚡ Cashfree (Direct Checkout)"
+    try:
+        await query.answer(f"Pass UI V2 Gateway set to: {gw_name}!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_ratelimit"

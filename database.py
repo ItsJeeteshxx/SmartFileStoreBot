@@ -1663,7 +1663,8 @@ class Database:
             'oxapay_env': 'production',
             'oxapay_enabled': True,
             'upi_enabled': True,
-            'pass_ui_version': 'v1'
+            'pass_ui_version': 'v1',
+            'v2_gateway': 'cashfree'
         }
         if not doc:
             return defaults
@@ -1688,7 +1689,8 @@ class Database:
             'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel',
             'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key',
             'cashfree_env', 'upi_id', 'upi_name', 'gmail_user', 'gmail_app_password',
-            'oxapay_key', 'oxapay_env', 'oxapay_enabled', 'upi_enabled', 'pass_ui_version'
+            'oxapay_key', 'oxapay_env', 'oxapay_enabled', 'upi_enabled', 'pass_ui_version',
+            'v2_gateway'
         }
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
