@@ -1175,7 +1175,7 @@ async def _send_welcome(client, message, bot_id: str = None):
         ],
         [
             {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"},
-            {"text": "⚙️", "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+            {"text": "\u200b", "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
         ]
     ]
 
@@ -1376,8 +1376,8 @@ async def _process_delivery_button(client, query):
             lbl_back = "← Back"
 
         set_buttons = [
-            [InlineKeyboardButton(f"🌐 {lbl_lang}", callback_data="pass#lang_menu")],
-            [InlineKeyboardButton(f"📜 {lbl_txns}", callback_data="pass#my_transactions")],
+            [InlineKeyboardButton(lbl_lang, callback_data="pass#lang_menu")],
+            [InlineKeyboardButton(lbl_txns, callback_data="pass#my_transactions")],
             [InlineKeyboardButton(lbl_back, callback_data="sbd#back")]
         ]
         set_api_kb = [
@@ -1387,7 +1387,16 @@ async def _process_delivery_button(client, query):
         ]
         try:
             if is_media_msg:
-                await msg.edit_caption(caption=set_txt, reply_markup=InlineKeyboardMarkup(set_buttons))
+                sent_ok = await send_or_edit_with_custom_icons(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=set_txt,
+                    inline_keyboard=set_api_kb,
+                    message_id=msg.id,
+                    is_media_edit=True
+                )
+                if not sent_ok:
+                    await msg.edit_caption(caption=set_txt, reply_markup=InlineKeyboardMarkup(set_buttons))
             else:
                 sent_ok = await send_or_edit_with_custom_icons(
                     client=client,
@@ -1671,7 +1680,16 @@ async def _process_delivery_button(client, query):
         ]
         try:
             if is_media_msg:
-                await msg.edit_caption(caption=txt, reply_markup=markup)
+                sent_ok = await send_or_edit_with_custom_icons(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=txt,
+                    inline_keyboard=welcome_api_kb,
+                    message_id=msg.id,
+                    is_media_edit=True
+                )
+                if not sent_ok:
+                    await msg.edit_caption(caption=txt, reply_markup=markup)
             else:
                 sent_ok = await send_or_edit_with_custom_icons(
                     client=client,
