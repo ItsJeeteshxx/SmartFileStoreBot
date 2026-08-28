@@ -2157,7 +2157,7 @@ async def _send_random_cooldown_reminder(
             (
                 f"Yo <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}☕️\n\n"
                 f"Are you seriously waiting <b>{cooldown_str}</b> just to download a file? {_re()}\n\n"
-                f"That timer is older than ancient history! Skip the whole wait for less than the price of a chai and enjoy instant uninterrupted streaming right now! {_re()}🚀"
+                f"That timer is older than ancient history! Skip the whole wait for less than the price of a chai with an <b>Unlimited Pass</b> and enjoy instant uninterrupted streaming right now! {_re()}🚀"
             ),
             # 3. Professional
             (

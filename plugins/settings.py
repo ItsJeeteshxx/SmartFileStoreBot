@@ -1171,28 +1171,23 @@ async def settings_query(bot, query):
     uiver = rl_cfg.get('pass_ui_version', 'v1')
     v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
     v2_gw_str = "⚡ Cashfree" if v2_gw == 'cashfree' else "💳 Pay Via UPI"
-    uiver_lbl = "💎 Pass UI: V1 (Multi-Gateway)" if uiver == 'v1' else f"⚡ Pass UI: V2 ({v2_gw_str})"
-    v2_gw_btn_lbl = f"⚙️ V2 Default: {v2_gw_str}"
 
     buttons = [
         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
+        [InlineKeyboardButton("💎 Pass UI Version & Flow", callback_data="settings#sb_rl_uiver_menu")],
         [
-            InlineKeyboardButton(uiver_lbl, callback_data="settings#sb_rl_toggle_uiver"),
-            InlineKeyboardButton(v2_gw_btn_lbl, callback_data="settings#sb_rl_toggle_v2gw")
+            InlineKeyboardButton("🔢 Download Limit", callback_data="settings#sb_rl_limit"),
+            InlineKeyboardButton("⏱ Cooldown Window", callback_data="settings#sb_rl_window"),
         ],
         [
-            InlineKeyboardButton(f"🔢 Limit: {max_limit} Links", callback_data="settings#sb_rl_limit"),
-            InlineKeyboardButton(f"⏱ Window: {win_friendly}",     callback_data="settings#sb_rl_window"),
+            InlineKeyboardButton("📋 Pass Purchase Logs", callback_data="settings#sb_rl_log_ch"),
+            InlineKeyboardButton("⚠️ Rate Limit Hit Logs", callback_data="settings#sb_rl_hit_log_ch"),
         ],
-        [
-            InlineKeyboardButton(f"📋 Pass Logs: {pass_log_str}", callback_data="settings#sb_rl_log_ch"),
-            InlineKeyboardButton(f"⚠️ Limit Logs: {hit_log_str}", callback_data="settings#sb_rl_hit_log_ch"),
-        ],
-        [InlineKeyboardButton(f"👥 Pass Customers ({active_cust} Active / {total_cust} Total)", callback_data="settings#sb_rl_cust_0")],
-        [InlineKeyboardButton(f"💰 Pricing ({pricing_str})", callback_data="settings#sb_rl_pricing")],
-        [InlineKeyboardButton(f"💳 UPI & Gmail ({upi_status})", callback_data="settings#sb_rl_upi_menu")],
-        [InlineKeyboardButton(f"⚡ Cashfree Gateway ({cf_status})", callback_data="settings#sb_rl_cf_menu")],
-        [InlineKeyboardButton(f"🌐 OxaPay Crypto ({oxa_status})", callback_data="settings#sb_rl_oxa_menu")],
+        [InlineKeyboardButton("👥 Pass Customers", callback_data="settings#sb_rl_cust_0")],
+        [InlineKeyboardButton("💰 Pass Pricing & Plans", callback_data="settings#sb_rl_pricing")],
+        [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
+        [InlineKeyboardButton("⚡ Cashfree Gateway", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton("🌐 OxaPay Crypto", callback_data="settings#sb_rl_oxa_menu")],
         [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
     ]
     await query.message.edit_text(
@@ -1217,6 +1212,78 @@ async def settings_query(bot, query):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
+  elif type == "sb_rl_uiver_menu":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    uiver = rl_cfg.get('pass_ui_version', 'v1')
+    v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
+    v2_gw_str = "⚡ Cashfree" if v2_gw == 'cashfree' else "💳 Pay Via UPI"
+
+    btn_v1 = "✅ 💎 V1 (Multi-Gateway Flow)" if uiver == 'v1' else "💎 V1 (Multi-Gateway Flow)"
+    btn_v2 = f"✅ ⚡ V2 (Single Gateway: {v2_gw_str})" if uiver == 'v2' else f"⚡ V2 (Single Gateway: {v2_gw_str})"
+
+    btn_v2_cf = "✅ ⚡ Cashfree" if v2_gw == 'cashfree' else "⚡ Cashfree"
+    btn_v2_upi = "✅ 💳 Pay Via UPI" if v2_gw == 'upi' else "💳 Pay Via UPI"
+
+    uiver_buttons = [
+        [InlineKeyboardButton(btn_v1, callback_data="settings#sb_rl_set_v1")],
+        [InlineKeyboardButton(btn_v2, callback_data="settings#sb_rl_set_v2")],
+        [InlineKeyboardButton("⚙️ Select V2 Default Gateway:", callback_data="settings#sb_rl_uiver_menu")],
+        [
+            InlineKeyboardButton(btn_v2_cf, callback_data="settings#sb_rl_set_v2_cf"),
+            InlineKeyboardButton(btn_v2_upi, callback_data="settings#sb_rl_set_v2_upi")
+        ],
+        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")]
+    ]
+    await query.message.edit_text(
+        f"<b>💎 PASS UI VERSION & FLOW SETTINGS</b>\n"
+        f"────────────────────\n"
+        f"<b>Active Pass UI:</b> <code>{'V1 (Multi-Gateway Flow)' if uiver == 'v1' else f'V2 (Single Gateway Direct Flow)'}</code>\n"
+        f"<b>V2 Default Gateway:</b> <code>{v2_gw_str}</code>\n"
+        f"────────────────────\n"
+        f"<blockquote expandable>ℹ️ <b>How each version works:</b>\n\n"
+        f"• <b>💎 Version 1 (Multi-Gateway Flow):</b>\n"
+        f"  User sees all payment methods (UPI Dynamic QR, Cashfree Checkout & Crypto). User chooses their gateway first, then views and selects the plan.\n\n"
+        f"• <b>⚡ Version 2 (Single Gateway Direct Flow):</b>\n"
+        f"  Direct 1-screen experience without any payment method selection page. Plan buttons immediately launch the chosen default gateway ({v2_gw_str}).</blockquote>",
+        reply_markup=InlineKeyboardMarkup(uiver_buttons)
+    )
+
+  elif type == "sb_rl_set_v1":
+    await db.set_delivery_rate_limit_config(pass_ui_version='v1')
+    try:
+        await query.answer("✅ Pass UI Version set to: V1 (Multi-Gateway Flow)!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_rl_uiver_menu"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_set_v2":
+    await db.set_delivery_rate_limit_config(pass_ui_version='v2')
+    try:
+        await query.answer("✅ Pass UI Version set to: V2 (Single Gateway Flow)!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_rl_uiver_menu"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_set_v2_cf":
+    await db.set_delivery_rate_limit_config(v2_gateway='cashfree')
+    try:
+        await query.answer("✅ V2 Gateway set to: ⚡ Cashfree!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_rl_uiver_menu"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_set_v2_upi":
+    await db.set_delivery_rate_limit_config(v2_gateway='upi')
+    try:
+        await query.answer("✅ V2 Gateway set to: 💳 Pay Via UPI!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_rl_uiver_menu"
+    return await settings_query(bot, query)
+
   elif type == "sb_rl_toggle_uiver":
     rl_cfg = await db.get_delivery_rate_limit_config()
     cur_ver = rl_cfg.get('pass_ui_version', 'v1')
@@ -1227,7 +1294,7 @@ async def settings_query(bot, query):
         await query.answer(f"Pass UI Version switched to: {ver_name}!", show_alert=True)
     except Exception:
         pass
-    query.data = "settings#sb_ratelimit"
+    query.data = "settings#sb_rl_uiver_menu"
     return await settings_query(bot, query)
 
   elif type == "sb_rl_toggle_v2gw":
@@ -1240,7 +1307,7 @@ async def settings_query(bot, query):
         await query.answer(f"Pass UI V2 Gateway set to: {gw_name}!", show_alert=True)
     except Exception:
         pass
-    query.data = "settings#sb_ratelimit"
+    query.data = "settings#sb_rl_uiver_menu"
     return await settings_query(bot, query)
 
   elif type == "sb_rl_toggle":
