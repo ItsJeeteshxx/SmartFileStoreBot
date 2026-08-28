@@ -2708,6 +2708,53 @@ def generate_dynamic_upi_amount(base_amount: float) -> float:
     return max(1.0, round(float(base_amount) + (random.choice(all_offsets) / 100.0), 2))
 
 
+def format_plan_name_friendly(dur_key: str, lang: str = 'en') -> str:
+    """Helper to return friendly plan string like '7 Days' or '7 दिन'."""
+    dur_str = str(dur_key).lower().strip()
+    if lang == 'hi':
+        if dur_str in ('7d', '7days', '7day', '7'):
+            return "7 दिन"
+        elif dur_str.endswith('mo'):
+            n = dur_str[:-2]
+            return f"{n} {'महीना' if n == '1' else 'महीने'}"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            n = dur_str.replace('months', '').replace('month', '').strip()
+            return f"{n} {'महीना' if n == '1' else 'महीने'}"
+        elif dur_str.endswith('d'):
+            n = dur_str[:-1]
+            return f"{n} {'दिन' if n == '1' else 'दिन'}"
+        elif dur_str.endswith('h'):
+            n = dur_str[:-1]
+            return f"{n} घंटे"
+        elif dur_str.endswith('m'):
+            n = dur_str[:-1]
+            return f"{n} मिनट"
+        elif dur_str.endswith('y') or dur_str.endswith('yr') or dur_str == '365d':
+            return "1 साल"
+        return dur_str
+    else:
+        if dur_str in ('7d', '7days', '7day', '7'):
+            return "7 Days"
+        elif dur_str.endswith('mo'):
+            n = dur_str[:-2]
+            return f"{n} {'Month' if n == '1' else 'Months'}"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            n = dur_str.replace('months', '').replace('month', '').strip()
+            return f"{n} {'Month' if n == '1' else 'Months'}"
+        elif dur_str.endswith('d'):
+            n = dur_str[:-1]
+            return f"{n} {'Day' if n == '1' else 'Days'}"
+        elif dur_str.endswith('h'):
+            n = dur_str[:-1]
+            return f"{n} Hours"
+        elif dur_str.endswith('m'):
+            n = dur_str[:-1]
+            return f"{n} Minutes"
+        elif dur_str.endswith('y') or dur_str.endswith('yr') or dur_str == '365d':
+            return "1 Year"
+        return dur_str.title()
+
+
 def format_plan_button_label(dur_key: str, price, lang: str = 'en') -> str:
     """Returns clean label: '1 Day - ₹15' or '1 दिन - ₹15'."""
     dur_str = str(dur_key).lower().strip()
@@ -3301,17 +3348,17 @@ async def _process_pass_callback(client, query):
 
         if is_hi:
             text = (
-                '<emoji id="5766975922620076409">💳</emoji> <b>UPI द्वारा भुगतान करें (Manual)</b>\n'
+                '<emoji id="5766975922620076409">💳</emoji> <b>UPI ( QR ) द्वारा भुगतान करें</b>\n'
                 "──────────────────────\n\n"
-                "Paytm, PhonePe, Gpay, BHIM या किसी भी UPI ऐप से तुरंत भुगतान।\n\n"
-                "अपना पसंदीदा पास प्लान चुनें:"
+                "Paytm, PhonePe, GPay, BHIM या किसी भी UPI ऐप से तुरंत भुगतान करें।\n\n"
+                '<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा पास प्लान चुनें:</b>'
             )
         else:
             text = (
-                '<emoji id="5766975922620076409">💳</emoji> <b>Pay with UPI ( Manual )</b>\n'
+                '<emoji id="5766975922620076409">💳</emoji> <b>Pay Via UPI ( QR )</b>\n'
                 "──────────────────────\n\n"
-                "Instant payment with Paytm, PhonePe, Gpay, BHIM, or any UPI app.\n\n"
-                "Select your desired Pass plan:"
+                "Instant payment with Paytm, PhonePe, GPay, BHIM, or any UPI app.\n\n"
+                '<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass plan below:</b>'
             )
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
@@ -3362,22 +3409,41 @@ async def _process_pass_callback(client, query):
         plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
 
         if len(plan_buttons) <= 1:
-            text = (
-                '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
-                "──────────────────────\n\n"
-                "⚠️ <b>No Eligible Crypto Plans Available</b>\n\n"
-                "OxaPay requires a minimum order amount of <b>$0.50 USD (~₹46)</b>.\n"
-                "None of the current configured plans meet this minimum.\n\n"
-                "👉 Please pay using <b>UPI (INR)</b> or <b>Cashfree</b> instead!"
-            )
+            if is_hi:
+                text = (
+                    '<emoji id="5283232570660634549">🌐</emoji> <b>Crypto ( OxaPay ) द्वारा भुगतान करें</b>\n'
+                    "──────────────────────\n\n"
+                    "⚠️ <b>कोई योग्य क्रिप्टो प्लान उपलब्ध नहीं है</b>\n\n"
+                    "OxaPay पर न्यूनतम पेमेंट <b>$0.50 USD (~₹46)</b> होना अनिवार्य है।\n"
+                    "वर्तमान में कोई भी प्लान इस न्यूनतम राशि को पूरा नहीं करता।\n\n"
+                    "👉 कृपया इसके स्थान पर <b>UPI (INR)</b> या <b>Cashfree</b> से भुगतान करें!"
+                )
+            else:
+                text = (
+                    '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
+                    "──────────────────────\n\n"
+                    "⚠️ <b>No Eligible Crypto Plans Available</b>\n\n"
+                    "OxaPay requires a minimum order amount of <b>$0.50 USD (~₹46)</b>.\n"
+                    "None of the current configured plans meet this minimum.\n\n"
+                    "👉 Please pay using <b>UPI (INR)</b> or <b>Cashfree</b> instead!"
+                )
         else:
-            text = (
-                '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
-                "──────────────────────\n\n"
-                "Instant payment with USDT, BTC, SOL, TON.\n\n"
-                '<emoji id="6026080811277621020">💡</emoji> Note: OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:\n\n'
-                "Select your desired Pass plan:"
-            )
+            if is_hi:
+                text = (
+                    '<emoji id="5283232570660634549">🌐</emoji> <b>Crypto ( OxaPay ) द्वारा भुगतान करें</b>\n'
+                    "──────────────────────\n\n"
+                    "USDT, BTC, SOL, TON के ज़रिए तुरंत भुगतान करें।\n\n"
+                    '<emoji id="6026080811277621020">💡</emoji> <b>नोट:</b> OxaPay की न्यूनतम सीमा $0.50 USD (~₹46) है। केवल योग्य प्लान नीचे दिखाए गए हैं:\n\n'
+                    '<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा पास प्लान चुनें:</b>'
+                )
+            else:
+                text = (
+                    '<emoji id="5283232570660634549">🌐</emoji> <b>Pay with Crypto ( OxaPay )</b>\n'
+                    "──────────────────────\n\n"
+                    "Instant payment with USDT, BTC, SOL, TON.\n\n"
+                    '<emoji id="6026080811277621020">💡</emoji> <b>Note:</b> OxaPay has a minimum order limit of $0.50 USD (~₹46). Only eligible plans are displayed below:\n\n'
+                    '<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass plan below:</b>'
+                )
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
@@ -3573,29 +3639,55 @@ async def _process_pass_callback(client, query):
         tn_clean = urllib.parse.quote_plus(order_id)
         upi_payload = f"upi://pay?pa={raw_upi}&pn={pn_clean}&am={dyn_amount:.2f}&cu=INR&tn={tn_clean}"
 
-        # Clean automated verification caption without manual UTR submission requirement
-        caption = (
-            '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
-            "──────────────────────\n"
-            f"• <b>Plan:</b> {count} {unit}\n"
-            f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
-            f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
-            f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
-            '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
-            "1. Scan the QR code above or pay directly to the UPI ID.\n"
-            f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
-            "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds of payment.\n\n"
-            '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 5 Minutes)\n'
-            "Your unlimited access pass will activate automatically as soon as payment is detected!"
-        )
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+        back_cb = "pass#unlock_menu" if uiver == 'v2' else "pass#method_upi"
+
+        if is_hi:
+            plan_name = format_plan_name_friendly(dur_key, lang='hi')
+            caption = (
+                '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI पेमेंट ऑर्डर बनाया गया!</b>\n\n'
+                "──────────────────────\n"
+                f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास\n"
+                f"• <b>भुगतान की सटीक राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                f"• <b>UPI ID:</b> <code>{raw_upi}</code> (कॉपी करने के लिए टैप करें)\n"
+                f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
+                '<emoji id="5807800879553715710">📲</emoji> <b>भुगतान निर्देश:</b>\n'
+                "1. ऊपर दिए गए QR कोड को स्कैन करें या सीधे UPI ID पर पेमेंट करें।\n"
+                f"2. बिल्कुल सटीक <b>₹{dyn_amount:.2f}</b> का भुगतान करें (पैसे कम या ज्यादा न करें)।\n"
+                "3. <b>ऑटोमैटिक वेरिफिकेशन:</b> आपको UTR सबमिट करने की कोई आवश्यकता नहीं है! पेमेंट करने के 5-15 सेकंड में सिस्टम ऑटोमैटिकली पास एक्टिवेट कर देगा।\n\n"
+                '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (5 मिनट के लिए वैध)\n'
+                "जैसे ही आपका पेमेंट प्राप्त होगा, आपका अनलिमिटेड पास तुरंत सक्रिय हो जाएगा!"
+            )
+            btn_status = "पेमेंट स्टेटस चेक करें"
+            btn_back = "← वापस"
+        else:
+            plan_name = format_plan_name_friendly(dur_key, lang='en')
+            caption = (
+                '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
+                "──────────────────────\n"
+                f"• <b>Plan:</b> {plan_name} Unlimited Access Pass\n"
+                f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
+                f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+                "1. Scan the QR code above or pay directly to the UPI ID.\n"
+                f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
+                "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds.\n\n"
+                '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 5 Minutes)\n'
+                "Your unlimited access pass will activate automatically as soon as payment is detected!"
+            )
+            btn_status = "Check Payment Status"
+            btn_back = "← Back"
 
         photo_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
-            [InlineKeyboardButton("← Back", callback_data="pass#method_upi")]
+            [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
+            [InlineKeyboardButton(btn_back, callback_data=back_cb)]
         ])
         photo_api_kb = [
-            [{"text": "Check Payment Status", "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
-            [{"text": "← Back", "callback_data": "pass#method_upi"}]
+            [{"text": btn_status, "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_back, "callback_data": back_cb}]
         ]
 
         # Generate QR buffer with dynamic amount and unified order ID
@@ -3655,15 +3747,18 @@ async def _process_pass_callback(client, query):
         dur_key = parts[2]
         dyn_amount = float(parts[3])
 
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
         try:
-            await query.answer("Checking payment with bank...", show_alert=False)
+            await query.answer("बैंक से पेमेंट चेक किया जा रहा है..." if is_hi else "Checking payment with bank...", show_alert=False)
         except Exception:
             pass
 
         # Check if pass already active
         pass_info = await db.get_user_unlimited_pass(user_id)
         if pass_info.get('active'):
-            return await query.answer("✅ Your Unlimited Access Pass is already active!", show_alert=True)
+            return await query.answer("✅ आपका अनलिमिटेड एक्सेस पास पहले से एक्टिव है!" if is_hi else "✅ Your Unlimited Access Pass is already active!", show_alert=True)
 
         from plugins.gmail_helper import find_upi_payment_by_amount
         from database import parse_duration_to_seconds, format_duration_verbose
@@ -3682,7 +3777,7 @@ async def _process_pass_callback(client, query):
             # Check if claimed by another user
             is_claimed_by_other = await db.is_utr_claimed_by_other(extracted_utr, user_id=user_id, order_id=order_id)
             if is_claimed_by_other:
-                return await query.answer("⚠️ This payment was already processed for another pass!", show_alert=True)
+                return await query.answer("⚠️ यह पेमेंट पहले ही किसी अन्य पास के लिए प्रोसेस किया जा चुका है!" if is_hi else "⚠️ This payment was already processed for another pass!", show_alert=True)
 
             await db.record_used_utr(
                 utr=extracted_utr,
@@ -3710,18 +3805,36 @@ async def _process_pass_callback(client, query):
             _pending_utr_users.pop(user_id, None)
             _active_order_reminders.pop(f"{user_id}_{order_id}", None)
 
-            success_text = (
-                f'<emoji id="6267118537752450044">🟢</emoji> <b>Payment Automatically Verified!</b>\n\n'
-                f"• <b>Order ID:</b> <code>{order_id}</code>\n"
-                f"• <b>Plan:</b> {dur_verbose.title()} Unlimited Access Pass\n"
-                f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
-                f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
-                f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
-                f'<blockquote><emoji id="5850176641803753392">🎉</emoji> ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</blockquote>'
-            )
+            if is_hi:
+                plan_name = format_plan_name_friendly(dur_key, lang='hi')
+                success_text = (
+                    f'<emoji id="6267118537752450044">🟢</emoji> <b>पेमेंट ऑटोमैटिकली वेरीफाई हो गया!</b>\n\n'
+                    f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n"
+                    f"• <b>प्लान:</b> {plan_name} अनलिमिटेड एक्सेस पास\n"
+                    f"• <b>भुगतान की गई राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UTR / संदर्भ:</b> <code>{extracted_utr}</code>\n"
+                    f"• <b>स्टेटस:</b> ✅ <b>सक्रिय और तैयार</b>\n\n"
+                    f'<blockquote><emoji id="5850176641803753392">🎉</emoji> धन्यवाद! आपका अनलिमिटेड एक्सेस पास एक्टिवेट हो चुका है। अब बिना किसी लिमिट के अनलिमिटेड फाइल्स डाउनलोड करें!</blockquote>'
+                )
+                lbl_txns = "📜 मेरे ट्रांसक्शन्स"
+                lbl_supp = "🔒 सहायता"
+            else:
+                plan_name = format_plan_name_friendly(dur_key, lang='en')
+                success_text = (
+                    f'<emoji id="6267118537752450044">🟢</emoji> <b>Payment Automatically Verified!</b>\n\n'
+                    f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+                    f"• <b>Plan:</b> {plan_name} Unlimited Access Pass\n"
+                    f"• <b>Amount Paid:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UTR / Ref:</b> <code>{extracted_utr}</code>\n"
+                    f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+                    f'<blockquote><emoji id="5850176641803753392">🎉</emoji> ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</blockquote>'
+                )
+                lbl_txns = "📜 My Transactions"
+                lbl_supp = "🔒 Support"
+
             success_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📜 My Transactions", callback_data="pass#my_transactions")],
-                [InlineKeyboardButton("🔒 Support", url="https://t.me/AryaHelpTG")]
+                [InlineKeyboardButton(lbl_txns, callback_data="pass#my_transactions")],
+                [InlineKeyboardButton(lbl_supp, url="https://t.me/AryaHelpTG")]
             ])
             try:
                 await query.message.edit_caption(caption=success_text, reply_markup=success_kb)
@@ -3732,14 +3845,22 @@ async def _process_pass_callback(client, query):
                     pass
                 await client.send_message(chat_id=query.message.chat.id, text=success_text, reply_markup=success_kb)
 
-            return await query.answer("✅ Payment Verified Successfully!", show_alert=True)
+            return await query.answer("✅ पेमेंट सफलतापूर्वक वेरीफाई हो गया!" if is_hi else "✅ Payment Verified Successfully!", show_alert=True)
         else:
-            return await query.answer(
-                f"⏳ Payment not detected yet.\n\n"
-                f"Please ensure you paid exactly ₹{dyn_amount:.2f}. "
-                f"Bank notification emails usually arrive within 5-20 seconds. Please try again in a moment.",
-                show_alert=True
-            )
+            if is_hi:
+                return await query.answer(
+                    f"⏳ अभी पेमेंट प्राप्त नहीं हुआ है।\n\n"
+                    f"कृपया सुनिश्चित करें कि आपने सटीक ₹{dyn_amount:.2f} का भुगतान किया है। "
+                    f"बैंक नोटिफिकेशन आने में 5-20 सेकंड लगते हैं। कृपया कुछ पलों में पुनः प्रयास करें।",
+                    show_alert=True
+                )
+            else:
+                return await query.answer(
+                    f"⏳ Payment not detected yet.\n\n"
+                    f"Please ensure you paid exactly ₹{dyn_amount:.2f}. "
+                    f"Bank notification emails usually arrive within 5-20 seconds. Please try again in a moment.",
+                    show_alert=True
+                )
 
     elif data.startswith("pass#upisubmit_"):
         parts = data.split("_")
@@ -3844,12 +3965,18 @@ async def _process_pass_callback(client, query):
         dur_key = parts[1]
         amount_inr = float(parts[2])
 
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
         usd_check = round(float(amount_inr) / 92.0, 2)
         if usd_check < 0.50:
-            return await query.answer("⚠️ Minimum crypto payment is $0.50 USD (~₹46). Please choose a larger plan or use UPI.", show_alert=True)
+            return await query.answer(
+                "⚠️ न्यूनतम क्रिप्टो पेमेंट $0.50 USD (~₹46) है। कृपया कोई बड़ा प्लान चुनें या UPI का उपयोग करें।" if is_hi else "⚠️ Minimum crypto payment is $0.50 USD (~₹46). Please choose a larger plan or use UPI.",
+                show_alert=True
+            )
 
         try:
-            await query.answer("Generating crypto invoice via OxaPay...", show_alert=False)
+            await query.answer("OxaPay के माध्यम से क्रिप्टो इनवॉइस बनाया जा रहा है..." if is_hi else "Generating crypto invoice via OxaPay...", show_alert=False)
         except Exception:
             pass
 
@@ -3859,11 +3986,11 @@ async def _process_pass_callback(client, query):
         if not res.get("success"):
             err_text = res.get("error", "Failed to generate crypto invoice.")
             err_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Retry", callback_data=data)],
-                [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
+                [InlineKeyboardButton("🔄 पुनः प्रयास करें" if is_hi else "🔄 Retry", callback_data=data)],
+                [InlineKeyboardButton("← वापस" if is_hi else "← Back", callback_data="pass#method_crypto")]
             ])
             return await query.message.edit_text(
-                f"❌ <b>Crypto Invoice Failed</b>\n\n{err_text}",
+                f"❌ <b>{'क्रिप्टो इनवॉइस विफल' if is_hi else 'Crypto Invoice Failed'}</b>\n\n{err_text}",
                 reply_markup=err_kb
             )
 
@@ -3872,20 +3999,36 @@ async def _process_pass_callback(client, query):
         amount_usd = res["amount_usd"]
         order_id = res["order_id"]
         dur_name = res["dur_name"]
+        dur_name_hi = format_plan_name_friendly(dur_key, lang='hi')
 
-        inv_text = (
-            f'<emoji id="5283232570660634549">🌐</emoji> <b>Crypto Payment Invoice — Unlimited Delivery Pass</b>\n\n'
-            f"<b>Plan:</b> {dur_name} Unlimited Access\n"
-            f"<b>Amount:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
-            f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
-            f"<blockquote>Tap the button below to pay using your preferred cryptocurrency (USDT, BTC, ETH, TRX, BNB, LTC, SOL, etc.) via OxaPay. After sending crypto, tap <b>'Verify Payment'</b> to activate!</blockquote>"
-        )
-        inv_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🌐 Pay ${amount_usd:.2f} Crypto ➟", url=pay_link)],
-            [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"pass#cancel_{order_id}")],
-            [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
-        ])
+        if is_hi:
+            inv_text = (
+                f'<emoji id="5283232570660634549">🌐</emoji> <b>क्रिप्टो पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n\n'
+                f"• <b>प्लान:</b> {dur_name_hi} अनलिमिटेड एक्सेस\n"
+                f"• <b>राशि:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
+                f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
+                f"<blockquote>नीचे दिए गए बटन पर टैप करके OxaPay के ज़रिए अपनी पसंदीदा क्रिप्टोकरेंसी (USDT, BTC, ETH, TRX, BNB, LTC, SOL आदि) से भुगतान करें। पेमेंट भेजने के बाद <b>'पेमेंट वेरीफाई करें'</b> पर टैप करें!</blockquote>"
+            )
+            inv_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🌐 ${amount_usd:.2f} क्रिप्टो पे करें ➟", url=pay_link)],
+                [InlineKeyboardButton("🔄 पेमेंट वेरीफाई करें", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
+                [InlineKeyboardButton("❌ अपना ऑर्डर कैंसिल करें", callback_data=f"pass#cancel_{order_id}")],
+                [InlineKeyboardButton("← वापस", callback_data="pass#method_crypto")]
+            ])
+        else:
+            inv_text = (
+                f'<emoji id="5283232570660634549">🌐</emoji> <b>Crypto Payment Invoice — Unlimited Delivery Pass</b>\n\n'
+                f"• <b>Plan:</b> {dur_name} Unlimited Access\n"
+                f"• <b>Amount:</b> <code>${amount_usd:.2f} USD</code> (~₹{amount_inr:.0f})\n"
+                f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                f"<blockquote>Tap the button below to pay using your preferred cryptocurrency (USDT, BTC, ETH, TRX, BNB, LTC, SOL, etc.) via OxaPay. After sending crypto, tap <b>'Verify Payment'</b> to activate!</blockquote>"
+            )
+            inv_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🌐 Pay ${amount_usd:.2f} Crypto ➟", url=pay_link)],
+                [InlineKeyboardButton("🔄 Verify Payment", callback_data=f"pass#oxaverify_{track_id}_{dur_key}_{amount_inr}_{order_id}")],
+                [InlineKeyboardButton("❌ Cancel your order", callback_data=f"pass#cancel_{order_id}")],
+                [InlineKeyboardButton("← Back", callback_data="pass#method_crypto")]
+            ])
         await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
         # Schedule automatic reminder under 5 minutes (3 mins) if OxaPay crypto invoice not completed
@@ -3907,8 +4050,11 @@ async def _process_pass_callback(client, query):
         amount_inr = float(parts[3])
         order_id = parts[4] if len(parts) > 4 else f"PASS-{user_id}-1D-1"
 
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
         try:
-            await query.answer("Checking blockchain payment status with OxaPay...", show_alert=False)
+            await query.answer("OxaPay से ब्लॉकचेन पेमेंट चेक किया जा रहा है..." if is_hi else "Checking blockchain payment status with OxaPay...", show_alert=False)
         except Exception:
             pass
 
@@ -3931,14 +4077,26 @@ async def _process_pass_callback(client, query):
             except Exception:
                 exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
-            success_text = (
-                f'<emoji id="5224607267797606837">🎉</emoji> <b>Crypto Payment Verified Successfully!</b>\n\n'
-                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
-                f"<b>Track ID:</b> <code>{track_id}</code>\n"
-                f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-                f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
-                f"You can now access any batch and story links without cooldown. Enjoy!"
-            )
+            if is_hi:
+                plan_name = format_plan_name_friendly(dur_key, lang='hi')
+                success_text = (
+                    f'<emoji id="5224607267797606837">🎉</emoji> <b>क्रिप्टो पेमेंट सफलतापूर्वक वेरीफाई हो गया!</b>\n\n'
+                    f"नमस्ते <b>{user_name}</b>, आपका <b>{plan_name} अनलिमिटेड एक्सेस पास</b> अब सक्रिय है!\n\n"
+                    f"• <b>ट्रैक ID:</b> <code>{track_id}</code>\n"
+                    f"• <b>वैधता:</b> <code>{exp_str}</code>\n"
+                    f'• <b>स्टेटस:</b> <emoji id="5411359377904934337">🟢</emoji> अनलिमिटेड एक्सेस (कोई कूलडाउन नहीं)\n\n'
+                    f"अब आप बिना किसी लिमिट के सारी फाइल्स तुरंत एक्सेस कर सकते हैं!"
+                )
+            else:
+                plan_name = format_plan_name_friendly(dur_key, lang='en')
+                success_text = (
+                    f'<emoji id="5224607267797606837">🎉</emoji> <b>Crypto Payment Verified Successfully!</b>\n\n'
+                    f"Hey <b>{user_name}</b>, your <b>{plan_name} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                    f"• <b>Track ID:</b> <code>{track_id}</code>\n"
+                    f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
+                    f'• <b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
+                    f"You can now access any batch and story links without cooldown. Enjoy!"
+                )
             await query.message.edit_text(success_text)
 
             rl_cfg = await db.get_delivery_rate_limit_config()
@@ -4111,7 +4269,9 @@ async def _process_pass_callback(client, query):
                 pass
 
     elif data.startswith("pass#cancel_"):
-        await query.message.edit_text("<i>Payment invoice cancelled.</i>")
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+        await query.message.edit_text("पेमेंट इनवॉइस कैंसिल कर दिया गया।" if is_hi else "Payment invoice cancelled.")
 
 
     elif data == "pass#back":
@@ -4121,6 +4281,8 @@ async def _process_pass_callback(client, query):
         max_limit = int(rl_cfg.get('max_limit', 5))
         window_seconds = int(rl_cfg.get('window_seconds', int(rl_cfg.get('window_hours', 12)) * 3600))
         hits = await db.get_user_delivery_hits(user_id, window_seconds)
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
         
         import time as _t
         rem_sec = window_seconds
@@ -4130,32 +4292,56 @@ async def _process_pass_callback(client, query):
         if rem_sec >= 3600:
             rem_hours = rem_sec // 3600
             rem_mins = (rem_sec % 3600) // 60
-            rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m"
+            rem_time_str = f"{rem_hours:02d}h {rem_mins:02d}m" if not is_hi else f"{rem_hours} घंटे {rem_mins} मिनट"
         elif rem_sec >= 60:
             rem_mins = rem_sec // 60
             rem_secs = rem_sec % 60
-            rem_time_str = f"{rem_mins:02d}m {rem_secs:02d}s"
+            rem_time_str = f"{rem_mins:02d}m {rem_secs:02d}s" if not is_hi else f"{rem_mins} मिनट {rem_secs} सेकंड"
         else:
-            rem_time_str = f"{rem_sec:02d}s"
+            rem_time_str = f"{rem_sec:02d}s" if not is_hi else f"{rem_sec} सेकंड"
 
         win_verbose = format_duration_verbose(window_seconds)
 
-        limit_text = (
-            f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
-            f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
-            f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
-            f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
-            f'<i>Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji></i>'
-        )
-        limit_api_kb = [
-            [
-                {
-                    "text": "Unlock Access Via Payment",
-                    "callback_data": "pass#unlock_menu",
-                    "icon_custom_emoji_id": "6030443364178992166"
-                }
+        if is_hi:
+            limit_text = (
+                f'<emoji id="6215133834149629990">⏳</emoji> <b>रेट लिमिट पूरी हो गई है</b>\n\n'
+                f'आपने पिछले <b>{win_verbose}</b> में <b>{len(hits)} / {max_limit} लिंक्स</b> एक्सेस कर लिए हैं। <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                f'सभी यूजर्स के लिए लिमिट <b>{max_limit} लिंक्स प्रति {win_verbose}</b> निर्धारित है।\n\n'
+                f'<emoji id="6217487596486922033">⏰</emoji> <b>कूलडाउन रीसेट होने में समय:</b> <code>{rem_time_str}</code>\n\n'
+                f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड पास अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
+            )
+            limit_api_kb = [
+                [
+                    {
+                        "text": "पास अनलॉक करें",
+                        "callback_data": "pass#unlock_menu",
+                        "icon_custom_emoji_id": "6030443364178992166"
+                    }
+                ]
             ]
-        ]
+            unlock_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔓 पास अनलॉक करें", callback_data="pass#unlock_menu")
+            ]])
+        else:
+            limit_text = (
+                f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
+                f'You have already accessed <b>{len(hits)} / {max_limit} links</b> in the past <b>{win_verbose}</b>. <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                f'The limit is <b>{max_limit} links per {win_verbose}</b> to ensure fair usage for everyone.\n\n'
+                f'<b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
+                f'Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji>'
+            )
+            limit_api_kb = [
+                [
+                    {
+                        "text": "Unlock Unlimited Pass",
+                        "callback_data": "pass#unlock_menu",
+                        "icon_custom_emoji_id": "6030443364178992166"
+                    }
+                ]
+            ]
+            unlock_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔓 Unlock Unlimited Pass", callback_data="pass#unlock_menu")
+            ]])
         sent_ok = await send_or_edit_with_custom_icons(
             client=client,
             chat_id=query.message.chat.id,
