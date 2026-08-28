@@ -209,10 +209,17 @@ def _get_base_header(user) -> str:
     u_name = user.first_name or "User"
     return f"›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{u_name}</a>\n\n"
 
-def _get_welcome_text(user, bot_name, custom_wel=None) -> str:
+def _get_welcome_text(user, bot_name, custom_wel=None, lang='en') -> str:
     if custom_wel:
         return format_msg(custom_wel, user)
     first = user.first_name or "User"
+    if lang == 'hi':
+        return (
+            f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a><emoji id=\"6041919344995209164\">❣️</emoji></blockquote>\n"
+            f"<blockquote expandable><b>»  {bot_name} में आपका स्वागत है!</b></blockquote>\n"
+            f"<blockquote expandable>मैं एक फ़ाइल डिलीवरी बॉट हूँ। चैनल से किसी भी लिंक बटन पर टैप करें और मैं आपको फ़ाइलें सीधे यहाँ भेज दूंगा।</blockquote>\n"
+            f"<blockquote expandable>अधिक जानकारी के लिए सहायता (Help) पर क्लिक करें।</blockquote>"
+        )
     return (
         # Block 1: Greeting with first name only
         f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a><emoji id=\"6041919344995209164\">❣️</emoji></blockquote>\n"
@@ -225,7 +232,24 @@ def _get_welcome_text(user, bot_name, custom_wel=None) -> str:
     )
 
 
-def _get_help_text(user) -> str:
+def _get_help_text(user, lang='en') -> str:
+    if lang == 'hi':
+        return (
+            _get_base_header(user) +
+            "<b>सहायता मेनू (Help Menu)</b>\n\n"
+            "मैं एक फ़ाइल डिलीवरी बॉट हूँ। आप चैनल में दिए गए शेयर करने योग्य लिंक का उपयोग करके फ़ाइलों तक पहुँच सकते हैं।\n\n"
+            "<b>फ़ाइलें कैसे प्राप्त करें:</b>\n"
+            "➲  चैनल खोलें और लिंक बटन पर टैप करें\n"
+            "➲  मैं फ़ाइलें सीधे आपके DM में भेज दूंगा\n"
+            "➲  यदि फोर्स-सब्सक्राइब चालू है, तो पहले आवश्यक चैनल से जुड़ें\n"
+            "➲  यदि फ़ाइलें डिलीट हो गई हैं, तो वही बटन फिर से दबाएं\n\n"
+            "<b>उपलब्ध कमांड्स:</b>\n"
+            "➲  /start — बॉट शुरू करें\n"
+            "➲  /help — सहायता मेनू देखें\n\n"
+            "<b>बॉट जानकारी:</b>\n"
+            "➲  सभी डिलीवरी सुरक्षित और एन्क्रिप्टेड हैं\n"
+            "➲  फ़ाइलें एक निश्चित समय के बाद ऑटो-डिलीट हो सकती हैं"
+        )
     return _get_base_header(user) + _sc(
         "Help Menu\n\n"
         "I am a permanent file store bot. You can access stored files by using "
@@ -761,8 +785,14 @@ async def _process_start(client, message):
     needs_msg_metadata = bool(cap_tpl and any(k in cap_tpl for k in ("{file_name}", "{file_size}", "{caption}")))
 
     # Show configurable fetching media (GIF / Photo / Video) or fallback to text
-    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cᴀɴᴄᴇʟ", callback_data=f"cancel_dl_{uuid_str}")]])
-    fetch_text = '<i><emoji id="6215133834149629990">⏳</emoji>  Fᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs sᴇᴄᴜʀᴇʟʏ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>'
+    user_lang = await db.get_language(user_id)
+    is_hi = bool(user_lang == 'hi')
+    cancel_lbl = "रद्द करें" if is_hi else "Cᴀɴᴄᴇʟ"
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton(cancel_lbl, callback_data=f"cancel_dl_{uuid_str}")]])
+    if is_hi:
+        fetch_text = '<emoji id="6215133834149629990">⏳</emoji>  आपकी फ़ाइलें सुरक्षित रूप से प्राप्त की जा रही हैं, कृपया प्रतीक्षा करें...'
+    else:
+        fetch_text = '<emoji id="6215133834149629990">⏳</emoji>  Fᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs sᴇᴄᴜʀᴇʟʏ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...'
     sts = None
 
     if fetching_media:
@@ -1088,32 +1118,45 @@ async def _send_welcome(client, message, bot_id: str = None):
         global_wel = await global_wel_task
         custom_wel = global_wel
 
-    txt = _get_welcome_text(user, bot_name, custom_wel)
+    user_lang = await db.get_language(user.id)
+    is_hi = bool(user_lang == 'hi')
+    txt = _get_welcome_text(user, bot_name, custom_wel, lang=user_lang)
 
     bot_about = await about_task or {}
     welcome_img = random.choice(bot_about.get('menu_image_ids', [])) if bot_about and bot_about.get('menu_image_ids') else None
 
+    lbl_prem = "Arya Premium" if not is_hi else "आर्या प्रीमियम"
+    lbl_help = _sc("Help") if not is_hi else "सहायता"
+    lbl_about = _sc("About") if not is_hi else "बारे में"
+    lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
+
     buttons = [
         [
-            InlineKeyboardButton("»  " + _sc("Arya Premium"), callback_data="sbd#premium"),
+            InlineKeyboardButton("»  " + _sc(lbl_prem), callback_data="sbd#premium"),
         ],
         [
-            InlineKeyboardButton(_sc("Help"), callback_data="sbd#help"),
-            InlineKeyboardButton(_sc("About"), callback_data="sbd#about"),
+            InlineKeyboardButton(lbl_help, callback_data="sbd#help"),
+            InlineKeyboardButton(lbl_about, callback_data="sbd#about"),
         ],
-        [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
+        [
+            InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
+            InlineKeyboardButton("⚙️", callback_data="sbd#settings")
+        ]
     ]
     markup = InlineKeyboardMarkup(buttons)
 
     welcome_api_kb = [
         [
-            {"text": "»  " + _sc("Arya Premium"), "callback_data": "sbd#premium"}
+            {"text": "»  " + _sc(lbl_prem), "callback_data": "sbd#premium"}
         ],
         [
-            {"text": _sc("Help"), "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
-            {"text": _sc("About"), "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
+            {"text": lbl_help, "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
+            {"text": lbl_about, "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
         ],
-        [{"text": "»  " + _sc("Update Channel"), "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}]
+        [
+            {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"},
+            {"text": "⚙️", "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+        ]
     ]
 
     try:
@@ -1281,13 +1324,62 @@ async def _process_delivery_button(client, query):
         buttons = [
             [InlineKeyboardButton("»  " + _sc("Support"), url=SUPPORT_LINK)],
             [InlineKeyboardButton("«  " + _sc("Back"), callback_data="sbd#back")],
-            [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
+            [InlineKeyboardButton(_sc("Update Channel"), url=UPDATE_LINK), InlineKeyboardButton("⚙️", callback_data="sbd#settings")]
         ]
         markup = InlineKeyboardMarkup(buttons)
         try:
             if is_media_msg: await msg.edit_caption(caption=txt, reply_markup=markup)
             else: await msg.edit_text(txt, reply_markup=markup)
         except Exception: pass
+
+    elif cmd == "settings":
+        await query.answer()
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+        if is_hi:
+            set_txt = (
+                '<emoji id="6021637109264160908">⚙️</emoji> <b>यूजर सेटिंग्स</b>\n'
+                "──────────────────────\n\n"
+                "डिलीवरी बॉट और पास सब्सक्रिप्शन के लिए अपनी सेटिंग्स चुनें:"
+            )
+            lbl_lang = "भाषा"
+            lbl_txns = "मेरे ट्रांसक्शन्स"
+            lbl_back = "← वापस"
+        else:
+            set_txt = (
+                '<emoji id="6021637109264160908">⚙️</emoji> <b>User Settings</b>\n'
+                "──────────────────────\n\n"
+                "Configure your delivery bot and pass subscription preferences:"
+            )
+            lbl_lang = "Language"
+            lbl_txns = "My Transactions"
+            lbl_back = "← Back"
+
+        set_buttons = [
+            [InlineKeyboardButton(f"🌐 {lbl_lang}", callback_data="pass#lang_menu")],
+            [InlineKeyboardButton(f"📜 {lbl_txns}", callback_data="pass#my_transactions")],
+            [InlineKeyboardButton(lbl_back, callback_data="sbd#back")]
+        ]
+        set_api_kb = [
+            [{"text": lbl_lang, "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"}],
+            [{"text": lbl_txns, "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6021487472603568286"}],
+            [{"text": lbl_back, "callback_data": "sbd#back"}]
+        ]
+        try:
+            if is_media_msg:
+                await msg.edit_caption(caption=set_txt, reply_markup=InlineKeyboardMarkup(set_buttons))
+            else:
+                sent_ok = await send_or_edit_with_custom_icons(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=set_txt,
+                    inline_keyboard=set_api_kb,
+                    message_id=msg.id
+                )
+                if not sent_ok:
+                    await msg.edit_text(set_txt, reply_markup=InlineKeyboardMarkup(set_buttons))
+        except Exception:
+            pass
 
     elif cmd == "premium":
         await query.answer()
@@ -1516,33 +1608,46 @@ async def _process_delivery_button(client, query):
 
 
 
-    elif cmd == "back":
+    elif cmd == "back" or cmd == "main_menu":
         await query.answer()
         bot_name = client.me.first_name if client.me else "Delivery Bot"
         custom_wel = (await db.get_share_bot_text(bot_id, "welcome_msg") if bot_id else "") or await db.get_share_text("welcome_msg", "")
-        txt = _get_welcome_text(query.from_user, bot_name, custom_wel)
+        user_lang = await db.get_language(query.from_user.id)
+        is_hi = bool(user_lang == 'hi')
+        txt = _get_welcome_text(query.from_user, bot_name, custom_wel, lang=user_lang)
         
+        lbl_prem = "Arya Premium" if not is_hi else "आर्या प्रीमियम"
+        lbl_help = _sc("Help") if not is_hi else "सहायता"
+        lbl_about = _sc("About") if not is_hi else "बारे में"
+        lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
+
         buttons = [
             [
-                InlineKeyboardButton("»  " + _sc("Arya Premium"), callback_data="sbd#premium"),
+                InlineKeyboardButton("»  " + _sc(lbl_prem), callback_data="sbd#premium"),
             ],
             [
-                InlineKeyboardButton(_sc("Help"), callback_data="sbd#help"),
-                InlineKeyboardButton(_sc("About"), callback_data="sbd#about"),
+                InlineKeyboardButton(lbl_help, callback_data="sbd#help"),
+                InlineKeyboardButton(lbl_about, callback_data="sbd#about"),
             ],
-            [InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]
+            [
+                InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
+                InlineKeyboardButton("⚙️", callback_data="sbd#settings")
+            ]
         ]
         markup = InlineKeyboardMarkup(buttons)
 
         welcome_api_kb = [
             [
-                {"text": "»  " + _sc("Arya Premium"), "callback_data": "sbd#premium"}
+                {"text": "»  " + _sc(lbl_prem), "callback_data": "sbd#premium"}
             ],
             [
-                {"text": _sc("Help"), "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
-                {"text": _sc("About"), "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
+                {"text": lbl_help, "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
+                {"text": lbl_about, "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
             ],
-            [{"text": "»  " + _sc("Update Channel"), "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}]
+            [
+                {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"},
+                {"text": "⚙️", "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+            ]
         ]
         try:
             if is_media_msg:
