@@ -691,6 +691,15 @@ async def _process_start(client, message):
                             InlineKeyboardButton("🔓 Unlock Access Via Payment", callback_data="pass#unlock_menu")
                         ]])
                         await message.reply_text(limit_text, reply_markup=unlock_kb)
+
+                    # Trigger intelligent Cooldown Reminders (Max 2 reminders)
+                    asyncio.create_task(schedule_rate_limit_reminders(
+                        client=client,
+                        user_id=user_id,
+                        user_name=user_obj.first_name if user_obj else "User",
+                        rem_sec=rem_sec,
+                        window_str=win_verbose
+                    ))
                     return
 
     # 2. Force-Subscribe check (per-bot fsub)
@@ -1742,6 +1751,378 @@ async def _process_fsub_check(client, query):
     await _process_start(client, msg)
 
 
+
+# ── Kawaii Reminder Custom Emojis (Filtered for positive/cute interactions) ───
+KAWAII_REMINDER_EMOJIS = [
+    ("❤️", "5848252019713776041"),
+    ("🎊", "5847925499120065335"),
+    ("🎊", "5847937885805747359"),
+    ("💕", "5850733759191586694"),
+    ("💕", "5850346718213708275"),
+    ("💕", "5850220665218538131"),
+    ("💕", "5848278231899184821"),
+    ("😴", "5848239474114306698"),
+    ("😴", "5850225969503148548"),
+    ("🥰", "5848298950821418909"),
+    ("🥰", "5848390386380183682"),
+    ("😘", "5848133826508757485"),
+    ("😘", "5850193830262874586"),
+    ("🎈", "5850502522447338230"),
+    ("🥰", "5847932461262052099"),
+    ("🥰", "5850603930920163907"),
+    ("🎈", "5848050547092889314"),
+    ("💙", "5848264045622205527"),
+    ("❤️", "5850268661478070978"),
+    ("🥰", "5850441039990495852"),
+    ("🥰", "5848079941849062172"),
+    ("💕", "5850690105143989976"),
+    ("💕", "5848449970461483776"),
+    ("❤️", "5848168525549542704"),
+    ("❤️", "5848312668946963057"),
+    ("😘", "5848277312776182595"),
+    ("😘", "5850416717590698464"),
+    ("🩷", "5848084868176550792"),
+    ("🩷", "5847976403072456935"),
+    ("✨", "5848479610030791324"),
+    ("✨", "5848137567425272287"),
+    ("👋", "5850325870442454209"),
+    ("👋", "5850355368277842985"),
+    ("😏", "5850651721021267320"),
+    ("😳", "5850306568859425667"),
+    ("❔", "5850371452930366117"),
+    ("😍", "5847968113785576864"),
+    ("‼️", "5848036073053100626"),
+    ("🤩", "5850688052149623747"),
+    ("☺️", "5848361086113292480"),
+    ("✨", "5850463528439257665"),
+    ("😢", "5848054296599337352"),
+    ("😭", "5848318243814513869"),
+    ("🌈", "5848404332138995312"),
+    ("😏", "5850445021425178687"),
+    ("😭", "5847933199996427721"),
+    ("😍", "5850495590370122561"),
+    ("🤔", "5850502432253025037"),
+    ("🙇", "5850476228657551204"),
+    ("🙏", "5848038628558641941"),
+    ("😎", "5850502041411000133"),
+    ("😘", "5848151040737680444"),
+    ("😜", "5850506340673264483"),
+    ("☺️", "5847981853385956294"),
+    ("😁", "5847961057154310044"),
+    ("😳", "5850393460342792008"),
+    ("🥰", "5850672104936054606"),
+    ("🥺", "5850529464777186361"),
+    ("🥺", "5850456149685445756"),
+    ("☺️", "5847986139763317354"),
+    ("😉", "5848337296289438813"),
+    ("😍", "5850188384244341454"),
+    ("😂", "5850725040407976081"),
+    ("🥺", "5850335173341617597"),
+    ("🥺", "5848075311874317861"),
+    ("🫤", "5848457301970655817"),
+    ("☺️", "5850665872938508852"),
+    ("👋", "5850698420200675761"),
+    ("🥺", "5848093445226240381"),
+    ("😯", "5850186520228535876"),
+    ("😍", "5850607349714131016"),
+    ("😪", "5850526166242302581"),
+    ("😂", "5850599786276723541"),
+    ("😐", "5850536182106036653"),
+    ("😳", "5848000265910753463"),
+    ("😜", "5848037198334532036"),
+    ("☺️", "5850379566123588378"),
+    ("😎", "5850192820945558613"),
+    ("🫡", "5850248900333542155"),
+    ("‼️", "5850577538346130136"),
+    ("😃", "5850389603462159449"),
+    ("😍", "5850722317398710493"),
+    ("😏", "5848134595307903838"),
+    ("✨", "5848050456898575301"),
+    ("🩷", "5850631929811966291"),
+    ("🌈", "5850582438903814187"),
+    ("🙇", "5850640017235385099"),
+    ("🙏", "5850192391448827964"),
+    ("❔", "5848479957923142528"),
+    ("‼️", "5847929364590631092"),
+    ("☺️", "5848326361302703424"),
+    ("😍", "5848341440932878268"),
+    ("😁", "5848019515954174149"),
+    ("😂", "5848349820414074768"),
+    ("😜", "5850276882045477026"),
+    ("😢", "5850301784265857748"),
+    ("🫢", "5850689125891448128"),
+    ("☺️", "5850248883153672421"),
+    ("🤔", "5848435934508361589"),
+    ("😭", "5850485643225864383"),
+    ("😉", "5848099329331435525"),
+    ("😍", "5850699678626093300"),
+    ("☺️", "5848226919924898730"),
+    ("😘", "5847984666589535250"),
+    ("👍", "5850422756314716370"),
+    ("🤨", "5848441225908067066"),
+    ("🤨", "5850549921706417222"),
+    ("😶", "5848149112297363951"),
+    ("😶", "5848444906695040049"),
+    ("😳", "5848359587169704834"),
+    ("😀", "5848350048047340496"),
+    ("😳", "5850229710419662994"),
+    ("😳", "5850658562904169846"),
+    ("😁", "5850331015813274096"),
+    ("☺️", "5850725156372093951"),
+    ("😳", "5850349342438725882"),
+    ("😳", "5850258521060285547"),
+    ("🥺", "5850409278707341919"),
+    ("🥺", "5848245701816884635"),
+    ("👍", "5848406440967936253"),
+    ("💌", "5850176641803753392"),
+    ("🦕", "5850409351721786284"),
+    ("🛸", "5850700322871188207"),
+    ("🏠", "5850713461176146954"),
+    ("🩷", "5848291370204142990"),
+    ("☕️", "5848214004958239776"),
+    ("🍰", "5848146251849145548"),
+    ("🚙", "5850392665773840870"),
+    ("💫", "5850719383936047212"),
+    ("✨", "5850638110269904627"),
+    ("🩵", "5850617640455773442"),
+    ("💕", "5850415549359593340"),
+    ("💘", "5850577933483121553"),
+    ("🩷", "5848266893185522044"),
+    ("💘", "5850719353871276137"),
+    ("🩷", "5850546992538720577"),
+    ("😳", "5796517991877189249"),
+    ("☺️", "5793918377021939684"),
+    ("🤩", "5794427266222005394"),
+    ("😳", "5794214665340853357"),
+    ("☺️", "5794002257733232164"),
+    ("☺️", "5796220866039652145"),
+    ("😢", "5796420723752835884"),
+    ("😭", "5796469235408444771"),
+    ("☺️", "5794086615185891025"),
+    ("☺️", "5796326152867945946"),
+    ("😶", "5796282400036101142"),
+    ("🐱", "5796350157440163851"),
+    ("🥺", "5794411207339286580"),
+    ("🫥", "5796311902166458160"),
+    ("😘", "5794313690106830178"),
+    ("🥰", "5796195113415744617"),
+    ("😳", "5796318434811716192"),
+    ("☺️", "5796449478558884019"),
+    ("🤩", "5796273934655561367"),
+    ("😳", "5796190930117598062"),
+    ("☺️", "5794138665894551392"),
+    ("☺️", "5796435872102489500"),
+    ("😶", "5796428257125474474"),
+    ("☺️", "5796151090000960903"),
+    ("☺️", "5796254143446262590"),
+    ("😢", "5796310270078899443"),
+    ("😭", "5794166492987660945"),
+    ("🐶", "5794376710161964211"),
+    ("🥺", "5796214067106421639"),
+    ("🫥", "5796329112100412694"),
+    ("😘", "5794442710924402354"),
+    ("🥰", "5796351622024011473"),
+    ("🩷", "5794232352016179004"),
+    ("🎁", "5794209537149901836"),
+    ("🎁", "5796616144764804167"),
+    ("💕", "5796353185392111831"),
+    ("🥰", "5796345471630843323"),
+    ("🥰", "5794335809188404698"),
+]
+
+
+_active_cooldown_reminders: dict = {}  # {user_id: asyncio.Task}
+
+def _cancel_cooldown_reminders(user_id: int):
+    """Cancel any active cooldown reminder task for this user."""
+    task = _active_cooldown_reminders.pop(user_id, None)
+    if task and not task.done():
+        try:
+            task.cancel()
+        except Exception:
+            pass
+
+async def _send_random_cooldown_reminder(
+    client,
+    user_id: int,
+    user_name: str,
+    rem_sec: int,
+    reminder_index: int = 1
+):
+    import random
+    user_lang = await db.get_language(user_id)  # 'hi' or 'en' or None
+    
+    # Calculate friendly remaining time
+    if rem_sec >= 3600:
+        rh = rem_sec // 3600
+        rm = (rem_sec % 3600) // 60
+        cooldown_str = f"{rh:02d}h {rm:02d}m" if user_lang != 'hi' else f"{rh} घंटे {rm} मिनट"
+    elif rem_sec >= 60:
+        rm = rem_sec // 60
+        rs = rem_sec % 60
+        cooldown_str = f"{rm:02d}m {rs:02d}s" if user_lang != 'hi' else f"{rm} मिनट {rs} सेकंड"
+    else:
+        cooldown_str = f"{rem_sec}s" if user_lang != 'hi' else f"{rem_sec} सेकंड"
+
+    # Select random kawaii custom emojis
+    def _re():
+        emo, eid = random.choice(KAWAII_REMINDER_EMOJIS)
+        return f'<emoji id="{eid}">{emo}</emoji>'
+
+    # Determine language: strict if user set preference, random Hindi/English if default
+    if user_lang == 'hi':
+        is_hi = True
+    elif user_lang == 'en':
+        is_hi = False
+    else:
+        is_hi = random.choice([True, False])
+
+    if is_hi:
+        templates = [
+            # Sarcastic & Witty 1
+            (
+                f"अरे <a href='tg://user?id={user_id}'>{user_name}</a> जी! {_re()}\n\n"
+                f"क्या आप अभी भी <b>{cooldown_str}</b> के टाइमर खत्म होने का इंतज़ार कर रहे हैं? {_re()}\n"
+                f"इतना सब्र तो कोई नहीं करता! सिर्फ <b>₹15</b> से शुरू होने वाला <b>अनलिमिटेड पास</b> लें और बिना किसी रोक-टोक के सारी फाइल्स तुरंत पाएं! {_re()}"
+            ),
+            # Love & Caring 2
+            (
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
+                f"हम नहीं चाहते कि आपको अपनी पसंदीदा फाइल्स के लिए घंटों इंतज़ार करना पड़े। {_re()}\n"
+                f"आपके लिए बेहद सस्ता और सुपरफास्ट पास उपलब्ध है — इसे अभी अनलॉक करें और अनलिमिटेड डाउनलोड्स का आनंद लें! {_re()}🎁"
+            ),
+            # Professional 3
+            (
+                f"नमस्ते <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"आपकी डाउनलोड लिमिट समाप्त है और अगला रीसेट <b>{cooldown_str}</b> बाद होगा। {_re()}\n"
+                f"बिना किसी लिमिट और बिना डोनेशन मैसेज के 24/7 नॉन-स्टॉप एक्सेस के लिए अभी <b>पास सब्सक्रिप्शन</b> अनलॉक करें। {_re()}⚡️"
+            ),
+            # Playful / Chai 4
+            (
+                f"सुनो <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}☕️\n\n"
+                f"एक चाय के खर्चे में पूरे दिन का अनलिमिटेड पास मिल रहा है, फिर टाइमर गिनने की क्या जरूरत? {_re()}\n"
+                f"नीचे दिए गए बटन पर टैप करें और तुरंत सुपरफास्ट स्पीड अनलॉक करें! {_re()}🚀"
+            )
+        ]
+        btn_unlock = "🔓 पास अभी अनलॉक करें"
+        btn_supp = "🔒 सहायता"
+    else:
+        templates = [
+            # Sarcastic & Witty 1
+            (
+                f"Hey <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"Still waiting <b>{cooldown_str}</b> in cooldown just to download another file? {_re()}\n"
+                f"Life is too short for timers! Grab our dirt-cheap <b>Unlimited Access Pass</b> starting at just ₹15 and say goodbye to limits forever! {_re()}"
+            ),
+            # Love & Caring 2
+            (
+                f"Dear <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}💕\n\n"
+                f"We hate seeing you wait on cooldown! You deserve smooth, instant downloads without any pause or interruptions. {_re()}\n"
+                f"Unlock unlimited high-speed access today with our affordable Pass — zero limits, zero ads, pure speed! {_re()}🎁"
+            ),
+            # Professional 3
+            (
+                f"Hello <a href='tg://user?id={user_id}'>{user_name}</a> {_re()}\n\n"
+                f"Your download quota is currently on pause for <b>{cooldown_str}</b> due to fair usage limits. {_re()}\n"
+                f"To bypass all cooldowns and enjoy instant unlimited downloads 24/7, upgrade to an <b>Unlimited Pass</b> now at discounted rates! {_re()}⚡️"
+            ),
+            # Playful / Chai 4
+            (
+                f"Yo <a href='tg://user?id={user_id}'>{user_name}</a>! {_re()}☕️\n\n"
+                f"Still staring at the clock counting down the seconds? {_re()}\n"
+                f"Skip the wait for less than the price of a chai! Get the Unlimited Pass and binge all your favorite files instantly! {_re()}🚀"
+            )
+        ]
+        btn_unlock = "🔓 Unlock Unlimited Pass"
+        btn_supp = "🔒 Support"
+
+    text = random.choice(templates)
+    
+    api_kb = [
+        [{"text": btn_unlock, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "6030443364178992166"}],
+        [{"text": btn_supp, "url": "https://t.me/AryaHelpTG", "icon_custom_emoji_id": "6030833407339008632"}]
+    ]
+    pyrogram_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(btn_unlock, callback_data="pass#unlock_menu")],
+        [InlineKeyboardButton(btn_supp, url="https://t.me/AryaHelpTG")]
+    ])
+
+    try:
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=user_id,
+            text=text,
+            inline_keyboard=api_kb
+        )
+        if not sent_ok:
+            await client.send_message(user_id, text, reply_markup=pyrogram_kb, disable_web_page_preview=True)
+    except Exception as ex:
+        logger.debug(f"Failed to send rate limit reminder to {user_id}: {ex}")
+
+
+async def schedule_rate_limit_reminders(
+    client,
+    user_id: int,
+    user_name: str,
+    rem_sec: int,
+    window_str: str = ""
+):
+    """
+    Schedules max 2 witty / sarcastic / love / professional reminders during the user's cooldown.
+    Automatically aborts if user activates an Unlimited Pass before or during the interval.
+    """
+    _cancel_cooldown_reminders(user_id)
+
+    async def _reminder_coro():
+        try:
+            if rem_sec < 60:
+                return
+
+            delay_1 = min(300, max(45, rem_sec // 3))
+            delay_2 = min(1800, max(120, (rem_sec * 2) // 3))
+
+            # --- REMINDER 1 ---
+            await asyncio.sleep(delay_1)
+
+            # Check if user already activated pass
+            pass_info = await db.get_user_unlimited_pass(user_id)
+            if pass_info.get('active'):
+                return
+
+            await _send_random_cooldown_reminder(
+                client=client,
+                user_id=user_id,
+                user_name=user_name,
+                rem_sec=max(1, rem_sec - delay_1),
+                reminder_index=1
+            )
+
+            # --- REMINDER 2 ---
+            remaining_sleep = delay_2 - delay_1
+            if remaining_sleep > 30 and (rem_sec - delay_2) > 30:
+                await asyncio.sleep(remaining_sleep)
+
+                pass_info = await db.get_user_unlimited_pass(user_id)
+                if pass_info.get('active'):
+                    return
+
+                await _send_random_cooldown_reminder(
+                    client=client,
+                    user_id=user_id,
+                    user_name=user_name,
+                    rem_sec=max(1, rem_sec - delay_2),
+                    reminder_index=2
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Cooldown reminder error for user {user_id}: {e}")
+        finally:
+            _active_cooldown_reminders.pop(user_id, None)
+
+    task = asyncio.create_task(_reminder_coro())
+    _active_cooldown_reminders[user_id] = task
+
 # ── Unlimited Delivery Pass Callback Handlers ─────────────────────────────────
 _pending_utr_users: dict = {}  # {user_id: {'dur_key': str, 'amount': float, 'ts': float}}
 
@@ -1817,6 +2198,7 @@ async def _poll_upi_payment(
                 )
 
                 # Activate user pass in database
+                _cancel_cooldown_reminders(user_id)
                 await db.activate_user_unlimited_pass(
                     user_id=user_id,
                     duration_seconds=dur_sec,
@@ -2017,6 +2399,7 @@ async def _handle_share_bot_utr_message(client, message):
         pending_info = _pending_utr_users.pop(user_id, {})
         order_id = pending_info.get('order_id') or f"PASS-{user_id}-1D-1"
         await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
+        _cancel_cooldown_reminders(user_id)
         new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
 
         from database import format_duration_verbose, parse_duration_to_seconds
@@ -3163,6 +3546,7 @@ async def _process_pass_callback(client, query):
                 user_name=payer_name,
                 gateway="Pay Via UPI (INR)"
             )
+            _cancel_cooldown_reminders(user_id)
             await db.activate_user_unlimited_pass(
                 user_id=user_id,
                 duration_seconds=dur_sec,
@@ -3259,6 +3643,7 @@ async def _process_pass_callback(client, query):
             pending = _pending_utr_users.pop(user_id, {})
             order_id = pending.get('order_id') or f"UPI_{user_id}_{int(time.time())}"
             await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
+            _cancel_cooldown_reminders(user_id)
             new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
             
             from database import format_duration_verbose, parse_duration_to_seconds
@@ -3385,6 +3770,7 @@ async def _process_pass_callback(client, query):
         v_res = await verify_oxapay_pass_order(track_id)
 
         if v_res.get("paid"):
+            _cancel_cooldown_reminders(user_id)
             new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -3534,6 +3920,7 @@ async def _process_pass_callback(client, query):
 
         if v_res.get("is_paid"):
             await db.mark_pass_order_paid(order_id, v_res)
+            _cancel_cooldown_reminders(user_id)
             new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
             
             import datetime
