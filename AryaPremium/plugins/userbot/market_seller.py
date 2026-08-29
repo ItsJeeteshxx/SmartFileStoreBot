@@ -2077,25 +2077,22 @@ async def _show_story_profile(client, user_id, story, lang):
         price_line = f"<b>🏷 {p_lbl}:</b> <s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>\n"
 
     else:
-
         price_line = ""
 
-    
+    files_lbl = "फ़ाइलें" if lang == "hi" else "Files"
+    actual_files = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None)
+    files_line = f"<b>📁 {files_lbl}:</b> <b>{actual_files}</b>\n" if actual_files else ""
 
-        files_lbl = "फ़ाइलें" if lang == "hi" else "Files"
-        actual_files = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None)
-        files_line = f"<b>📁 {files_lbl}:</b> <b>{actual_files}</b>\n" if actual_files else ""
-
-        header_txt = (
-            f"<b>♨️ Story:</b> {to_mathbold(name)}\n"
-            f"<b>🔰 {status_lbl}:</b> <b>{status}</b>\n"
-            f"<b>🖥 {plat_lbl}:</b> <b>{platform}</b>\n"
-            f"<b>🧩 {genre_lbl}:</b> <b>{genre}</b>\n"
-            f"{price_line}"
-            f"<b>🎬 {ep_lbl}:</b> <b>{episodes}</b>\n"
-            f"{files_line}"
-            f"<b>📥 {del_lbl}:</b> <i>{del_val}</i>\n\n"
-        )
+    header_txt = (
+        f"<b>♨️ Story:</b> {to_mathbold(name)}\n"
+        f"<b>🔰 {status_lbl}:</b> <b>{status}</b>\n"
+        f"<b>🖥 {plat_lbl}:</b> <b>{platform}</b>\n"
+        f"<b>🧩 {genre_lbl}:</b> <b>{genre}</b>\n"
+        f"{price_line}"
+        f"<b>🎬 {ep_lbl}:</b> <b>{episodes}</b>\n"
+        f"{files_line}"
+        f"<b>📥 {del_lbl}:</b> <i>{del_val}</i>\n\n"
+    )
 
     if desc and desc.lower() != "none":
 
