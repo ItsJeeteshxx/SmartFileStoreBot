@@ -4224,9 +4224,11 @@ async def _process_text(client, message):
             for idx, s in enumerate(all_stories, start=1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = " 🆕" if idx <= 5 else ""
-                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"
-                kb.append([_kb_btn(btn_txt)])
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                if idx <= 5:
+                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                else:
+                    kb.append([_kb_btn(btn_txt)])
             kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
             title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
             msg_text = f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>'
@@ -4267,9 +4269,11 @@ async def _process_text(client, message):
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = " 🆕" if idx <= 5 else ""
-                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"
-                kb.append([_kb_btn(btn_txt)])
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                if idx <= 5:
+                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                else:
+                    kb.append([_kb_btn(btn_txt)])
 
             nav_row = []
             if new_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
@@ -4370,9 +4374,11 @@ async def _process_text(client, message):
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
-            badge = " 🆕" if idx <= 5 else ""
-            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"
-            kb.append([_kb_btn(btn_txt)])
+            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
+            if idx <= 5:
+                kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+            else:
+                kb.append([_kb_btn(btn_txt)])
 
         nav_row = []
         if s_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
@@ -4608,9 +4614,11 @@ async def _process_text(client, message):
         kb = []
         for idx, s in enumerate(matches, start=1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
-            badge = " 🆕" if idx <= 5 else ""
-            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"
-            kb.append([_kb_btn(btn_txt)])
+            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
+            if idx <= 5:
+                kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+            else:
+                kb.append([_kb_btn(btn_txt)])
         kb.append([_kb_btn("« " + "CANCEL")])
 
         msg_text = (
