@@ -1500,11 +1500,14 @@ async def _send_reply_keyboard_bot_api(
         api_row = []
         for btn in row:
             if isinstance(btn, dict):
-                api_row.append({"text": btn.get("text", "")})
+                api_row.append(btn)
             elif isinstance(btn, str):
                 api_row.append({"text": btn})
             elif hasattr(btn, "text"):
-                api_row.append({"text": btn.text})
+                d = {"text": btn.text}
+                if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
+                    d["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
+                api_row.append(d)
         api_keyboard.append(api_row)
 
     payload = {
@@ -1524,48 +1527,11 @@ async def _send_reply_keyboard_bot_api(
                 data = await resp.json()
                 if data.get("ok"):
                     return True
-                logger.warning(f"Seller Bot API sendMessage (ReplyKeyboard) returned: {data}")
+                logger.debug(f"Seller Bot API sendMessage (ReplyKeyboard) returned: {data}")
     except Exception as e:
-        logger.warning(f"Seller Bot API sendMessage (ReplyKeyboard) exception: {e}")
+        logger.debug(f"Seller Bot API sendMessage (ReplyKeyboard) exception: {e}")
 
     return False
-
-async def _send_safe_reply_keyboard(client, user_id: int, text: str, keyboard: list, resize_keyboard: bool = True) -> bool:
-    import re
-    from pyrogram.types import ReplyKeyboardMarkup
-    from pyrogram import enums
-    
-    ok = await _send_reply_keyboard_bot_api(client, user_id, text, keyboard, resize_keyboard=resize_keyboard)
-    if ok:
-        return True
-        
-    # Pyrogram MTProto fallback (clean HTML tags unsupported by Pyrogram MTProto)
-    pyro_text = re.sub(r'<emoji id="\d+">([^<]*)</emoji>', r'\1', text)
-    pyro_text = re.sub(r'<tg-emoji emoji-id="\d+">([^<]*)</tg-emoji>', r'\1', pyro_text)
-    
-    pyro_kb = []
-    for r in keyboard:
-        row = []
-        for b in r:
-            if isinstance(b, dict):
-                row.append(b.get("text", ""))
-            elif isinstance(b, str):
-                row.append(b)
-            elif hasattr(b, "text"):
-                row.append(b.text)
-        pyro_kb.append(row)
-        
-    try:
-        await client.send_message(
-            user_id,
-            pyro_text,
-            reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=resize_keyboard),
-            parse_mode=enums.ParseMode.HTML
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Fallback send_reply_keyboard error: {e}")
-        return False
 
 
 async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
@@ -4265,7 +4231,14 @@ async def _process_text(client, message):
             f"<blockquote expandable>{pg_info}\n"
             f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
         )
-        await _send_safe_reply_keyboard(client, user_id, msg_text, kb)
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
     is_nav_next = (
@@ -4413,7 +4386,14 @@ async def _process_text(client, message):
                 f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>"
             )
 
-        await _send_safe_reply_keyboard(client, user_id, msg_text, kb)
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
     # Check if it's a story selection e.g. "1. STORY NAME [ ₹ 49 ]"
@@ -4529,7 +4509,14 @@ async def _process_text(client, message):
             f"<i>{desc}</i>\n"
             f"</blockquote>"
         )
-        await _send_safe_reply_keyboard(client, user_id, msg_text, kb)
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
     # ── REQUEST STORY trigger ──
@@ -4694,7 +4681,14 @@ async def _process_text(client, message):
             f'<b><emoji id="6025893082552081088">🔍</emoji> {_sc("Search Results")} ({len(matches)})</b>\n\n'
             f"<blockquote expandable>{_sc('Tap on a story name from the keyboard menu below to view its details and purchase options.')}</blockquote>"
         )
-        await _send_safe_reply_keyboard(client, user_id, msg_text, kb)
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
 
@@ -7780,7 +7774,11 @@ async def _process_callback(client, query):
             else:
                 p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below.'
 
-            return await _send_safe_reply_keyboard(client, user_id, p_text, kb)
+            ok = await _send_reply_keyboard_bot_api(client, user_id, p_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                return await client.send_message(user_id, p_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+            return
 
             
 
