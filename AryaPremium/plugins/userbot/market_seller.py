@@ -1963,6 +1963,27 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
     if fallback_photo and fallback_photo not in img_candidates:
         img_candidates.append(fallback_photo)
 
+    has_custom_emoji = reply_markup and any(
+        hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
+        for row in reply_markup.inline_keyboard for btn in row
+    )
+
+    if has_custom_emoji:
+        for photo_ref in img_candidates:
+            try:
+                ok = await _send_or_edit_seller_bot_api(
+                    client=client,
+                    chat_id=user_id,
+                    text=caption,
+                    markup=reply_markup,
+                    media_id=photo_ref,
+                    media_type="photo"
+                )
+                if ok:
+                    return True
+            except Exception as e:
+                logger.debug(f"Bot API send_photo candidate {str(photo_ref)[:30]}: {e}")
+
     for photo_ref in img_candidates:
         try:
             return await client.send_photo(
@@ -1975,6 +1996,19 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
         except Exception as e:
             logger.debug(f"Failed send_photo candidate {str(photo_ref)[:30]}: {e}")
             continue
+
+    if has_custom_emoji:
+        try:
+            ok = await _send_or_edit_seller_bot_api(
+                client=client,
+                chat_id=user_id,
+                text=caption,
+                markup=reply_markup
+            )
+            if ok:
+                return True
+        except Exception:
+            pass
 
     # Fallback: send text message if all image options failed
     return await client.send_message(
@@ -8258,29 +8292,17 @@ async def _send_demo_files(client, user_id, story, lang):
     try:
 
         if lang == "hi":
-
-            txt = "<b>👀 डेमो फ़ाइलें भेजी जा रही हैं...</b>\n\n<i>नोट: एपिसोड हमेशा अलग-अलग नहीं दिए जाते हैं; वे ग्रुप फॉर्मेट/बड़ी फाइल में भी हो सकते हैं, इसलिए कृपया इसे ध्यान में रखें।\nये डेमो फाइल्स 5 मिनट बाद सख्ती से अपने आप डिलीट हो जाएंगी।</i>"
-
+            txt = '<emoji id="5210956306952758910">👀</emoji> <b>डेमो फ़ाइलें भेजी जा रही हैं...</b>\n\n<i>नोट: एपिसोड हमेशा अलग-अलग नहीं दिए जाते हैं; वे ग्रुप फॉर्मेट/बड़ी फाइल में भी हो सकते हैं, इसलिए कृपया इसे ध्यान में रखें।\nये डेमो फाइल्स 5 मिनट बाद सख्ती से अपने आप डिलीट हो जाएंगी।</i>'
         else:
+            txt = '<emoji id="5210956306952758910">👀</emoji> <b>Sending Demo Files...</b>\n\n<i>Note: Episodes are not necessarily provided separately; they may also be delivered in a group format, so please keep that in mind.\nThese demo files will be auto-deleted strictly after 5 minutes.</i>'
 
-            txt = "<b>👀 Sending Demo Files...</b>\n\n<i>Note: Episodes are not necessarily provided separately; they may also be delivered in a group format, so please keep that in mind.\nThese demo files will be auto-deleted strictly after 5 minutes.</i>"
-
-            
-
-        m = await client.send_message(user_id, txt, protect_content=True)
-
+        m = await client.send_message(user_id, txt, protect_content=True, parse_mode=enums.ParseMode.HTML)
         msg_ids.append(m.id)
 
-        
+        lbl_start = '<emoji id="5224473711494581672">1️⃣</emoji> <b>स्टार्टिंग फ़ाइलें (शुरुआत)</b> <emoji id="6147439566107186310">👇</emoji>' if lang == "hi" else '<emoji id="5224473711494581672">1️⃣</emoji> <b>STARTING FILES</b> <emoji id="6147439566107186310">👇</emoji>'
+        lbl_end = f'<emoji id="5224251017440285983">2️⃣</emoji> <b>अंतिम फ़ाइल (कुल: {total} फ़ाइलें)</b> <emoji id="6147439566107186310">👇</emoji>' if lang == "hi" else f'<emoji id="5224251017440285983">2️⃣</emoji> <b>ENDING FILE (Total: {total} files)</b> <emoji id="6147439566107186310">👇</emoji>'
 
-        lbl_start = "<b>1️⃣ स्टार्टिंग फ़ाइलें (शुरुआत) 👇</b>" if lang == "hi" else "<b>1️⃣ STARTING FILES 👇</b>"
-
-        lbl_end = f"<b>2️⃣ अंतिम फ़ाइल (कुल: {total} फ़ाइलें) 👇</b>" if lang == "hi" else f"<b>2️⃣ ENDING FILE (Total: {total} files) 👇</b>"
-
-        
-
-        m_s = await client.send_message(user_id, lbl_start, protect_content=True)
-
+        m_s = await client.send_message(user_id, lbl_start, protect_content=True, parse_mode=enums.ParseMode.HTML)
         msg_ids.append(m_s.id)
 
         
@@ -8299,7 +8321,7 @@ async def _send_demo_files(client, user_id, story, lang):
 
         if total > 2:
 
-            m_e = await client.send_message(user_id, lbl_end, protect_content=True)
+            m_e = await client.send_message(user_id, lbl_end, protect_content=True, parse_mode=enums.ParseMode.HTML)
 
             msg_ids.append(m_e.id)
 
