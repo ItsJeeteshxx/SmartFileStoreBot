@@ -1133,7 +1133,7 @@ def _get_main_menu(lang='en'):
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
-                InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
+                _ikb(" ", callback_data="mb#main_close", icon_custom_emoji_id="5774077015388852135"),
                 InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
             ]
@@ -1150,7 +1150,7 @@ def _get_main_menu(lang='en'):
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
-                InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
+                _ikb(" ", callback_data="mb#main_close", icon_custom_emoji_id="5774077015388852135"),
                 InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
             ]
