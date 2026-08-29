@@ -2150,7 +2150,7 @@ async def _show_story_profile(client, user_id, story, lang):
 
         confirm_btn = "आगे बढ़ें"
         back_btn = "❮ वापस"
-        loading_txt = "प्रोफाइल लोड हो रही है..."
+        loading_txt = f"{name} लोड हो रही है..."
     else:
         status_lbl = "Status"
         plat_lbl = "Platform"
@@ -2159,7 +2159,7 @@ async def _show_story_profile(client, user_id, story, lang):
         desc_lbl = "Story Description"
         confirm_btn = "Confirm"
         back_btn = f"❮ {_sc('BACK')}"
-        loading_txt = _sc("LOADING PROFILE...")
+        loading_txt = _sc(f"LOADING {name.upper()}...")
 
     desc = story.get(f'description_{lang}', story.get('description', '')).strip()
     
@@ -3063,24 +3063,8 @@ async def _process_start(client, message):
 
             
 
-            # Check per-bot Mini App Deep Links toggle, fallback to global
-            bt_doc = await _get_cached_bot_doc(client.me.id)
-            bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
-            _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
-            if _mini_app_on is None:
-                _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-                _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
-
-            if _mini_app_on:
-                # Redirect to Mini App
-                bot_username = client.me.username
-                wa_url = f"https://t.me/{bot_username}/apminibyarya?startapp=story_{story_id}"
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ Open in Mini App / मिनी ऐप खोलें", url=wa_url)]])
-                txt = "<b>🛍️ View Story / स्टोरी देखें</b>\n\nTap the button below to open this story securely in our new Premium Mini App.\nइस कहानी को सुरक्षित रूप से हमारे प्रीमियम मिनी ऐप में देखने और खरीदने के लिए नीचे दिए गए बटन पर टैप करें।"
-                return await message.reply_text(txt, reply_markup=kb)
-            else:
-                # Old bot flow: show story preview directly (skips mini app)
-                return await _show_story_preview(client, user_id, story, lang)
+            # Direct story profile preview (same as selecting from Marketplace)
+            return await _show_story_profile(client, user_id, story, lang)
 
 
 
@@ -9328,14 +9312,13 @@ def _resolve_story_thumb_url(s: dict) -> str | None:
 async def _process_inline_query(client, inline_query):
     """
     Handles native Telegram Inline Query Search for stories.
-    Allows users to search stories with title, banner/thumbnail, platform, and price,
-    and open full story preview directly.
+    When user taps any result, it delivers the full story preview profile card directly
+    with Confirm, Demo Files, and Back buttons (identical to selecting from Marketplace).
     """
     try:
         user_id = inline_query.from_user.id if inline_query.from_user else 0
         q = (inline_query.query or "").strip()
         bot_id = getattr(getattr(client, "me", None), "id", None)
-        bot_username = getattr(getattr(client, "me", None), "username", "")
         
         user = await db.get_user(user_id, from_user=inline_query.from_user, bot_id=bot_id) if user_id else {}
         lang = user.get('lang', 'en') if user else 'en'
@@ -9375,61 +9358,102 @@ async def _process_inline_query(client, inline_query):
             else:
                 stories = await db.db.premium_stories.find({}).sort("_id", -1).limit(50).to_list(length=50)
 
-        from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+        from pyrogram.types import InlineQueryResultArticle, InlineQueryResultPhoto, InputTextMessageContent
         results = []
 
         for idx, s in enumerate(stories):
             s_id = str(s['_id'])
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Unknown Story'))
+            status = s.get('status', 'Unknown')
             platform = s.get('platform', 'Unknown')
+            genre = s.get('genre', 'Unknown')
             episodes = s.get('episodes', 'Unknown')
             price = int(s.get('price', 0))
-            genre = s.get('genre', 'Story')
             thumb = _resolve_story_thumb_url(s)
-            
+
             desc_text = f"{platform} • {episodes} eps • ₹{price}"
 
-            story_caption = (
-                f'<b>⟦ ♨️ <b>{s_name}</b> ⟧</b>\n\n'
-                f'<b>• Platform:</b> {platform}\n'
-                f'<b>• Genre:</b> {genre}\n'
-                f'<b>• Episodes:</b> {episodes}\n'
-                f'<b>• Price:</b> ₹{price}\n\n'
-                f'<i>Tap below to view full details, demo files, or purchase:</i>'
-            ) if lang == 'en' else (
-                f'<b>⟦ ♨️ <b>{s_name}</b> ⟧</b>\n\n'
-                f'<b>• प्लेटफॉर्म:</b> {platform}\n'
-                f'<b>• जौनर:</b> {genre}\n'
-                f'<b>• एपिसोड्स:</b> {episodes}\n'
-                f'<b>• कीमत:</b> ₹{price}\n\n'
-                f'<i>पूरी जानकारी, डेमो फ़ाइलें देखने या खरीदने के लिए नीचे टैप करें:</i>'
-            )
-            
-            view_btn_txt = "📖 View Story Details" if lang == 'en' else "📖 कहानी विवरण देखें"
-            start_url = f"https://t.me/{bot_username}?start=story_{s_id}" if bot_username else None
-            
-            kb = []
-            if start_url:
-                kb.append([InlineKeyboardButton(view_btn_txt, url=start_url)])
+            if price > 0:
+                if price <= 50: mrp = 149
+                elif price <= 100: mrp = 299
+                elif price <= 200: mrp = 599
+                elif price <= 300: mrp = 899
+                else: mrp = int(price * 2.5)
+                calc_off = int(((mrp - price) / mrp) * 100)
+                p_lbl = "कीमत" if lang == "hi" else "Price"
+                price_line = f'<b><emoji id="5886285355279193209">🏷</emoji> {p_lbl}:</b> <s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>\n'
             else:
-                kb.append([InlineKeyboardButton(view_btn_txt, callback_data=f"mb#access_{s_id}")])
+                price_line = ""
 
-            article_kwargs = {
-                "id": f"{s_id}_{idx}",
-                "title": s_name,
-                "description": desc_text,
-                "input_message_content": InputTextMessageContent(
-                    story_caption,
-                    parse_mode=enums.ParseMode.HTML
-                ),
-                "reply_markup": InlineKeyboardMarkup(kb)
-            }
+            status_lbl = "स्टेटस" if lang == 'hi' else "Status"
+            plat_lbl = "प्लेटफॉर्म" if lang == 'hi' else "Platform"
+            genre_lbl = "जौनर" if lang == 'hi' else "Genre"
+            ep_lbl = "एपिसोड्स" if lang == 'hi' else "Episodes"
+            desc_lbl = "कहानी का विवरण" if lang == 'hi' else "Story Description"
+            confirm_btn = "आगे बढ़ें" if lang == 'hi' else "Confirm"
+            back_btn = "❮ वापस" if lang == 'hi' else f"❮ {_sc('BACK')}"
+            demo_btn = "डेमो फ़ाइलें देखें" if lang == "hi" else "View Demo Files"
+
+            delivery_mode = s.get('delivery_mode', 'pool')
+            del_hi = "केवल डायरेक्ट DM (कोई चैनल नहीं)" if delivery_mode == "dm_only" else "चैनल लिंक और DM"
+            del_en = "Direct DM Only (No Channel Link)" if delivery_mode == "dm_only" else "Channel Invite + DM"
+            del_lbl = "डिलीवरी" if lang == "hi" else "Delivery"
+            del_val = del_hi if lang == "hi" else del_en
+
+            files_lbl = "फ़ाइलें" if lang == "hi" else "Files"
+            actual_files = s.get('file_count') or (len(s.get('valid_file_ids')) if s.get('valid_file_ids') else None)
+            files_line = f'<b><emoji id="5805550320985578625">📁</emoji> {files_lbl}:</b> <b>{actual_files}</b>\n' if actual_files else ""
+
+            header_txt = (
+                f'<b><emoji id="5465432711218863135">♨️</emoji> Story:</b> {to_mathbold(s_name)}\n'
+                f'<b><emoji id="6019118553326689234">🔰</emoji> {status_lbl}:</b> <b>{status}</b>\n'
+                f'<b><emoji id="6019455905827920171">🖥</emoji> {plat_lbl}:</b> <b>{platform}</b>\n'
+                f'<b><emoji id="6024065724291488135">🧩</emoji> {genre_lbl}:</b> <b>{genre}</b>\n'
+                f"{price_line}"
+                f'<b><emoji id="5937999673510858217">🎬</emoji> {ep_lbl}:</b> <b>{episodes}</b>\n'
+                f"{files_line}"
+                f'<b><emoji id="5776182936638329359">📥</emoji> {del_lbl}:</b> <i>{del_val}</i>\n\n'
+            )
+
+            desc = s.get(f'description_{lang}', s.get('description', '')).strip()
+            if desc and desc.lower() != "none":
+                MAX_DESC = 450
+                desc_full = desc if len(desc) <= MAX_DESC else desc[:MAX_DESC].rstrip() + "…"
+                header_txt += (
+                    f'<emoji id="6021620268697393273">📝</emoji> <b>{desc_lbl}</b>\n'
+                    f"<blockquote expandable>"
+                    f"{to_mathbold(desc_full)}"
+                    f"</blockquote>\n"
+                )
+
+            card_markup = InlineKeyboardMarkup([
+                [_ikb(confirm_btn, callback_data=f"mb#show_tc#{s_id}", icon_custom_emoji_id="6273749318717412886")],
+                [_ikb(demo_btn, callback_data=f"mb#demo#{s_id}", icon_custom_emoji_id="5305388752162539722")],
+                [InlineKeyboardButton(back_btn, callback_data="mb#return_main")]
+            ])
+
             if thumb:
-                article_kwargs["thumb_url"] = thumb
-                article_kwargs["thumb_width"] = 120
-                article_kwargs["thumb_height"] = 120
-
-            results.append(InlineQueryResultArticle(**article_kwargs))
+                results.append(InlineQueryResultPhoto(
+                    id=f"{s_id}_{idx}",
+                    photo_url=thumb,
+                    thumb_url=thumb,
+                    title=s_name,
+                    description=desc_text,
+                    caption=header_txt,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=card_markup
+                ))
+            else:
+                results.append(InlineQueryResultArticle(
+                    id=f"{s_id}_{idx}",
+                    title=s_name,
+                    description=desc_text,
+                    input_message_content=InputTextMessageContent(
+                        header_txt,
+                        parse_mode=enums.ParseMode.HTML
+                    ),
+                    reply_markup=card_markup
+                ))
 
         await inline_query.answer(
             results=results,
