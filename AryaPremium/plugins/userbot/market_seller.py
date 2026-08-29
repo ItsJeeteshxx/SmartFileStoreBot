@@ -200,16 +200,22 @@ async def get_robust_user(client: Client, user_id: int):
 
 
 def _is_cancel(msg):
-
-    if not msg: return False
-
+    if not msg: return True
     if hasattr(msg, "data") and msg.data == "ask_cancel": return True
-
-    txt = (getattr(msg, 'text', '') or '').lower()
-
-    # Support both standard and smallcap "cancel"
-
-    return "cancel" in txt or "c\u1d00\u0274\u1d04\u1d07\u029f" in txt or "/cancel" in txt or "back" in txt
+    txt = (getattr(msg, 'text', '') or '').strip().lower()
+    if not txt: return False
+    if txt.startswith("/"):
+        return True
+    cancel_keywords = [
+        "cancel", "c\u1d00\u0274\u1d04\u1d07\u029f", "रद्द", "रद्द करें", "वापस",
+        "back", "exit", "stop", "close", "menu", "main menu", "« back", "« cancel", "«", "❮", "❬", "❯"
+    ]
+    for kw in cancel_keywords:
+        if kw in txt:
+            return True
+    if " [ ₹ " in txt or txt in ["pocket fm", "kuku fm", "kuku tv", "pratilipi fm", "headfone", "story tv", "other"]:
+        return True
+    return False
 
 
 
@@ -3303,41 +3309,28 @@ async def _process_media(client, message):
 
 
     # If user is in feedback_pending state, route to feedback system
-
     if user.get("state") == "feedback_pending":
+        caption = getattr(message, 'caption', None) or ""
+        cap_strip = caption.strip().lower()
+        if cap_strip.startswith("/") or cap_strip in ["cancel", "रद्द", "रद्द करें", "back", "« back", "वापस"]:
+            await db.db.users.update_one({"id": user_id}, {"$unset": {"state": 1}})
+            return
 
         if message.photo:
-
             content_type = "photo"
-
         elif message.video:
-
             content_type = "video"
-
         elif message.animation:
-
             content_type = "animation"
-
         elif message.voice:
-
             content_type = "voice"
-
         elif message.audio:
-
             content_type = "audio"
-
         elif message.document:
-
             content_type = "document"
-
         else:
-
             content_type = "photo"
-
-        caption = getattr(message, 'caption', None) or ""
-
         await _submit_feedback(client, message, user_id, user, lang, content_type=content_type, text=caption)
-
         return
 
 
@@ -3606,12 +3599,53 @@ async def _process_text(client, message):
 
     txt_lower = txt.lower()
 
-    # 1. Episode Chunk Range Selection (Reply Keyboard)
+    # 1. Any Slash Command triggers state reset and command execution
+    if txt.startswith("/"):
+        if user.get("state") or user.get("pending_utr_story_id") or user.get("dm_story_id_pending"):
+            await db.db.users.update_one(
+                {"id": user_id},
+                {"$unset": {"state": 1, "pending_utr_story_id": 1, "dm_story_id_pending": 1}}
+            )
+
+        cmd_word = txt_lower.split()[0]
+        if cmd_word in ["/cancel", "/stop", "/abort"]:
+            await message.reply_text("<i>❌ Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+            return await _send_main_menu(client, user_id, message.from_user, lang)
+
+        if cmd_word == "/start":
+            return await _process_start(client, message)
+
+        if cmd_word in ["/mystories", "/stories", "/library"]:
+            return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
+
+        if cmd_word in ["/marketplace", "/arya", "/help", "/settings", "/profile"]:
+            m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading...</i>', parse_mode=enums.ParseMode.HTML)
+            class MockQuery:
+                def __init__(self, msg, u, d):
+                    self.message = msg
+                    self.from_user = u
+                    self.data = d
+                async def answer(self, text="", show_alert=False):
+                    pass
+            mapping = {
+                "/marketplace": "mb#main_marketplace",
+                "/arya": "mb#about_arya_0",
+                "/help": "mb#main_help",
+                "/settings": "mb#main_settings",
+                "/profile": "mb#main_profile"
+            }
+            return await _process_callback(client, MockQuery(m, message.from_user, mapping[cmd_word]))
+
+    # 2. Episode Chunk Range Selection (Reply Keyboard)
     pending_s_id = user.get("dm_story_id_pending")
-    if pending_s_id and ("files " in txt_lower or "फ़ाइलें " in txt_lower or "full delivery" in txt_lower or "सभी फ़ाइलें" in txt_lower or "cancel" in txt_lower or "रद्द" in txt_lower):
+    if pending_s_id and ("files " in txt_lower or "फ़ाइलें " in txt_lower or "full delivery" in txt_lower or "सभी फ़ाइलें" in txt_lower or "cancel" in txt_lower or "रद्द" in txt_lower or txt.startswith("«")):
+        try:
+            await message.delete()
+        except Exception:
+            pass
         await db.db.users.update_one({"id": user_id}, {"$unset": {"dm_story_id_pending": 1}})
         
-        if "cancel" in txt_lower or "रद्द" in txt_lower:
+        if "cancel" in txt_lower or "रद्द" in txt_lower or txt.startswith("«"):
             return await message.reply_text("<i>❌ Delivery Selection Cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
         
         from bson.objectid import ObjectId
@@ -3678,23 +3712,30 @@ async def _process_text(client, message):
         else:
             return await message.reply_text("❌ <i>Story not found.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
-    # 2. Feedback submission state handler
+    # 3. Feedback submission state handler
     if user.get("state") == "feedback_pending":
-        is_cancel = txt.strip().lower() in ["/cancel", "cancel", "रद्द", "back", "« back", "back to menu", "वापस मेनू", "« वापस मेनू", "« cancel"]
+        is_cancel = txt.strip().lower() in [
+            "/cancel", "cancel", "रद्द", "रद्द करें", "back", "« back", 
+            "back to menu", "वापस", "वापस मेनू", "« वापस मेनू", "« cancel", "«", "❬", "❮"
+        ]
         if is_cancel:
             await db.update_user(user_id, {"state": None})
             await message.reply_text("<i>❌ Feedback cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
             return await _send_main_menu(client, user_id, message.from_user, lang)
-        await _submit_feedback(client, message, user_id, user, lang, content_type="text", text=txt)
-        return
 
-    # 3. Direct Section Commands
-    cmd_text = txt.lower()
-    if cmd_text in ["/mystories", "/stories", "/library"]:
-        return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
-
-    if cmd_text == "/start":
-        return await _process_start(client, message)
+        # Check if user sent a menu button / platform / story name instead of typing feedback
+        all_plats_check = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
+        is_menu_btn = (
+            " [ ₹ " in txt or 
+            txt in ["SEARCH", "खोजें", "VIEW ALL", "सभी देखें", "NEXT ❭", "❬ PREV", "अगला ❭", "❬ पिछला", "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂", "वापस मेनू", "CAN'T FIND? REQUEST NOW!", "कहानी नहीं मिल रही? अनुरोध करें!"] or
+            txt in (T[lang]["cant_find_btn"], "CAN'T FIND? REQUEST NOW!", "कहानी नहीं मिल रही? अनुरोध करें!", "🔍 CAN'T FIND? REQUEST NOW!", "🔍 कहानी नहीं मिल रही? अनुरोध करें!") or
+            any(txt == p for p in all_plats_check)
+        )
+        if is_menu_btn:
+            await db.update_user(user_id, {"state": None})
+        else:
+            await _submit_feedback(client, message, user_id, user, lang, content_type="text", text=txt)
+            return
 
     # 4. Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
     bt = await _get_cached_bot_doc(client.me.id)
@@ -3705,30 +3746,6 @@ async def _process_text(client, message):
     pending_s_id_utr = user.get("pending_utr_story_id")
     if not pending_s_id_utr and bot_mode == "miniapp":
         return
-
-    if cmd_text in ["/marketplace", "/mystories", "/stories", "/arya", "/help", "/settings", "/profile"]:
-        m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading...</i>', parse_mode=enums.ParseMode.HTML)
-        
-        class MockQuery:
-            def __init__(self, msg, user, data):
-                self.message = msg
-                self.from_user = user
-                self.data = data
-            async def answer(self, text="", show_alert=False):
-                pass
-                
-        mapping = {
-            "/marketplace": "mb#main_marketplace",
-            "/mystories": "mb#my_buys",
-            "/stories": "mb#my_buys",
-            "/arya": "mb#about_arya_0",
-            "/help": "mb#main_help",
-            "/settings": "mb#main_settings",
-            "/profile": "mb#main_profile"
-        }
-        
-        if cmd_text in mapping:
-            return await _process_callback(client, MockQuery(m, message.from_user, mapping[cmd_text]))
 
     # -- UTR Payment handler: user sends their 12-digit UTR in chat --
     # Flow: User sees UPI page → sends 12-digit UTR → bot INSTANTLY verifies via IMAP
@@ -4051,7 +4068,11 @@ async def _process_text(client, message):
         return
 
     # Back to main menu
-    if "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" in txt or "BACK TO MAIN MENU" in txt:
+    if "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" in txt or "BACK TO MAIN MENU" in txt or "वापस मेनू" in txt or txt.startswith("« Back") or txt.startswith("« वापस"):
+        try:
+            await message.delete()
+        except Exception:
+            pass
         m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading...</i>', reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
         try:
             await m.delete()
@@ -4070,6 +4091,10 @@ async def _process_text(client, message):
     _view_all_hi = "📑 सभी देखें"
 
     if txt in (_view_all, _view_all_hi, "VIEW ALL", "सभी देखें", _sc("VIEW ALL"), "📑 " + _sc("VIEW ALL"), "📑 सभी देखें"):
+        try:
+            await message.delete()
+        except Exception:
+            pass
         plat = user.get("_mkt_plat")
         if plat:
             q_find = {"bot_id": client.me.id}
@@ -4100,6 +4125,10 @@ async def _process_text(client, message):
         return
 
     if txt in (_nav_next, _nav_prev, _nav_next_hi, _nav_prev_hi):
+        try:
+            await message.delete()
+        except Exception:
+            pass
         plat = user.get("_mkt_plat")
         cur_page = int(user.get("_mkt_page", 0))
         if plat:
@@ -4161,6 +4190,10 @@ async def _process_text(client, message):
 
     # Check if it's a story selection e.g. "1. STORY NAME [ ₹ 49 ]"
     if " [ ₹ " in txt:
+        try:
+            await message.delete()
+        except Exception:
+            pass
         parts = txt.split(". ", 1)
         raw = parts[1] if len(parts) > 1 else txt
         sName = raw.split(" [ ₹ ")[0].strip()
@@ -4202,6 +4235,10 @@ async def _process_text(client, message):
     platforms.append("Other")
 
     if txt in platforms:
+        try:
+            await message.delete()
+        except Exception:
+            pass
         # -- Paginated story listing per platform --
         STORY_PAGE_SIZE = 15
         s_page = int(user.get("_mkt_page", 0))
@@ -4274,170 +4311,121 @@ async def _process_text(client, message):
             )
         return
 
-        
-
     # ── REQUEST STORY trigger ──
     if txt in (T[lang]["cant_find_btn"], "CAN'T FIND? REQUEST NOW!", "कहानी नहीं मिल रही? अनुरोध करें!", "🔍 CAN'T FIND? REQUEST NOW!", "🔍 कहानी नहीं मिल रही? अनुरोध करें!"):
-
         try:
-
+            await message.delete()
+        except Exception:
+            pass
+        try:
             from utils import native_ask, log_arya_event
-
             from datetime import datetime, timezone
 
-            
+            cancel_btn_txt = "« " + (_sc("Cancel") if lang == 'en' else "रद्द करें")
+            cancel_kb = ReplyKeyboardMarkup([[cancel_btn_txt]], resize_keyboard=True)
 
-            # Step 1
-
-            ans1 = await native_ask(client, user_id, 
-
+            # Step 1: Story Name
+            s1_title = "STORY REQUEST" if lang == 'en' else "कहानी का अनुरोध"
+            s1_txt = (
                 f"<b>╔══════════════════════╗</b>\n"
-
-                f"<b>        𝗦𝗧𝗢𝗥𝗬 𝗥𝗘𝗤𝗨𝗘𝗦𝗧</b>\n"
-
+                f"<b>        {to_mathbold(s1_title)}</b>\n"
                 f"<b>╚══════════════════════╝</b>\n\n"
-
-                f"<b>𝗦𝗧𝗘𝗣 𝟭 / 𝟯</b>\n"
-
-                f"<i>(Note: This is a paid service)</i>\n\n"
-
-                f"<b>• Enter Story Name:</b>\n"
-
-                f"<i>Please provide the full, exact name.</i>",
-
-                reply_markup=ReplyKeyboardMarkup([[_sc("Cancel")]], resize_keyboard=True)
-
+                f"<b>{_sc('STEP 1 / 3') if lang == 'en' else 'चरण 1 / 3'}</b>\n\n"
+                f"<i>({_sc('Note: This is a paid service') if lang == 'en' else 'नोट: यह एक सशुल्क सेवा है'})</i>\n\n"
+                f"<b>• {_sc('Enter Story Name:') if lang == 'en' else 'कहानी का नाम दर्ज करें:'}</b>\n"
+                f"<i>{_sc('Please provide the full, exact name.') if lang == 'en' else 'कृपया पूरा और सही नाम लिखें।'}</i>"
             )
+            ans1 = await native_ask(client, user_id, s1_txt, reply_markup=cancel_kb, parse_mode=enums.ParseMode.HTML)
+            if ans1 and hasattr(ans1, 'delete'):
+                try: await ans1.delete()
+                except Exception: pass
 
             if _is_cancel(ans1):
+                cancel_msg = "Process Cancelled!" if lang == 'en' else "प्रक्रिया रद्द कर दी गई!"
+                await client.send_message(user_id, f"<i>❌ {cancel_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+                return await _send_main_menu(client, user_id, message.from_user, lang)
 
-                 await client.send_message(user_id, f"<i>{_sc('Process Cancelled!')}</i>", reply_markup=ReplyKeyboardRemove())
+            str_name = (ans1.text if hasattr(ans1, 'text') else str(ans1)).strip()
 
-                 return await _send_main_menu(client, user_id, message.from_user, lang)
-
-            str_name = ans1.text.strip()
-
-            
-
-            # Step 2
-
-            ans2 = await native_ask(client, user_id, 
-
-                f"<b>𝗦𝗧𝗘𝗣 𝟮 / 𝟯</b>\n\n"
-
-                f"<b>• Enter Platform:</b>\n"
-
-                f"<i>e.g. Pocket FM, Kuku FM, etc.</i>", 
-
-                reply_markup=ReplyKeyboardMarkup([[_sc("Cancel")]], resize_keyboard=True)
-
+            # Step 2: Platform
+            s2_txt = (
+                f"<b>{_sc('STEP 2 / 3') if lang == 'en' else 'चरण 2 / 3'}</b>\n\n"
+                f"<b>• {_sc('Enter Platform:') if lang == 'en' else 'प्लेटफ़ॉर्म का नाम दर्ज करें:'}</b>\n"
+                f"<i>{_sc('e.g. Pocket FM, Kuku FM, etc.') if lang == 'en' else 'उदा. Pocket FM, Kuku FM, आदि।'}</i>"
             )
+            ans2 = await native_ask(client, user_id, s2_txt, reply_markup=cancel_kb, parse_mode=enums.ParseMode.HTML)
+            if ans2 and hasattr(ans2, 'delete'):
+                try: await ans2.delete()
+                except Exception: pass
 
             if _is_cancel(ans2):
+                cancel_msg = "Process Cancelled!" if lang == 'en' else "प्रक्रिया रद्द कर दी गई!"
+                await client.send_message(user_id, f"<i>❌ {cancel_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+                return await _send_main_menu(client, user_id, message.from_user, lang)
 
-                 await client.send_message(user_id, f"<i>{_sc('Process Cancelled!')}</i>", reply_markup=ReplyKeyboardRemove())
+            str_plat = (ans2.text if hasattr(ans2, 'text') else str(ans2)).strip()
 
-                 return await _send_main_menu(client, user_id, message.from_user, lang)
-
-            str_plat = ans2.text.strip()
-
-            
-
-            # Step 3
-
-            ans3 = await native_ask(client, user_id, 
-
-                f"<b>𝗦𝗧𝗘𝗣 𝟯 / 𝟯</b>\n\n"
-
-                f"<b>• Select Type:</b>\n"
-
-                f"<i>Is this story currently ongoing or finished?</i>", 
-
-                reply_markup=ReplyKeyboardMarkup([[ "ONGOING", "COMPLETE" ], [_sc("Cancel")]], resize_keyboard=True)
-
+            # Step 3: Type (Ongoing / Complete)
+            type_ongoing = "ONGOING" if lang == 'en' else "चल रही है (ONGOING)"
+            type_complete = "COMPLETE" if lang == 'en' else "पूरी हो चुकी (COMPLETE)"
+            s3_kb = ReplyKeyboardMarkup([[type_ongoing, type_complete], [cancel_btn_txt]], resize_keyboard=True)
+            s3_txt = (
+                f"<b>{_sc('STEP 3 / 3') if lang == 'en' else 'चरण 3 / 3'}</b>\n\n"
+                f"<b>• {_sc('Select Type:') if lang == 'en' else 'प्रकार चुनें:'}</b>\n"
+                f"<i>{_sc('Is this story currently ongoing or finished?') if lang == 'en' else 'क्या यह कहानी अभी चल रही है या पूरी हो चुकी है?'}</i>"
             )
+            ans3 = await native_ask(client, user_id, s3_txt, reply_markup=s3_kb, parse_mode=enums.ParseMode.HTML)
+            if ans3 and hasattr(ans3, 'delete'):
+                try: await ans3.delete()
+                except Exception: pass
 
             if _is_cancel(ans3):
+                cancel_msg = "Process Cancelled!" if lang == 'en' else "प्रक्रिया रद्द कर दी गई!"
+                await client.send_message(user_id, f"<i>❌ {cancel_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+                return await _send_main_menu(client, user_id, message.from_user, lang)
 
-                 await client.send_message(user_id, f"<i>{_sc('Process Cancelled!')}</i>", reply_markup=ReplyKeyboardRemove())
-
-                 return await _send_main_menu(client, user_id, message.from_user, lang)
-
-            str_status = ans3.text.strip()
-
-            
+            str_status = (ans3.text if hasattr(ans3, 'text') else str(ans3)).strip()
 
             m_proc = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Processing Request...</i>', reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
-            
-
             # Save to MongoDB
-
             req_doc = {
-
                 "user_id": user_id,
-
                 "bot_id": client.me.id,
-
                 "story_name": str_name,
-
                 "platform": str_plat,
-
                 "completion_type": str_status,
-
                 "status": "Sent",
-
                 "created_at": datetime.now(timezone.utc)
-
             }
-
             await db.db.premium_requests.insert_one(req_doc)
 
-            
-
             await log_arya_event(
-
                 "NEW STORY REQUEST", user_id, user, 
-
                 f"<b>Story:</b> {str_name}\n<b>Platform:</b> {str_plat}\n<b>Type:</b> {str_status}"
-
             )
-
-            
 
             await m_proc.delete()
-
             asyncio.create_task(react_bg(client, user_id, message.id, pool=REACTIONS_SUCCESS))
 
-            
-
             succ_txt = (
-
                 "<b>✅ REQUEST SUBMITTED!</b>\n\n"
-
                 "We have received your request. You can check the status anytime in your Profile.\n\n"
-
                 "<i>Our team will review it shortly.</i>"
-
             )
-
             await client.send_message(user_id, succ_txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_sc("BACK TO MENU"), callback_data="mb#main_back")]]))
 
-            
-
-        except asyncio.TimeoutError:
-
-            await client.send_message(user_id, "⏳ Request timed out.", reply_markup=ReplyKeyboardRemove())
-
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            await client.send_message(user_id, "⏳ Request cancelled.", reply_markup=ReplyKeyboardRemove())
             await _send_main_menu(client, user_id, message.from_user, lang)
-
         return
 
-
-
     # ── SEARCH trigger ──
-
-    if txt == "🔍 " + ("SEARCH" if lang=='en' else "खोजें"):
+    if txt == "🔍 " + ("SEARCH" if lang=='en' else "खोजें") or txt in ("SEARCH", "खोजें", "🔎 SEARCH", "🔎 खोजें"):
+        try:
+            await message.delete()
+        except Exception:
+            pass
         await message.reply_text(
             f'<b><emoji id="6025893082552081088">🔍</emoji> SEARCH</b>\n\n<i>Type a few words of the story name to search:</i>',
             reply_markup=ReplyKeyboardMarkup([["« " + "CANCEL"]], resize_keyboard=True),
@@ -4447,7 +4435,11 @@ async def _process_text(client, message):
         return
 
     # ── CANCEL search ──
-    if txt == "« " + "CANCEL" or (user.get("state") == "searching" and txt.startswith("«")):
+    if txt == "« " + "CANCEL" or (user.get("state") == "searching" and (txt.startswith("«") or txt.lower() in ["cancel", "रद्द", "back", "वापस"])):
+        try:
+            await message.delete()
+        except Exception:
+            pass
         await db.update_user(user_id, {"state": None})
         m = await message.reply_text("<i>❌ Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
         await asyncio.sleep(1.5)
@@ -4803,6 +4795,11 @@ async def _process_callback(client, query):
             await query.answer()
         except Exception:
             pass
+
+    # Clear active text-input states if navigating away
+    if cmd not in ("feedback_start", "mkt_search"):
+        if user.get("state") in ("feedback_pending", "searching"):
+            await db.db.users.update_one({"id": user_id}, {"$unset": {"state": 1}})
 
     # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
     bt = await _get_cached_bot_doc(client.me.id)

@@ -179,16 +179,19 @@ async def _input_router(bot, message):
     message.continue_propagation()
 
 async def _cb_input_router(bot, query):
-    uid = query.from_user.id
-    if query.data in ["ask_cancel", "ask_skip"]:
+    uid = query.from_user.id if query.from_user else None
+    if uid:
         key = _ask_key(bot, uid)
         if key and key in _waiting_futures:
-            fut = _waiting_futures.pop(key)
-            if not fut.done():
-                fut.set_result(query)
-            try: await query.answer()
-            except: pass
-            return
+            fut = _waiting_futures.pop(key, None)
+            if fut and not fut.done():
+                if query.data in ["ask_cancel", "ask_skip"]:
+                    fut.set_result(query)
+                    try: await query.answer()
+                    except: pass
+                    return
+                else:
+                    fut.cancel()
     query.continue_propagation()
 
 def setup_ask_router(bot: Client):
@@ -212,7 +215,7 @@ async def native_ask(bot, user_id: int, text: str, reply_markup=None, timeout: i
     
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         _waiting_futures.pop(key, None)
         raise
 
