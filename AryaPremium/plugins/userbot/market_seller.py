@@ -5383,6 +5383,19 @@ async def _process_callback(client, query):
 
 
 
+        elif action == "search_story":
+            await db.update_user(user_id, {"state": "searching"})
+            s_title = _sc("SEARCH STORY") if lang == 'en' else "स्टोरी खोजें"
+            s_prompt = _sc("Please type the story name or keywords in the chat below:") if lang == 'en' else "कृपया नीचे चैट में कहानी का नाम या कीवर्ड टाइप करें:"
+            c_label = _sc("CANCEL") if lang == 'en' else "रद्द करें"
+            txt_s = (
+                f'<b><emoji id="5258274739041883702">🔍</emoji> {s_title}</b>\n\n'
+                f'<i>{s_prompt}</i>'
+            )
+            kb = [[InlineKeyboardButton(f"« ❮ {c_label}", callback_data="mb#main_back")]]
+            await _safe_edit(query.message, text=txt_s, markup=InlineKeyboardMarkup(kb))
+            return
+
         elif action == "help":
 
             return await _show_help_menu(client, query)
