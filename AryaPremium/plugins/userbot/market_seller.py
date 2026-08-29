@@ -1462,36 +1462,140 @@ async def _edit_main_menu_in_place(client, query, user, lang: str):
 
 
 
-    res = await _safe_edit(query.message, text=msg_txt, markup=markup)
+_seller_bot_token_cache = {}
 
-    if not res:
+async def _get_seller_bot_token(client) -> str:
+    bot_id = getattr(getattr(client, "me", None), "id", None)
+    if bot_id and bot_id in _seller_bot_token_cache:
+        return _seller_bot_token_cache[bot_id]
+    
+    t = getattr(client, "bot_token", None)
+    if t:
+        if bot_id: _seller_bot_token_cache[bot_id] = t
+        return t
+        
+    if bot_id:
+        bt = await db.db.premium_bots.find_one({"id": int(bot_id)})
+        if bt and (bt.get("token") or bt.get("bot_token")):
+            tok = bt.get("token") or bt.get("bot_token")
+            _seller_bot_token_cache[bot_id] = tok
+            return tok
+            
+    from config import Config
+    return getattr(Config, "BOT_TOKEN", "")
 
-        await _send_main_menu(client, query.from_user.id, user, lang)
+def _markup_to_bot_api_list(markup: InlineKeyboardMarkup) -> list:
+    res = []
+    for row in markup.inline_keyboard:
+        row_list = []
+        for btn in row:
+            d = {"text": btn.text}
+            if btn.callback_data: d["callback_data"] = btn.callback_data
+            if btn.url: d["url"] = btn.url
+            if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
+                d["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
+            row_list.append(d)
+        res.append(row_list)
+    return res
 
+async def _send_or_edit_seller_bot_api(
+    client,
+    chat_id: int,
+    text: str,
+    markup: InlineKeyboardMarkup,
+    message_id: int = None,
+    media_id: str = None,
+    media_type: str = "photo",
+    is_media_edit: bool = False
+) -> bool:
+    import aiohttp
+    import json
+    import re
 
+    bot_token = await _get_seller_bot_token(client)
+    if not bot_token:
+        return False
 
+    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+    api_kb = _markup_to_bot_api_list(markup)
+
+    payload = {
+        "chat_id": int(chat_id),
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": api_kb
+        }
+    }
+
+    url = f"https://api.telegram.org/bot{bot_token}/"
+    if media_id and not is_media_edit:
+        payload["caption"] = api_text
+        if media_type == "animation":
+            method = "sendAnimation"
+            payload["animation"] = media_id
+        elif media_type == "video":
+            method = "sendVideo"
+            payload["video"] = media_id
+        else:
+            method = "sendPhoto"
+            payload["photo"] = media_id
+    elif is_media_edit and message_id:
+        method = "editMessageCaption"
+        payload["message_id"] = int(message_id)
+        payload["caption"] = api_text
+    elif message_id:
+        method = "editMessageText"
+        payload["message_id"] = int(message_id)
+        payload["text"] = api_text
+    else:
+        method = "sendMessage"
+        payload["text"] = api_text
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=3.0)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return True
+                logger.debug(f"Seller Bot API {method} returned: {data}")
+    except Exception as e:
+        logger.debug(f"Seller Bot API {method} exception: {e}")
+
+    return False
 
 
 async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
-
     is_media = bool(getattr(msg, 'photo', None) or getattr(msg, 'video', None) or getattr(msg, 'animation', None) or getattr(msg, 'document', None))
 
+    # Try Bot API edit if custom emoji buttons are present
     try:
-
-        if is_media:
-
-            return await msg.edit_caption(caption=text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-
-        return await msg.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-
-    except MessageNotModified:
-
-        return None
-
+        has_custom_emoji = any(
+            hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
+            for row in markup.inline_keyboard for btn in row
+        )
+        if has_custom_emoji and msg and hasattr(msg, "chat") and hasattr(msg, "id"):
+            client = getattr(msg, "_client", None)
+            ok = await _send_or_edit_seller_bot_api(
+                client=client,
+                chat_id=msg.chat.id,
+                text=text,
+                markup=markup,
+                message_id=msg.id,
+                is_media_edit=is_media
+            )
+            if ok:
+                return True
     except Exception as e:
+        logger.debug(f"Bot API edit fallback: {e}")
 
+    try:
+        if is_media:
+            return await msg.edit_caption(caption=text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        return await msg.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+    except MessageNotModified:
+        return None
+    except Exception as e:
         logger.warning(f"Safe edit failed: {e}")
-
         return None
 
 
@@ -1577,28 +1681,39 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
 
 
 async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_message_id: int = None):
-
     bt = await _get_cached_bot_doc(client.me.id)
-
     bt_cfg = bt.get("config", {}) if bt else {}
-
     bot_name = client.me.first_name
-
     msg_txt = _menu_card_text(user, bt_cfg, bot_name, lang)
-
     markup = _get_premium_menu_markup(bt_cfg, lang)
 
-
-
     # Menu media rotation: supports Photo / GIF / Video.
-
     items = [x for x in _cfg_list(bt_cfg, "menu_media") if isinstance(x, dict) and x.get("file_id")]
-
     if not items and (bt_cfg.get("menuimg") or "").strip():
-
-        # Backward compatible
-
         items = [{"type": "photo", "file_id": (bt_cfg.get("menuimg") or "").strip()}]
+
+    # Try Bot API send first to preserve custom animated emoji buttons
+    try:
+        has_custom_emoji = any(
+            hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
+            for row in markup.inline_keyboard for btn in row
+        )
+        if has_custom_emoji:
+            m_item = items[0] if items else None
+            m_fid = (m_item.get("file_id") or "").strip() if m_item else None
+            m_type = (m_item.get("type") or "photo").strip() if m_item else "photo"
+            ok = await _send_or_edit_seller_bot_api(
+                client=client,
+                chat_id=user_id,
+                text=msg_txt,
+                markup=markup,
+                media_id=m_fid,
+                media_type=m_type
+            )
+            if ok:
+                return
+    except Exception as e:
+        logger.debug(f"Bot API send main menu error: {e}")
 
 
 
