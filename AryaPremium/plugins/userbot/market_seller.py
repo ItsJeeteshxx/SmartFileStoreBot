@@ -1101,141 +1101,77 @@ Our team will search for this story and update you soon. Check status in <b>Prof
 
 
 def _get_main_menu(lang='en'):
-
     if lang == 'hi':
-
         kb = [
-
             [
-
-                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
-
-                InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
-
-                InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
-
-                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
-
+                InlineKeyboardButton("🛒", callback_data="mb#main_marketplace"),
+                InlineKeyboardButton("❤️", callback_data="mb#my_buys"),
+                InlineKeyboardButton("👤", callback_data="mb#main_profile"),
+                InlineKeyboardButton("⚙️", callback_data="mb#main_settings"),
             ],
-
             [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
-
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
-
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
-
              InlineKeyboardButton("सेटिंग्स", callback_data="mb#main_settings")],
-
-            [InlineKeyboardButton("सपोर्ट / सहायता", callback_data="mb#main_help")],
-
+            [InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help"),
+             InlineKeyboardButton("आर्या", callback_data="mb#about_arya_0")],
             [
-
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
-
             ]
-
         ]
-
     else:
-
         kb = [
-
             [
-
-                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
-
-                InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
-
-                InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
-
-                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
-
+                InlineKeyboardButton("🛒", callback_data="mb#main_marketplace"),
+                InlineKeyboardButton("❤️", callback_data="mb#my_buys"),
+                InlineKeyboardButton("👤", callback_data="mb#main_profile"),
+                InlineKeyboardButton("⚙️", callback_data="mb#main_settings"),
             ],
-
             [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
-
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
-
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
-
              InlineKeyboardButton(f"{_sc('Settings')}", callback_data="mb#main_settings")],
-
-            [InlineKeyboardButton(f"{_sc('Support / Help')}", callback_data="mb#main_help")],
-
+            [InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help"),
+             InlineKeyboardButton(f"{_sc('Arya')}", callback_data="mb#about_arya_0")],
             [
-
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
-
                 InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
-
             ]
-
         ]
-
     return InlineKeyboardMarkup(kb)
 
 
-
-
-
 def _get_premium_menu_markup(bt_cfg: dict, lang: str):
-
     """
-
     Adds optional URL buttons (Updates/Support) like your reference UI.
-
     Stored in premium_bots.config as `updates_url` / `support_url`.
-
     """
-
     rows = []
-
     updates_url = (bt_cfg.get("updates_url") or "").strip()
-
     support_url = (bt_cfg.get("support_url") or "").strip()
 
     if updates_url or support_url:
-
         r = []
-
         if updates_url:
-
             label = "अपडेट्स" if lang == 'hi' else _sc("UPDATES")
-
             r.append(InlineKeyboardButton(label, url=updates_url))
-
         if support_url:
-
             label = "सपोर्ट" if lang == 'hi' else _sc("SUPPORT")
-
             r.append(InlineKeyboardButton(label, url=support_url))
-
         if r:
-
             rows.append(r)
 
     base = _get_main_menu(lang).inline_keyboard
-
     # Insert URL row above Close
-
     if rows:
-
-        base = base[:2] + rows + base[2:]
-
+        base = base[:-1] + rows + base[-1:]
     return InlineKeyboardMarkup(base)
 
 
