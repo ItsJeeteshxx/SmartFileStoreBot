@@ -4172,7 +4172,7 @@ async def _process_text(client, message):
             for idx, s in enumerate(all_stories, start=1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
+                badge = " ɴᴇᴡ" if idx <= 5 else ""
                 kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
             kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
             title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
@@ -4209,7 +4209,7 @@ async def _process_text(client, message):
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
+                badge = " ɴᴇᴡ" if idx <= 5 else ""
                 kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
 
             nav_row = []
@@ -4301,7 +4301,7 @@ async def _process_text(client, message):
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
-            badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
+            badge = " ɴᴇᴡ" if idx <= 5 else ""
             kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
 
         nav_row = []
@@ -4546,7 +4546,7 @@ async def _process_text(client, message):
         kb = []
         for idx, s in enumerate(matches, start=1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
-            badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
+            badge = " ɴᴇᴡ" if idx <= 5 else ""
             kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
         kb.append(["« " + "CANCEL"])
 
@@ -4561,6 +4561,159 @@ async def _process_text(client, message):
 
 
 
+
+
+async def _show_marketplace_platforms(client, query, lang='en'):
+    platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
+    PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
+    for _rm in ("Other",):
+        if _rm in platforms:
+            platforms.remove(_rm)
+
+    sorted_plats = []
+    for pp in PRIORITY_PLATFORMS:
+        if pp in platforms:
+            sorted_plats.append(pp)
+            platforms.remove(pp)
+    sorted_plats.extend(sorted(platforms))
+    platforms = sorted_plats
+
+    p_title = _sc("PLATFORM SELECTION") if lang == 'en' else "प्लेटफॉर्म चयन"
+    p_desc = _sc("Choose a platform below to browse stories:") if lang == 'en' else "कहानियाँ ब्राउज़ करने के लिए नीचे दिए गए प्लेटफॉर्म में से चुनें:"
+
+    txt = f"<b>🎧 {p_title}</b>\n\n<i>{p_desc}</i>"
+    kb = []
+    for i in range(0, len(platforms), 2):
+        row = []
+        for p in platforms[i:i+2]:
+            row.append(InlineKeyboardButton(f"• {p} •", callback_data=f"mb#mkt_plat#{p}#0"))
+        kb.append(row)
+
+    search_lbl = _sc("SEARCH STORY") if lang == 'en' else "स्टोरी खोजें"
+    back_lbl = _sc("MAIN MENU") if lang == 'en' else "मुख्य मेनू"
+
+    kb.append([_ikb(f"  {search_lbl}", callback_data="mb#mkt_search", icon_custom_emoji_id="6025893082552081088")])
+    kb.append([InlineKeyboardButton(f"« ❮ {back_lbl}", callback_data="mb#main_back")])
+
+    await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
+
+
+async def _show_marketplace_stories(client, query, platform_name: str, page: int = 0, lang='en'):
+    PAGE_SIZE = 8
+    q_find = {"bot_id": client.me.id}
+    if platform_name != "Other":
+        q_find["platform"] = platform_name
+
+    total_count = await db.db.premium_stories.count_documents(q_find)
+    if total_count == 0:
+        empty_txt = "No stories found for this platform." if lang == 'en' else "इस प्लेटफॉर्म के लिए कोई कहानी नहीं मिली।"
+        kb = [[InlineKeyboardButton(f"« ❮ {_sc('BACK') if lang == 'en' else 'वापस'}", callback_data="mb#main_marketplace")]]
+        return await _safe_edit(query.message, text=f"<i>{empty_txt}</i>", markup=InlineKeyboardMarkup(kb))
+
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    newest_5_ids = set()
+    newest_cursor = await db.db.premium_stories.find(q_find, {"_id": 1}).sort("_id", -1).limit(5).to_list(length=5)
+    for doc in newest_cursor:
+        newest_5_ids.add(str(doc["_id"]))
+
+    stories = await db.db.premium_stories.find(
+        q_find,
+        {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+    ).sort("_id", -1).skip(page * PAGE_SIZE).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
+
+    kb = []
+    for idx, s in enumerate(stories, start=page * PAGE_SIZE + 1):
+        s_id = str(s["_id"])
+        s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+        if len(s_name) > 22:
+            s_name = s_name[:20] + "…"
+        price = s.get('price', 0)
+        btn_text = f"{idx}. {s_name} [ ₹{price} ]"
+
+        if s_id in newest_5_ids:
+            kb.append([_ikb(btn_text, callback_data=f"mb#view_{s_id}", icon_custom_emoji_id="6271473763439612077")])
+        else:
+            kb.append([InlineKeyboardButton(btn_text, callback_data=f"mb#view_{s_id}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(_sc("PREV") if lang == 'en' else "पिछला", callback_data=f"mb#mkt_plat#{platform_name}#{page-1}"))
+
+    view_all_lbl = _sc("VIEW ALL") if lang == 'en' else "सभी देखें"
+    nav.append(_ikb(f"  {view_all_lbl}", callback_data=f"mb#mkt_all#{platform_name}#0", icon_custom_emoji_id="5764638872000533034"))
+
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(_sc("NEXT") if lang == 'en' else "अगला", callback_data=f"mb#mkt_plat#{platform_name}#{page+1}"))
+    kb.append(nav)
+
+    search_lbl = _sc("SEARCH STORY") if lang == 'en' else "स्टोरी खोजें"
+    kb.append([_ikb(f"  {search_lbl}", callback_data="mb#mkt_search", icon_custom_emoji_id="6025893082552081088")])
+    kb.append([InlineKeyboardButton(f"« ❮ {_sc('BACK TO PLATFORMS') if lang == 'en' else 'प्लेटफॉर्म मेनू'}", callback_data="mb#main_marketplace")])
+
+    title = _sc("AVAILABLE STORIES") if lang == 'en' else "उपलब्ध कहानियाँ"
+    txt = (
+        f"<b>⟦ {title} — {to_mathbold(platform_name)} ⟧</b>\n"
+        f"<i>Page {page+1}/{total_pages} (Total: {total_count})</i>\n\n"
+        f"<blockquote expandable>"
+        f"<i>{_sc('Tap any story button below to view details and purchase options.')}</i>"
+        f"</blockquote>"
+    )
+    await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
+
+
+async def _show_marketplace_all_stories(client, query, platform_name: str, page: int = 0, lang='en'):
+    PAGE_SIZE = 12
+    q_find = {"bot_id": client.me.id}
+    if platform_name != "Other":
+        q_find["platform"] = platform_name
+
+    total_count = await db.db.premium_stories.count_documents(q_find)
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    newest_5_ids = set()
+    newest_cursor = await db.db.premium_stories.find(q_find, {"_id": 1}).sort("_id", -1).limit(5).to_list(length=5)
+    for doc in newest_cursor:
+        newest_5_ids.add(str(doc["_id"]))
+
+    stories = await db.db.premium_stories.find(
+        q_find,
+        {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+    ).sort("_id", -1).skip(page * PAGE_SIZE).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
+
+    kb = []
+    for idx, s in enumerate(stories, start=page * PAGE_SIZE + 1):
+        s_id = str(s["_id"])
+        s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+        if len(s_name) > 22:
+            s_name = s_name[:20] + "…"
+        price = s.get('price', 0)
+        btn_text = f"{idx}. {s_name} [ ₹{price} ]"
+        if s_id in newest_5_ids:
+            kb.append([_ikb(btn_text, callback_data=f"mb#view_{s_id}", icon_custom_emoji_id="6271473763439612077")])
+        else:
+            kb.append([InlineKeyboardButton(btn_text, callback_data=f"mb#view_{s_id}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(_sc("PREV") if lang == 'en' else "पिछला", callback_data=f"mb#mkt_all#{platform_name}#{page-1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(f"ᴘᴀɢᴇ {page+1}/{total_pages}", callback_data="mb#noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(_sc("NEXT") if lang == 'en' else "अगला", callback_data=f"mb#mkt_all#{platform_name}#{page+1}"))
+    if nav:
+        kb.append(nav)
+
+    kb.append([InlineKeyboardButton(f"« ❮ {_sc('BACK TO STORIES') if lang == 'en' else 'वापस'}", callback_data=f"mb#mkt_plat#{platform_name}#0")])
+
+    title = _sc("ALL STORIES") if lang == 'en' else "सभी कहानियाँ"
+    txt = (
+        f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(platform_name)} ⟧</b>\n'
+        f"<i>Page {page+1}/{total_pages} (Total: {total_count})</i>"
+    )
+    await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
 
 
 async def _show_about_arya(client, query, page: int):
@@ -4713,7 +4866,7 @@ async def _process_callback(client, query):
     cmd = data[1]
 
     # Quick early answer for standard instant-transition callbacks to eliminate button loading spinner
-    if cmd in ("main_marketplace", "my_buys", "main_profile", "main_settings", "main_help", "main_back", "return_main", "noop", "show_tc") or cmd.startswith(("my_buys_page_", "about_arya_", "tc_accept_", "tc_iaadnsa_")):
+    if cmd in ("main_marketplace", "my_buys", "main_profile", "main_settings", "main_help", "main_back", "return_main", "noop", "show_tc", "mkt_plat", "mkt_all", "mkt_search") or cmd.startswith(("my_buys_page_", "about_arya_", "tc_accept_", "tc_iaadnsa_", "mkt_")):
         try:
             await query.answer()
         except Exception:
@@ -4932,80 +5085,7 @@ async def _process_callback(client, query):
 
 
         if action == "marketplace":
-
-            platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
-
-            
-
-            # Priority order — these come first if they have stories
-
-            PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
-
-            # Remove "Other" — we won't show it as a separate button anymore
-
-            for _rm in ("Other",):
-
-                if _rm in platforms:
-
-                    platforms.remove(_rm)
-
-
-
-            sorted_plats = []
-
-            for pp in PRIORITY_PLATFORMS:
-
-                if pp in platforms:
-
-                    sorted_plats.append(pp)
-
-                    platforms.remove(pp)
-
-            # Any remaining (custom) platforms sorted alphabetically
-
-            sorted_plats.extend(sorted(platforms))
-
-            platforms = sorted_plats
-
-
-
-            # Reset pagination to start when opening marketplace
-
-            await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": 0}})
-
-
-
-            t = T[lang]
-
-            kb = []
-
-            for i in range(0, len(platforms), 2):
-
-                row = platforms[i:i+2]
-
-                kb.append(row)
-
-            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang=='en' else "वापस मेनू")])
-
-            
-
-            p_title = "🎧 Platform Selection" if lang == 'en' else "🎧 प्लेटफॉर्म चयन"
-
-            p_desc = "Choose a platform from the keyboard below:" if lang == 'en' else "नीचे दिए गए कीबोर्ड से एक प्लेटफॉर्म चुनें:"
-
-            
-
-            await query.message.delete()
-
-            await client.send_message(
-
-                user_id,
-
-                f"<b>{p_title}</b>\n\n{p_desc}",
-
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
-            )
+            return await _show_marketplace_platforms(client, query, lang)
 
 
 
@@ -5982,8 +6062,27 @@ async def _process_callback(client, query):
 
             
 
-    # ── Access purchased story directly ──
+    # ── Marketplace Inline Navigation ──
+    elif cmd == "mkt_plat":
+        plat_name = data[2] if len(data) > 2 else "Pocket FM"
+        page = int(data[3]) if len(data) > 3 else 0
+        return await _show_marketplace_stories(client, query, plat_name, page, lang)
 
+    elif cmd == "mkt_all":
+        plat_name = data[2] if len(data) > 2 else "Pocket FM"
+        page = int(data[3]) if len(data) > 3 else 0
+        return await _show_marketplace_all_stories(client, query, plat_name, page, lang)
+
+    elif cmd == "mkt_search":
+        await db.update_user(user_id, {"state": "searching"})
+        txt = (
+            f'<b><emoji id="6025893082552081088">🔍</emoji> {_sc("SEARCH STORY")}</b>\n\n'
+            f'<i>{_sc("Please type a few words of the story name in the chat below:")}</i>'
+        )
+        kb = [[InlineKeyboardButton(f"« ❮ {_sc('CANCEL') if lang == 'en' else 'रद्द करें'}", callback_data="mb#main_marketplace")]]
+        return await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
+
+    # ── Access purchased story directly ──
     elif cmd.startswith("access_"):
 
         s_id = data[2] if len(data) > 2 else cmd.replace("access_", "")
