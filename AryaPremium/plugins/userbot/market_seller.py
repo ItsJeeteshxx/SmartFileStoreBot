@@ -1941,39 +1941,123 @@ def to_mathitalic(text: str) -> str:
 
 
 
+async def _fetch_url_bytes(url: str) -> bytes | None:
+    """Download image bytes from HTTP URL with timeout and User-Agent."""
+    try:
+        import aiohttp
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=6.0)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if data and len(data) > 500:
+                        return data
+    except Exception:
+        pass
+    return None
+
+
+async def _send_story_photo_bytes(client, user_id: int, img_bytes: bytes, caption: str, reply_markup=None, story: dict = None) -> bool:
+    """Uploads raw image bytes directly via Telegram Bot API multipart sendPhoto."""
+    bot_token = await _get_seller_bot_token(client)
+    if not bot_token:
+        return False
+    try:
+        import aiohttp
+        import json
+        import re
+        api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', caption)
+        api_kb = _markup_to_bot_api_list(reply_markup) if reply_markup else []
+
+        data = aiohttp.FormData()
+        data.add_field("chat_id", str(user_id))
+        data.add_field("caption", api_text)
+        data.add_field("parse_mode", "HTML")
+        if api_kb:
+            data.add_field("reply_markup", json.dumps({"inline_keyboard": api_kb}))
+        data.add_field("photo", img_bytes, filename="story_banner.jpg", content_type="image/jpeg")
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                res = await resp.json()
+                if res.get("ok"):
+                    # Cache the new file_id for THIS bot so future queries are instant
+                    try:
+                        photos = res.get("result", {}).get("photo", [])
+                        if photos and story and story.get("_id"):
+                            new_fid = photos[-1].get("file_id")
+                            if new_fid:
+                                await db.db.premium_stories.update_one({"_id": story["_id"]}, {"$set": {"image": new_fid}})
+                    except Exception:
+                        pass
+                    return True
+                else:
+                    logger.debug(f"Bot API sendPhoto multipart returned: {res}")
+    except Exception as e:
+        logger.debug(f"Exception in _send_story_photo_bytes: {e}")
+    return False
+
+
 async def _send_story_photo(client, user_id: int, story: dict, caption: str, reply_markup=None, fallback_photo: str = None):
     """
-    Robustly sends a story image to user across bots:
-    1. Tries story.get('image') / story.get('poster')
-    2. Tries story.get('poster_url') / story.get('image_url') (CDN HTTP URL)
-    3. Tries fallback_photo (if provided)
-    4. Falls back to send_message with text
+    Robustly sends a story banner image to user across bots:
+    1. Tests HTTP/CDN URLs (poster_url, banner_url, image_url, cover_url) via in-memory bytes upload.
+    2. Tests direct file_id (with cross-bot download recovery if file_id was created on an old bot).
+    3. Caches new valid file_id on story in MongoDB for this bot.
+    4. Falls back gracefully to text message if no image could be delivered.
     """
     from pyrogram import enums
-    img_candidates = []
-    
-    # Priority 1: Direct file_id or image stored on story
+    import io
+
+    # ── 1. Check for Public HTTP / CDN URLs first (Catbox, R2, Mini App) ──
+    http_candidates = []
+    for k in ("poster_url", "banner_url", "image_url", "cover_url", "cover", "thumbnail"):
+        val = story.get(k)
+        if val and isinstance(val, str):
+            val = val.strip()
+            if val.startswith("http://") or val.startswith("https://"):
+                if val not in http_candidates: http_candidates.append(val)
+            elif val.startswith("/") or val.startswith("uploads/") or val.startswith("static/"):
+                full_url = "https://aryapremium.store/" + val.lstrip("/")
+                if full_url not in http_candidates: http_candidates.append(full_url)
+
+    if fallback_photo and isinstance(fallback_photo, str) and fallback_photo.startswith("http"):
+        if fallback_photo not in http_candidates: http_candidates.append(fallback_photo)
+
+    for h_url in http_candidates:
+        img_bytes = await _fetch_url_bytes(h_url)
+        if img_bytes:
+            ok = await _send_story_photo_bytes(client, user_id, img_bytes, caption, reply_markup, story)
+            if ok:
+                return True
+            try:
+                # Try Pyrogram byte stream fallback
+                return await client.send_photo(
+                    chat_id=user_id,
+                    photo=io.BytesIO(img_bytes),
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception as e:
+                logger.debug(f"Pyrogram BytesIO send_photo failed: {e}")
+
+    # ── 2. Check direct file_id candidates ──
+    fid_candidates = []
     for k in ("image", "poster", "banner"):
         val = story.get(k)
-        if val and val not in img_candidates:
-            img_candidates.append(val)
-            
-    # Priority 2: CDN HTTP URLs (works 100% across all bots)
-    for k in ("poster_url", "image_url", "cover_url"):
-        val = story.get(k)
-        if val and val not in img_candidates:
-            img_candidates.append(val)
-            
-    if fallback_photo and fallback_photo not in img_candidates:
-        img_candidates.append(fallback_photo)
+        if val and isinstance(val, str) and not val.startswith("http") and not val.startswith("/"):
+            if val not in fid_candidates: fid_candidates.append(val)
 
     has_custom_emoji = reply_markup and any(
         hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
         for row in reply_markup.inline_keyboard for btn in row
     )
 
-    if has_custom_emoji:
-        for photo_ref in img_candidates:
+    # Try sending file_id directly
+    for photo_ref in fid_candidates:
+        if has_custom_emoji:
             try:
                 ok = await _send_or_edit_seller_bot_api(
                     client=client,
@@ -1985,10 +2069,9 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
                 )
                 if ok:
                     return True
-            except Exception as e:
-                logger.debug(f"Bot API send_photo candidate {str(photo_ref)[:30]}: {e}")
+            except Exception:
+                pass
 
-    for photo_ref in img_candidates:
         try:
             return await client.send_photo(
                 chat_id=user_id,
@@ -1998,9 +2081,25 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
                 parse_mode=enums.ParseMode.HTML
             )
         except Exception as e:
-            logger.debug(f"Failed send_photo candidate {str(photo_ref)[:30]}: {e}")
-            continue
+            logger.debug(f"Direct file_id send_photo failed: {e}")
 
+    # ── 3. Cross-Bot File ID Recovery (if file_id belongs to old delivery bot) ──
+    for photo_ref in fid_candidates:
+        for b_str, other_cli in list(market_clients.items()):
+            if getattr(getattr(other_cli, "me", None), "id", None) == getattr(getattr(client, "me", None), "id", None):
+                continue
+            try:
+                dl = await other_cli.download_media(photo_ref, in_memory=True)
+                if dl:
+                    dl_bytes = bytes(dl.getbuffer())
+                    if dl_bytes:
+                        ok = await _send_story_photo_bytes(client, user_id, dl_bytes, caption, reply_markup, story)
+                        if ok:
+                            return True
+            except Exception:
+                continue
+
+    # ── 4. Final Text Fallback ──
     if has_custom_emoji:
         try:
             ok = await _send_or_edit_seller_bot_api(
@@ -2014,14 +2113,12 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
         except Exception:
             pass
 
-    # Fallback: send text message if all image options failed
     return await client.send_message(
         chat_id=user_id,
         text=caption,
         reply_markup=reply_markup,
         parse_mode=enums.ParseMode.HTML
     )
-
 
 async def _show_story_profile(client, user_id, story, lang):
 
