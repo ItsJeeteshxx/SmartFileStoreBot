@@ -9220,8 +9220,9 @@ async def _process_inline_query(client, inline_query):
     """
     try:
         user_id = inline_query.from_user.id if inline_query.from_user else 0
-        q = inline_query.query.strip()
+        q = (inline_query.query or "").strip()
         bot_id = getattr(getattr(client, "me", None), "id", None)
+        bot_username = getattr(getattr(client, "me", None), "username", "")
         
         user = await db.get_user(user_id, from_user=inline_query.from_user, bot_id=bot_id) if user_id else {}
         lang = user.get('lang', 'en') if user else 'en'
@@ -9247,22 +9248,24 @@ async def _process_inline_query(client, inline_query):
             q_find = q_bot if q_bot else {}
 
         stories = await db.db.premium_stories.find(q_find).sort("_id", -1).limit(50).to_list(length=50)
-        if not stories and q:
-            # Fallback search without bot_id
-            stories = await db.db.premium_stories.find({
-                "$or": [
-                    {"story_name_en": {"$regex": reg, "$options": "i"}},
-                    {"story_name_hi": {"$regex": reg, "$options": "i"}},
-                    {"platform": {"$regex": reg, "$options": "i"}},
-                    {"genre": {"$regex": reg, "$options": "i"}}
-                ]
-            }).sort("_id", -1).limit(50).to_list(length=50)
+        if not stories:
+            if q:
+                reg = re.escape(q)
+                stories = await db.db.premium_stories.find({
+                    "$or": [
+                        {"story_name_en": {"$regex": reg, "$options": "i"}},
+                        {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                        {"platform": {"$regex": reg, "$options": "i"}},
+                        {"genre": {"$regex": reg, "$options": "i"}}
+                    ]
+                }).sort("_id", -1).limit(50).to_list(length=50)
+            else:
+                stories = await db.db.premium_stories.find({}).sort("_id", -1).limit(50).to_list(length=50)
 
         from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
         results = []
-        bot_username = getattr(getattr(client, "me", None), "username", "")
 
-        for s in stories:
+        for idx, s in enumerate(stories):
             s_id = str(s['_id'])
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Unknown Story'))
             platform = s.get('platform', 'Unknown')
@@ -9271,17 +9274,17 @@ async def _process_inline_query(client, inline_query):
             genre = s.get('genre', 'Story')
             thumb = s.get('image') or s.get('poster_url') or s.get('image_url')
             
-            desc_text = f"🖥 {platform} • 🎬 {episodes} eps • 🏷 ₹{price}"
+            desc_text = f"{platform} • {episodes} eps • ₹{price}"
 
             story_caption = (
-                f'<b>⟦ <emoji id="5465432711218863135">♨️</emoji> {to_mathbold(s_name)} ⟧</b>\n\n'
+                f'<b>⟦ ♨️ <b>{s_name}</b> ⟧</b>\n\n'
                 f'<b>• Platform:</b> {platform}\n'
                 f'<b>• Genre:</b> {genre}\n'
                 f'<b>• Episodes:</b> {episodes}\n'
                 f'<b>• Price:</b> ₹{price}\n\n'
                 f'<i>Tap below to view full details, demo files, or purchase:</i>'
             ) if lang == 'en' else (
-                f'<b>⟦ <emoji id="5465432711218863135">♨️</emoji> {to_mathbold(s_name)} ⟧</b>\n\n'
+                f'<b>⟦ ♨️ <b>{s_name}</b> ⟧</b>\n\n'
                 f'<b>• प्लेटफॉर्म:</b> {platform}\n'
                 f'<b>• जौनर:</b> {genre}\n'
                 f'<b>• एपिसोड्स:</b> {episodes}\n'
@@ -9299,7 +9302,7 @@ async def _process_inline_query(client, inline_query):
                 kb.append([InlineKeyboardButton(view_btn_txt, callback_data=f"mb#access_{s_id}")])
 
             article_kwargs = {
-                "id": s_id,
+                "id": f"{s_id}_{idx}",
                 "title": f"{s_name} [ ₹{price} ]",
                 "description": desc_text,
                 "input_message_content": InputTextMessageContent(
@@ -9308,14 +9311,14 @@ async def _process_inline_query(client, inline_query):
                 ),
                 "reply_markup": InlineKeyboardMarkup(kb)
             }
-            if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
+            if thumb and isinstance(thumb, str) and (thumb.startswith("http://") or thumb.startswith("https://")):
                 article_kwargs["thumb_url"] = thumb
 
             results.append(InlineQueryResultArticle(**article_kwargs))
 
         await inline_query.answer(
             results=results,
-            cache_time=5,
+            cache_time=1,
             is_personal=True,
             switch_pm_text="🛒 Browse All Marketplace Stories" if lang == 'en' else "🛒 सभी कहानियाँ देखें",
             switch_pm_parameter="marketplace"
