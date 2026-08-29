@@ -932,7 +932,7 @@ Select your language:""",
         "req_step1": "<b>📤 Story Request System</b>\n\n<i>(Note: The story you request will be a Paid service, please keep this in mind.)</i>\n\nPlease enter the exact name of the story you are looking for:",
         "req_step2": "Got it. Send me any sample files, links, or screenshots related to this story (to help us locate it). If you don’t have any, type /skip.",
         "req_done": "✅ <b>Request Submitted!</b>\nWe have received your request. You can track its status using the 'My Requests' button in your Profile.",
-        "cant_find_btn": "🔍 CAN'T FIND? REQUEST NOW!",
+        "cant_find_btn": "CAN'T FIND? REQUEST NOW!",
         "req_search_prompt": """<b><emoji id="6025893082552081088">🔍</emoji> SEARCH / REQUEST STORY</b>
 
 Type the <b>Story Name</b> you want to search or request:""",
@@ -997,7 +997,7 @@ Our team will search for this story and update you soon. Check status in <b>Prof
 
         "wait_a_sec": "कृपया प्रतीक्षा करें...",
 
-        "cant_find_btn": "🔍 कहानी नहीं मिल रही? अनुरोध करें!",
+        "cant_find_btn": "कहानी नहीं मिल रही? अनुरोध करें!",
 
         "req_search_prompt": """<b><emoji id="6025893082552081088">🔍</emoji> स्टोरी खोजें / अनुरोध करें</b>
 
@@ -4227,11 +4227,9 @@ async def _process_text(client, message):
             for idx, s in enumerate(all_stories, start=1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
-                if idx <= 5:
-                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
-                else:
-                    kb.append([_kb_btn(btn_txt)])
+                badge = " 🆕" if idx <= 5 else ""
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"
+                kb.append([_kb_btn(btn_txt)])
             kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
             title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
             msg_text = f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>'
@@ -4272,11 +4270,9 @@ async def _process_text(client, message):
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
-                if idx <= 5:
-                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
-                else:
-                    kb.append([_kb_btn(btn_txt)])
+                badge = " 🆕" if idx <= 5 else ""
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"
+                kb.append([_kb_btn(btn_txt)])
 
             nav_row = []
             if new_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
@@ -4377,11 +4373,9 @@ async def _process_text(client, message):
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
-            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
-            if idx <= 5:
-                kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
-            else:
-                kb.append([_kb_btn(btn_txt)])
+            badge = " 🆕" if idx <= 5 else ""
+            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"
+            kb.append([_kb_btn(btn_txt)])
 
         nav_row = []
         if s_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
@@ -4617,17 +4611,23 @@ async def _process_text(client, message):
         kb = []
         for idx, s in enumerate(matches, start=1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
-            badge = " ɴᴇᴡ" if idx <= 5 else ""
-            kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
-        kb.append(["« " + "CANCEL"])
+            badge = " 🆕" if idx <= 5 else ""
+            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"
+            kb.append([_kb_btn(btn_txt)])
+        kb.append([_kb_btn("« " + "CANCEL")])
 
-        await message.reply_text(
+        msg_text = (
             f'<b><emoji id="6025893082552081088">🔍</emoji> {_sc("Search Results")} ({len(matches)})</b>\n\n'
-            f"<blockquote expandable>{_sc('Tap on a story name from the keyboard menu below to view its details and purchase options.')}</blockquote>",
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-            parse_mode=enums.ParseMode.HTML
+            f"<blockquote expandable>{_sc('Tap on a story name from the keyboard menu below to view its details and purchase options.')}</blockquote>"
         )
-
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
 
