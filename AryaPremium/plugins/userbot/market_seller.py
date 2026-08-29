@@ -4146,22 +4146,39 @@ async def _process_text(client, message):
             u_doc = await db.db.users.find_one({"id": user_id}) or {}
             plat = u_doc.get("_mkt_plat")
 
+        ALL_PAGE_SIZE = 70
         q_find = {"bot_id": client.me.id}
         if plat and plat != "Other":
             q_find["platform"] = plat
-        all_stories = await db.db.premium_stories.find(q_find).sort("_id", -1).to_list(length=None)
-        if not all_stories and plat:
+
+        total_s = await db.db.premium_stories.count_documents(q_find)
+        if total_s == 0 and plat:
             q_find = {"bot_id": client.me.id}
-            all_stories = await db.db.premium_stories.find(q_find).sort("_id", -1).to_list(length=None)
+            total_s = await db.db.premium_stories.count_documents(q_find)
             plat = None
 
-        if not all_stories:
+        if total_s == 0:
             empty_msg = "No stories available right now." if lang == 'en' else "वर्तमान में कोई कहानी उपलब्ध नहीं है।"
             return await message.reply_text(f"<i>{empty_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
+        total_pg = max(1, (total_s + ALL_PAGE_SIZE - 1) // ALL_PAGE_SIZE)
+        cur_all_page = 0
+
+        # Save mode and page in DB
+        await db.db.users.update_one(
+            {"id": user_id},
+            {"$set": {"_mkt_mode": "all", "_mkt_all_page": cur_all_page, "_mkt_plat": plat}}
+        )
+
+        all_stories = await db.db.premium_stories.find(
+            q_find,
+            {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+        ).sort("_id", -1).skip(cur_all_page * ALL_PAGE_SIZE).limit(ALL_PAGE_SIZE).to_list(length=ALL_PAGE_SIZE)
+
         kb = []
         MNL = 22
-        for idx, s in enumerate(all_stories[:70], start=1):
+        start_idx = cur_all_page * ALL_PAGE_SIZE + 1
+        for idx, s in enumerate(all_stories, start=start_idx):
             sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
             if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
             btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
@@ -4170,6 +4187,16 @@ async def _process_text(client, message):
             else:
                 kb.append([_kb_btn(btn_txt)])
         
+        # Pagination row for View All (if > 70 stories)
+        if total_pg > 1:
+            nav_row = []
+            if cur_all_page > 0:
+                nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
+            if cur_all_page < total_pg - 1:
+                nav_row.append(_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭"))
+            if nav_row:
+                kb.append(nav_row)
+
         search_text = "SEARCH" if lang == 'en' else "खोजें"
         kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
         kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
@@ -4177,10 +4204,11 @@ async def _process_text(client, message):
 
         title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
         plat_hdr = f" — {to_mathbold(plat)}" if plat else ""
+        pg_info = f"<i>{_sc('Page')} {cur_all_page+1}/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{_sc('Total Stories:') if lang == 'en' else 'कुल स्टोरिज:'} <b>{total_s}</b></i>"
         msg_text = (
             f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title}{plat_hdr} ⟧</b>\n\n'
-            f"<blockquote expandable><i>{_sc('Total Stories:') if lang == 'en' else 'कुल स्टोरिज:'} <b>{len(all_stories)}</b>\n"
-            f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</i></blockquote>"
+            f"<blockquote expandable>{pg_info}\n"
+            f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
         )
         ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
         if not ok:
@@ -4200,57 +4228,108 @@ async def _process_text(client, message):
             await message.delete()
         except Exception:
             pass
-        plat = user.get("_mkt_plat")
-        if not plat:
-            u_doc = await db.db.users.find_one({"id": user_id}) or {}
-            plat = u_doc.get("_mkt_plat")
-        cur_page = int(user.get("_mkt_page", 0))
+        u_fresh = await db.db.users.find_one({"id": user_id}) or {}
+        plat = u_fresh.get("_mkt_plat") or user.get("_mkt_plat")
+        mkt_mode = u_fresh.get("_mkt_mode") or user.get("_mkt_mode", "normal")
+        cur_all_p = int(u_fresh.get("_mkt_all_page", user.get("_mkt_all_page", 0)))
+        cur_norm_p = int(u_fresh.get("_mkt_page", user.get("_mkt_page", 0)))
+
         if plat:
             is_next = is_nav_next
-            STORY_PAGE_SIZE = 15
             q_find = {"bot_id": client.me.id}
-            if plat != "Other": q_find["platform"] = plat
+            if plat != "Other":
+                q_find["platform"] = plat
 
             total_s = await db.db.premium_stories.count_documents(q_find)
-            total_pg = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
-            new_page = cur_page + 1 if is_next else cur_page - 1
-            new_page = max(0, min(new_page, total_pg - 1))
 
-            await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": new_page}})
+            if mkt_mode == "all":
+                # ── View All Pagination (70 stories per page) ──
+                ALL_PAGE_SIZE = 70
+                total_pg = max(1, (total_s + ALL_PAGE_SIZE - 1) // ALL_PAGE_SIZE)
+                new_page = cur_all_p + 1 if is_next else cur_all_p - 1
+                new_page = max(0, min(new_page, total_pg - 1))
 
-            pg_stories = await db.db.premium_stories.find(
-                q_find,
-                {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
-            ).sort("_id", -1).skip(new_page * STORY_PAGE_SIZE).limit(STORY_PAGE_SIZE).to_list(length=STORY_PAGE_SIZE)
+                await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_all_page": new_page}})
 
-            MNL = 22
-            kb = []
-            for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
-                sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
-                if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
-                if idx <= 5:
-                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
-                else:
-                    kb.append([_kb_btn(btn_txt)])
+                pg_stories = await db.db.premium_stories.find(
+                    q_find,
+                    {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+                ).sort("_id", -1).skip(new_page * ALL_PAGE_SIZE).limit(ALL_PAGE_SIZE).to_list(length=ALL_PAGE_SIZE)
 
-            nav_row = []
-            if new_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
-            view_all_text = "VIEW ALL" if lang == 'en' else "सभी देखें"
-            nav_row.append(_kb_btn(view_all_text, icon_custom_emoji_id="5764638872000533034"))
-            if new_page < total_pg - 1: nav_row.append(_kb_btn(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭"))
-            if nav_row: kb.append(nav_row)
-            
-            search_text = "SEARCH" if lang == 'en' else "खोजें"
-            kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
-            kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
-            kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+                MNL = 22
+                kb = []
+                start_idx = new_page * ALL_PAGE_SIZE + 1
+                for idx, s in enumerate(pg_stories, start=start_idx):
+                    sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+                    if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+                    btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                    if idx <= 5:
+                        kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                    else:
+                        kb.append([_kb_btn(btn_txt)])
 
-            title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
-            msg_text = (
-                f"<b>⟦ {title} — {to_mathbold(plat)} ⟧</b>\n"
-                f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>"
-            )
+                nav_row = []
+                if new_page > 0:
+                    nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
+                if new_page < total_pg - 1:
+                    nav_row.append(_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭"))
+                if nav_row:
+                    kb.append(nav_row)
+
+                search_text = "SEARCH" if lang == 'en' else "खोजें"
+                kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+                title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
+                msg_text = (
+                    f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>\n\n'
+                    f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg} (Total: {total_s})</i>\n"
+                    f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
+                )
+            else:
+                # ── Normal Mode Pagination (15 stories per page) ──
+                STORY_PAGE_SIZE = 15
+                total_pg = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
+                new_page = cur_norm_p + 1 if is_next else cur_norm_p - 1
+                new_page = max(0, min(new_page, total_pg - 1))
+
+                await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": new_page}})
+
+                pg_stories = await db.db.premium_stories.find(
+                    q_find,
+                    {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+                ).sort("_id", -1).skip(new_page * STORY_PAGE_SIZE).limit(STORY_PAGE_SIZE).to_list(length=STORY_PAGE_SIZE)
+
+                MNL = 22
+                kb = []
+                for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
+                    sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+                    if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+                    btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                    if idx <= 5:
+                        kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                    else:
+                        kb.append([_kb_btn(btn_txt)])
+
+                nav_row = []
+                if new_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
+                view_all_text = "VIEW ALL" if lang == 'en' else "सभी देखें"
+                nav_row.append(_kb_btn(view_all_text, icon_custom_emoji_id="5764638872000533034"))
+                if new_page < total_pg - 1: nav_row.append(_kb_btn(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭"))
+                if nav_row: kb.append(nav_row)
+                
+                search_text = "SEARCH" if lang == 'en' else "खोजें"
+                kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+                title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
+                msg_text = (
+                    f"<b>⟦ {title} — {to_mathbold(plat)} ⟧</b>\n"
+                    f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>"
+                )
+
             ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
             if not ok:
                 pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
@@ -4329,7 +4408,7 @@ async def _process_text(client, message):
         total_pages_s = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
         s_page = max(0, min(s_page, total_pages_s - 1))
 
-        await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_plat": txt, "_mkt_page": s_page}})
+        await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_plat": txt, "_mkt_page": s_page, "_mkt_mode": "normal"}})
 
         page_stories = await db.db.premium_stories.find(
             query_find,
