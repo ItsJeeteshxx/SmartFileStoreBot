@@ -1114,11 +1114,11 @@ def _get_main_menu(lang='en'):
     if lang == 'hi':
         kb = [
             [
-                _ikb("🛒", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
-                _ikb("❤️", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
-                _ikb("👤", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
-                _ikb("⚙️", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
-                _ikb("🆘", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
+                _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
+                _ikb(" ", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
+                _ikb(" ", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
+                _ikb(" ", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
+                _ikb(" ", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
             ],
             [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
@@ -1137,11 +1137,11 @@ def _get_main_menu(lang='en'):
     else:
         kb = [
             [
-                _ikb("🛒", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
-                _ikb("❤️", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
-                _ikb("👤", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
-                _ikb("⚙️", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
-                _ikb("🆘", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
+                _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
+                _ikb(" ", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
+                _ikb(" ", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
+                _ikb(" ", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
+                _ikb(" ", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
             ],
             [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
