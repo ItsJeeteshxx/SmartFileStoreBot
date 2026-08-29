@@ -1043,7 +1043,7 @@ def _ikb(text: str, callback_data: str = None, url: str = None, icon_custom_emoj
 
 def _get_top_emoji_row() -> list:
     return [
-        _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
+        _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="5920332557466997677"),
         _ikb(" ", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
         _ikb(" ", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
         _ikb(" ", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
@@ -5085,7 +5085,38 @@ async def _process_callback(client, query):
 
 
         if action == "marketplace":
-            return await _show_marketplace_platforms(client, query, lang)
+            platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
+            PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
+            for _rm in ("Other",):
+                if _rm in platforms:
+                    platforms.remove(_rm)
+
+            sorted_plats = []
+            for pp in PRIORITY_PLATFORMS:
+                if pp in platforms:
+                    sorted_plats.append(pp)
+                    platforms.remove(pp)
+            sorted_plats.extend(sorted(platforms))
+            platforms = sorted_plats
+
+            await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": 0}})
+
+            t = T[lang]
+            kb = []
+            for i in range(0, len(platforms), 2):
+                row = platforms[i:i+2]
+                kb.append(row)
+            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang=='en' else "वापस मेनू")])
+            
+            p_title = "🎧 Platform Selection" if lang == 'en' else "🎧 प्लेटफॉर्म चयन"
+            p_desc = "Choose a platform from the keyboard below:" if lang == 'en' else "नीचे दिए गए कीबोर्ड से एक प्लेटफॉर्म चुनें:"
+            
+            await query.message.delete()
+            return await client.send_message(
+                user_id,
+                f"<b>{p_title}</b>\n\n{p_desc}",
+                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
+            )
 
 
 
