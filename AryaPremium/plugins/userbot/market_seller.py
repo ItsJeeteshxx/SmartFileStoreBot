@@ -4127,7 +4127,7 @@ async def _process_text(client, message):
 
         kb = []
         MNL = 22
-        for idx, s in enumerate(all_stories[:80], start=1):
+        for idx, s in enumerate(all_stories[:70], start=1):
             sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
             if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
             btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
