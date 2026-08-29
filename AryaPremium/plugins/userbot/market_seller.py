@@ -4141,21 +4141,22 @@ async def _process_text(client, message):
             await message.delete()
         except Exception:
             pass
-        plat = user.get("_mkt_plat")
-        if not plat:
-            u_doc = await db.db.users.find_one({"id": user_id}) or {}
-            plat = u_doc.get("_mkt_plat")
+        u_doc = await db.db.users.find_one({"id": int(user_id)}) or {}
+        plat = u_doc.get("_mkt_plat") or user.get("_mkt_plat")
 
         ALL_PAGE_SIZE = 70
         q_find = {"bot_id": client.me.id}
-        if plat and plat != "Other":
-            q_find["platform"] = plat
+        if plat == "Other":
+            q_find["$or"] = [
+                {"platform": "Other"},
+                {"platform": {"$exists": False}},
+                {"platform": None},
+                {"platform": ""}
+            ]
+        elif plat:
+            q_find["platform"] = {"$regex": f"^{re.escape(plat)}$", "$options": "i"}
 
         total_s = await db.db.premium_stories.count_documents(q_find)
-        if total_s == 0 and plat:
-            q_find = {"bot_id": client.me.id}
-            total_s = await db.db.premium_stories.count_documents(q_find)
-            plat = None
 
         if total_s == 0:
             empty_msg = "No stories available right now." if lang == 'en' else "वर्तमान में कोई कहानी उपलब्ध नहीं है।"
@@ -4166,7 +4167,7 @@ async def _process_text(client, message):
 
         # Save mode and page in DB
         await db.db.users.update_one(
-            {"id": user_id},
+            {"id": int(user_id)},
             {"$set": {"_mkt_mode": "all", "_mkt_all_page": cur_all_page, "_mkt_plat": plat}}
         )
 
@@ -4220,15 +4221,25 @@ async def _process_text(client, message):
             )
         return
 
-    is_nav_next = txt in (_nav_next, _nav_next_hi, "NEXT ❭", "NEXT", "अगला", "अगला ❭") or "next ❭" in txt.lower()
-    is_nav_prev = txt in (_nav_prev, _nav_prev_hi, "❬ PREV", "PREV", "पिछला", "❬ पिछला") or "❬ prev" in txt.lower()
+    is_nav_next = (
+        txt in (_nav_next, _nav_next_hi, "NEXT ❭", "NEXT", "अगला", "अगला ❭", "ɴᴇxᴛ ❭", "ɴᴇxᴛ", "next ❭", "next")
+        or "next" in txt_lower
+        or "अगला" in txt
+        or "ɴᴇxᴛ" in txt
+    )
+    is_nav_prev = (
+        txt in (_nav_prev, _nav_prev_hi, "❬ PREV", "PREV", "पिछला", "❬ पिछला", "❬ ᴘʀᴇᴠ", "ᴘʀᴇᴠ", "prev", "❬ prev")
+        or "prev" in txt_lower
+        or "पिछला" in txt
+        or "ᴘʀᴇᴠ" in txt
+    )
 
     if is_nav_next or is_nav_prev:
         try:
             await message.delete()
         except Exception:
             pass
-        u_fresh = await db.db.users.find_one({"id": user_id}) or {}
+        u_fresh = await db.db.users.find_one({"id": int(user_id)}) or {}
         plat = u_fresh.get("_mkt_plat") or user.get("_mkt_plat")
         mkt_mode = u_fresh.get("_mkt_mode") or user.get("_mkt_mode", "normal")
         cur_all_p = int(u_fresh.get("_mkt_all_page", user.get("_mkt_all_page", 0)))
@@ -4237,8 +4248,15 @@ async def _process_text(client, message):
         if plat:
             is_next = is_nav_next
             q_find = {"bot_id": client.me.id}
-            if plat != "Other":
-                q_find["platform"] = plat
+            if plat == "Other":
+                q_find["$or"] = [
+                    {"platform": "Other"},
+                    {"platform": {"$exists": False}},
+                    {"platform": None},
+                    {"platform": ""}
+                ]
+            elif plat:
+                q_find["platform"] = {"$regex": f"^{re.escape(plat)}$", "$options": "i"}
 
             total_s = await db.db.premium_stories.count_documents(q_find)
 
@@ -4249,7 +4267,7 @@ async def _process_text(client, message):
                 new_page = cur_all_p + 1 if is_next else cur_all_p - 1
                 new_page = max(0, min(new_page, total_pg - 1))
 
-                await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_all_page": new_page}})
+                await db.db.users.update_one({"id": int(user_id)}, {"$set": {"_mkt_all_page": new_page, "_mkt_mode": "all", "_mkt_plat": plat}})
 
                 pg_stories = await db.db.premium_stories.find(
                     q_find,
@@ -4294,7 +4312,7 @@ async def _process_text(client, message):
                 new_page = cur_norm_p + 1 if is_next else cur_norm_p - 1
                 new_page = max(0, min(new_page, total_pg - 1))
 
-                await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": new_page}})
+                await db.db.users.update_one({"id": int(user_id)}, {"$set": {"_mkt_page": new_page, "_mkt_mode": "normal", "_mkt_plat": plat}})
 
                 pg_stories = await db.db.premium_stories.find(
                     q_find,
@@ -4313,11 +4331,14 @@ async def _process_text(client, message):
                         kb.append([_kb_btn(btn_txt)])
 
                 nav_row = []
-                if new_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
+                if new_page > 0:
+                    nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
                 view_all_text = "VIEW ALL" if lang == 'en' else "सभी देखें"
                 nav_row.append(_kb_btn(view_all_text, icon_custom_emoji_id="5764638872000533034"))
-                if new_page < total_pg - 1: nav_row.append(_kb_btn(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭"))
-                if nav_row: kb.append(nav_row)
+                if new_page < total_pg - 1:
+                    nav_row.append(_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭"))
+                if nav_row:
+                    kb.append(nav_row)
                 
                 search_text = "SEARCH" if lang == 'en' else "खोजें"
                 kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
