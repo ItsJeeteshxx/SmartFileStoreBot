@@ -1110,16 +1110,20 @@ def _ikb(text: str, callback_data: str = None, url: str = None, icon_custom_emoj
     return b
 
 
+def _get_top_emoji_row() -> list:
+    return [
+        _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
+        _ikb(" ", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
+        _ikb(" ", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
+        _ikb(" ", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
+        _ikb(" ", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
+    ]
+
+
 def _get_main_menu(lang='en'):
     if lang == 'hi':
         kb = [
-            [
-                _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
-                _ikb(" ", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
-                _ikb(" ", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
-                _ikb(" ", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
-                _ikb(" ", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
-            ],
+            _get_top_emoji_row(),
             [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
@@ -1136,13 +1140,7 @@ def _get_main_menu(lang='en'):
         ]
     else:
         kb = [
-            [
-                _ikb(" ", callback_data="mb#main_marketplace", icon_custom_emoji_id="6030561664758191905"),
-                _ikb(" ", callback_data="mb#my_buys", icon_custom_emoji_id="6026337676091726218"),
-                _ikb(" ", callback_data="mb#main_profile", icon_custom_emoji_id="6021487472603568286"),
-                _ikb(" ", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
-                _ikb(" ", callback_data="mb#main_help", icon_custom_emoji_id="5945256248390721326"),
-            ],
+            _get_top_emoji_row(),
             [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
@@ -1385,80 +1383,60 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str, lang: str = 'en') -> str:
 
 
 async def _edit_main_menu_in_place(client, query, user, lang: str):
-
     """
-
     Edit current message back to main menu when possible.
-
-    Supports random media rotation on navigation.
-
+    Supports random media rotation on navigation and preserves custom emojis.
     """
-
     bt = await db.db.premium_bots.find_one({"id": client.me.id})
-
     bt_cfg = bt.get("config", {}) if bt else {}
-
     bot_name = client.me.first_name
-
     msg_txt = _menu_card_text(user, bt_cfg, bot_name, lang)
-
     markup = _get_premium_menu_markup(bt_cfg, lang)
 
-
-
-    # Media rotation on navigation
-
     items = [x for x in _cfg_list(bt_cfg, "menu_media") if isinstance(x, dict) and x.get("file_id")]
-
     if not items and (bt_cfg.get("menuimg") or "").strip():
-
         items = [{"type": "photo", "file_id": (bt_cfg.get("menuimg") or "").strip()}]
-
-    
 
     is_media = bool(getattr(query.message, 'photo', None) or getattr(query.message, 'video', None) or getattr(query.message, 'animation', None))
 
-    
+    # First try Bot API edit to preserve custom emoji buttons
+    try:
+        ok = await _send_or_edit_seller_bot_api(
+            client=client,
+            chat_id=query.message.chat.id,
+            text=msg_txt,
+            markup=markup,
+            message_id=query.message.id,
+            is_media_edit=is_media
+        )
+        if ok:
+            return
+    except Exception as e:
+        logger.debug(f"Bot API edit failed in _edit_main_menu_in_place: {e}")
 
+    # Fallback if media edit is possible
     if items and is_media:
-
         import random
-
         media_item = random.choice(items)
-
         t = (media_item.get("type") or "photo").strip()
-
         fid = (media_item.get("file_id") or "").strip()
-
-        
-
         try:
-
             input_media = None
-
             if t == "animation":
-
                 input_media = InputMediaAnimation(fid, caption=msg_txt, parse_mode=enums.ParseMode.HTML)
-
             elif t == "video":
-
                 input_media = InputMediaVideo(fid, caption=msg_txt, parse_mode=enums.ParseMode.HTML)
-
             else:
-
                 input_media = InputMediaPhoto(fid, caption=msg_txt, parse_mode=enums.ParseMode.HTML)
 
-
-
             await query.message.edit_media(media=input_media, reply_markup=markup)
-
             return
-
         except Exception as e:
-
-            # Fallback if media edit fails (e.g. invalid file_id)
-
             logger.warning(f"Failed to rotate media on edit: {e}")
+
+    res = await _safe_edit(query.message, text=msg_txt, markup=markup)
+    if not res:
+        await _send_main_menu(client, query.from_user.id, user, lang)
 
 
 
@@ -1668,12 +1646,13 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
         kb.append(nav)
 
     kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
+    kb.insert(0, _get_top_emoji_row())
 
     txt_b = f"<b>{title}</b>\n\n<b>{total_txt}</b> {total}\n\n{desc}" if total > 0 else f"<b>{title}</b>\n\n<b>{total_txt}</b> 0\n\n{empty_txt}"
-    if total == 0: kb.insert(0, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
+    if total == 0: kb.insert(1, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
 
     if edit_query:
-        await edit_query.message.edit_text(txt_b, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+        await _safe_edit(edit_query.message, text=txt_b, markup=InlineKeyboardMarkup(kb))
     elif reply_to_message:
         await reply_to_message.reply_text(txt_b, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
     else:
@@ -4723,237 +4702,125 @@ async def _process_text(client, message):
 async def _show_about_arya(client, query, page: int):
 
     if page == 0:
-
         txt = (
-
             f"<b>⟦ {_sc('ABOUT ARYA PREMIUM')} ⟧</b>\n\n"
-
             f"<blockquote expandable>"
-
             f"<i>{_sc('Welcome to Arya Premium — the ultimate, fully automated storefront for exclusive, high-quality stories.')}</i>"
-
             f"</blockquote>\n\n"
-
             f"<blockquote expandable>"
-
             f"<u>{_sc('WHAT IT IS:')}</u>\n"
-
             f"{_sc('Arya Premium is a state-of-the-art paid content delivery ecosystem. It enables users to browse, purchase, and instantly receive premium stories without any manual intervention.')}"
-
             f"</blockquote>\n\n"
-
             f"<blockquote expandable>"
-
             f"<u>{_sc('HOW IT WORKS:')}</u>\n"
-
             f"• {_sc('Browse the Marketplace to find your desired story.')}\n"
-
             f"• {_sc('Make a secure payment via automatic gateways (Razorpay) or manual UPI.')}\n"
-
             f"• {_sc('Upon successful validation, choose your preferred delivery method (Direct DM or Secure Channel).')}"
-
             f"</blockquote>\n\n"
-
             f"<blockquote expandable>"
-
             f"<u>{_sc('CORE FEATURES:')}</u>\n"
-
             f"• <b>{_sc('Instant Access:')}</b> {_sc('The moment your payment is verified, the content is unlocked forever.')}\n"
-
             f"• <b>{_sc('Permanent Library:')}</b> {_sc('All your purchases are safely stored in ')}<b>{_sc('My Stories')}</b>. {_sc('You never lose access.')}\n"
-
             f"• <b>{_sc('Seamless Experience:')}</b> {_sc('Clean UI, fast response times, and high-quality file delivery.')}"
-
             f"</blockquote>"
-
         )
-
         kb = [
-
+            _get_top_emoji_row(),
             [InlineKeyboardButton(f"ɴᴇxᴛ ❭", callback_data="mb#about_arya_1")],
-
             [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")]
-
         ]
-
     else:
-
         txt = (
-
             f"<b>⟦ {_sc('ABOUT ARYA BOT (PARENT)')} ⟧</b>\n\n"
-
             f"<blockquote expandable>"
-
             f"<i>{_sc('Arya Premium is proudly powered by the Main Arya Bot architecture — a trusted name in Telegram automation.')}</i>"
-
             f"</blockquote>\n\n"
-
             f"<blockquote expandable>"
-
             f"<u>{_sc('WHAT IT IS:')}</u>\n"
-
             f"{_sc('The parent Arya Bot is a highly advanced file management and delivery juggernaut, built to handle massive loads and complex operations.')}"
-
             f"</blockquote>\n\n"
-
             f"<blockquote expandable>"
-
             f"<u>{_sc('WHY CHOOSE US:')}</u>\n"
-
             f"• <b>{_sc('Instant Delivery:')}</b> {_sc('High-speed servers ensure files are forwarded to you with zero lag.')}\n"
-
             f"• <b>{_sc('Fully Automatic:')}</b> {_sc('No waiting for human admins. Everything is handled securely by code.')}\n"
-
             f"• <b>{_sc('Trusted Service:')}</b> {_sc('Used by thousands to manage and deliver files reliably every single day.')}"
-
             f"</blockquote>\n\n"
-
             f"<blockquote expandable>"
-
             f"<u>{_sc('FEATURES:')}</u>\n"
-
             f"• <b>{_sc('Batch Links:')}</b> {_sc('Group hundreds of files securely for public or private sharing.')}\n"
-
             f"• <b>{_sc('Live Sync:')}</b> {_sc('Real-time mirroring across multiple channels.')}\n"
-
             f"• <b>{_sc('Smart Management:')}</b> {_sc('Auto-approve logic, Force Subscribe walls, and deep user analytics.')}"
-
             f"</blockquote>"
-
         )
-
         kb = [
-
+            _get_top_emoji_row(),
             [InlineKeyboardButton(f"❬ ᴘʀᴇᴠ", callback_data="mb#about_arya_0")],
-
             [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")]
-
         ]
-
-
 
     await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
 
 
-
-
-
 async def _show_help_menu(client, query):
-
     user_id = query.from_user.id
-
     user = await db.get_user(user_id, from_user=query.from_user)
-
     lang = user.get('lang', 'en')
 
-
-
     if lang == 'hi':
-
         txt = (
-
             f"<b>⟦ {_sc('सपोर्ट एवं सहायता केंद्र')} ⟧</b>\n\n"
-
             f"<blockquote expandable>"
-
             f"<i>{_sc('आर्या प्रीमियम के विस्तृत गाइड में आपका स्वागत है।')}</i>\n\n"
-
             f"<u>{_sc('कमांड्स:')}</u>\n"
-
             f"• /start — {_sc('मुख्य मेनू खोलने के लिए।')}\n\n"
-
             f"<u>{_sc('मेनू बटन:')}</u>\n"
-
             f"• <b>{_sc('Marketplace:')}</b> {_sc('पसंदीदा प्लेटफार्म द्वारा सभी कहानियों को ब्राउज़ करें।')}\n"
-
             f"• <b>{_sc('My Stories:')}</b> {_sc('अपनी खरीदी हुई कहानियों तक पहुँचें और उन्हें फिर से डाउनलोड करें।')}\n"
-
             f"• <b>{_sc('Profile:')}</b> {_sc('अपनी खाता जानकारी और कुल खरीदारी देखें।')}\n"
-
             f"• <b>{_sc('Settings:')}</b> {_sc('अपनी पसंदीदा भाषा बदलें।')}\n\n"
-
             f"<u>{_sc('कहानी कैसे खरीदें:')}</u>\n"
-
             f"<i><b>1.</b></i> {_sc('Marketplace में कहानी चुनें।')}\n"
-
             f"<i><b>2.</b></i> {_sc('Razorpay (ऑटोमैटिक) या UPI (मैन्युअल) द्वारा सुरक्षित भुगतान करें।')}\n"
-
             f"<i><b>3.</b></i> {_sc('UPI के मामले में सही राशि भेजें और अपनी रसीद/स्क्रीनशॉट अपलोड करें।')}\n"
-
             f"<i><b>4.</b></i> {_sc('वेरिफिकेशन पूरा होने के बाद, ')}<b>{_sc('Get Delivery')}</b> {_sc('चुनें (सीधा DM या चैनल लिंक)।')}\n\n"
-
             f"<i>{_sc('किसी भी समस्या के लिए नीचे दिए गए Terms या Refund बटन का उपयोग करें।')}</i>"
-
             f"</blockquote>"
-
         )
-
         kb = [
-
+            _get_top_emoji_row(),
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
-
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
-
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
-
             [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
-
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
-
         ]
-
     else:
-
         txt = (
-
             f"<b>⟦ {_sc('SUPPORT & HELP CENTER')} ⟧</b>\n\n"
-
             f"<blockquote expandable>"
-
             f"<i>{_sc('Welcome to the detailed guide for using Arya Premium.')}</i>\n\n"
-
             f"<u>{_sc('COMMANDS:')}</u>\n"
-
             f"• /start — {_sc('Launches the main interface menu.')}\n\n"
-
             f"<u>{_sc('MENU BUTTONS:')}</u>\n"
-
             f"• <b>{_sc('Marketplace:')}</b> {_sc('Browse all available stories filtered by platform.')}\n"
-
             f"• <b>{_sc('My Stories:')}</b> {_sc('Access your previously purchased stories. You can instantly redownload them from here.')}\n"
-
             f"• <b>{_sc('Profile:')}</b> {_sc('View your account details, Telegram ID, and purchase count.')}\n"
-
             f"• <b>{_sc('Settings:')}</b> {_sc('Change your preferred bot language.')}\n\n"
-
             f"<u>{_sc('HOW TO BUY:')}</u>\n"
-
             f"<i><b>1.</b></i> {_sc('Find a story in the Marketplace.')}\n"
-
             f"<i><b>2.</b></i> {_sc('Choose to pay securely via Razorpay (Instant) or Manual UPI.')}\n"
-
             f"<i><b>3.</b></i> {_sc('For UPI, send the exact amount to the provided details and upload your screenshot.')}\n"
-
             f"<i><b>4.</b></i> {_sc('Once verified, tap ')}<b>{_sc('Get Delivery')}</b> {_sc('and choose your method (Direct DM or Secure Channel Invite).')}\n\n"
-
             f"<i>{_sc('For technical issues, use the Terms & Refund buttons below.')}</i>"
-
             f"</blockquote>"
-
         )
-
         kb = [
-
+            _get_top_emoji_row(),
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
-
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
-
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
-
             [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
-
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
-
         ]
 
         
@@ -5335,73 +5202,41 @@ async def _process_callback(client, query):
             )
 
             kb = [
-
+                _get_top_emoji_row(),
                 [InlineKeyboardButton(t['my_reqs'], callback_data="mb#my_reqs_0")],
-
                 [InlineKeyboardButton(t['set_lang'], callback_data="mb#main_settings")],
-
                 [InlineKeyboardButton("❮ " + t['back'], callback_data="mb#main_back")]
-
             ]
-
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
-
             return
 
-
-
         elif action == "settings":
-
             t = T[lang]
-
             subscribed = user.get("alerts_subscribed", False)   # Default OFF
-
             if lang == 'hi':
-
                 sub_text    = "🔔 अपडेट नोटिफिकेशन: चालू"  if subscribed else "🔕 अपडेट नोटिफिकेशन: बंद"
-
                 lang_label  = "भाषा बदलें"
-
                 settings_txt = (
-
                     "<b>⚙️ सेटिंग्स</b>\n\n"
-
                     "<b>भाषा:</b> अपनी पसंदीदा भाषा चुनें\n"
-
                     "<b>नोटिफिकेशन:</b> नई कहानियों का अलर्ट"
-
                 )
-
             else:
-
                 sub_text    = "🔔 New Story Alerts: On"  if subscribed else "🔕 New Story Alerts: Off"
-
                 lang_label  = "Language"
-
                 settings_txt = (
-
                     "<b>⚙️ Settings</b>\n\n"
-
                     "<b>Language:</b> Choose your preferred language\n"
-
                     "<b>Notifications:</b> Get alerted when new stories arrive"
-
                 )
-
-
 
             kb = [
-
+                _get_top_emoji_row(),
                 [InlineKeyboardButton("🇬🇧 English", callback_data="mb#lang#en"),
-
                  InlineKeyboardButton("🇮🇳 हिंदी",   callback_data="mb#lang#hi")],
-
                 [InlineKeyboardButton(sub_text,      callback_data="mb#toggle_sub")],
-
                 [InlineKeyboardButton("❮ Back" if lang == 'en' else "❮ वापस", callback_data="mb#main_back")]
-
             ]
-
             await _safe_edit(query.message, text=settings_txt, markup=InlineKeyboardMarkup(kb))
 
 
