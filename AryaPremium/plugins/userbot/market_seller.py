@@ -2022,7 +2022,7 @@ async def _show_story_profile(client, user_id, story, lang):
         genre_lbl = "Genre"
         ep_lbl = "Episodes"
         desc_lbl = "Story Description"
-        confirm_btn = _sc("CONFIRM")
+        confirm_btn = "Confirm"
         back_btn = f"❮ {_sc('BACK')}"
         loading_txt = _sc("LOADING PROFILE...")
 
@@ -2070,7 +2070,7 @@ async def _show_story_profile(client, user_id, story, lang):
         desc_preview = desc[:120].rstrip() + ("…" if len(desc) > 120 else "")
         desc_full = desc if len(desc) <= MAX_DESC else desc[:MAX_DESC].rstrip() + "…"
         header_txt += (
-            f"<b>{desc_lbl}</b>\n"
+            f'<emoji id="6021620268697393273">📝</emoji> <b>{desc_lbl}</b>\n'
             f"<blockquote expandable>"
             f"{to_mathbold(desc_full)}"
             f"</blockquote>\n"
@@ -3638,7 +3638,7 @@ async def _process_text(client, message):
 
     # 2. Episode Chunk Range Selection (Reply Keyboard)
     pending_s_id = user.get("dm_story_id_pending")
-    if pending_s_id and ("files " in txt_lower or "फ़ाइलें " in txt_lower or "full delivery" in txt_lower or "सभी फ़ाइलें" in txt_lower or "cancel" in txt_lower or "रद्द" in txt_lower or txt.startswith("«")):
+    if pending_s_id and ("-" in txt or "files" in txt_lower or "फ़ाइलें" in txt_lower or "full delivery" in txt_lower or "सभी फ़ाइलें" in txt_lower or "cancel" in txt_lower or "रद्द" in txt_lower or txt.startswith("«")):
         try:
             await message.delete()
         except Exception:
@@ -6011,51 +6011,28 @@ async def _process_callback(client, query):
                     f"<b>पेमेंट      ⟶</b> {payment_label}\n"
 
                     "──────────────\n"
-
-                    "अपनी फाइलें प्राप्त करने के लिए नीचे टैप करें।"
-
+                    'अपनी फाइलें प्राप्त करने के लिए नीचे टैप करें। <emoji id="6147439566107186310">👇</emoji>'
                 )
-
                 kb = [
-
-                    [InlineKeyboardButton("डिलीवरी प्राप्त करें", callback_data=f"mb#access_{s_id}")],
-
+                    [_ikb("डिलीवरी प्राप्त करें", callback_data=f"mb#access_{s_id}", icon_custom_emoji_id="6024030612933844303")],
                     [InlineKeyboardButton("« मेरी स्टोरीज पर वापस", callback_data="mb#my_buys")]
-
                 ]
-
             else:
-
                 txt_req = (
-
                     "<b>⟦ 𝗦𝗧𝗢𝗥𝗬 𝗠𝗘𝗧𝗔 ⟧</b>\n\n"
-
                     f"<b>{s_name}</b>\n\n"
-
                     "──────────────\n"
-
                     f"<b>ᴘʟᴀᴛꜰᴏʀᴍ ⟶</b> {story.get('platform', 'Other')}\n"
-
                     f"<b>ᴇᴘɪꜱᴏᴅᴇꜱ ⟶</b> {story.get('episodes', 'N/A')}\n"
-
                     f"<b>ꜰɪʟᴇꜱ    ⟶</b> {ep_count}\n"
-
                     f"<b>ꜱᴛᴀᴛᴜꜱ   ⟶</b> ᴏᴡɴᴇᴅ\n"
-
                     f"<b>ᴘᴀʏᴍᴇɴᴛ  ⟶</b> {payment_label}\n"
-
                     "──────────────\n"
-
-                    "𝖳𝖺𝗉 𝖻𝖾𝗅𝗈𝗐 𝗍𝗈 𝗋𝖾𝖼𝖾𝗂𝗏𝖾 𝗒𝗈𝗎𝗋 𝖿𝗂𝗅𝖾𝗌."
-
+                    '𝖳𝖺𝗉 𝖻𝖾𝗅𝗈𝗐 𝗍𝗈 𝗋𝖾𝖼𝖾𝗂𝗏𝖾 𝗒𝗈𝗎𝗋 𝖿𝗂𝗅𝖾𝗌. <emoji id="6147439566107186310">👇</emoji>'
                 )
-
                 kb = [
-
-                    [InlineKeyboardButton(_bs("GET DELIVERY"), callback_data=f"mb#access_{s_id}")],
-
+                    [_ikb("Get Delivery", callback_data=f"mb#access_{s_id}", icon_custom_emoji_id="6024030612933844303")],
                     [InlineKeyboardButton(_bs("Back to My Stories"), callback_data="mb#my_buys")]
-
                 ]
 
             await _safe_edit(query.message, text=txt_req, markup=InlineKeyboardMarkup(kb))
@@ -7596,72 +7573,44 @@ async def _process_callback(client, query):
         parts_data = len(data) > 3
 
         if not parts_data and total_files > 40:
-
             if total_files > 300: chunk = 100
-
             elif total_files > 100: chunk = 50
-
             else: chunk = 30
 
-            
-
             kb = []
-
             row = []
-
             for i in range(0, total_files, chunk):
-
                 f_start = i + 1
-
                 f_end = min(i + chunk, total_files)
-
-                lbl = f"Files {f_start} - {f_end}" if lang != "hi" else f"फ़ाइलें {f_start} - {f_end}"
-
-                row.append(lbl)
-
+                lbl = f"{f_start} - {f_end}"
+                row.append(_kb_btn(lbl, icon_custom_emoji_id="5341492148468465410"))
                 if len(row) == 2:
-
                     kb.append(row)
-
                     row = []
-
             if row:
-
                 kb.append(row)
 
-                
-
             full_btn = "Full Delivery (All Files)" if lang != "hi" else "Full Delivery (सभी फ़ाइलें)"
-
-            cancel_btn = "Cancel" if lang != "hi" else "रद्द करें"
-
-            kb.append([full_btn])
-
-            kb.append([cancel_btn])
-
-            
+            cancel_btn = "« " + ("Cancel" if lang != "hi" else "रद्द करें")
+            kb.append([_kb_btn(full_btn, icon_custom_emoji_id="5805550320985578625")])
+            kb.append([_kb_btn(cancel_btn)])
 
             await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id}})
 
-            
-
             await query.answer()
-
             try: await query.message.delete()
-
             except: pass
 
-            
-
             if lang == "hi":
-
-                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
-
+                p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।'
             else:
+                p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below.'
 
-                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
-
-            return await client.send_message(user_id, p_text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+            ok = await _send_reply_keyboard_bot_api(client, user_id, p_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                return await client.send_message(user_id, p_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+            return
 
             
 
@@ -8067,50 +8016,28 @@ async def dispatch_delivery_choice(client, user_id, story):
 
 
     if lang == 'hi':
-
         del_txt = (
-
-            "<b>✅ एक्सेस मिल गया है!</b>\n\n"
-
+            '<b><emoji id="6129783634158163466">✅</emoji> एक्सेस मिल गया है!</b>\n\n'
             f"<b>स्टोरी:</b> {s_name}\n"
-
             + (f"<b>भुगतान तरीका:</b> {method_info}\n" if method_info else "")
-
             + "\n"
-
-            + "<b>ℹ️ डिलीवरी की जानकारी</b>\n\n"
-
+            + '<b><emoji id="6021620268697393273">ℹ️</emoji> डिलीवरी की जानकारी</b>\n\n'
             + "<blockquote>• <b>DM डिलीवरी:</b> फाइलें सीधे यहां भेजी जाती हैं। उन्हें तुरंत सेव या फॉरवर्ड करें—वे कुछ समय बाद अपने आप डिलीट हो जाती हैं।</blockquote>\n"
-
             + "<blockquote>• <b>चैनल लिंक:</b> एक वन-टाइम प्राइवेट इनवाइट लिंक जेनरेट किया जाता है। प्रत्येक स्टोरी के लिए केवल एक चैनल लिंक की अनुमति है।</blockquote>\n"
-
             + "<blockquote>• <b>लाइफटाइम एक्सेस:</b> आप किसी भी खरीदी हुई स्टोरी को कभी भी <b>मुख्य मेनू ⟶ मेरी स्टोरीज</b> से एक्सेस कर सकते हैं।</blockquote>\n"
-
             + "──────────────\n\n"
-
             + "आप अपनी फाइलें कैसे प्राप्त करना चाहेंगे?"
-
         )
-
         dm_btn_txt = "⤓ DM में प्राप्त करें"
-
         chan_btn_txt = "➦ चैनल लिंक प्राप्त करें"
-
         back_btn_txt = "« ❮ मुख्य मेनू"
-
     else:
-
         del_txt = (
-
-            "<b>✅ Access Granted!</b>\n\n"
-
+            '<b><emoji id="6129783634158163466">✅</emoji> Access Granted!</b>\n\n'
             f"<b>Product:</b> {s_name}\n"
-
             + (f"<b>Method:</b> {method_info}\n" if method_info else "")
-
             + "\n"
-
-            + "<b>ℹ️ Delivery Info</b>\n\n"
+            + '<b><emoji id="6021620268697393273">ℹ️</emoji> Delivery Info</b>\n\n'
 
             + "<blockquote>• <b>DM Delivery:</b> Files are sent directly here. Save or forward them immediately—they auto-delete after some time.</blockquote>\n"
 
