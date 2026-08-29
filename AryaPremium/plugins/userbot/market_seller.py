@@ -3672,7 +3672,14 @@ async def _process_text(client, message):
 
     # 2. Episode Chunk Range Selection (Reply Keyboard)
     pending_s_id = user.get("dm_story_id_pending")
-    if pending_s_id and ("-" in txt or "files" in txt_lower or "फ़ाइलें" in txt_lower or "full delivery" in txt_lower or "सभी फ़ाइलें" in txt_lower or "cancel" in txt_lower or "रद्द" in txt_lower or txt.startswith("«")):
+    import re
+    is_chunk_btn = bool(
+        re.search(r"^\s*\d+\s*-\s*\d+\s*$", txt)
+        or "full delivery" in txt_lower
+        or "सभी फ़ाइलें" in txt_lower
+        or (("cancel" in txt_lower or "रद्द" in txt_lower) and "«" in txt)
+    )
+    if pending_s_id and is_chunk_btn:
         try:
             await message.delete()
         except Exception:
@@ -3778,7 +3785,25 @@ async def _process_text(client, message):
 
     # If in miniapp mode and not in any active state (like UTR entry), ignore random text (only /start triggers welcome)
     pending_s_id_utr = user.get("pending_utr_story_id")
-    if not pending_s_id_utr and bot_mode == "miniapp":
+    is_any_menu_btn = (
+        " [ ₹ " in txt
+        or "view all" in txt.lower()
+        or "view_all" in txt.lower()
+        or "सभी देखें" in txt
+        or "next" in txt.lower()
+        or "prev" in txt.lower()
+        or "अगला" in txt
+        or "पिछला" in txt
+        or "search" in txt.lower()
+        or "खोजें" in txt
+        or "back" in txt.lower()
+        or "वापस" in txt
+        or "menu" in txt.lower()
+        or "cant_find" in txt.lower()
+        or "request" in txt.lower()
+        or "अनुरोध" in txt
+    )
+    if not pending_s_id_utr and not is_any_menu_btn and bot_mode == "miniapp":
         return
 
     # -- UTR Payment handler: user sends their 12-digit UTR in chat --
@@ -4409,20 +4434,15 @@ async def _process_text(client, message):
 
         import re
         reg = f"^{re.escape(clean_name)}"
+        reg_sub = re.escape(clean_name)
         story = await db.db.premium_stories.find_one({
-            "bot_id": client.me.id,
             "$or": [
                 {"story_name_en": {"$regex": reg, "$options": "i"}},
-                {"story_name_hi": {"$regex": reg, "$options": "i"}}
+                {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                {"story_name_en": {"$regex": reg_sub, "$options": "i"}},
+                {"story_name_hi": {"$regex": reg_sub, "$options": "i"}}
             ]
         })
-        if not story:
-            story = await db.db.premium_stories.find_one({
-                "$or": [
-                    {"story_name_en": {"$regex": reg, "$options": "i"}},
-                    {"story_name_hi": {"$regex": reg, "$options": "i"}}
-                ]
-            })
 
         if not story:
             return await message.reply_text("<i>Story not found or removed.</i>", parse_mode=enums.ParseMode.HTML)
