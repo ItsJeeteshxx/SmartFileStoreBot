@@ -890,15 +890,10 @@ T = {
 
         "back": "❮ Back",
 
-        "qr_msg": """<b>💳 Complete Payment</b>
-
-
+        "qr_msg": """<b><emoji id="6030410254276106984">💳</emoji> Complete Payment</b>
 
 • Scan the QR code above.
-
 • Amount: ₹{price}
-
-
 
 <b>After paying, send the successful payment screenshot here.</b>""",
 
@@ -950,7 +945,7 @@ Our team will search for this story and update you soon. Check status in <b>Prof
         "no_stories": "वर्तमान में कोई स्टोरी उपलब्ध नहीं है।",
         "pay_upi": "UPI से पेमेंट करें",
         "back": "❮ वापस",
-        "qr_msg": """<b>💳 पेमेंट पूरा करें</b>
+        "qr_msg": """<b><emoji id="6030410254276106984">💳</emoji> पेमेंट पूरा करें</b>
 
 • ऊपर QR स्कैन करें।
 • राशि: ₹{price}
@@ -2012,137 +2007,83 @@ async def _show_story_profile(client, user_id, story, lang):
 
         desc_lbl = "कहानी का विवरण"
 
-        confirm_btn = "✅ आगे बढ़ें"
-
+        confirm_btn = "आगे बढ़ें"
         back_btn = "❮ वापस"
-
         loading_txt = "प्रोफाइल लोड हो रही है..."
-
     else:
-
         status_lbl = "Status"
-
         plat_lbl = "Platform"
-
         genre_lbl = "Genre"
-
         ep_lbl = "Episodes"
-
         desc_lbl = "Story Description"
-
-        confirm_btn = f"✅ {_sc('CONFIRM')}"
-
+        confirm_btn = _sc("CONFIRM")
         back_btn = f"❮ {_sc('BACK')}"
-
         loading_txt = _sc("LOADING PROFILE...")
 
-
-
     desc = story.get(f'description_{lang}', story.get('description', '')).strip()
-
     
-
     delivery_mode = story.get('delivery_mode', 'pool')
-
     del_hi = "केवल डायरेक्ट DM (कोई चैनल नहीं)" if delivery_mode == "dm_only" else "चैनल लिंक और DM"
-
     del_en = "Direct DM Only (No Channel Link)" if delivery_mode == "dm_only" else "Channel Invite + DM"
-
     del_lbl = "डिलीवरी" if lang == "hi" else "Delivery"
-
     del_val = del_hi if lang == "hi" else del_en
-
     
-
     price = int(story.get('price', 0))
-
     if price > 0:
-
         if price <= 50: mrp = 149
-
         elif price <= 100: mrp = 299
-
         elif price <= 200: mrp = 599
-
         elif price <= 300: mrp = 899
-
         else: mrp = int(price * 2.5)
-
         calc_off = int(((mrp - price) / mrp) * 100)
-
         p_lbl = "कीमत" if lang == "hi" else "Price"
-
         # Shopping app style: M.R.P: ̶₹̶̶1̶̶4̶̶9̶ Deal Price: ₹49
-
-        price_line = f"<b>🏷 {p_lbl}:</b> <s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>\n"
-
+        price_line = f'<b><emoji id="5886285355279193209">🏷</emoji> {p_lbl}:</b> <s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>\n'
     else:
         price_line = ""
 
     files_lbl = "फ़ाइलें" if lang == "hi" else "Files"
     actual_files = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None)
-    files_line = f"<b>📁 {files_lbl}:</b> <b>{actual_files}</b>\n" if actual_files else ""
+    files_line = f'<b><emoji id="5805550320985578625">📁</emoji> {files_lbl}:</b> <b>{actual_files}</b>\n' if actual_files else ""
 
     header_txt = (
-        f"<b>♨️ Story:</b> {to_mathbold(name)}\n"
-        f"<b>🔰 {status_lbl}:</b> <b>{status}</b>\n"
-        f"<b>🖥 {plat_lbl}:</b> <b>{platform}</b>\n"
-        f"<b>🧩 {genre_lbl}:</b> <b>{genre}</b>\n"
+        f'<b><emoji id="5465432711218863135">♨️</emoji> Story:</b> {to_mathbold(name)}\n'
+        f'<b><emoji id="6019118553326689234">🔰</emoji> {status_lbl}:</b> <b>{status}</b>\n'
+        f'<b><emoji id="6019455905827920171">🖥</emoji> {plat_lbl}:</b> <b>{platform}</b>\n'
+        f'<b><emoji id="6024065724291488135">🧩</emoji> {genre_lbl}:</b> <b>{genre}</b>\n'
         f"{price_line}"
-        f"<b>🎬 {ep_lbl}:</b> <b>{episodes}</b>\n"
+        f'<b><emoji id="5937999673510858217">🎬</emoji> {ep_lbl}:</b> <b>{episodes}</b>\n'
         f"{files_line}"
-        f"<b>📥 {del_lbl}:</b> <i>{del_val}</i>\n\n"
+        f'<b><emoji id="5776182936638329359">📥</emoji> {del_lbl}:</b> <i>{del_val}</i>\n\n'
     )
 
     if desc and desc.lower() != "none":
-
         # Telegram photo caption hard limit: 1024 chars.
-
         # Use a short preview in the blockquote title, full text inside (expandable hides overflow).
-
         MAX_DESC = 700  # leave room for header_txt
-
         desc_preview = desc[:120].rstrip() + ("…" if len(desc) > 120 else "")
-
         desc_full = desc if len(desc) <= MAX_DESC else desc[:MAX_DESC].rstrip() + "…"
-
         header_txt += (
-
             f"<b>{desc_lbl}</b>\n"
-
             f"<blockquote expandable>"
-
             f"{to_mathbold(desc_full)}"
-
             f"</blockquote>\n"
-
         )
 
     txt = header_txt
 
-
-
     # Safety: if total text still exceeds 1020 chars, strip from description end
-
     MAX_CAPTION = 1020
-
     if len(txt) > MAX_CAPTION and image:
-
         # Rebuild with a shorter desc to guarantee image fits
-
         overflow = len(txt) - MAX_CAPTION
-
         # Trim desc_full further
-
         safe_desc = desc_full[:max(60, len(desc_full) - overflow - 10)].rstrip() + "…"
-
         txt = header_txt.replace(to_mathbold(desc_full), to_mathbold(safe_desc))
-
         
-
     demo_btn = "डेमो फ़ाइलें देखें" if lang == "hi" else "View Demo Files"
     kb = [
-        [InlineKeyboardButton(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}")],
+        [_ikb(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}", icon_custom_emoji_id="6273749318717412886")],
         [InlineKeyboardButton(demo_btn, callback_data=f"mb#demo#{str(story['_id'])}")],
         [InlineKeyboardButton(back_btn, callback_data="mb#return_main")]
     ]
@@ -2180,7 +2121,7 @@ async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
         missing_title = "• <b>𝗠𝗶𝘀𝘀𝗶𝗻𝗴 𝗘𝗽𝗶𝘀𝗼𝗱𝗲𝘀</b>"
         missing_desc = "3-4 episodes may be missing if not publicly released. In such cases, we keep the story price lower from our side. If we find those episodes later, they will be automatically added to your current episodes. If more than 4 episodes are missing, please contact support."
         quality_title = "• <b>𝗤𝘂𝗮𝗹𝗶𝘁𝘆</b>"
-        quality_desc = "𝖲𝗈𝗆𝖾 𝗈𝗅𝖽𝖾𝗋 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝗁𝖺𝗏𝖾 𝗋𝖾𝖽𝗎𝖼𝖾𝖽 𝗊𝗎𝖺𝗅𝗂𝗍𝗒. 𝖶𝖾 𝖼𝖺𝗇𝗇𝗈𝗍 𝗀𝗎𝖺𝗋𝖺𝗇𝗍𝖾𝖾 𝟣𝟢𝟢% 𝗊𝗎𝖺𝗅𝗂𝗍𝗒, 𝖻𝗎𝗍 𝖺𝗅𝗐𝖺𝗒𝗌 𝗉𝗋𝗈𝗏𝗂𝖽𝖾 𝖻𝖾𝗌𝗍 𝗏𝖾𝗋𝗌𝗂𝗈𝗇."
+        quality_desc = "𝖲𝗈𝗆𝖾 𝗈𝗅𝖽𝖾𝗋 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗏 𝗁𝖺𝗏𝖾 𝗋𝖾𝖽𝗎𝖼𝖾𝖽 𝗊𝗎𝖺𝗅𝗂𝗍𝗒. 𝖶𝖾 𝖼𝖺𝗇𝗇𝗈𝗍 𝗀𝗎𝖺𝗋𝖺𝗇𝗍𝖾𝖾 𝟣𝟢𝟢% 𝗊𝗎𝖺𝗅𝗂𝗍𝗒, 𝖻𝗎𝚝 𝖺𝗅𝗐𝖺𝗒𝗌 𝗉𝗋𝗈𝗏𝗂𝖽𝖾 𝖻𝖾𝗌𝗍 𝗏𝖾𝗋𝗌𝗂𝗈𝗇."
         refund_title = "• <b>𝗡𝗼 𝗥𝗲𝗳𝘂𝗻𝗱𝘀</b>"
         refund_desc = "No refunds once payment is confirmed and delivery starts. If your Telegram account gets suspended or deleted, contact the admin with complete details and proof to be added again. If you accidentally pay an extra amount, contact us immediately with proof for a refund (Razorpay platform fees will be deducted)."
         fake_title = "• <b>𝗙𝗮𝗸𝗲 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀</b>"
@@ -2197,7 +2138,7 @@ async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
     s_obj = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)}, {"story_name_hi": 1, "story_name_en": 1})
     s_name = s_obj.get(f'story_name_{lang}', s_obj.get('story_name_en', 'Unknown')) if s_obj else 'Unknown'
 
-    user_details = f"👤 <b>User:</b> {full_name} ({uname_str}) | <b>ID:</b> <code>{user_id}</code>\n📖 <b>Story:</b> {s_name}\n"
+    user_details = f'👤 <b>User:</b> {full_name} ({uname_str}) | <b>ID:</b> <code>{user_id}</code>\n<emoji id="6023962911364357003">📖</emoji> <b>Story:</b> {s_name}\n'
 
     tc_text = (
         f"{tc_title}\n\n"
@@ -2403,178 +2344,92 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     
 
     if lang == 'hi':
-
         title = "⟦ सुरक्षित चेकआउट ⟧"
-
         item_lbl = "आइटम"
-
         price_lbl = "कुल कीमत"
-
         rzp_title = "✅ ऑटोमैटिक पेमेंट (Razorpay)"
-
         rzp_desc = "• <b>फायदे:</b> तत्काल एक्सेस (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> UPI, डेबिट कार्ड, वॉलेट, नेट बैंकिंग।\n• <b>वेरिफिकेशन:</b> पेमेंट सफल होते ही अपने आप।"
-
-        upi_title = "⏳ मैनुअल पेमेंट (Manual UPI)"
-
+        upi_title = '<emoji id="5264895611517300926">🏦</emoji> मैनुअल पेमेंट (Manual UPI)'
         upi_desc = "• <b>प्रोसेस:</b> पे करें -> स्क्रीनशॉट भेजें -> एडमिन चेक करेगा।\n• <b>पेमेंट मोड:</b> केवल UPI ऐप्स (PhonePe, GPay, etc.)।\n• <b>वेरिफिकेशन:</b> इसमें 5-10 मिनट का समय लग सकता है।"
-
-        pay_gateway_btn = "💳 पेमेंट गेटवे से भुगतान (Razorpay) ⚡️"
-
-        pay_upi_btn = "🏦 मैनुअल यूपीआई (Manual UPI)"
-
+        pay_gateway_btn = "पेमेंट गेटवे से भुगतान (Razorpay)"
+        pay_upi_btn = "मैनुअल यूपीआई (Manual UPI)"
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
-
         back_btn = "❮ वापस"
-
     else:
-
         title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
-
         item_lbl = "Item"
-
         price_lbl = "Total Price"
-
         rzp_title = "✅ 𝗔𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆)"
-
         rzp_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> UPI, Debit Card, Wallets, Net Banking.\n• <b>Verification:</b> Automatically upon successful payment."
-
-        upi_title = "⏳ 𝗠𝗮𝗻𝘂𝗮𝗹 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)"
-
+        upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗠𝗮𝗻𝘂𝗮𝗹 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>Process:</b> Pay -> Send Screenshot -> Admin Verify.\n• <b>Modes:</b> Only UPI Apps (PhonePe, GPay, etc.).\n• <b>Verification:</b> Manual (Takes 5-10 minutes)."
-
-        pay_gateway_btn = f"💳 {_sc('PAY VIA RAZORPAY')} ⚡️"
-
-        pay_upi_btn = f"🏦 {_sc('PAY VIA MANUAL UPI')}"
-
+        pay_gateway_btn = _sc('PAY VIA RAZORPAY')
+        pay_upi_btn = _sc('PAY VIA MANUAL UPI')
         unavailable_upi = "UPI Currently Unavailable"
-
         back_btn = f"❮ {_sc('BACK')}"
 
-
-
     # ── UPI availability check ───────────────────────────────────────────────
-
     from .market_seller import _upi_availability
-
     upi_status = _upi_availability(bot_cfg)
-
     upi_ok = upi_status['available']
 
-
-
     # Build UPI block text based on availability
-
     if upi_ok:
-
         upi_block = f"<blockquote expandable=\"true\">{upi_title}\n{upi_desc}</blockquote>"
-
     else:
-
         # Reason-specific unavailability message
-
         if upi_status['reason'] == 'schedule':
-
             until_note = upi_status.get('until', '6:00 AM IST')
-
             if lang == 'hi':
-
                 upi_block = (
-
                     f"<blockquote expandable=\"true\"><b>⏸ मैनुअल UPI अभी उपलब्ध नहीं है।</b>\n\n"
-
                     f"• रात्रि 9 बजे से सुबह 6 बजे के बीच सुरक्षा कारणों से मैनुअल UPI स्वचालित रूप से बंद रहता है।\n"
-
                     f"• UPI फिर से उपलब्ध होगा: <b>{until_note}</b>\n\n"
-
                     f"Razorpay से तत्काल पेमेंट करें — UPI, Debit Card, Net Banking सभी स्वीकार होते हैं।</blockquote>"
-
                 )
-
             else:
-
                 upi_block = (
-
                     f"<blockquote expandable=\"true\"><b>⏸ Manual UPI is currently unavailable.</b>\n\n"
-
                     f"• Manual UPI is automatically paused between 9 PM – 6 AM IST for security.\n"
-
                     f"• UPI will be available again at: <b>{until_note}</b>\n\n"
-
                     f"Use Razorpay for instant payment — accepts UPI, Debit Card &amp; Net Banking.</blockquote>"
-
                 )
-
         else:  # manual off by admin
-
             if lang == 'hi':
-
                 upi_block = (
-
                     f"<blockquote expandable=\"true\"><b>⏸ मैनुअल UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
-
                     f"• एडमिन ने फिलहाल मैनुअल UPI बंद किया है।\n"
-
                     f"• Razorpay से पेमेंट करें — UPI, Debit Card, Net Banking स्वीकार।</blockquote>"
-
                 )
-
             else:
-
                 upi_block = (
-
                     f"<blockquote expandable=\"true\"><b>⏸ Manual UPI is temporarily unavailable.</b>\n\n"
-
                     f"• The admin has disabled Manual UPI for now.\n"
-
                     f"• Please use Razorpay to complete your payment — accepts UPI, Debit Card &amp; Net Banking.</blockquote>"
-
                 )
-
-
 
     txt = (
-
         f"<b>{title}</b>\n\n"
-
         f"<b>{item_lbl} :</b> <code>{name}</code>\n"
-
         f"<b>{price_lbl} :</b> {p_str}\n\n"
-
         f"<blockquote expandable=\"true\">{rzp_title}\n{rzp_desc}</blockquote>\n"
-
         f"{upi_block}"
-
     )
 
-
-
     # Determine which payment methods are enabled for this specific story
-
     story_methods = story.get("payment_methods", ["upi", "razorpay"])
-
     show_razorpay = "razorpay" in story_methods
-
     show_upi = "upi" in story_methods
 
-
-
     kb = []
-
     # Razorpay row - only if enabled for this story
-
     if show_razorpay:
-
-        kb.append([InlineKeyboardButton(pay_gateway_btn, callback_data=f"mb#pay#razorpay#{str(story['_id'])}")])
-
+        kb.append([_ikb(pay_gateway_btn, callback_data=f"mb#pay#razorpay#{str(story['_id'])}", icon_custom_emoji_id="6030410254276106984")])
     
-
     # UPI row - only if enabled for this story
-
     if show_upi:
-
         if upi_ok:
-
-            kb.append([InlineKeyboardButton(pay_upi_btn, callback_data=f"mb#pay#upi#{str(story['_id'])}")])
+            kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay#upi#{str(story['_id'])}", icon_custom_emoji_id="5264895611517300926")])
 
         else:
 
@@ -2644,13 +2499,13 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         item_lbl = "आइटम"
         price_lbl = "कुल कीमत"
         
-        upi_title = "🏦 डायरेक्ट UPI ट्रांसफर (Direct UPI)"
+        upi_title = '<emoji id="5264895611517300926">🏦</emoji> डायरेक्ट UPI ट्रांसफर (Direct UPI)'
         upi_desc = "• <b>प्रोसेस:</b> अपने UPI ऐप से भुगतान करें → 12-अंकों का UTR दर्ज करें → तत्काल सत्यापन।\n• <b>पेमेंट मोड:</b> PhonePe, GPay, Paytm, BHIM, आदि।\n• <b>वेरिफिकेशन:</b> स्वचालित वेरिफिकेशन (1-2 मिनट में)।"
         
         crypto_title = "₿ क्रिप्टो से भुगतान (Pay with Crypto)"
         crypto_desc = "• <b>फायदे:</b> स्वचालित वेरिफिकेशन (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> BTC, USDT, ETH, LTC, Doge & 300+ अन्य।\n• <b>वेरिफिकेशन:</b> भुगतान सफल होते ही तत्काल डिलीवरी।"
         
-        pay_upi_btn = "Pay Via UPI [ QR ]"
+        pay_upi_btn = "Pay Via UPI"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
@@ -2659,13 +2514,13 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         item_lbl = "Item"
         price_lbl = "Total Price"
         
-        upi_title = "🏦 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)"
+        upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>Process:</b> Pay directly using any UPI App → Enter 12-digit UTR → Auto Verify.\n• <b>Modes:</b> PhonePe, GPay, Paytm, BHIM, etc.\n• <b>Verification:</b> Automatic verification (Takes 1-2 mins)."
         
         crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
         
-        pay_upi_btn = "Pay Via UPI [ QR ]"
+        pay_upi_btn = "Pay Via UPI"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "UPI Currently Unavailable"
         back_btn = f"❮ {_sc('BACK')}"
@@ -2727,7 +2582,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     kb = []
     if show_upi:
         if upi_ok:
-            kb.append([InlineKeyboardButton(pay_upi_btn, callback_data=f"mb#pay2#upi#{str(story['_id'])}")])
+            kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay2#upi#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
         else:
             kb.append([InlineKeyboardButton(f"⏸ {unavailable_upi}", callback_data="mb#noop")])
 
@@ -3945,9 +3800,10 @@ async def _process_text(client, message):
                     err_txt,
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton(
-                            "🔄 दूसरा UTR भेजें" if lang == 'hi' else "🔄 Send a Different UTR",
-                            callback_data=f"mb#pay2#upi#{pending_s_id_utr}"
+                        [_ikb(
+                            "दूसरा UTR भेजें" if lang == 'hi' else "Send a Different UTR",
+                            callback_data=f"mb#pay2#upi#{pending_s_id_utr}",
+                            icon_custom_emoji_id="5807492110059838726"
                         )]
                     ])
                 )
@@ -4053,7 +3909,7 @@ async def _process_text(client, message):
                 return await message.reply_text(
                     f"❌ <b>Verification error!</b>\n<i>{ex}</i>",
                     parse_mode=enums.ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"mb#pay2#upi#{pending_s_id_utr}")]])
+                    reply_markup=InlineKeyboardMarkup([[_ikb("Retry", callback_data=f"mb#pay2#upi#{pending_s_id_utr}", icon_custom_emoji_id="5807492110059838726")]])
                 )
 
             await ver_msg.delete()
@@ -4065,7 +3921,7 @@ async def _process_text(client, message):
                 return await message.reply_text(
                     f"❌ <b>Verification failed!</b>\n<i>{err}</i>",
                     parse_mode=enums.ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🔄 {_retry_lbl}", callback_data=f"mb#pay2#upi#{pending_s_id_utr}")]])
+                    reply_markup=InlineKeyboardMarkup([[_ikb(_retry_lbl, callback_data=f"mb#pay2#upi#{pending_s_id_utr}", icon_custom_emoji_id="5807492110059838726")]])
                 )
 
             if not imap_result["verified"]:
@@ -4104,7 +3960,7 @@ async def _process_text(client, message):
                     err_text,
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton(f"🔄 {_retry_btn}", callback_data=f"mb#pay2#upi#{pending_s_id_utr}")],
+                        [_ikb(_retry_btn, callback_data=f"mb#pay2#upi#{pending_s_id_utr}", icon_custom_emoji_id="5807492110059838726")],
                         [InlineKeyboardButton(_back_btn, callback_data=f"mb#pay_back#{pending_s_id_utr}")]
                     ])
                 )
@@ -6386,84 +6242,45 @@ async def _process_callback(client, query):
 
             
 
-            lbl_pay = "सुरक्षित भुगतान करें" if lang == 'hi' else f"💳 Pay securely via {method.title()}"
-
-            lbl_ver = "भुगतान सत्यापित करें" if lang == 'hi' else "🔄 Verify Payment"
-
+            lbl_pay = "सुरक्षित भुगतान करें" if lang == 'hi' else f"Pay securely via {method.title()}"
+            lbl_ver = "भुगतान सत्यापित करें" if lang == 'hi' else "Verify Payment"
             lbl_bck = "‹ वापस" if lang == 'hi' else "‹ Back"
 
-
-
             kb = [
-
-                [InlineKeyboardButton(lbl_pay, url=url)],
-
-                [InlineKeyboardButton(lbl_ver, callback_data=f"mb#{method}_check#{s_id}")],
-
+                [_ikb(lbl_pay, url=url, icon_custom_emoji_id="6030410254276106984")],
+                [_ikb(lbl_ver, callback_data=f"mb#{method}_check#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                 [InlineKeyboardButton(lbl_bck, callback_data="mb#return_main")]
-
             ]
 
-            
-
             if lang == "hi":
-
                 check_txt = (
-
-                    f"💸 <b>सुरक्षित चेकआउट</b>\n\n"
-
-                    f"<b>📖 कहानी:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
-
-                    f"<b>💰 मूल्य:</b> <code>₹{price}</code>\n\n"
-
+                    f'<emoji id="5472030678633684592">💸</emoji> <b>सुरक्षित चेकआउट</b>\n\n'
+                    f'<b><emoji id="6023962911364357003">📖</emoji> कहानी:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
+                    f'<b><emoji id="5283232570660634549">💰</emoji> मूल्य:</b> <code>₹{price}</code>\n\n'
                     f"<blockquote expandable>"
-
-                    f"<b>🛡 {method.title()} से भुगतान कैसे करें?</b>\n\n"
-
+                    f'<b><emoji id="6019328362479097179">🛡</emoji> {method.title()} से भुगतान कैसे करें?</b>\n\n'
                     f"1. नीचे दिए गए '{lbl_pay}' बटन पर क्लिक करें।\n"
-
                     f"2. आपको सुरक्षित पेमेंट गेटवे पर भेजा जाएगा।\n"
-
                     f"3. UPI या किसी भी माध्यम से भुगतान पूरा करें।\n"
-
                     f"4. भुगतान सफल होने के बाद वापस आकर '{lbl_ver}' पर क्लिक करें।\n"
-
                     f"5. बॉट तुरंत सत्यापित करके फाइल भेज देगा।"
-
                     f"</blockquote>\n\n"
-
-                    f"<i>⚡ त्वरित सत्यापन और फ़ाइल वितरण।</i>"
-
+                    f'<i><emoji id="6023761060786346622">⚡</emoji> त्वरित सत्यापन और फ़ाइल वितरण।</i>'
                 )
-
             else:
-
                 check_txt = (
-
-                    f"💸 <b>SECURE CHECKOUT</b>\n\n"
-
-                    f"<b>📖 Story Name:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
-
-                    f"<b>💰 Total Price:</b> <code>₹{price}</code>\n\n"
-
+                    f'<emoji id="5472030678633684592">💸</emoji> <b>SECURE CHECKOUT</b>\n\n'
+                    f'<b><emoji id="6023962911364357003">📖</emoji> Story Name:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
+                    f'<b><emoji id="5283232570660634549">💰</emoji> Total Price:</b> <code>₹{price}</code>\n\n'
                     f"<blockquote expandable>"
-
-                    f"<b>🛡 How to pay via {method.title()}:</b>\n\n"
-
+                    f'<b><emoji id="6019328362479097179">🛡</emoji> How to pay via {method.title()}:</b>\n\n'
                     f"1. Click the '{lbl_pay}' button below.\n"
-
                     f"2. You will be redirected to the secure payment gateway.\n"
-
                     f"3. Complete your payment using UPI, Card, or Netbanking.\n"
-
                     f"4. Come back to this chat and click '{lbl_ver}'.\n"
-
                     f"5. The bot will automatically verify and provide access instantly."
-
                     f"</blockquote>\n\n"
-
-                    f"<i>⚡ Instant automated verification & delivery.</i>"
-
+                    f'<i><emoji id="6023761060786346622">⚡</emoji> Instant automated verification & delivery.</i>'
                 )
 
                 
@@ -6868,8 +6685,8 @@ async def _process_callback(client, query):
                     f"<b>राशि:</b> <code>₹{s_price}</code></blockquote>\n\n"
                     f"<b>𝗦𝘁𝗲𝗽 𝟮: पेमेंट वेरिफाई</b>\n\n"
                     f"<blockquote>"
-                    f"💳 भुगतान के बाद, अपनी Payment App (Paytm, PhonePe, GPay) के <b>Transaction Page</b> से <b>12 अंकों का UPI Reference Number / UTR Number</b> कॉपी करके यहाँ इस चैट में <b>भेजें</b>।\n\n"
-                    f"⚡ UTR भेजते ही बोट तुरंत वेरिफाई करेगा — कोई बटन दबाने की जरूरत नहीं।"
+                    f'<emoji id="6030410254276106984">💳</emoji> भुगतान के बाद, अपनी Payment App (Paytm, PhonePe, GPay) के <b>Transaction Page</b> से <b>12 अंकों का UPI Reference Number / UTR Number</b> कॉपी करके यहाँ इस चैट में <b>भेजें</b>।\n\n'
+                    f'<emoji id="6023761060786346622">⚡</emoji> UTR भेजते ही बोट तुरंत वेरिफाई करेगा — कोई बटन दबाने की जरूरत नहीं।'
                     f"</blockquote>\n"
                     f"────────────────────"
                 )
@@ -6886,8 +6703,8 @@ async def _process_callback(client, query):
                     f"<b>Amount:</b> <code>₹{s_price}</code></blockquote>\n\n"
                     f"<b>𝗦𝘁𝗲𝗽 𝟮: Verify Payment</b>\n\n"
                     f"<blockquote>"
-                    f"💳 After payment, open your Payment App (Paytm, PhonePe, GPay) → go to <b>Transaction Page</b> → copy the <b>12-digit UPI Reference Number / UTR Number</b> and <b>send it here in this chat.</b>\n\n"
-                    f"⚡ As soon as you send the UTR, the bot will <b>instantly verify</b> your payment — no button needed."
+                    f'<emoji id="6030410254276106984">💳</emoji> After payment, open your Payment App (Paytm, PhonePe, GPay) → go to <b>Transaction Page</b> → copy the <b>12-digit UPI Reference Number / UTR Number</b> and <b>send it here in this chat.</b>\n\n'
+                    f'<emoji id="6023761060786346622">⚡</emoji> As soon as you send the UTR, the bot will <b>instantly verify</b> your payment — no button needed.'
                     f"</blockquote>\n"
                     f"────────────────────"
                 )
@@ -6973,44 +6790,44 @@ async def _process_callback(client, query):
                 usd_amount = 0.50
 
             lbl_pay = "सुरक्षित क्रिप्टो भुगतान करें" if lang == 'hi' else f"₿ Pay securely via Crypto"
-            lbl_ver = "क्रिप्टो भुगतान सत्यापित करें" if lang == 'hi' else "🔄 Verify Crypto Payment"
+            lbl_ver = "क्रिप्टो भुगतान सत्यापित करें" if lang == 'hi' else "Verify Crypto Payment"
             lbl_bck = "‹ वापस" if lang == 'hi' else "‹ Back"
 
             kb = [
                 [InlineKeyboardButton(lbl_pay, url=url)],
-                [InlineKeyboardButton(lbl_ver, callback_data=f"mb#crypto2_check#{s_id}")],
+                [_ikb(lbl_ver, callback_data=f"mb#crypto2_check#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                 [InlineKeyboardButton(lbl_bck, callback_data=f"mb#pay_back#{s_id}")]
             ]
 
             if lang == "hi":
                 check_txt = (
-                    f"💸 <b>सुरक्षित चेकआउट - 2</b>\n\n"
-                    f"<b>📖 कहानी:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
-                    f"<b>💰 कुल कीमत:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n"
+                    f'<emoji id="5472030678633684592">💸</emoji> <b>सुरक्षित चेकआउट - 2</b>\n\n'
+                    f'<b><emoji id="6023962911364357003">📖</emoji> कहानी:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
+                    f'<b><emoji id="5283232570660634549">💰</emoji> कुल कीमत:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
                     f"<blockquote expandable>"
-                    f"<b>🛡 क्रिप्टो से भुगतान कैसे करें?</b>\n\n"
+                    f'<b><emoji id="6019328362479097179">🛡</emoji> क्रिप्टो से भुगतान कैसे करें?</b>\n\n'
                     f"1. नीचे दिए गए '{lbl_pay}' बटन पर क्लिक करें।\n"
                     f"2. आपको OxaPay के सुरक्षित गेटवे पर भेजा जाएगा।\n"
                     f"3. समर्थित कॉइन (USDT, BTC, LTC आदि) चुनें और भुगतान करें।\n"
                     f"4. भुगतान पूरा होने के बाद वापस आकर '{lbl_ver}' पर क्लिक करें।\n"
                     f"5. बॉट तुरंत सत्यापित करके आपकी फ़ाइल भेज देगा।"
                     f"</blockquote>\n\n"
-                    f"<i>⚡ 24/7 स्वचालित सत्यापन और तत्काल डिलीवरी।</i>"
+                    f'<i><emoji id="6023761060786346622">⚡</emoji> 24/7 स्वचालित सत्यापन और तत्काल डिलीवरी।</i>'
                 )
             else:
                 check_txt = (
-                    f"💸 <b>SECURE CHECKOUT - 2</b>\n\n"
-                    f"<b>📖 Story Name:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
-                    f"<b>💰 Total Price:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n"
+                    f'<emoji id="5472030678633684592">💸</emoji> <b>SECURE CHECKOUT - 2</b>\n\n'
+                    f'<b><emoji id="6023962911364357003">📖</emoji> Story Name:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
+                    f'<b><emoji id="5283232570660634549">💰</emoji> Total Price:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
                     f"<blockquote expandable>"
-                    f"<b>🛡 How to pay via Crypto (OxaPay):</b>\n\n"
+                    f'<b><emoji id="6019328362479097179">🛡</emoji> How to pay via Crypto (OxaPay):</b>\n\n'
                     f"1. Click the '{lbl_pay}' button below.\n"
                     f"2. Select your preferred coin (USDT, BTC, LTC, etc.) on OxaPay.\n"
                     f"3. Send the exact amount shown to the payment address.\n"
                     f"4. Once transaction is complete, return here and click '{lbl_ver}'.\n"
                     f"5. The bot will automatically verify and grant instant access."
                     f"</blockquote>\n\n"
-                    f"<i>⚡ 24/7 automated verification & instant delivery.</i>"
+                    f'<i><emoji id="6023761060786346622">⚡</emoji> 24/7 automated verification & instant delivery.</i>'
                 )
             
             await query.message.edit_text(check_txt, reply_markup=InlineKeyboardMarkup(kb))
@@ -7170,7 +6987,7 @@ async def _process_callback(client, query):
                     user_id,
                     f"❌ <b>Verification error!</b>\nFailed to connect to verification server.\n<i>Detail: {ex}</i>",
                     parse_mode=enums.ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"mb#verify2_utr#{s_id}")]])
+                    reply_markup=InlineKeyboardMarkup([[_ikb("Retry", callback_data=f"mb#verify2_utr#{s_id}", icon_custom_emoji_id="5807492110059838726")]])
                 )
 
             await ver_msg.delete()
@@ -7182,7 +6999,7 @@ async def _process_callback(client, query):
                     user_id,
                     f"❌ <b>Verification failed!</b>\nCould not connect to mail server.\n<i>{err}</i>",
                     parse_mode=enums.ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"mb#verify2_utr#{s_id}")]])
+                    reply_markup=InlineKeyboardMarkup([[_ikb("Retry", callback_data=f"mb#verify2_utr#{s_id}", icon_custom_emoji_id="5807492110059838726")]])
                 )
 
             if not imap_result["verified"]:
@@ -7220,7 +7037,7 @@ async def _process_callback(client, query):
                     err_text,
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 पुनः प्रयास करें" if lang == 'hi' else "🔄 Retry", callback_data=f"mb#verify2_utr#{s_id}")],
+                        [_ikb("पुनः प्रयास करें" if lang == 'hi' else "Retry", callback_data=f"mb#verify2_utr#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                         [InlineKeyboardButton("« वापस" if lang == 'hi' else "« Back", callback_data=f"mb#pay_back#{s_id}")]
                     ])
                 )
@@ -7420,7 +7237,7 @@ async def _process_callback(client, query):
             await m.edit_text(
                 savage_msg,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Verify Again", callback_data=f"mb#crypto2_check#{s_id}")],
+                    [_ikb("Verify Again", callback_data=f"mb#crypto2_check#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                     [InlineKeyboardButton("« Back", callback_data=f"mb#show_tc#{s_id}")]
                 ])
             )
@@ -7637,11 +7454,8 @@ async def _process_callback(client, query):
             )
 
             await m.edit_text(
-
                 savage_msg,
-
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Verify Again", callback_data=f"mb#{method}_check#{s_id}")], [InlineKeyboardButton("« Back", callback_data=f"mb#show_tc#{s_id}")]])
-
+                reply_markup=InlineKeyboardMarkup([[_ikb("Verify Again", callback_data=f"mb#{method}_check#{s_id}", icon_custom_emoji_id="5807492110059838726")], [InlineKeyboardButton("« Back", callback_data=f"mb#show_tc#{s_id}")]])
             )
 
 
