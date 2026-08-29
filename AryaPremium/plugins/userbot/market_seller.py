@@ -9212,6 +9212,22 @@ async def _process_chat_member(client, update):
 
 
 
+def _resolve_story_thumb_url(s: dict) -> str | None:
+    """
+    Resolves the best public HTTP URL for story thumbnail in inline search.
+    Prioritizes HTTP CDN/Catbox URLs over Telegram file_ids.
+    """
+    for k in ("poster_url", "banner_url", "image_url", "cover_url", "cover", "thumbnail", "image", "banner"):
+        val = s.get(k)
+        if val and isinstance(val, str):
+            val = val.strip()
+            if val.startswith("http://") or val.startswith("https://"):
+                return val
+            if (val.startswith("/") or val.startswith("uploads/") or val.startswith("static/") or (val.endswith((".jpg", ".jpeg", ".png", ".webp")) and not val.startswith("AgAC") and len(val) < 80 and " " not in val)):
+                return "https://aryapremium.store/" + val.lstrip("/")
+    return None
+
+
 async def _process_inline_query(client, inline_query):
     """
     Handles native Telegram Inline Query Search for stories.
@@ -9272,7 +9288,7 @@ async def _process_inline_query(client, inline_query):
             episodes = s.get('episodes', 'Unknown')
             price = int(s.get('price', 0))
             genre = s.get('genre', 'Story')
-            thumb = s.get('image') or s.get('poster_url') or s.get('image_url')
+            thumb = _resolve_story_thumb_url(s)
             
             desc_text = f"{platform} • {episodes} eps • ₹{price}"
 
@@ -9303,7 +9319,7 @@ async def _process_inline_query(client, inline_query):
 
             article_kwargs = {
                 "id": f"{s_id}_{idx}",
-                "title": f"{s_name} [ ₹{price} ]",
+                "title": s_name,
                 "description": desc_text,
                 "input_message_content": InputTextMessageContent(
                     story_caption,
@@ -9311,8 +9327,10 @@ async def _process_inline_query(client, inline_query):
                 ),
                 "reply_markup": InlineKeyboardMarkup(kb)
             }
-            if thumb and isinstance(thumb, str) and (thumb.startswith("http://") or thumb.startswith("https://")):
+            if thumb:
                 article_kwargs["thumb_url"] = thumb
+                article_kwargs["thumb_width"] = 120
+                article_kwargs["thumb_height"] = 120
 
             results.append(InlineQueryResultArticle(**article_kwargs))
 
