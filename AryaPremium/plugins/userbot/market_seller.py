@@ -1470,6 +1470,66 @@ async def _send_or_edit_seller_bot_api(
     except Exception as e:
         logger.debug(f"Seller Bot API {method} exception: {e}")
 
+def _kb_btn(text: str, icon_custom_emoji_id: str = None) -> dict:
+    d = {"text": text}
+    if icon_custom_emoji_id:
+        d["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
+    return d
+
+
+async def _send_reply_keyboard_bot_api(
+    client,
+    chat_id: int,
+    text: str,
+    keyboard: list,
+    resize_keyboard: bool = True
+) -> bool:
+    import aiohttp
+    import json
+    import re
+
+    bot_token = await _get_seller_bot_token(client)
+    if not bot_token:
+        return False
+
+    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+
+    api_keyboard = []
+    for row in keyboard:
+        api_row = []
+        for btn in row:
+            if isinstance(btn, dict):
+                api_row.append(btn)
+            elif isinstance(btn, str):
+                api_row.append({"text": btn})
+            elif hasattr(btn, "text"):
+                d = {"text": btn.text}
+                if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
+                    d["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
+                api_row.append(d)
+        api_keyboard.append(api_row)
+
+    payload = {
+        "chat_id": int(chat_id),
+        "text": api_text,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "keyboard": api_keyboard,
+            "resize_keyboard": resize_keyboard
+        }
+    }
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=3.0)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return True
+                logger.debug(f"Seller Bot API sendMessage (ReplyKeyboard) returned: {data}")
+    except Exception as e:
+        logger.debug(f"Seller Bot API sendMessage (ReplyKeyboard) exception: {e}")
+
     return False
 
 
@@ -4133,10 +4193,9 @@ async def _process_text(client, message):
                         f"विवरण: <code>{success_err}</code>\n\n"
                         "<i>कृपया UTR के साथ सहायता (Support) से संपर्क करें।</i>"
                     )
+                await message.reply_text(err_msg, parse_mode=enums.ParseMode.HTML)
                 return
         return
-
-
 
     # Back to main menu
     if "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" in txt or "BACK TO MAIN MENU" in txt:
@@ -4149,19 +4208,15 @@ async def _process_text(client, message):
         return
 
     # -- Marketplace NEXT/PREV pagination handler --
-
     _nav_next = _sc("NEXT") + " ❭"
-
     _nav_prev = "❬ " + _sc("PREV")
-
     _nav_next_hi = "अगला ❭"
-
     _nav_prev_hi = "❬ पिछला"
 
     _view_all = "📑 " + _sc("VIEW ALL")
     _view_all_hi = "📑 सभी देखें"
 
-    if txt in (_view_all, _view_all_hi):
+    if txt in (_view_all, _view_all_hi, "VIEW ALL", "सभी देखें", _sc("VIEW ALL"), "📑 " + _sc("VIEW ALL"), "📑 सभी देखें"):
         plat = user.get("_mkt_plat")
         if plat:
             q_find = {"bot_id": client.me.id}
@@ -4172,15 +4227,23 @@ async def _process_text(client, message):
             for idx, s in enumerate(all_stories, start=1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = " ɴᴇᴡ" if idx <= 5 else ""
-                kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
-            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                if idx <= 5:
+                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                else:
+                    kb.append([_kb_btn(btn_txt)])
+            kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
             title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
-            return await message.reply_text(
-                f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>',
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-                parse_mode=enums.ParseMode.HTML
-            )
+            msg_text = f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>'
+            ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                await message.reply_text(
+                    msg_text,
+                    reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                    parse_mode=enums.ParseMode.HTML
+                )
+            return
         return
 
     if txt in (_nav_next, _nav_prev, _nav_next_hi, _nav_prev_hi):
@@ -4209,25 +4272,38 @@ async def _process_text(client, message):
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = " ɴᴇᴡ" if idx <= 5 else ""
-                kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                if idx <= 5:
+                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                else:
+                    kb.append([_kb_btn(btn_txt)])
 
             nav_row = []
-            if new_page > 0: nav_row.append("❬ " + (_sc("PREV") if lang == 'en' else "पिछला"))
-            nav_row.append("📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें"))
-            if new_page < total_pg - 1: nav_row.append(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭")
+            if new_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
+            view_all_text = "VIEW ALL" if lang == 'en' else "सभी देखें"
+            nav_row.append(_kb_btn(view_all_text, icon_custom_emoji_id="5764638872000533034"))
+            if new_page < total_pg - 1: nav_row.append(_kb_btn(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭"))
             if nav_row: kb.append(nav_row)
-            kb.append(["🔍 " + ("SEARCH" if lang == 'en' else "खोजें")])
-            kb.append([T[lang]["cant_find_btn"]])
-            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
+            
+            search_text = "SEARCH" if lang == 'en' else "खोजें"
+            kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+            kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+            kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
 
             title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
-            return await message.reply_text(
+            msg_text = (
                 f"<b>⟦ {title} — {to_mathbold(plat)} ⟧</b>\n"
-                f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>",
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-                parse_mode=enums.ParseMode.HTML
+                f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>"
             )
+            ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                await message.reply_text(
+                    msg_text,
+                    reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                    parse_mode=enums.ParseMode.HTML
+                )
+            return
         return
 
     # Check if it's a story selection e.g. "1. STORY NAME [ ₹ 49 ]"
@@ -4301,59 +4377,54 @@ async def _process_text(client, message):
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
-            badge = " ɴᴇᴡ" if idx <= 5 else ""
-            kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
+            btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
+            if idx <= 5:
+                kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+            else:
+                kb.append([_kb_btn(btn_txt)])
 
         nav_row = []
-        if s_page > 0: nav_row.append("❬ " + (_sc("PREV") if lang == 'en' else "पिछला"))
-        nav_row.append("📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें"))
-        if s_page < total_pages_s - 1: nav_row.append(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭")
+        if s_page > 0: nav_row.append(_kb_btn("❬ " + (_sc("PREV") if lang == 'en' else "पिछला")))
+        view_all_text = "VIEW ALL" if lang == 'en' else "सभी देखें"
+        nav_row.append(_kb_btn(view_all_text, icon_custom_emoji_id="5764638872000533034"))
+        if s_page < total_pages_s - 1: nav_row.append(_kb_btn(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭"))
         if nav_row: kb.append(nav_row)
-        kb.append(["🔍 " + ("SEARCH" if lang == 'en' else "खोजें")])
-        kb.append([T[lang]["cant_find_btn"]])
-        kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
-
-
+        
+        search_text = "SEARCH" if lang == 'en' else "खोजें"
+        kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+        kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+        kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
 
         t = T[lang]
-
         title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
-
         desc = (
-
             f"All available stories and their prices are shown in the menu below. "
-
             f"Please tap or click on any story name from the keyboard menu below to view details and purchase it:"
-
         ) if lang == 'en' else (
-
             f"सभी उपलब्ध कहानियाँ और उनकी कीमतें नीचे मेनू में दिखाई गई हैं। "
-
             f"विवरण देखने और इसे खरीदने के लिए कृपया नीचे दिए गए कीबोर्ड मेनू से किसी भी कहानी के नाम पर टैप या क्लिक करें:"
-
         )
 
-        await message.reply_text(
-
+        msg_text = (
             f"<b>⟦ {title} — {to_mathbold(txt)} ⟧</b>\n\n"
-
             f"<blockquote expandable>"
-
             f"<i>{desc}</i>\n"
-
-            f"</blockquote>",
-
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
+            f"</blockquote>"
         )
-
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
         
 
     # ── REQUEST STORY trigger ──
-
-    if txt == T[lang]["cant_find_btn"]:
+    if txt in (T[lang]["cant_find_btn"], "CAN'T FIND? REQUEST NOW!", "कहानी नहीं मिल रही? अनुरोध करें!", "🔍 CAN'T FIND? REQUEST NOW!", "🔍 कहानी नहीं मिल रही? अनुरोध करें!"):
 
         try:
 
