@@ -933,7 +933,7 @@ Select your language:""",
         "req_step2": "Got it. Send me any sample files, links, or screenshots related to this story (to help us locate it). If you don’t have any, type /skip.",
         "req_done": "✅ <b>Request Submitted!</b>\nWe have received your request. You can track its status using the 'My Requests' button in your Profile.",
         "cant_find_btn": "🔍 CAN'T FIND? REQUEST NOW!",
-        "req_search_prompt": """<b>🔍 SEARCH / REQUEST STORY</b>
+        "req_search_prompt": """<b><emoji id="6025893082552081088">🔍</emoji> SEARCH / REQUEST STORY</b>
 
 Type the <b>Story Name</b> you want to search or request:""",
         "req_cancel": "Process Cancelled.",
@@ -999,9 +999,7 @@ Our team will search for this story and update you soon. Check status in <b>Prof
 
         "cant_find_btn": "🔍 कहानी नहीं मिल रही? अनुरोध करें!",
 
-        "req_search_prompt": """<b>🔍 स्टोरी खोजें / अनुरोध करें</b>
-
-
+        "req_search_prompt": """<b><emoji id="6025893082552081088">🔍</emoji> स्टोरी खोजें / अनुरोध करें</b>
 
 उस <b>कहानी का नाम</b> लिखें जिसे आप खोजना या अनुरोध करना चाहते हैं:""",
 
@@ -4161,54 +4159,29 @@ async def _process_text(client, message):
     _nav_prev_hi = "❬ पिछला"
 
     _view_all = "📑 " + _sc("VIEW ALL")
-
     _view_all_hi = "📑 सभी देखें"
 
-    
-
     if txt in (_view_all, _view_all_hi):
-
         plat = user.get("_mkt_plat")
-
         if plat:
-
             q_find = {"bot_id": client.me.id}
-
             if plat != "Other": q_find["platform"] = plat
-
             all_stories = await db.db.premium_stories.find(q_find).sort("_id", -1).to_list(length=None)
-
             kb = []
-
             MNL = 22
-
             for idx, s in enumerate(all_stories, start=1):
-
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
-
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-
-                badge = " ɴᴇᴡ" if idx <= 5 else ""
-
+                badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
                 kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
-
             kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
-
             title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
-
             return await message.reply_text(
-
-                f"<b>⟦ {title} — {to_mathbold(plat)} ⟧</b>",
-
+                f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>',
                 reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-
                 parse_mode=enums.ParseMode.HTML
-
             )
-
         return
-
-
 
     if txt in (_nav_next, _nav_prev, _nav_next_hi, _nav_prev_hi):
         plat = user.get("_mkt_plat")
@@ -4236,7 +4209,7 @@ async def _process_text(client, message):
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
                 sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                badge = " ɴᴇᴡ" if idx <= 5 else ""
+                badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
                 kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]{badge}"])
 
             nav_row = []
@@ -4258,7 +4231,7 @@ async def _process_text(client, message):
         return
 
     # Check if it's a story selection e.g. "1. STORY NAME [ ₹ 49 ]"
-    if " [ ₹ " in txt and (txt.endswith(" ]") or txt.endswith(" ɴᴇᴡ")):
+    if " [ ₹ " in txt:
         parts = txt.split(". ", 1)
         raw = parts[1] if len(parts) > 1 else txt
         sName = raw.split(" [ ₹ ")[0].strip()
@@ -4328,7 +4301,7 @@ async def _process_text(client, message):
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
-            badge = " ɴᴇᴡ" if idx <= 5 else ""
+            badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
             kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
 
         nav_row = []
@@ -4541,79 +4514,47 @@ async def _process_text(client, message):
     # ── SEARCH trigger ──
 
     if txt == "🔍 " + ("SEARCH" if lang=='en' else "खोजें"):
-
         await message.reply_text(
-
-            f"<b>🔍 SEARCH</b>\n\n<i>Type a few words of the story name to search:</i>",
-
-            reply_markup=ReplyKeyboardMarkup([["« " + "CANCEL"]], resize_keyboard=True)
-
+            f'<b><emoji id="6025893082552081088">🔍</emoji> SEARCH</b>\n\n<i>Type a few words of the story name to search:</i>',
+            reply_markup=ReplyKeyboardMarkup([["« " + "CANCEL"]], resize_keyboard=True),
+            parse_mode=enums.ParseMode.HTML
         )
-
         await db.update_user(user_id, {"state": "searching"})
-
         return
-
-
 
     # ── CANCEL search ──
-
     if txt == "« " + "CANCEL" or (user.get("state") == "searching" and txt.startswith("«")):
-
         await db.update_user(user_id, {"state": None})
-
         m = await message.reply_text("<i>❌ Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-
         await asyncio.sleep(1.5)
-
         try: await m.delete()
-
         except: pass
-
         await _send_main_menu(client, user_id, message.from_user, lang)
-
         return
 
-
-
     # ── SEARCH query matching ──
-
     if user.get("state") == "searching":
-
         q = txt.lower().strip()
-
         if not q or len(q) < 2:
-
             return await message.reply_text("<i>Please type at least 2 characters to search.</i>")
 
         all_stories = await db.db.premium_stories.find({"bot_id": client.me.id}).to_list(length=None)
-
         matches = [s for s in all_stories if q in s.get("story_name_en", "").lower() or q in s.get("story_name_hi", "").lower()]
-
         if not matches:
-
             return await message.reply_text(f"<i>No stories matched '<b>{txt}</b>'. Try different keywords.</i>")
 
         kb = []
-
         for idx, s in enumerate(matches, start=1):
-
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
-
-            kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"])
-
+            badge = ' <emoji id="6271473763439612077">🆕</emoji>' if idx <= 5 else ""
+            kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]{badge}"])
         kb.append(["« " + "CANCEL"])
 
         await message.reply_text(
-
-            f"<b>🔍 {_sc('Search Results')} ({len(matches)})</b>\n\n"
-
+            f'<b><emoji id="6025893082552081088">🔍</emoji> {_sc("Search Results")} ({len(matches)})</b>\n\n'
             f"<blockquote expandable>{_sc('Tap on a story name from the keyboard menu below to view its details and purchase options.')}</blockquote>",
-
             reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-
             parse_mode=enums.ParseMode.HTML
-
         )
 
         return
