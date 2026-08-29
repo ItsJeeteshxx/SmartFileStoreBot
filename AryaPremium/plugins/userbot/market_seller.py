@@ -1059,9 +1059,8 @@ def _get_main_menu(lang='en'):
             [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
-             InlineKeyboardButton("सेटिंग्स", callback_data="mb#main_settings")],
-            [InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help"),
-             InlineKeyboardButton("अबाउट", callback_data="mb#about_arya_0")],
+             InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help")],
+            [_ikb("स्टोरी खोजें", callback_data="mb#main_search_story", icon_custom_emoji_id="5258274739041883702")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1076,9 +1075,8 @@ def _get_main_menu(lang='en'):
             [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
-             InlineKeyboardButton(f"{_sc('Settings')}", callback_data="mb#main_settings")],
-            [InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help"),
-             InlineKeyboardButton(f"{_sc('About')}", callback_data="mb#about_arya_0")],
+             InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help")],
+            [_ikb(f"{_sc('Search Story')}", callback_data="mb#main_search_story", icon_custom_emoji_id="5258274739041883702")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -4682,10 +4680,16 @@ async def _process_text(client, message):
         if not q or len(q) < 2:
             return await message.reply_text("<i>Please type at least 2 characters to search.</i>")
 
-        all_stories = await db.db.premium_stories.find({"bot_id": client.me.id}).to_list(length=None)
+        all_stories = await db.db.premium_stories.find({"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}).to_list(length=None)
+        if not all_stories:
+            all_stories = await db.db.premium_stories.find({}).to_list(length=None)
         matches = [s for s in all_stories if q in s.get("story_name_en", "").lower() or q in s.get("story_name_hi", "").lower()]
         if not matches:
             return await message.reply_text(f"<i>No stories matched '<b>{txt}</b>'. Try different keywords.</i>")
+
+        if len(matches) == 1:
+            await db.update_user(user_id, {"state": None})
+            return await _show_story_profile(client, user_id, matches[0], lang)
 
         kb = []
         for idx, s in enumerate(matches, start=1):
@@ -4695,11 +4699,13 @@ async def _process_text(client, message):
                 kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
             else:
                 kb.append([_kb_btn(btn_txt)])
-        kb.append([_kb_btn("« " + "CANCEL")])
+        kb.append([_kb_btn("« " + ("CANCEL" if lang == 'en' else "रद्द करें"))])
 
+        title_res = _sc("Search Results") if lang == 'en' else "खोज परिणाम"
+        tap_info = _sc("Tap on a story name from the keyboard menu below to view its details and purchase options.") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे दिए गए कीबोर्ड मेनू से किसी कहानी पर टैप करें।"
         msg_text = (
-            f'<b><emoji id="6025893082552081088">🔍</emoji> {_sc("Search Results")} ({len(matches)})</b>\n\n'
-            f"<blockquote expandable>{_sc('Tap on a story name from the keyboard menu below to view its details and purchase options.')}</blockquote>"
+            f'<b><emoji id="5258274739041883702">🔍</emoji> {title_res} ({len(matches)})</b>\n\n'
+            f"<blockquote expandable>{tap_info}</blockquote>"
         )
         ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
         if not ok:
@@ -5018,14 +5024,14 @@ async def _process_callback(client, query):
     cmd = data[1]
 
     # Quick early answer for standard instant-transition callbacks to eliminate button loading spinner
-    if cmd in ("main_marketplace", "my_buys", "main_profile", "main_settings", "main_help", "main_back", "return_main", "noop", "show_tc", "mkt_plat", "mkt_all", "mkt_search") or cmd.startswith(("my_buys_page_", "about_arya_", "tc_accept_", "tc_iaadnsa_", "mkt_")):
+    if cmd in ("main_marketplace", "my_buys", "main_profile", "main_settings", "main_help", "main_back", "return_main", "noop", "show_tc", "mkt_plat", "mkt_all", "mkt_search", "main_search_story") or cmd.startswith(("my_buys_page_", "about_arya_", "tc_accept_", "tc_iaadnsa_", "mkt_")):
         try:
             await query.answer()
         except Exception:
             pass
 
     # Clear active text-input states if navigating away
-    if cmd not in ("feedback_start", "mkt_search"):
+    if cmd not in ("feedback_start", "mkt_search", "main_search_story"):
         if user.get("state") in ("feedback_pending", "searching"):
             await db.db.users.update_one({"id": user_id}, {"$unset": {"state": 1}})
 
@@ -5331,11 +5337,15 @@ async def _process_callback(client, query):
 
             req_label = _sc("MY REQUESTS") if lang == 'en' else "मेरे अनुरोध"
             set_label = _sc("Settings") if lang == 'en' else "सेटिंग्स"
+            abt_label = _sc("About") if lang == 'en' else "अबाउट"
             back_label = _sc("BACK") if lang == 'en' else "वापस"
 
             kb = [
-                [_ikb(f"»  {req_label}", callback_data="mb#my_reqs_0", icon_custom_emoji_id="5766915217552315762")],
-                [_ikb(f"»  {set_label}", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908")],
+                [_ikb(req_label, callback_data="mb#my_reqs_0", icon_custom_emoji_id="5766915217552315762")],
+                [
+                    _ikb(set_label, callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908"),
+                    _ikb(abt_label, callback_data="mb#about_arya_0", icon_custom_emoji_id="6021620268697393273")
+                ],
                 [InlineKeyboardButton("« ❮ " + back_label, callback_data="mb#main_back")]
             ]
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
@@ -6238,13 +6248,17 @@ async def _process_callback(client, query):
         page = int(data[3]) if len(data) > 3 else 0
         return await _show_marketplace_all_stories(client, query, plat_name, page, lang)
 
-    elif cmd == "mkt_search":
+    elif cmd in ("mkt_search", "main_search_story"):
         await db.update_user(user_id, {"state": "searching"})
+        s_title = _sc("SEARCH STORY") if lang == 'en' else "स्टोरी खोजें"
+        s_prompt = _sc("Please type the story name or keywords in the chat below:") if lang == 'en' else "कृपया नीचे चैट में कहानी का नाम या कीवर्ड टाइप करें:"
+        c_label = _sc("CANCEL") if lang == 'en' else "रद्द करें"
+        back_cb = "mb#main_back" if cmd == "main_search_story" else "mb#main_marketplace"
         txt = (
-            f'<b><emoji id="6025893082552081088">🔍</emoji> {_sc("SEARCH STORY")}</b>\n\n'
-            f'<i>{_sc("Please type a few words of the story name in the chat below:")}</i>'
+            f'<b><emoji id="5258274739041883702">🔍</emoji> {s_title}</b>\n\n'
+            f'<i>{s_prompt}</i>'
         )
-        kb = [[InlineKeyboardButton(f"« ❮ {_sc('CANCEL') if lang == 'en' else 'रद्द करें'}", callback_data="mb#main_marketplace")]]
+        kb = [[InlineKeyboardButton(f"« ❮ {c_label}", callback_data=back_cb)]]
         return await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
 
     # ── Access purchased story directly ──
