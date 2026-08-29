@@ -1646,10 +1646,9 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
         kb.append(nav)
 
     kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
-    kb.insert(0, _get_top_emoji_row())
 
     txt_b = f"<b>{title}</b>\n\n<b>{total_txt}</b> {total}\n\n{desc}" if total > 0 else f"<b>{title}</b>\n\n<b>{total_txt}</b> 0\n\n{empty_txt}"
-    if total == 0: kb.insert(1, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
+    if total == 0: kb.insert(0, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
 
     if edit_query:
         await _safe_edit(edit_query.message, text=txt_b, markup=InlineKeyboardMarkup(kb))
@@ -4725,7 +4724,6 @@ async def _show_about_arya(client, query, page: int):
             f"</blockquote>"
         )
         kb = [
-            _get_top_emoji_row(),
             [InlineKeyboardButton(f"ɴᴇxᴛ ❭", callback_data="mb#about_arya_1")],
             [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")]
         ]
@@ -4753,7 +4751,6 @@ async def _show_about_arya(client, query, page: int):
             f"</blockquote>"
         )
         kb = [
-            _get_top_emoji_row(),
             [InlineKeyboardButton(f"❬ ᴘʀᴇᴠ", callback_data="mb#about_arya_0")],
             [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")]
         ]
@@ -4787,7 +4784,6 @@ async def _show_help_menu(client, query):
             f"</blockquote>"
         )
         kb = [
-            _get_top_emoji_row(),
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
@@ -4815,7 +4811,6 @@ async def _show_help_menu(client, query):
             f"</blockquote>"
         )
         kb = [
-            _get_top_emoji_row(),
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
@@ -5202,7 +5197,6 @@ async def _process_callback(client, query):
             )
 
             kb = [
-                _get_top_emoji_row(),
                 [InlineKeyboardButton(t['my_reqs'], callback_data="mb#my_reqs_0")],
                 [InlineKeyboardButton(t['set_lang'], callback_data="mb#main_settings")],
                 [InlineKeyboardButton("❮ " + t['back'], callback_data="mb#main_back")]
@@ -5231,7 +5225,6 @@ async def _process_callback(client, query):
                 )
 
             kb = [
-                _get_top_emoji_row(),
                 [InlineKeyboardButton("🇬🇧 English", callback_data="mb#lang#en"),
                  InlineKeyboardButton("🇮🇳 हिंदी",   callback_data="mb#lang#hi")],
                 [InlineKeyboardButton(sub_text,      callback_data="mb#toggle_sub")],
