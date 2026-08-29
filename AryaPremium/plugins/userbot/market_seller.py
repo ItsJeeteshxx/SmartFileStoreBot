@@ -902,139 +902,72 @@ T = {
 
 <b>After paying, send the successful payment screenshot here.</b>""",
 
-        "wait_ver": "⏳ Your payment is being verified, please wait (approx 5 minutes)...",
-
+        "wait_ver": '<emoji id="5348471079482441278">⏳</emoji> Your payment is being verified, please wait (approx 5 minutes)...',
         "notify": "🔔 Notify Admin",
-
-        "prof_title": "╔═⟦ 𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ⟧═╗",
-
+        "prof_title": '╔═⟦ <emoji id="6021487472603568286">👤</emoji> 𝗣𝗥𝗢𝗙𝗜𝗟𝗘 ⟧═╗',
         "prof_name": "ɴᴀᴍᴇ",
-
         "prof_uname": "ᴜꜱᴇʀɴᴀᴍᴇ",
-
         "prof_id": "ᴛɢ ɪᴅ",
-
         "prof_bought": "ᴘᴜʀᴄʜᴀꜱᴇꜱ",
-
         "prof_lang": "ʟᴀɴɢᴜᴀɢᴇ",
-
         "prof_join": "ᴊᴏɪɴᴇᴅ",
-
-        "my_reqs": "📝 MY REQUESTS",
-
-        "set_lang": "⚙️ Settings",
-
-        "set_prompt": """<b>⚙️ Settings</b>
-
-
+        "my_reqs": "MY REQUESTS",
+        "set_lang": "Settings",
+        "set_prompt": """<b><emoji id="6021637109264160908">⚙️</emoji> Settings</b>
 
 Select your language:""",
-
-        "req_main_title": "📝 My Story Requests",
-
+        "req_main_title": "My Story Requests",
         "req_click": "Click on any request to view its status:",
-
         "req_empty": "You haven't made any story requests yet.",
-
         "back_prof": "« BACK TO PROFILE",
-
         "back_reqs": "« BACK TO REQUESTS",
-
-        "req_details": "📝 STORY REQUEST DETAILS",
-
+        "req_details": "STORY REQUEST DETAILS",
         "req_name": "Name",
-
         "req_plat": "Platform",
-
         "req_type": "Type",
-
         "req_date": "Date",
-
         "req_status": "Status",
-
         "already_owned": "✅ You already own this story. Sending delivery options...",
-
         "wait_a_sec": "WAIT A SECOND...",
-
         "req_step1": "<b>📤 Story Request System</b>\n\n<i>(Note: The story you request will be a Paid service, please keep this in mind.)</i>\n\nPlease enter the exact name of the story you are looking for:",
-
         "req_step2": "Got it. Send me any sample files, links, or screenshots related to this story (to help us locate it). If you don’t have any, type /skip.",
-
         "req_done": "✅ <b>Request Submitted!</b>\nWe have received your request. You can track its status using the 'My Requests' button in your Profile.",
-
         "cant_find_btn": "🔍 CAN'T FIND? REQUEST NOW!",
-
         "req_search_prompt": """<b>🔍 SEARCH / REQUEST STORY</b>
 
-
-
 Type the <b>Story Name</b> you want to search or request:""",
-
         "req_cancel": "Process Cancelled.",
-
         "req_success": """✅ <b>Request Submitted!</b>
 
-
-
 Our team will search for this story and update you soon. Check status in <b>Profile -> My Requests</b>."""
-
     },
-
     "hi": {
-
         "welcome": "स्वागत है",
-
         "store": "स्टोर",
-
         "intro": "प्रीमियम कलेक्शन ब्राउज़ करें। Marketplace पर टैप करें।",
-
         "tc_accept": "✅ मुझे शर्तें मंजूर हैं",
-
         "tc_reject": "❌ मैं अस्वीकार करता हूँ",
-
         "no_stories": "वर्तमान में कोई स्टोरी उपलब्ध नहीं है।",
-
         "pay_upi": "UPI से पेमेंट करें",
-
         "back": "❮ वापस",
-
         "qr_msg": """<b>💳 पेमेंट पूरा करें</b>
 
-
-
 • ऊपर QR स्कैन करें।
-
 • राशि: ₹{price}
 
-
-
 <b>पेमेंट के बाद स्क्रीनशॉट यहाँ भेजें।</b>""",
-
-        "wait_ver": "⏳ आपके भुगतान का सत्यापन हो रहा है...",
-
+        "wait_ver": '<emoji id="5348471079482441278">⏳</emoji> आपके भुगतान का सत्यापन हो रहा है...',
         "notify": "🔔 एडमिन को सूचित करें",
-
-        "prof_title": "╔═⟦ आपकी प्रोफाइल ⟧═╗",
-
+        "prof_title": '╔═⟦ <emoji id="6021487472603568286">👤</emoji> आपकी प्रोफाइल ⟧═╗',
         "prof_name": "नाम",
-
         "prof_uname": "यूज़रनेम",
-
         "prof_id": "आईडी",
-
         "prof_bought": "खरीदी गई स्टोरीज",
-
         "prof_lang": "भाषा",
-
         "prof_join": "जुड़े हुए",
-
-        "my_reqs": "📝 मेरे अनुरोध (My Requests)",
-
-        "set_lang": "⚙️ सेटिंग्स",
-
-        "set_prompt": """<b>⚙️ सेटिंग्स</b>
-
-
+        "my_reqs": "मेरे अनुरोध",
+        "set_lang": "सेटिंग्स",
+        "set_prompt": """<b><emoji id="6021637109264160908">⚙️</emoji> सेटिंग्स</b>
 
 अपनी पसंदीदा भाषा चुनें:""",
 
@@ -2161,7 +2094,7 @@ async def _show_story_profile(client, user_id, story, lang):
     markup = InlineKeyboardMarkup(kb)
 
     from pyrogram import enums
-    tmp = await client.send_message(user_id, f"<b>› › ⏳ {loading_txt}</b>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+    tmp = await client.send_message(user_id, f'<b>› › <emoji id="5348471079482441278">⏳</emoji> {loading_txt}</b>', reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
     try:
         await _send_story_photo(client, user_id, story, caption=txt, reply_markup=markup)
         await tmp.delete()
@@ -3247,7 +3180,7 @@ async def _process_start(client, message):
 
     wait_msg_txt = "WAIT A SECOND..." if lang == 'en' else "कृपया प्रतीक्षा करें..."
 
-    wait_msg = await message.reply_text(f"<b>› › ⏳ {wait_msg_txt}</b>", parse_mode=enums.ParseMode.HTML)
+    wait_msg = await message.reply_text(f'<b>› › <emoji id="5348471079482441278">⏳</emoji> {wait_msg_txt}</b>', parse_mode=enums.ParseMode.HTML)
 
     await asyncio.sleep(0.4)
 
@@ -3864,7 +3797,7 @@ async def _process_text(client, message):
         return
 
     if cmd_text in ["/marketplace", "/mystories", "/stories", "/arya", "/help", "/settings", "/profile"]:
-        m = await message.reply_text("<i>⏳ Loading...</i>")
+        m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading...</i>', parse_mode=enums.ParseMode.HTML)
         
         class MockQuery:
             def __init__(self, msg, user, data):
@@ -3963,7 +3896,6 @@ async def _process_text(client, message):
                         )]
                     ])
                 )
-
             # Check already purchased
             if await db.has_purchase(user_id, pending_s_id_utr):
                 _own_msg = "आप पहले से इस कहानी के मालिक हैं!" if lang == 'hi' else "You already own this story!"
@@ -4209,21 +4141,13 @@ async def _process_text(client, message):
 
 
     # Back to main menu
-
     if "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" in txt or "BACK TO MAIN MENU" in txt:
-
-        m = await message.reply_text("<i>⏳ Loading...</i>", reply_markup=ReplyKeyboardRemove())
-
+        m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading...</i>', reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
         try:
-
             await m.delete()
-
         except:
-
             pass
-
         await _send_main_menu(client, user_id, message.from_user, lang)
-
         return
 
     # -- Marketplace NEXT/PREV pagination handler --
@@ -4546,7 +4470,7 @@ async def _process_text(client, message):
 
             
 
-            m_proc = await message.reply_text("<i>⏳ Processing Request...</i>", reply_markup=ReplyKeyboardRemove())
+            m_proc = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Processing Request...</i>', reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
             
 
@@ -4786,7 +4710,7 @@ async def _show_help_menu(client, query):
         kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
-            [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
+            [_ikb(f"{_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start", icon_custom_emoji_id="6023852792697854544")],
             [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
@@ -4813,7 +4737,7 @@ async def _show_help_menu(client, query):
         kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
-            [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
+            [_ikb(f"{_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start", icon_custom_emoji_id="6023852792697854544")],
             [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
@@ -5196,10 +5120,14 @@ async def _process_callback(client, query):
 
             )
 
+            req_label = _sc("MY REQUESTS") if lang == 'en' else "मेरे अनुरोध"
+            set_label = _sc("Settings") if lang == 'en' else "सेटिंग्स"
+            back_label = _sc("BACK") if lang == 'en' else "वापस"
+
             kb = [
-                [InlineKeyboardButton(t['my_reqs'], callback_data="mb#my_reqs_0")],
-                [InlineKeyboardButton(t['set_lang'], callback_data="mb#main_settings")],
-                [InlineKeyboardButton("❮ " + t['back'], callback_data="mb#main_back")]
+                [_ikb(f"»  {req_label}", callback_data="mb#my_reqs_0", icon_custom_emoji_id="5766915217552315762")],
+                [_ikb(f"»  {set_label}", callback_data="mb#main_settings", icon_custom_emoji_id="6021637109264160908")],
+                [InlineKeyboardButton("« ❮ " + back_label, callback_data="mb#main_back")]
             ]
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
             return
@@ -5208,27 +5136,29 @@ async def _process_callback(client, query):
             t = T[lang]
             subscribed = user.get("alerts_subscribed", False)   # Default OFF
             if lang == 'hi':
-                sub_text    = "🔔 अपडेट नोटिफिकेशन: चालू"  if subscribed else "🔕 अपडेट नोटिफिकेशन: बंद"
-                lang_label  = "भाषा बदलें"
+                sub_text = "अपडेट नोटिफिकेशन: चालू" if subscribed else "अपडेट नोटिफिकेशन: बंद"
+                sub_emoji = "6021536113108196448" if subscribed else "6021440013214948027"
                 settings_txt = (
-                    "<b>⚙️ सेटिंग्स</b>\n\n"
-                    "<b>भाषा:</b> अपनी पसंदीदा भाषा चुनें\n"
-                    "<b>नोटिफिकेशन:</b> नई कहानियों का अलर्ट"
+                    '<emoji id="6021637109264160908">⚙️</emoji> <b>सेटिंग्स</b>\n\n'
+                    '<emoji id="6030768072296502910">🌐</emoji> <b>भाषा:</b> अपनी पसंदीदा भाषा चुनें\n'
+                    '<b>नोटिफिकेशन:</b> नई कहानियों का अलर्ट'
                 )
             else:
-                sub_text    = "🔔 New Story Alerts: On"  if subscribed else "🔕 New Story Alerts: Off"
-                lang_label  = "Language"
+                sub_text = "New Story Alerts: On" if subscribed else "New Story Alerts: Off"
+                sub_emoji = "6021536113108196448" if subscribed else "6021440013214948027"
                 settings_txt = (
-                    "<b>⚙️ Settings</b>\n\n"
-                    "<b>Language:</b> Choose your preferred language\n"
-                    "<b>Notifications:</b> Get alerted when new stories arrive"
+                    '<emoji id="6021637109264160908">⚙️</emoji> <b>Settings</b>\n\n'
+                    '<emoji id="6030768072296502910">🌐</emoji> <b>Language:</b> Choose your preferred language\n'
+                    '<b>Notifications:</b> Get alerted when new stories arrive'
                 )
 
             kb = [
-                [InlineKeyboardButton("🇬🇧 English", callback_data="mb#lang#en"),
-                 InlineKeyboardButton("🇮🇳 हिंदी",   callback_data="mb#lang#hi")],
-                [InlineKeyboardButton(sub_text,      callback_data="mb#toggle_sub")],
-                [InlineKeyboardButton("❮ Back" if lang == 'en' else "❮ वापस", callback_data="mb#main_back")]
+                [
+                    _ikb("English", callback_data="mb#lang#en", icon_custom_emoji_id="5293993521026453119"),
+                    _ikb("हिंदी", callback_data="mb#lang#hi", icon_custom_emoji_id="5291933173674957761")
+                ],
+                [_ikb(sub_text, callback_data="mb#toggle_sub", icon_custom_emoji_id=sub_emoji)],
+                [InlineKeyboardButton("« ❮ " + (_sc("BACK") if lang == 'en' else "वापस"), callback_data="mb#main_back")]
             ]
             await _safe_edit(query.message, text=settings_txt, markup=InlineKeyboardMarkup(kb))
 
@@ -5477,51 +5407,32 @@ async def _process_callback(client, query):
 
 
         lang = u.get("lang", "en")
-
         if lang == 'hi':
-
-            sub_text    = "🔔 अपडेट नोटिफिकेशन: चालू"  if new_sub else "🔕 अपडेट नोटिफिकेशन: बंद"
-
+            sub_text = "अपडेट नोटिफिकेशन: चालू" if new_sub else "अपडेट नोटिफिकेशन: बंद"
+            sub_emoji = "6021536113108196448" if new_sub else "6021440013214948027"
             settings_txt = (
-
-                "<b>⚙️ सेटिंग्स</b>\n\n"
-
-                "<b>भाषा:</b> अपनी पसंदीदा भाषा चुनें\n"
-
-                "<b>नोटिफिकेशन:</b> नई कहानियों का अलर्ट"
-
+                '<emoji id="6021637109264160908">⚙️</emoji> <b>सेटिंग्स</b>\n\n'
+                '<emoji id="6030768072296502910">🌐</emoji> <b>भाषा:</b> अपनी पसंदीदा भाषा चुनें\n'
+                '<b>नोटिफिकेशन:</b> नई कहानियों का अलर्ट'
             )
-
             alert_msg = "नोटिफिकेशन चालू किया!" if new_sub else "नोटिफिकेशन बंद किया!"
-
         else:
-
-            sub_text    = "🔔 New Story Alerts: On"  if new_sub else "🔕 New Story Alerts: Off"
-
+            sub_text = "New Story Alerts: On" if new_sub else "New Story Alerts: Off"
+            sub_emoji = "6021536113108196448" if new_sub else "6021440013214948027"
             settings_txt = (
-
-                "<b>⚙️ Settings</b>\n\n"
-
-                "<b>Language:</b> Choose your preferred language\n"
-
-                "<b>Notifications:</b> Get alerted when new stories arrive"
-
+                '<emoji id="6021637109264160908">⚙️</emoji> <b>Settings</b>\n\n'
+                '<emoji id="6030768072296502910">🌐</emoji> <b>Language:</b> Choose your preferred language\n'
+                '<b>Notifications:</b> Get alerted when new stories arrive'
             )
-
             alert_msg = "Story alerts enabled!" if new_sub else "Story alerts disabled!"
 
-
-
         kb = [
-
-            [InlineKeyboardButton("🇬🇧 English", callback_data="mb#lang#en"),
-
-             InlineKeyboardButton("🇮🇳 हिंदी",   callback_data="mb#lang#hi")],
-
-            [InlineKeyboardButton(sub_text,      callback_data="mb#toggle_sub")],
-
-            [InlineKeyboardButton("❮ Back" if lang == 'en' else "❮ वापस", callback_data="mb#main_back")]
-
+            [
+                _ikb("English", callback_data="mb#lang#en", icon_custom_emoji_id="5293993521026453119"),
+                _ikb("हिंदी", callback_data="mb#lang#hi", icon_custom_emoji_id="5291933173674957761")
+            ],
+            [_ikb(sub_text, callback_data="mb#toggle_sub", icon_custom_emoji_id=sub_emoji)],
+            [InlineKeyboardButton("« ❮ " + (_sc("BACK") if lang == 'en' else "वापस"), callback_data="mb#main_back")]
         ]
 
         await _safe_edit(query.message, text=settings_txt, markup=InlineKeyboardMarkup(kb))
@@ -5643,7 +5554,7 @@ async def _process_callback(client, query):
         new_lang = data[2]
         pending_arg = data[3] if len(data) > 3 else None
         await query.answer("✓ Updates applied!", show_alert=False)
-        m = await client.send_message(user_id, "<b>› › Yup, Bro updating... ⏳</b>")
+        m = await client.send_message(user_id, '<b>› › <emoji id="5348471079482441278">⏳</emoji> Yup, Bro updating...</b>', parse_mode=enums.ParseMode.HTML)
         await asyncio.sleep(2)
         await db.update_user(user_id, {"lang": new_lang})
         try: await m.delete()
