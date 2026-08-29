@@ -2090,7 +2090,7 @@ async def _show_story_profile(client, user_id, story, lang):
     demo_btn = "डेमो फ़ाइलें देखें" if lang == "hi" else "View Demo Files"
     kb = [
         [_ikb(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}", icon_custom_emoji_id="6273749318717412886")],
-        [InlineKeyboardButton(demo_btn, callback_data=f"mb#demo#{str(story['_id'])}")],
+        [_ikb(demo_btn, callback_data=f"mb#demo#{str(story['_id'])}", icon_custom_emoji_id="5305388752162539722")],
         [InlineKeyboardButton(back_btn, callback_data="mb#return_main")]
     ]
     markup = InlineKeyboardMarkup(kb)
@@ -2158,9 +2158,9 @@ async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
     )
 
     kb = [
-        [InlineKeyboardButton(accept_btn, callback_data=f"mb#tc_accept_{story_id}"),
+        [_ikb(accept_btn, callback_data=f"mb#tc_accept_{story_id}", icon_custom_emoji_id="6273749318717412886"),
          InlineKeyboardButton(reject_btn, callback_data="mb#tc_reject")],
-        [InlineKeyboardButton(iaadnsa_btn, callback_data=f"mb#tc_iaadnsa_{story_id}"),
+        [_ikb(iaadnsa_btn, callback_data=f"mb#tc_iaadnsa_{story_id}", icon_custom_emoji_id="6273749318717412886"),
          InlineKeyboardButton(back_btn, callback_data=f"mb#view_{story_id}")]
     ]
     from pyrogram import enums
@@ -2435,7 +2435,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     # UPI row - only if enabled for this story
     if show_upi:
         if upi_ok:
-            kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay#upi#{str(story['_id'])}", icon_custom_emoji_id="5264895611517300926")])
+            kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay#upi#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
 
         else:
 
@@ -4090,49 +4090,89 @@ async def _process_text(client, message):
     _view_all = "📑 " + _sc("VIEW ALL")
     _view_all_hi = "📑 सभी देखें"
 
-    if txt in (_view_all, _view_all_hi, "VIEW ALL", "सभी देखें", _sc("VIEW ALL"), "📑 " + _sc("VIEW ALL"), "📑 सभी देखें"):
+    is_view_all = (
+        txt in (_view_all, _view_all_hi, "VIEW ALL", "सभी देखें", _sc("VIEW ALL"), "📑 " + _sc("VIEW ALL"), "📑 सभी देखें")
+        or "view all" in txt.lower()
+        or "view_all" in txt.lower()
+        or "सभी देखें" in txt
+        or "सभी कहानियाँ" in txt
+        or "सभी कहानियां" in txt
+        or "सभी स्टोरिज" in txt
+        or "all stories" in txt.lower()
+        or "v\u026a\u1d07\u1d33 \u1d00\u029f\u029f" in txt.lower()
+    )
+
+    if is_view_all:
         try:
             await message.delete()
         except Exception:
             pass
         plat = user.get("_mkt_plat")
-        if plat:
+        if not plat:
+            u_doc = await db.db.users.find_one({"id": user_id}) or {}
+            plat = u_doc.get("_mkt_plat")
+
+        q_find = {"bot_id": client.me.id}
+        if plat and plat != "Other":
+            q_find["platform"] = plat
+        all_stories = await db.db.premium_stories.find(q_find).sort("_id", -1).to_list(length=None)
+        if not all_stories and plat:
             q_find = {"bot_id": client.me.id}
-            if plat != "Other": q_find["platform"] = plat
             all_stories = await db.db.premium_stories.find(q_find).sort("_id", -1).to_list(length=None)
-            kb = []
-            MNL = 22
-            for idx, s in enumerate(all_stories, start=1):
-                sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
-                if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
-                if idx <= 5:
-                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
-                else:
-                    kb.append([_kb_btn(btn_txt)])
-            kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
-            title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
-            msg_text = f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(plat)} ⟧</b>'
-            ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
-            if not ok:
-                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
-                await message.reply_text(
-                    msg_text,
-                    reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
-                    parse_mode=enums.ParseMode.HTML
-                )
-            return
+            plat = None
+
+        if not all_stories:
+            empty_msg = "No stories available right now." if lang == 'en' else "वर्तमान में कोई कहानी उपलब्ध नहीं है।"
+            return await message.reply_text(f"<i>{empty_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+
+        kb = []
+        MNL = 22
+        for idx, s in enumerate(all_stories[:80], start=1):
+            sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+            if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+            btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+            if idx <= 5:
+                kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+            else:
+                kb.append([_kb_btn(btn_txt)])
+        
+        search_text = "SEARCH" if lang == 'en' else "खोजें"
+        kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+        kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+        kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+        title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
+        plat_hdr = f" — {to_mathbold(plat)}" if plat else ""
+        msg_text = (
+            f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title}{plat_hdr} ⟧</b>\n\n'
+            f"<blockquote expandable><i>{_sc('Total Stories:') if lang == 'en' else 'कुल स्टोरिज:'} <b>{len(all_stories)}</b>\n"
+            f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</i></blockquote>"
+        )
+        ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+        if not ok:
+            pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+            await message.reply_text(
+                msg_text,
+                reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
         return
 
-    if txt in (_nav_next, _nav_prev, _nav_next_hi, _nav_prev_hi):
+    is_nav_next = txt in (_nav_next, _nav_next_hi, "NEXT ❭", "NEXT", "अगला", "अगला ❭") or "next ❭" in txt.lower()
+    is_nav_prev = txt in (_nav_prev, _nav_prev_hi, "❬ PREV", "PREV", "पिछला", "❬ पिछला") or "❬ prev" in txt.lower()
+
+    if is_nav_next or is_nav_prev:
         try:
             await message.delete()
         except Exception:
             pass
         plat = user.get("_mkt_plat")
+        if not plat:
+            u_doc = await db.db.users.find_one({"id": user_id}) or {}
+            plat = u_doc.get("_mkt_plat")
         cur_page = int(user.get("_mkt_page", 0))
         if plat:
-            is_next = txt in (_nav_next, _nav_next_hi)
+            is_next = is_nav_next
             STORY_PAGE_SIZE = 15
             q_find = {"bot_id": client.me.id}
             if plat != "Other": q_find["platform"] = plat
@@ -6605,16 +6645,6 @@ async def _process_callback(client, query):
                 logger.error(f"[PAY2] Error setting up variables: {ex}", exc_info=True)
                 return await query.answer(f"Setup error: {ex}", show_alert=True)
             
-            # Generate Premium UPI Card
-            qr_card = None
-            try:
-                logger.info("[PAY2] Attempting to generate UPI card image...")
-                qr_card = generate_upi_card(upi_id, s_price, s_name, payee_name=p_name)
-                logger.info(f"[PAY2] UPI card generation result: {'SUCCESS' if qr_card else 'FAILED'}")
-            except Exception as e:
-                logger.error(f"[PAY2] UPI Card generation raised exception: {e}", exc_info=True)
-                qr_card = None
-
             try:
                 upi_uri = _build_upi_uri(
                     upi_id=upi_id,
@@ -6633,6 +6663,17 @@ async def _process_callback(client, query):
                 logger.info(f"[PAY2] Shortened URL: {button_url}")
             except Exception as ex:
                 logger.error(f"[PAY2] Error building UPI URI / Shortener: {ex}", exc_info=True)
+                upi_uri = f"upi://pay?pa={upi_id}&pn={p_name}&am={s_price}&cu=INR"
+
+            # Generate Simple Clean UPI QR Code (no template card)
+            qr_card = None
+            try:
+                logger.info("[PAY2] Attempting to generate simple QR code image...")
+                qr_card = _make_qr_png_bytes(upi_uri)
+                logger.info(f"[PAY2] Simple QR code generation result: {'SUCCESS' if qr_card else 'FAILED'}")
+            except Exception as e:
+                logger.error(f"[PAY2] Simple QR code generation raised exception: {e}", exc_info=True)
+                qr_card = None
 
             try:
                 logger.info("[PAY2] Updating checkout in DB...")
