@@ -1032,10 +1032,12 @@ Our team will search for this story and update you soon. Check status in <b>Prof
 
 
 
-def _ikb(text: str, callback_data: str = None, url: str = None, icon_custom_emoji_id: str = None) -> InlineKeyboardButton:
+def _ikb(text: str, callback_data: str = None, url: str = None, switch_inline_query_current_chat: str = None, switch_inline_query: str = None, icon_custom_emoji_id: str = None) -> InlineKeyboardButton:
     kw = {}
-    if callback_data: kw["callback_data"] = callback_data
-    if url: kw["url"] = url
+    if callback_data is not None: kw["callback_data"] = callback_data
+    if url is not None: kw["url"] = url
+    if switch_inline_query_current_chat is not None: kw["switch_inline_query_current_chat"] = switch_inline_query_current_chat
+    if switch_inline_query is not None: kw["switch_inline_query"] = switch_inline_query
     b = InlineKeyboardButton(text, **kw)
     if icon_custom_emoji_id:
         b.icon_custom_emoji_id = str(icon_custom_emoji_id)
@@ -1060,7 +1062,7 @@ def _get_main_menu(lang='en'):
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
              InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help")],
-            [_ikb("स्टोरी खोजें", callback_data="mb#main_search_story", icon_custom_emoji_id="5258274739041883702")],
+            [_ikb("स्टोरी खोजें", switch_inline_query_current_chat="", icon_custom_emoji_id="5258274739041883702")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1076,7 +1078,7 @@ def _get_main_menu(lang='en'):
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
              InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help")],
-            [_ikb(f"{_sc('Search Story')}", callback_data="mb#main_search_story", icon_custom_emoji_id="5258274739041883702")],
+            [_ikb(f"{_sc('Search Story')}", switch_inline_query_current_chat="", icon_custom_emoji_id="5258274739041883702")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1398,8 +1400,12 @@ def _markup_to_bot_api_list(markup: InlineKeyboardMarkup) -> list:
         row_list = []
         for btn in row:
             d = {"text": btn.text}
-            if btn.callback_data: d["callback_data"] = btn.callback_data
-            if btn.url: d["url"] = btn.url
+            if getattr(btn, "callback_data", None) is not None: d["callback_data"] = btn.callback_data
+            if getattr(btn, "url", None) is not None: d["url"] = btn.url
+            if getattr(btn, "switch_inline_query_current_chat", None) is not None:
+                d["switch_inline_query_current_chat"] = btn.switch_inline_query_current_chat
+            elif getattr(btn, "switch_inline_query", None) is not None:
+                d["switch_inline_query"] = btn.switch_inline_query
             if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
                 d["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
             row_list.append(d)
@@ -9204,3 +9210,119 @@ async def _process_chat_member(client, update):
 
 
 
+
+
+async def _process_inline_query(client, inline_query):
+    """
+    Handles native Telegram Inline Query Search for stories.
+    Allows users to search stories with title, banner/thumbnail, platform, and price,
+    and open full story preview directly.
+    """
+    try:
+        user_id = inline_query.from_user.id if inline_query.from_user else 0
+        q = inline_query.query.strip()
+        bot_id = getattr(getattr(client, "me", None), "id", None)
+        
+        user = await db.get_user(user_id, from_user=inline_query.from_user, bot_id=bot_id) if user_id else {}
+        lang = user.get('lang', 'en') if user else 'en'
+        
+        q_bot = {"$or": [{"bot_id": bot_id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]} if bot_id else {}
+        
+        import re
+        if q:
+            reg = re.escape(q)
+            q_cond = {
+                "$or": [
+                    {"story_name_en": {"$regex": reg, "$options": "i"}},
+                    {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                    {"platform": {"$regex": reg, "$options": "i"}},
+                    {"genre": {"$regex": reg, "$options": "i"}}
+                ]
+            }
+            if q_bot:
+                q_find = {"$and": [q_bot, q_cond]}
+            else:
+                q_find = q_cond
+        else:
+            q_find = q_bot if q_bot else {}
+
+        stories = await db.db.premium_stories.find(q_find).sort("_id", -1).limit(50).to_list(length=50)
+        if not stories and q:
+            # Fallback search without bot_id
+            stories = await db.db.premium_stories.find({
+                "$or": [
+                    {"story_name_en": {"$regex": reg, "$options": "i"}},
+                    {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                    {"platform": {"$regex": reg, "$options": "i"}},
+                    {"genre": {"$regex": reg, "$options": "i"}}
+                ]
+            }).sort("_id", -1).limit(50).to_list(length=50)
+
+        from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+        results = []
+        bot_username = getattr(getattr(client, "me", None), "username", "")
+
+        for s in stories:
+            s_id = str(s['_id'])
+            s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Unknown Story'))
+            platform = s.get('platform', 'Unknown')
+            episodes = s.get('episodes', 'Unknown')
+            price = int(s.get('price', 0))
+            genre = s.get('genre', 'Story')
+            thumb = s.get('image') or s.get('poster_url') or s.get('image_url')
+            
+            desc_text = f"🖥 {platform} • 🎬 {episodes} eps • 🏷 ₹{price}"
+
+            story_caption = (
+                f'<b>⟦ <emoji id="5465432711218863135">♨️</emoji> {to_mathbold(s_name)} ⟧</b>\n\n'
+                f'<b>• Platform:</b> {platform}\n'
+                f'<b>• Genre:</b> {genre}\n'
+                f'<b>• Episodes:</b> {episodes}\n'
+                f'<b>• Price:</b> ₹{price}\n\n'
+                f'<i>Tap below to view full details, demo files, or purchase:</i>'
+            ) if lang == 'en' else (
+                f'<b>⟦ <emoji id="5465432711218863135">♨️</emoji> {to_mathbold(s_name)} ⟧</b>\n\n'
+                f'<b>• प्लेटफॉर्म:</b> {platform}\n'
+                f'<b>• जौनर:</b> {genre}\n'
+                f'<b>• एपिसोड्स:</b> {episodes}\n'
+                f'<b>• कीमत:</b> ₹{price}\n\n'
+                f'<i>पूरी जानकारी, डेमो फ़ाइलें देखने या खरीदने के लिए नीचे टैप करें:</i>'
+            )
+            
+            view_btn_txt = "📖 View Story Details" if lang == 'en' else "📖 कहानी विवरण देखें"
+            start_url = f"https://t.me/{bot_username}?start=story_{s_id}" if bot_username else None
+            
+            kb = []
+            if start_url:
+                kb.append([InlineKeyboardButton(view_btn_txt, url=start_url)])
+            else:
+                kb.append([InlineKeyboardButton(view_btn_txt, callback_data=f"mb#access_{s_id}")])
+
+            article_kwargs = {
+                "id": s_id,
+                "title": f"{s_name} [ ₹{price} ]",
+                "description": desc_text,
+                "input_message_content": InputTextMessageContent(
+                    story_caption,
+                    parse_mode=enums.ParseMode.HTML
+                ),
+                "reply_markup": InlineKeyboardMarkup(kb)
+            }
+            if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
+                article_kwargs["thumb_url"] = thumb
+
+            results.append(InlineQueryResultArticle(**article_kwargs))
+
+        await inline_query.answer(
+            results=results,
+            cache_time=5,
+            is_personal=True,
+            switch_pm_text="🛒 Browse All Marketplace Stories" if lang == 'en' else "🛒 सभी कहानियाँ देखें",
+            switch_pm_parameter="marketplace"
+        )
+    except Exception as e:
+        logger.error(f"Inline query error: {e}", exc_info=True)
+        try:
+            await inline_query.answer(results=[], cache_time=1)
+        except Exception:
+            pass

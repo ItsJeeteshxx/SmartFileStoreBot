@@ -2511,9 +2511,9 @@ async def _add_store_bot_flow(client, user_id):
     await db.db.premium_bots.update_one({"id": me.id}, {"$set": {"id": me.id, "username": me.username, "name": me.first_name, "token": token}}, upsert=True)
     
     # Live Boot logic to prevent needing a restart
-    from plugins.userbot.market_seller import _process_start, _process_callback, _process_screenshot, _process_text, market_clients
+    from plugins.userbot.market_seller import _process_start, _process_callback, _process_screenshot, _process_text, _process_inline_query, market_clients
     try:
-        from pyrogram.handlers import MessageHandler, CallbackQueryHandler
+        from pyrogram.handlers import MessageHandler, CallbackQueryHandler, InlineQueryHandler
         from utils import setup_ask_router
         new_cli = Client(name=f"market_{me.id}", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=token, in_memory=False)
         setup_ask_router(new_cli)
@@ -2521,6 +2521,7 @@ async def _add_store_bot_flow(client, user_id):
         new_cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
         new_cli.add_handler(MessageHandler(_process_screenshot, filters.photo & filters.private))
         new_cli.add_handler(MessageHandler(_process_text, filters.text & filters.private))
+        new_cli.add_handler(InlineQueryHandler(_process_inline_query))
         await new_cli.start()
         market_clients[str(me.id)] = new_cli
     except Exception as e:

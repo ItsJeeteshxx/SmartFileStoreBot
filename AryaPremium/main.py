@@ -98,8 +98,8 @@ async def main():
 
     # ── 2. Load Store Bots ──
     try:
-        from plugins.userbot.market_seller import market_clients, _process_start, _process_screenshot, _process_callback, _process_text, _process_media, _process_my_stories, _process_chat_member
-        from pyrogram.handlers import MessageHandler, CallbackQueryHandler, ChatMemberUpdatedHandler
+        from plugins.userbot.market_seller import market_clients, _process_start, _process_screenshot, _process_callback, _process_text, _process_media, _process_my_stories, _process_chat_member, _process_inline_query
+        from pyrogram.handlers import MessageHandler, CallbackQueryHandler, ChatMemberUpdatedHandler, InlineQueryHandler
         from pyrogram.errors import UserNotParticipant
         from pyrogram import StopPropagation
         from utils import setup_ask_router
@@ -187,6 +187,7 @@ async def main():
             cli.add_handler(MessageHandler(_process_text, filters.text & filters.private))
             cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
             cli.add_handler(ChatMemberUpdatedHandler(_process_chat_member))
+            cli.add_handler(InlineQueryHandler(_process_inline_query))
             market_clients[str(b['id'])] = cli
             apps.append(cli)
     except Exception as e:
