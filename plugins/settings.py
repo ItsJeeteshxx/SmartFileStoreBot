@@ -1183,7 +1183,7 @@ async def settings_query(bot, query):
             InlineKeyboardButton("📋 Pass Purchase Logs", callback_data="settings#sb_rl_log_ch"),
             InlineKeyboardButton("⚠️ Rate Limit Hit Logs", callback_data="settings#sb_rl_hit_log_ch"),
         ],
-        [InlineKeyboardButton("👥 Pass Customers", callback_data="settings#sb_rl_cust_0")],
+        [InlineKeyboardButton("👥 Customers & Subscriptions", callback_data="settings#sb_rl_cust_0")],
         [InlineKeyboardButton("💰 Pass Pricing & Plans", callback_data="settings#sb_rl_pricing")],
         [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
         [InlineKeyboardButton("⚡ Cashfree Gateway", callback_data="settings#sb_rl_cf_menu")],
@@ -1848,43 +1848,68 @@ async def settings_query(bot, query):
     slice_custs = all_custs[page * per_page : (page + 1) * per_page]
 
     buttons = []
+    api_buttons = []
     for c in slice_custs:
-        icon = "🟢" if c.get('active') else "🔴"
+        is_act = bool(c.get('active'))
+        icon_id = "5809949600152296075" if is_act else "5970055887774028039"
+        icon_fb = "🟢" if is_act else "🔴"
         name = c.get('name', 'User')
         uid = c.get('user_id')
-        t_left = f" ({c.get('time_left_str')})" if c.get('active') else ""
-        btn_text = f"{icon} {name} [{uid}]{t_left}"
-        buttons.append([InlineKeyboardButton(btn_text, callback_data=f"settings#sb_rl_u_{uid}_{page}")])
+        t_left = f" ({c.get('time_left_str')})" if is_act else ""
+        btn_label = f"{name} [{uid}]{t_left}"
+        cb = f"settings#sb_rl_u_{uid}_{page}"
+        buttons.append([InlineKeyboardButton(f"{icon_fb} {btn_label}", callback_data=cb)])
+        api_buttons.append([{"text": btn_label, "callback_data": cb, "icon_custom_emoji_id": icon_id}])
 
     nav_row = []
+    api_nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"settings#sb_rl_cust_{page - 1}"))
+        api_nav_row.append({"text": "◀️ Prev", "callback_data": f"settings#sb_rl_cust_{page - 1}"})
     nav_row.append(InlineKeyboardButton(f"📄 {page + 1} / {total_pages}", callback_data="settings#noop"))
+    api_nav_row.append({"text": f"📄 {page + 1} / {total_pages}", "callback_data": "settings#noop"})
     if page < total_pages - 1:
         nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"settings#sb_rl_cust_{page + 1}"))
+        api_nav_row.append({"text": "Next ▶️", "callback_data": f"settings#sb_rl_cust_{page + 1}"})
     if nav_row:
         buttons.append(nav_row)
+        api_buttons.append(api_nav_row)
 
-    buttons.append([InlineKeyboardButton("➕ Add / Grant Customer Pass", callback_data="settings#sb_rl_add_cust")])
-    buttons.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")])
+    buttons.append([InlineKeyboardButton("➕ Add Customer Pass", callback_data="settings#sb_rl_add_cust")])
+    api_buttons.append([{"text": "Add Customer Pass", "callback_data": "settings#sb_rl_add_cust", "icon_custom_emoji_id": "5882207227997066107"}])
+
+    buttons.append([InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")])
+    api_buttons.append([{"text": "Back", "callback_data": "settings#sb_ratelimit"}])
 
     text = (
-        "<b>👥 PASS CUSTOMERS & SUBSCRIPTIONS</b>\n"
+        '<emoji id="5778145208411624388">👤</emoji> <b>Costumers & Subscriptions</b>\n'
         "────────────────────\n"
-        f"<b>Total Customers:</b> <code>{total_cust}</code> | <b>Active Passes:</b> <code>{active_cust}</code>\n"
-        f"<b>Page:</b> <code>{page + 1} of {total_pages}</code>\n"
-        "────────────────────\n"
-        "<i>Tap any customer below to view their active subscription details, live expiry countdown, and order transactions:</i>"
+        f'<emoji id="5904630315946611415">👥</emoji> <b>Total Customers:</b> <code>{total_cust}</code> | <emoji id="6007983438294949171">👑</emoji> <b>Active Passes:</b> <code>{active_cust}</code>\n'
+        f'<emoji id="6023880246128810031">📄</emoji> <b>Page:</b> <code>{page + 1} of {total_pages}</code>\n'
+        "────────────────────"
     )
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
 
   elif type == "sb_rl_add_cust":
     prompt_text = (
-        "<b>➕ GRANT / ADD CUSTOMER PASS</b>\n\n"
+        '<emoji id="5882207227997066107">➕</emoji> <b>Grant / Add Customer Pass</b>\n\n'
         "Please send the <b>Telegram User ID</b> of the customer (e.g. <code>123456789</code>):\n"
         "<i>Or send /cancel to abort.</i>"
     )
-    cancel_btn = [[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cust_0")]]
+    cancel_btn = [[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cust_0")]]
     msg = await query.message.edit_text(prompt_text, reply_markup=InlineKeyboardMarkup(cancel_btn))
     resp = await _ask(bot, user_id, timeout=120)
     if not resp or resp.text.strip() == "/cancel":
@@ -1921,7 +1946,7 @@ async def settings_query(bot, query):
     except Exception: pass
 
     dur_text = (
-        f"<b>⏱️ SELECT DURATION FOR USER</b> <code>{target_uid}</code>\n\n"
+        f'<emoji id="5807879906951960923">⏳</emoji> <b>Select Duration For User</b> <code>{target_uid}</code>\n\n'
         "Choose how long the Unlimited Access Pass should be valid for:"
     )
     dur_buttons = [
@@ -1937,12 +1962,34 @@ async def settings_query(bot, query):
             InlineKeyboardButton("6 Months", callback_data=f"settings#sb_rl_gdur_{target_uid}_6mo"),
             InlineKeyboardButton("1 Year", callback_data=f"settings#sb_rl_gdur_{target_uid}_365d")
         ],
-        [InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data="settings#sb_rl_cust_0")]
+        [InlineKeyboardButton("Back", callback_data="settings#sb_rl_cust_0")]
+    ]
+    api_dur_buttons = [
+        [
+            {"text": "1 Day", "callback_data": f"settings#sb_rl_gdur_{target_uid}_1d", "icon_custom_emoji_id": "5882207227997066107"},
+            {"text": "3 Days", "callback_data": f"settings#sb_rl_gdur_{target_uid}_3d", "icon_custom_emoji_id": "5882207227997066107"}
+        ],
+        [
+            {"text": "7 Days", "callback_data": f"settings#sb_rl_gdur_{target_uid}_7d", "icon_custom_emoji_id": "5882207227997066107"},
+            {"text": "1 Month", "callback_data": f"settings#sb_rl_gdur_{target_uid}_1mo", "icon_custom_emoji_id": "5882207227997066107"}
+        ],
+        [
+            {"text": "6 Months", "callback_data": f"settings#sb_rl_gdur_{target_uid}_6mo", "icon_custom_emoji_id": "5882207227997066107"},
+            {"text": "1 Year", "callback_data": f"settings#sb_rl_gdur_{target_uid}_365d", "icon_custom_emoji_id": "5882207227997066107"}
+        ],
+        [{"text": "Back", "callback_data": "settings#sb_rl_cust_0"}]
     ]
     try:
-        await msg.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
+        from plugins.share_bot import send_or_edit_with_custom_icons
+        await send_or_edit_with_custom_icons(
+            client=bot,
+            chat_id=user_id,
+            text=dur_text,
+            inline_keyboard=api_dur_buttons,
+            message_id=msg.id if msg else None
+        )
     except Exception:
-        try: await query.message.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
+        try: await msg.edit_text(dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
         except Exception: await bot.send_message(user_id, dur_text, reply_markup=InlineKeyboardMarkup(dur_buttons))
 
   elif type.startswith("sb_rl_gdur_"):
