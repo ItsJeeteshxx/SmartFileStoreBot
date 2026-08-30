@@ -2470,11 +2470,13 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     # ── Checkout Mode Routing ──────────────────────────────────────────────────
     # Admin can switch between V1 (Razorpay + Manual UPI) and V2 (Direct UPI + Crypto)
     try:
-        _feat = await _get_cached_features()
-        if _feat.get("checkout_mode", "v1") == "v2":
+        _feat = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        chk_mode = _feat.get("checkout_mode", "v1")
+        logger.info(f"[CHECKOUT] Resolved checkout_mode: '{chk_mode}' for story {story.get('_id')}")
+        if chk_mode == "v2":
             return await _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg=bot_cfg)
-    except Exception:
-        pass  # fallback to V1 on any DB error
+    except Exception as ex:
+        logger.error(f"[CHECKOUT] Error checking checkout_mode: {ex}", exc_info=True)
     # ──────────────────────────────────────────────────────────────────────────
 
     from pyrogram.types import Message, CallbackQuery
@@ -2652,8 +2654,9 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     """
     Shows V2 Checkout Page with Direct UPI, Cashfree (Cards/NetBanking/UPI), and Crypto (OxaPay).
     """
-    is_msg = hasattr(msg_or_query, "text") and not hasattr(msg_or_query, "data")
-    user_id = msg_or_query.from_user.id
+    from pyrogram.types import Message, CallbackQuery
+    is_msg = isinstance(msg_or_query, Message)
+    user_id = msg_or_query.chat.id if is_msg else msg_or_query.from_user.id
     name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
     price = story.get('price', 0)
     p_str = f"₹{price}" if price > 0 else "FREE"
@@ -6939,7 +6942,9 @@ async def _process_callback(client, query):
         from bson.objectid import ObjectId
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
         if story:
-            return await _show_story_profile(client, user_id, story, lang)
+            _bt = await _get_cached_bot_doc(client.me.id)
+            _bt_cfg = (_bt or {}).get("config", {})
+            return await _show_story_details(client, query, story, lang, bot_cfg=_bt_cfg)
         else:
             return await _edit_main_menu_in_place(client, query, query.from_user, lang)
 
