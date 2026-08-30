@@ -2078,6 +2078,7 @@ class Database:
         pass_info = await self.get_user_unlimited_pass(user_id)
         
         name = ""
+        username = ""
         joined_ts = None
         # Priority 1: Check Telegram users collection (self.col)
         try:
@@ -2085,12 +2086,23 @@ class Database:
             if u_doc:
                 if u_doc.get('name'):
                     name = u_doc['name']
+                if u_doc.get('username'):
+                    username = str(u_doc['username']).lstrip('@')
                 if u_doc.get('created_at'):
                     joined_ts = float(u_doc['created_at'])
                 elif u_doc.get('_id'):
                     joined_ts = u_doc['_id'].generation_time.timestamp()
         except Exception:
             pass
+
+        # Check mini app users collection if username still empty
+        if not username:
+            try:
+                mu_doc = await self.users.find_one({'user_id': user_id}) or await self.users.find_one({'id': user_id})
+                if mu_doc and mu_doc.get('username'):
+                    username = str(mu_doc['username']).lstrip('@')
+            except Exception:
+                pass
 
         # Priority 2: Check unlimited_passes
         pass_doc = None
@@ -2099,6 +2111,8 @@ class Database:
             if pass_doc:
                 if not name and pass_doc.get('user_name'):
                     name = pass_doc['user_name']
+                if not username and pass_doc.get('username'):
+                    username = str(pass_doc['username']).lstrip('@')
                 if not joined_ts and pass_doc.get('_id'):
                     joined_ts = pass_doc['_id'].generation_time.timestamp()
         except Exception:
@@ -2135,6 +2149,7 @@ class Database:
         return {
             'user_id': user_id,
             'name': name,
+            'username': username,
             'joined_ts': joined_ts,
             'first_buy_ts': first_buy_ts,
             'language': user_lang,

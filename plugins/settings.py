@@ -2058,18 +2058,21 @@ async def settings_query(bot, query):
     lang_code = details.get('language', 'en')
     lang_display = "Hindi (हिन्दी)" if lang_code == 'hi' else "English"
 
+    username = str(details.get('username', '')).strip().lstrip('@')
+    profile_url = f"https://t.me/{username}" if username else f"tg://user?id={cust_uid}"
+
     exp_str = format_dt(expires_at) if expires_at > 0 else "None"
 
     if active:
         sub_status = (
-            f"• <emoji id=\"6032604359794104706\">📊</emoji> <b>Status:-</b> <emoji id=\"5809949600152296075\">🟢</emoji> <b>ACTIVE SUBSCRIPTION</b>\n"
-            f"• <emoji id=\"5807879906951960923\">⏳</emoji> <b>Remaining Time:-</b> <code>{pass_info.get('time_left_str', 'Active')}</code>\n"
-            f"• <emoji id=\"5807427071370075099\">📅</emoji> <b>Valid Until:-</b> <code>{exp_str}</code>"
+            f"<emoji id=\"6032604359794104706\">📊</emoji> <b>Status:-</b> <emoji id=\"5809949600152296075\">🟢</emoji> <b>ACTIVE SUBSCRIPTION</b>\n"
+            f"<emoji id=\"5807879906951960923\">⏳</emoji> <b>Remaining Time:-</b> <code>{pass_info.get('time_left_str', 'Active')}</code>\n"
+            f"<emoji id=\"5807427071370075099\">📅</emoji> <b>Valid Until:-</b> <code>{exp_str}</code>"
         )
     else:
         sub_status = (
-            f"• <emoji id=\"6032604359794104706\">📊</emoji> <b>Status:-</b> <emoji id=\"5970055887774028039\">🔴</emoji> <b>EXPIRED / INACTIVE</b>\n"
-            f"• <emoji id=\"5807427071370075099\">📅</emoji> <b>Valid Until:-</b> <code>{exp_str}</code>"
+            f"<emoji id=\"6032604359794104706\">📊</emoji> <b>Status:-</b> <emoji id=\"5970055887774028039\">🔴</emoji> <b>EXPIRED / INACTIVE</b>\n"
+            f"<emoji id=\"5807427071370075099\">📅</emoji> <b>Valid Until:-</b> <code>{exp_str}</code>"
         )
 
     txns = details.get('transactions', [])
@@ -2099,21 +2102,21 @@ async def settings_query(bot, query):
             oid = txn.get('id', 'N/A')
             txns_text += (
                 f"<b>{idx}.</b> <emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
-                f"   • <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
-                f"   • <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
-                f"   • <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
-                f"   • <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>\n\n"
+                f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
+                f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
+                f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
+                f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>\n\n"
             )
 
     body = (
         f'<emoji id="5778145208411624388">👤</emoji> <b>Costumer Overview</b>\n'
         f"────────────────────\n\n"
-        f"• <emoji id=\"5904630315946611415\">👤</emoji> <b>Name:-</b> {name}\n"
-        f"• <emoji id=\"6021683099773966917\">🆔</emoji> <b>TG ID:-</b> <code>{cust_uid}</code>\n"
-        f"• <emoji id=\"6023880246128810031\">📅</emoji> <b>Joined Date:-</b> <code>{joined_str}</code>\n"
-        f"• <emoji id=\"6030664675253820292\">🛍</emoji> <b>First Buy:-</b> <code>{first_buy_str}</code>\n"
-        f"• <emoji id=\"6030768072296502910\">🌐</emoji> <b>Language:-</b> {lang_display}\n"
-        f"• <emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"tg://user?id={cust_uid}\">View User TG</a>\n\n"
+        f"<emoji id=\"5904630315946611415\">👤</emoji> <b>Name:-</b> {name}\n"
+        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>TG ID:-</b> <code>{cust_uid}</code>\n"
+        f"<emoji id=\"6023880246128810031\">📅</emoji> <b>Joined Date:-</b> <code>{joined_str}</code>\n"
+        f"<emoji id=\"6030664675253820292\">🛍</emoji> <b>First Buy:-</b> <code>{first_buy_str}</code>\n"
+        f"<emoji id=\"6030768072296502910\">🌐</emoji> <b>Language:-</b> {lang_display}\n"
+        f"<emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"{profile_url}\">View User TG</a>\n\n"
         f'<emoji id="6007983438294949171">👑</emoji> <b>Subscription Status</b>\n'
         f"────────────────────\n\n"
         f"{sub_status}\n"
@@ -2134,7 +2137,10 @@ async def settings_query(bot, query):
             InlineKeyboardButton("➕ Grant 1 Year", callback_data=f"settings#sb_rl_g_{cust_uid}_365d_{page}")
         ],
         [
-            InlineKeyboardButton("❌ Revoke Pass", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
+            InlineKeyboardButton("🔗 View User TG Profile", url=profile_url),
+            InlineKeyboardButton("❌ Revoke Pass", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}")
+        ],
+        [
             InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data=f"settings#sb_rl_cust_{page}")
         ]
     ]
@@ -2143,7 +2149,7 @@ async def settings_query(bot, query):
     except Exception as ex:
         try:
             await query.message.edit_text(
-                f"<b>👤 CUSTOMER PROFILE</b>\n\n• <b>ID:</b> <code>{cust_uid}</code>\n• <b>Name:</b> {name}\n\n{sub_status}",
+                f"<b>👤 CUSTOMER PROFILE</b>\n\n<b>ID:</b> <code>{cust_uid}</code>\n<b>Name:</b> {name}\n\n{sub_status}",
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
         except Exception:
