@@ -7013,22 +7013,22 @@ async def _process_callback(client, query):
         txt_dev = (
             f"<b>⟦ {_sc('DEVELOPER & TECH SUPPORT')} ⟧</b>\n\n"
             f"<blockquote expandable>"
-            f"<b>• Project Developer:</b> @im_jeetu\n"
+            f"<b>• Project Developer:</b> @MeJeetX\n"
             f"<b>• Architecture:</b> Arya Premium Store &amp; FastEngine\n"
-            f"<b>• Telegram:</b> <a href=\"https://t.me/im_jeetu\">@im_jeetu</a>\n\n"
+            f"<b>• Telegram:</b> <a href=\"https://t.me/MeJeetX\">@MeJeetX</a>\n\n"
             f"<i>For custom bot development, infrastructure, or technical inquiries, click below to contact directly.</i>"
             f"</blockquote>"
         ) if lang == 'en' else (
             f"<b>⟦ {_sc('डेवलपर एवं तकनीकी सहायता')} ⟧</b>\n\n"
             f"<blockquote expandable>"
-            f"<b>• मुख्य डेवलपर:</b> @im_jeetu\n"
+            f"<b>• मुख्य डेवलपर:</b> @MeJeetX\n"
             f"<b>• आर्किटेक्चर:</b> आर्या प्रीमियम स्टोर एवं फास्टइंजन\n"
-            f"<b>• टेलीग्राम:</b> <a href=\"https://t.me/im_jeetu\">@im_jeetu</a>\n\n"
+            f"<b>• टेलीग्राम:</b> <a href=\"https://t.me/MeJeetX\">@MeJeetX</a>\n\n"
             f"<i>कस्टम बॉट डेवलपमेंट या तकनीकी सहायता के लिए नीचे दिए गए बटन से सीधे डेवलपर से संपर्क करें।</i>"
             f"</blockquote>"
         )
         kb_dev = [
-            [_ikb("Contact Developer", url="https://t.me/im_jeetu", icon_custom_emoji_id="6021683099773966917")],
+            [_ikb("Contact Developer", url="https://t.me/MeJeetX", icon_custom_emoji_id="6021683099773966917")],
             [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_help")]
         ]
         await _safe_edit(query.message, text=txt_dev, markup=InlineKeyboardMarkup(kb_dev))
