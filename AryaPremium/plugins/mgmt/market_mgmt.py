@@ -47,7 +47,7 @@ async def _send_or_edit_mgmt_bot_api(client, chat_id: int, text: str, markup: In
     import aiohttp
     import json
     import re
-    bot_token = getattr(Config, "BOT_TOKEN", "") or getattr(client, "bot_token", "")
+    bot_token = getattr(Config, "MGMT_BOT_TOKEN", "") or getattr(client, "bot_token", "") or getattr(Config, "BOT_TOKEN", "")
     if not bot_token:
         return False
 
