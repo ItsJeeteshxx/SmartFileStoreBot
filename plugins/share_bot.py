@@ -3410,7 +3410,7 @@ async def _process_pass_callback(client, query):
             benefits_sec = (
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>पास के मुख्य फायदे:</b>\n'
                 '• <emoji id="5774077015388852135">🚫</emoji> <b>कोई डोनेशन मैसेज नहीं:</b> बिना किसी डोनेशन मैसेज के 100% क्लीन एक्सपीरियंस।\n'
-                '• <emoji id="5805331990618053402">⚡️</emoji> <b>कोई एक्सेस लिमिट नहीं:</b> बिना किसी कूलडाउन के अनलिमिटेड फाइल्स डाउनलोड करें।\n\n'
+                '• <emoji id="5805331990618053402">⚡️</emoji> <b>कोई एक्सेस लिमिट नहीं:</b> बिना किसी कूलडाउन के सभी ऑडियो कहानियां लगातार सुनें।\n\n'
             )
             lbl_txns = "📜 मेरे ट्रांसक्शन्स"
             lbl_lang = "भाषा"
@@ -3422,7 +3422,7 @@ async def _process_pass_callback(client, query):
             benefits_sec = (
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>Pass Benefits:</b>\n'
                 '• <emoji id="5774077015388852135">🚫</emoji> <b>No Donation Messages:</b> 100% clean experience without any donation messages.\n'
-                '• <emoji id="5805331990618053402">⚡️</emoji> <b>No Access Limits:</b> Unlimited link access without cooldown.\n\n'
+                '• <emoji id="5805331990618053402">⚡️</emoji> <b>No Access Limits:</b> Unlimited story listening access without cooldown.\n\n'
             )
             lbl_txns = "📜 My Transactions"
             lbl_lang = "Language"
