@@ -75,12 +75,24 @@ logger = logging.getLogger(__name__)
 
 # Wait, we need the Management Bot token if it's separate from the connected bots.
 async def main():
+    print("==================================================", flush=True)
+    print(">>> ARYA PREMIUM BOT ECOSYSTEM BOOTING...", flush=True)
+    print(f">>> PID: {os.getpid()}", flush=True)
+    print(f">>> API_ID: {Config.API_ID}", flush=True)
+    print(f">>> MGMT_BOT_TOKEN: {'Configured' if Config.MGMT_BOT_TOKEN else 'MISSING'}", flush=True)
+    print(f">>> MONGO_URI: {'Configured' if Config.MONGO_URI else 'MISSING'}", flush=True)
+    print("==================================================", flush=True)
+
     logger.info("Initializing Premium Ecosystem Database...")
     await db.connect()
+
+    if not Config.MGMT_BOT_TOKEN and Config.BOT_TOKEN:
+        Config.MGMT_BOT_TOKEN = Config.BOT_TOKEN
 
     config_vars = ["API_ID", "API_HASH", "MGMT_BOT_TOKEN", "MONGO_URI", "DATABASE_NAME"]
     missing = [c for c in config_vars if not getattr(Config, c)]
     if missing:
+        print(f"❌ CRITICAL CONFIG ERROR: Missing required configs: {', '.join(missing)}", flush=True)
         logger.error(f"Missing required configs: {', '.join(missing)}")
         return
     
