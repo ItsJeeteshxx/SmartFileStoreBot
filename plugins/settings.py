@@ -2156,56 +2156,71 @@ async def settings_query(bot, query):
     
     buttons = []
     api_buttons = []
+    plans_list = list(configured_prices.keys())[:3]
     
-    # 1. Dynamic Grant buttons (➕ Plan Duration with icon_custom_emoji_id="5882207227997066107")
-    grant_row = []
-    api_grant_row = []
-    for k in configured_prices.keys():
+    # 1. Dynamic Grant rows (2 per row, max 3 starting plans + Custom with icon_custom_emoji_id="5882207227997066107")
+    grant_row_1 = []
+    api_grant_row_1 = []
+    for k in plans_list[:2]:
         dur_sec = parse_duration_to_seconds(k, default_unit='d')
         lbl = format_duration_friendly(dur_sec).title()
-        grant_row.append(InlineKeyboardButton(f"➕ {lbl}", callback_data=f"settings#sb_rl_g_{cust_uid}_{k}_{page}"))
-        api_grant_row.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_g_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
-        if len(grant_row) == 3:
-            buttons.append(grant_row)
-            api_buttons.append(api_grant_row)
-            grant_row = []
-            api_grant_row = []
-    if grant_row:
-        if len(grant_row) < 3:
-            grant_row.append(InlineKeyboardButton("➕ Custom", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}"))
-            api_grant_row.append({"text": "Custom", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
-            buttons.append(grant_row)
-            api_buttons.append(api_grant_row)
-        else:
-            buttons.append(grant_row)
-            api_buttons.append(api_grant_row)
-            buttons.append([InlineKeyboardButton("➕ Custom Grant", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}")])
-            api_buttons.append([{"text": "Custom Grant", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"}])
-    else:
-        buttons.append([InlineKeyboardButton("➕ Custom Grant", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}")])
-        api_buttons.append([{"text": "Custom Grant", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"}])
+        grant_row_1.append(InlineKeyboardButton(f"{lbl}", callback_data=f"settings#sb_rl_g_{cust_uid}_{k}_{page}"))
+        api_grant_row_1.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_g_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
+    if grant_row_1:
+        buttons.append(grant_row_1)
+        api_buttons.append(api_grant_row_1)
 
-    # 2. Dynamic Revoke / Deduct buttons (➖ Plan Duration with icon_custom_emoji_id="5350814400754236833")
-    revoke_row = []
-    api_revoke_row = []
-    for k in list(configured_prices.keys())[:3]:
+    grant_row_2 = []
+    api_grant_row_2 = []
+    if len(plans_list) > 2:
+        k = plans_list[2]
         dur_sec = parse_duration_to_seconds(k, default_unit='d')
         lbl = format_duration_friendly(dur_sec).title()
-        revoke_row.append(InlineKeyboardButton(f"➖ {lbl}", callback_data=f"settings#sb_rl_red_{cust_uid}_{k}_{page}"))
-        api_revoke_row.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_red_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
-    revoke_row.append(InlineKeyboardButton("➖ Custom", callback_data=f"settings#sb_rl_cred_{cust_uid}_{page}"))
-    api_revoke_row.append({"text": "Custom", "callback_data": f"settings#sb_rl_cred_{cust_uid}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
-    buttons.append(revoke_row)
-    api_buttons.append(api_revoke_row)
+        grant_row_2.append(InlineKeyboardButton(f"{lbl}", callback_data=f"settings#sb_rl_g_{cust_uid}_{k}_{page}"))
+        api_grant_row_2.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_g_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
+    grant_row_2.append(InlineKeyboardButton("Custom", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}"))
+    api_grant_row_2.append({"text": "Custom", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
+    buttons.append(grant_row_2)
+    api_buttons.append(api_grant_row_2)
+
+    # 2. Dynamic Revoke / Deduct rows (2 per row, max 3 starting plans + Custom with icon_custom_emoji_id="5350814400754236833")
+    revoke_row_1 = []
+    api_revoke_row_1 = []
+    for k in plans_list[:2]:
+        dur_sec = parse_duration_to_seconds(k, default_unit='d')
+        lbl = format_duration_friendly(dur_sec).title()
+        revoke_row_1.append(InlineKeyboardButton(f"{lbl}", callback_data=f"settings#sb_rl_red_{cust_uid}_{k}_{page}"))
+        api_revoke_row_1.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_red_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
+    if revoke_row_1:
+        buttons.append(revoke_row_1)
+        api_buttons.append(api_revoke_row_1)
+
+    revoke_row_2 = []
+    api_revoke_row_2 = []
+    if len(plans_list) > 2:
+        k = plans_list[2]
+        dur_sec = parse_duration_to_seconds(k, default_unit='d')
+        lbl = format_duration_friendly(dur_sec).title()
+        revoke_row_2.append(InlineKeyboardButton(f"{lbl}", callback_data=f"settings#sb_rl_red_{cust_uid}_{k}_{page}"))
+        api_revoke_row_2.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_red_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
+    revoke_row_2.append(InlineKeyboardButton("Custom", callback_data=f"settings#sb_rl_cred_{cust_uid}_{page}"))
+    api_revoke_row_2.append({"text": "Custom", "callback_data": f"settings#sb_rl_cred_{cust_uid}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
+    buttons.append(revoke_row_2)
+    api_buttons.append(api_revoke_row_2)
 
     # 3. Actions & Navigation
     buttons.append([
-        InlineKeyboardButton("❌ Full Revoke", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
-        InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data=f"settings#sb_rl_cust_{page}")
+        InlineKeyboardButton("Full Revoke", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}")
     ])
     api_buttons.append([
-        {"text": "Full Revoke", "callback_data": f"settings#sb_rl_r_{cust_uid}_{page}", "icon_custom_emoji_id": "5774077015388852135"},
-        {"text": "❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", "callback_data": f"settings#sb_rl_cust_{page}"}
+        {"text": "Full Revoke", "callback_data": f"settings#sb_rl_r_{cust_uid}_{page}", "icon_custom_emoji_id": "5774077015388852135"}
+    ])
+
+    buttons.append([
+        InlineKeyboardButton("Back", callback_data=f"settings#sb_rl_cust_{page}")
+    ])
+    api_buttons.append([
+        {"text": "Back", "callback_data": f"settings#sb_rl_cust_{page}"}
     ])
 
     from plugins.share_bot import send_or_edit_with_custom_icons
