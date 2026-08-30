@@ -5003,6 +5003,34 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                 if cf_status in ("PAID", "SUCCESS"):
                     payment_id = res_json.get("cf_order_id") or cf_query_id
                     
+                    # 1. Delivery Bot Unlimited Pass Order Isolation (DO NOT log as story or create mini app order)
+                    if oid.startswith("PASS-") or await arya_db.db.pass_orders.count_documents({"order_id": oid}) > 0:
+                        pass_order = await arya_db.db.pass_orders.find_one({"order_id": oid})
+                        if pass_order and pass_order.get("status") != "PAID":
+                            claimed = await arya_db.db.pass_orders.find_one_and_update(
+                                {"order_id": oid, "status": {"$ne": "PAID"}},
+                                {"$set": {"status": "PAID", "paid_at": time.time(), "payment_details": res_json}},
+                                return_document=False
+                            )
+                            if claimed:
+                                p_uid = int(pass_order.get("user_id"))
+                                p_dur = pass_order.get("duration", "1d")
+                                p_uname = pass_order.get("user_name", "User")
+                                from database import parse_duration_to_seconds
+                                dur_sec = parse_duration_to_seconds(str(p_dur), default_unit='d')
+                                cur_pass = await arya_db.db.unlimited_passes.find_one({'user_id': p_uid})
+                                now_ts = time.time()
+                                base_t = cur_pass.get('expires_at', 0) if (cur_pass and cur_pass.get('expires_at', 0) > now_ts) else now_ts
+                                new_exp = base_t + dur_sec
+                                pass_fields = {'expires_at': new_exp, 'user_name': p_uname, 'updated_at': now_ts}
+                                if pass_order.get("bot_id"):
+                                    pass_fields['bot_id'] = int(pass_order.get("bot_id"))
+                                if pass_order.get("bot_username"):
+                                    pass_fields['bot_username'] = str(pass_order.get("bot_username"))
+                                await arya_db.db.unlimited_passes.update_one({'user_id': p_uid}, {'$set': pass_fields}, upsert=True)
+                        return {"success": True, "status": "paid", "order_id": oid, "is_pass": True}
+
+                    # 2. Mini App Story Order Processing
                     cust_details = res_json.get("customer_details", {})
                     cust_id_str = str(cust_details.get("customer_id", ""))
                     user_id = order.get("user_id") if order else (int(cust_id_str.replace("cust_", "")) if "cust_" in cust_id_str and cust_id_str.replace("cust_", "").isdigit() else None)
@@ -5017,7 +5045,7 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                                 "paid_at": datetime.now(timezone.utc),
                             }}
                         )
-                    else:
+                    elif story_ids or (oid.startswith("AM-") or oid.startswith("DODO-")):
                         order_doc = {
                             "order_id": oid,
                             "cf_order_id": str(payment_id),
@@ -5030,8 +5058,11 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                             "created_at": datetime.now(timezone.utc)
                         }
                         await arya_db.db.orders.insert_one(order_doc)
+                    else:
+                        # Unrecognized order with no story associations — do not pollute story orders
+                        return {"success": True, "status": "paid", "order_id": oid}
                     
-                    if user_id:
+                    if user_id and story_ids:
                         for sid in story_ids:
                             try:
                                 await arya_db.add_purchase(user_id, sid)
@@ -5039,22 +5070,22 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                                 logger.error(f"add_purchase error for {sid}: {e}")
                                 
                     story_names = order.get("story_names", []) if order else []
-                    updated_order = {
-                        "order_id": oid,
-                        "user_id": user_id,
-                        "story_ids": story_ids,
-                        "story_names": story_names,
-                        "total": float(res_json.get("order_amount", 0.0)),
-                        "status": "paid",
-                        "payment_id": str(payment_id),
-                        "payment_method": "Cashfree",
-                        "source": "Cashfree"
-                    }
-                    asyncio.create_task(trigger_payment_log_from_order(updated_order))
-                    asyncio.create_task(record_purchased_stories(updated_order))
-                    asyncio.create_task(send_purchase_receipt_to_user(updated_order))
+                    if story_ids or story_names:
+                        updated_order = {
+                            "order_id": oid,
+                            "user_id": user_id,
+                            "story_ids": story_ids,
+                            "story_names": story_names,
+                            "total": float(res_json.get("order_amount", 0.0)),
+                            "status": "paid",
+                            "payment_id": str(payment_id),
+                            "payment_method": "Cashfree",
+                            "source": "Cashfree"
+                        }
+                        asyncio.create_task(trigger_payment_log_from_order(updated_order))
+                        asyncio.create_task(record_purchased_stories(updated_order))
+                        asyncio.create_task(send_purchase_receipt_to_user(updated_order))
 
-                    
                     return {"success": True, "status": "paid", "order_id": oid, "payment_id": str(payment_id)}
                 else:
                     return {"success": False, "status": cf_status, "order_id": oid}
