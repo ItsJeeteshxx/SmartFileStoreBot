@@ -78,11 +78,12 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                 data = await resp.json()
                 if resp.status in (200, 201) and (data.get("payment_session_id") or data.get("order_id")):
                     payment_session_id = data.get("payment_session_id", "")
+                    is_sb = (cf_cfg["env"] == "sandbox")
+                    # Use Arya Premium Mini App animated wrapper for Cashfree JS SDK checkout
                     payment_link = (
-                        data.get("payment_link") 
-                        or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None)
-                        or (f"https://payments-test.cashfree.com/order/#{payment_session_id}" if (cf_cfg["env"] == "sandbox" and payment_session_id) else None)
-                        or (f"https://payments.cashfree.com/order/#{payment_session_id}" if payment_session_id else None)
+                        f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sb else 'false'}"
+                        if payment_session_id else
+                        (data.get("payment_link") or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None))
                     )
                     
                     # Store order in MongoDB

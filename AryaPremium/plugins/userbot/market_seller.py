@@ -7108,7 +7108,6 @@ async def _process_callback(client, query):
         if method == "cashfree":
             # Cashfree Payment Gateway order flow
             logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
-            await query.answer("⏳ Generating Payment Link...", show_alert=False)
             from cashfree_helper import create_cashfree_order
             bot_username = getattr(getattr(client, "me", None), "username", "")
             user_name = query.from_user.first_name or "Buyer"
@@ -7118,14 +7117,14 @@ async def _process_callback(client, query):
             if not cf_res.get("success"):
                 err_msg = cf_res.get("error", "Failed to initiate Cashfree order.")
                 logger.error(f"[PAY2] Cashfree order error: {err_msg}")
-                return await query.answer(f"❌ {err_msg}", show_alert=True)
+                return await query.answer(f"❌ {err_msg[:180]}", show_alert=True)
 
             order_id = cf_res["order_id"]
-            pay_link = cf_res["payment_link"]
+            pay_link = cf_res.get("payment_link") or f"https://aryapremium.store/app?story_id={s_id}"
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
             price = story.get('price', 0)
 
-            title_cf = "<b>⟦ 💳 PAYMENT GATEWAY ⟧</b>" if lang == 'en' else "<b>⟦ 💳 पेमेंट गेटवे ⟧</b>"
+            title_cf = "⟦ 💳 PAYMENT GATEWAY ⟧" if lang == 'en' else "⟦ 💳 पेमेंट गेटवे ⟧"
             desc_cf = (
                 f"<b>{title_cf}</b>\n\n"
                 f"<b>• Story:</b> {to_mathbold(s_name)}\n"
@@ -7151,7 +7150,19 @@ async def _process_callback(client, query):
                 [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                 [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
             ]
-            await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
+
+            await _send_story_photo(
+                client=client,
+                user_id=user_id,
+                story=story,
+                caption=desc_cf,
+                reply_markup=InlineKeyboardMarkup(kb),
+                fallback_photo="https://files.catbox.moe/a6xw61.png"
+            )
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
             return
 
         elif method == "upi":
