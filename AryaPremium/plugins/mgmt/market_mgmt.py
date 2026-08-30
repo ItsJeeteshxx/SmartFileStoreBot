@@ -113,16 +113,16 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     )
 
     kb = [
-        [InlineKeyboardButton("ADD STORY", callback_data="mk#add_story"),
-         InlineKeyboardButton("PENDING APPROVALS", callback_data="mk#pending")],
-        [InlineKeyboardButton("STORY REQUESTS", callback_data="mk#reqs_0"),
-         InlineKeyboardButton("SUPPORT PANEL", callback_data="mk#fb_panel_0")],
-        [InlineKeyboardButton("MANAGE STORIES", callback_data="mk#manage_stories"),
-         InlineKeyboardButton("CHANNELS", callback_data="mk#channels")],
-        [InlineKeyboardButton("ACCOUNTS", callback_data="mk#accounts"),
-         InlineKeyboardButton("BUYERS", callback_data="mk#users")],
-        [InlineKeyboardButton("SETTINGS", callback_data="mk#settings")],
-        [InlineKeyboardButton("CLOSE PANEL", callback_data="mk#close")]
+        [InlineKeyboardButton("Add", callback_data="mk#add_story"),
+         InlineKeyboardButton("Approval", callback_data="mk#pending")],
+        [InlineKeyboardButton("Requests", callback_data="mk#reqs_0"),
+         InlineKeyboardButton("Support Tab", callback_data="mk#fb_panel_0")],
+        [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
+        [InlineKeyboardButton("Channels", callback_data="mk#channels"),
+         InlineKeyboardButton("Bots", callback_data="mk#accounts")],
+        [InlineKeyboardButton("Costumers", callback_data="mk#users"),
+         InlineKeyboardButton("Settings", callback_data="mk#settings")],
+        [InlineKeyboardButton("Close", callback_data="mk#close")]
     ]
     markup = InlineKeyboardMarkup(kb)
 
@@ -177,14 +177,28 @@ def parse_chat_from_link(text: str):
 
 
 async def _render_settings(client, query):
-    """Renders the settings panel with all toggle states fetched from DB."""
-    groq_key_raw = await db.get_config("groq_api_key")
-    groq_status = f"✅ Set ({(groq_key_raw or '')[:8]}…)" if groq_key_raw else "❌ Not Set"
+    """Renders the top-level settings categories."""
+    txt = (
+        "<b>⚙️ Settings Panel</b>\n\n"
+        "Select a section below to configure your system:\n\n"
+        "• <b>💳 Payments:</b> UPI slots, Checkout Page 1 &amp; 2, Cashfree gateway, Gmail settings &amp; auto-verification.\n"
+        "• <b>⚙️ More:</b> Groq AI keys, T&amp;C requirement, and Mini App deep links.\n\n"
+        "<i>Tap any category below to proceed:</i>"
+    )
+    kb = [
+        [InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")],
+        [InlineKeyboardButton("⚙️ More", callback_data="mk#settings_more")],
+        [InlineKeyboardButton("« Back to Dashboard", callback_data="mk#back")]
+    ]
+    if hasattr(query, "message") and query.message:
+        await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+    else:
+        await client.send_message(query.from_user.id, txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
-    # Fetch feature toggles
+
+async def _render_payments_settings(client, query):
+    """Renders the Payments Settings panel: UPI, Checkout 1 & 2, Cashfree, Gmail verify."""
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    mini_app_on = cfg.get("mini_app_enabled", True)
-    tnc_on = cfg.get("tnc_enabled", True)
     checkout_mode = cfg.get("checkout_mode", "v1")
     
     gmail_user = cfg.get("gmail_user", "")
@@ -201,10 +215,8 @@ async def _render_settings(client, query):
     upi3_status = f"✅ ({upi3[:8]}…)" if upi3 else "❌"
     upi4_status = f"✅ ({upi4[:8]}…)" if upi4 else "❌"
 
-    mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
-    tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
-    chk_v1_btn = f"🛒 Checkout Page 1 (Razorpay+UPI): {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
-    chk_v2_btn = f"🛒 Checkout Page 2 (UPI+Crypto): {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
+    chk_v1_btn = f"🛒 Checkout Page 1: {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
+    chk_v2_btn = f"🛒 Checkout Page 2: {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
     
     cf_enabled = cfg.get("cashfree_enabled", False)
     cf_app_id = cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")
@@ -223,27 +235,59 @@ async def _render_settings(client, query):
             InlineKeyboardButton(f"💳 UPI 3: {upi3_status}", callback_data="mk#set_upi_3"),
             InlineKeyboardButton(f"💳 UPI 4: {upi4_status}", callback_data="mk#set_upi_4")
         ],
-        [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
-        [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
-        [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
-        [InlineKeyboardButton(chk_v1_btn, callback_data="mk#toggle_checkout_v1")],
-        [InlineKeyboardButton(chk_v2_btn, callback_data="mk#toggle_checkout_v2")],
+        [
+            InlineKeyboardButton(chk_v1_btn, callback_data="mk#toggle_checkout_v1"),
+            InlineKeyboardButton(chk_v2_btn, callback_data="mk#toggle_checkout_v2")
+        ],
         [InlineKeyboardButton(f"💳 Cashfree Settings [{cf_status}]", callback_data="mk#cashfree_menu")],
         [InlineKeyboardButton(f"📧 Set Gmail [{gmail_user_status}]", callback_data="mk#set_gmail_user")],
         [InlineKeyboardButton(f"🔑 Set Gmail Pwd [{gmail_pwd_status}]", callback_data="mk#set_gmail_pwd")],
         [InlineKeyboardButton(gmail_verify_btn, callback_data="mk#toggle_gmail_verify")],
-        [InlineKeyboardButton("« Back", callback_data="mk#back")]
+        [InlineKeyboardButton("« Back to Payments", callback_data="mk#settings_payments")]
     ]
     txt = (
-        "<b>⚙️ Ecosystem Settings</b>\n\n"
-        "<b>💳 Payment:</b> Configure UPI & AI integrations.\n"
-        "<b>📱 Mini App Deep Links:</b> When ON, story buy links open in Mini App. When OFF, story buy links open in Bot.\n"
-        "<b>📜 T&amp;C Requirement:</b> When ON, users must accept Terms before purchasing.\n"
-        "<b>🛒 Checkout Page:</b> Switch between <b>Page 1</b> (Razorpay + Manual UPI) and <b>Page 2</b> (Direct UPI + Crypto Payment).\n"
-        "<b>📧 Gmail Verification:</b> Auto-verify Direct UPI payments via Gmail secure IMAP (Slice Bank alerts).\n\n"
-        "<i>Tap any toggle button below to switch it.</i>"
+        "<b>💳 Payments &amp; Gateway Settings</b>\n\n"
+        "<b>• UPI IDs:</b> Rotate up to 4 UPI IDs for direct payments.\n"
+        "<b>• Checkout Pages:</b> Switch between <b>Page 1</b> (Razorpay + Manual UPI) and <b>Page 2</b> (Direct UPI + Cashfree + Crypto).\n"
+        "<b>• Cashfree:</b> Configure Cards, NetBanking, and UPI gateway keys.\n"
+        "<b>• Gmail Verification:</b> Auto-verify UPI payments via IMAP alerts.\n\n"
+        "<i>Tap any button to configure or toggle.</i>"
     )
-    await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+    if hasattr(query, "message") and query.message:
+        await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+    else:
+        await client.send_message(query.from_user.id, txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+
+
+async def _render_more_settings(client, query):
+    """Renders the More Settings panel: Groq AI, T&C requirement, Mini App deep links."""
+    groq_key_raw = await db.get_config("groq_api_key")
+    groq_status = f"✅ Set ({(groq_key_raw or '')[:8]}…)" if groq_key_raw else "❌ Not Set"
+
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    mini_app_on = cfg.get("mini_app_enabled", True)
+    tnc_on = cfg.get("tnc_enabled", True)
+
+    mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
+    tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
+
+    kb = [
+        [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
+        [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
+        [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
+        [InlineKeyboardButton("« Back to Settings", callback_data="mk#settings")]
+    ]
+    txt = (
+        "<b>⚙️ More System Settings</b>\n\n"
+        "<b>• Groq AI:</b> Transliterate story names and translate descriptions.\n"
+        "<b>• T&amp;C Requirement:</b> Require users to accept terms before purchasing.\n"
+        "<b>• Mini App Deep Links:</b> Open stories in Mini App when enabled, or in Telegram bot when disabled.\n\n"
+        "<i>Tap any button to configure or toggle.</i>"
+    )
+    if hasattr(query, "message") and query.message:
+        await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+    else:
+        await client.send_message(query.from_user.id, txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
 
 async def _render_cashfree_settings(client, query):
@@ -397,6 +441,14 @@ async def market_callback(client, query):
             await _safe_answer(query)
             await _render_settings(client, query)
 
+        elif cmd == "settings_payments":
+            await _safe_answer(query)
+            await _render_payments_settings(client, query)
+
+        elif cmd == "settings_more":
+            await _safe_answer(query)
+            await _render_more_settings(client, query)
+
         elif cmd == "toggle_miniapp":
             await _safe_answer(query)
             cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
@@ -409,7 +461,7 @@ async def market_callback(client, query):
             )
             status = "✅ ON" if new_val else "❌ OFF"
             await query.answer(f"Mini App Deep Links: {status}", show_alert=True)
-            await _render_settings(client, query)
+            await _render_more_settings(client, query)
 
         elif cmd == "toggle_tnc":
             await _safe_answer(query)
@@ -423,7 +475,7 @@ async def market_callback(client, query):
             )
             status = "✅ ON" if new_val else "❌ OFF"
             await query.answer(f"T&C Requirement: {status}", show_alert=True)
-            await _render_settings(client, query)
+            await _render_more_settings(client, query)
 
         elif cmd in ("toggle_checkout_v1", "toggle_checkout_v2"):
             await _safe_answer(query)
@@ -437,7 +489,7 @@ async def market_callback(client, query):
             )
             status = "Page 1 (Razorpay+UPI)" if new_val == "v1" else "Page 2 (UPI+Crypto)"
             await query.answer(f"Checkout Mode Set To: {status}", show_alert=True)
-            await _render_settings(client, query)
+            await _render_payments_settings(client, query)
 
         elif cmd == "toggle_gmail_verify":
             await _safe_answer(query)
@@ -451,7 +503,7 @@ async def market_callback(client, query):
             )
             status = "✅ ON" if new_val else "❌ OFF"
             await query.answer(f"Gmail Auto-Verify: {status}", show_alert=True)
-            await _render_settings(client, query)
+            await _render_payments_settings(client, query)
 
         # ── Support Panel (Feedback/Suggestions) ──
         elif cmd.startswith("fb_panel_"):
@@ -2311,7 +2363,7 @@ async def _settings_flow(client, user_id, cmd):
             return await client.send_message(
                 user_id,
                 "<i>Process Cancelled. UPI ID unchanged.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")]])
             )
             
         entered = msg.text.strip()
@@ -2326,7 +2378,7 @@ async def _settings_flow(client, user_id, cmd):
             return await client.send_message(
                 user_id,
                 f"✅ UPI ID {upi_idx} cleared successfully!",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")]])
             )
             
         new_upi = entered
@@ -2345,7 +2397,7 @@ async def _settings_flow(client, user_id, cmd):
             return await client.send_message(
                 user_id,
                 "<i>Process Cancelled. UPI ID unchanged.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")]])
             )
             
         new_name = msg_name.text.strip()
@@ -2414,7 +2466,7 @@ async def _settings_flow(client, user_id, cmd):
             return await client.send_message(
                 user_id, 
                 "<i>Process Cancelled. Gmail email address unchanged.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")]])
             )
             
         new_email = msg.text.strip()
@@ -2449,7 +2501,7 @@ async def _settings_flow(client, user_id, cmd):
             return await client.send_message(
                 user_id, 
                 "<i>Process Cancelled. Gmail App Password unchanged.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Settings", callback_data="mk#settings")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")]])
             )
             
         new_pwd = msg.text.strip().replace(" ", "")
