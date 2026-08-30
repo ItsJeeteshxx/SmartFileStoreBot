@@ -2677,7 +2677,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         crypto_desc = "• <b>लाभ:</b> तुरंत एक्सेस (कोई प्रतीक्षा नहीं), 24/7 उपलब्ध।\n• <b>माध्यम:</b> BTC, USDT, ETH, LTC और 300+ अन्य कॉइन्स।\n• <b>सत्यापन:</b> भुगतान के तुरंत बाद स्वचालित।"
         
         pay_upi_btn = "Pay Via UPI"
-        pay_cf_btn = "Pay Via Cashfree"
+        pay_cf_btn = "Pay Via Cards , NetBanking"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
@@ -2696,7 +2696,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
         
         pay_upi_btn = "Pay Via UPI"
-        pay_cf_btn = "Pay Via Cashfree"
+        pay_cf_btn = "Pay Via Cards , NetBanking"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "UPI Currently Unavailable"
         back_btn = f"❮ {_sc('BACK')}"
@@ -2764,7 +2764,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
             kb.append([InlineKeyboardButton(f"⏸ {unavailable_upi}", callback_data="mb#noop")])
 
     if show_cashfree:
-        kb.append([_ikb(pay_cf_btn, callback_data=f"mb#pay2#cashfree#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
+        kb.append([_ikb(pay_cf_btn, callback_data=f"mb#pay2#cashfree#{str(story['_id'])}", icon_custom_emoji_id="6104751980641525812")])
 
     if show_crypto:
         kb.append([InlineKeyboardButton(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}")])
@@ -5120,7 +5120,8 @@ async def _show_help_menu(client, query):
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
             [_ikb(f"{_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start", icon_custom_emoji_id="6023852792697854544")],
-            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
+            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1"),
+             _ikb("Developer", callback_data="mb#help_dev", icon_custom_emoji_id="6021683099773966917")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
     else:
@@ -5145,7 +5146,8 @@ async def _show_help_menu(client, query):
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
             [_ikb(f"{_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start", icon_custom_emoji_id="6023852792697854544")],
-            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
+            [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1"),
+             _ikb("Developer", callback_data="mb#help_dev", icon_custom_emoji_id="6021683099773966917")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
 
@@ -7006,6 +7008,32 @@ async def _process_callback(client, query):
 
 
 
+
+    elif cmd == "help_dev":
+        txt_dev = (
+            f"<b>⟦ {_sc('DEVELOPER & TECH SUPPORT')} ⟧</b>\n\n"
+            f"<blockquote expandable>"
+            f"<b>• Project Developer:</b> @im_jeetu\n"
+            f"<b>• Architecture:</b> Arya Premium Store &amp; FastEngine\n"
+            f"<b>• Telegram:</b> <a href=\"https://t.me/im_jeetu\">@im_jeetu</a>\n\n"
+            f"<i>For custom bot development, infrastructure, or technical inquiries, click below to contact directly.</i>"
+            f"</blockquote>"
+        ) if lang == 'en' else (
+            f"<b>⟦ {_sc('डेवलपर एवं तकनीकी सहायता')} ⟧</b>\n\n"
+            f"<blockquote expandable>"
+            f"<b>• मुख्य डेवलपर:</b> @im_jeetu\n"
+            f"<b>• आर्किटेक्चर:</b> आर्या प्रीमियम स्टोर एवं फास्टइंजन\n"
+            f"<b>• टेलीग्राम:</b> <a href=\"https://t.me/im_jeetu\">@im_jeetu</a>\n\n"
+            f"<i>कस्टम बॉट डेवलपमेंट या तकनीकी सहायता के लिए नीचे दिए गए बटन से सीधे डेवलपर से संपर्क करें।</i>"
+            f"</blockquote>"
+        )
+        kb_dev = [
+            [_ikb("Contact Developer", url="https://t.me/im_jeetu", icon_custom_emoji_id="6021683099773966917")],
+            [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_help")]
+        ]
+        await _safe_edit(query.message, text=txt_dev, markup=InlineKeyboardMarkup(kb_dev))
+        return
+
     # ── CASHFREE PAYMENT STATUS VERIFIER ──
     elif cmd == "cf_status":
         order_id = data[2]
@@ -7077,7 +7105,56 @@ async def _process_callback(client, query):
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
         if not story: return await query.answer("Story not found!", show_alert=True)
 
-        if method == "upi":
+        if method == "cashfree":
+            # Cashfree Payment Gateway order flow
+            logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
+            await query.answer("⏳ Generating Payment Link...", show_alert=False)
+            from cashfree_helper import create_cashfree_order
+            bot_username = getattr(getattr(client, "me", None), "username", "")
+            user_name = query.from_user.first_name or "Buyer"
+            
+            cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
+            
+            if not cf_res.get("success"):
+                err_msg = cf_res.get("error", "Failed to initiate Cashfree order.")
+                logger.error(f"[PAY2] Cashfree order error: {err_msg}")
+                return await query.answer(f"❌ {err_msg}", show_alert=True)
+
+            order_id = cf_res["order_id"]
+            pay_link = cf_res["payment_link"]
+            s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+            price = story.get('price', 0)
+
+            title_cf = "<b>⟦ 💳 PAYMENT GATEWAY ⟧</b>" if lang == 'en' else "<b>⟦ 💳 पेमेंट गेटवे ⟧</b>"
+            desc_cf = (
+                f"<b>{title_cf}</b>\n\n"
+                f"<b>• Story:</b> {to_mathbold(s_name)}\n"
+                f"<b>• Amount:</b> ₹{price}\n"
+                f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
+                f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
+                f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
+            ) if lang == 'en' else (
+                f"<b>{title_cf}</b>\n\n"
+                f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
+                f"<b>• राशि:</b> ₹{price}\n"
+                f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
+                f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
+                f"<i>भुगतान पूरा करने के बाद, तत्काल डिलीवरी के लिए <b>Check Status</b> पर टैप करें।</i>"
+            )
+
+            pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें (Cards/UPI/NetBanking)"
+            check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
+            back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
+
+            kb = [
+                [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
+                [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
+                [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
+            ]
+            await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
+            return
+
+        elif method == "upi":
             # Direct UPI Transfer Screen
             logger.info(f"[PAY2] User {user_id} clicked Direct UPI option for story {s_id}")
             try:

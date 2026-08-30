@@ -81,6 +81,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                     payment_link = (
                         data.get("payment_link") 
                         or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None)
+                        or (f"https://payments-test.cashfree.com/order/#{payment_session_id}" if (cf_cfg["env"] == "sandbox" and payment_session_id) else None)
                         or (f"https://payments.cashfree.com/order/#{payment_session_id}" if payment_session_id else None)
                     )
                     
@@ -109,7 +110,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                         "amount": price
                     }
                 else:
-                    err_msg = data.get("message") or str(data)
+                    err_msg = data.get("message") or data.get("description") or str(data)
                     logger.error(f"Cashfree create order failed: {data}")
                     return {"success": False, "error": err_msg}
     except Exception as e:
