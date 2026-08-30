@@ -1538,8 +1538,33 @@ async def _send_reply_keyboard_bot_api(
     return False
 
 
+def _clean_markup_for_pyrogram(markup: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return markup
+    cleaned_rows = []
+    for row in markup.inline_keyboard:
+        cleaned_row = []
+        for btn in row:
+            kwargs = {"text": getattr(btn, "text", "")}
+            if getattr(btn, "callback_data", None) is not None:
+                kwargs["callback_data"] = btn.callback_data
+            if getattr(btn, "url", None) is not None:
+                kwargs["url"] = btn.url
+            if getattr(btn, "switch_inline_query_current_chat", None) is not None:
+                kwargs["switch_inline_query_current_chat"] = btn.switch_inline_query_current_chat
+            elif getattr(btn, "switch_inline_query", None) is not None:
+                kwargs["switch_inline_query"] = btn.switch_inline_query
+            if getattr(btn, "web_app", None) is not None:
+                kwargs["web_app"] = btn.web_app
+            cleaned_row.append(InlineKeyboardButton(**kwargs))
+        cleaned_rows.append(cleaned_row)
+    return InlineKeyboardMarkup(cleaned_rows)
+
 async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
+    if not msg:
+        return None
     is_media = bool(getattr(msg, 'photo', None) or getattr(msg, 'video', None) or getattr(msg, 'animation', None) or getattr(msg, 'document', None))
+    client = getattr(msg, "_client", None)
 
     # Try Bot API edit if custom emoji buttons are present
     try:
@@ -1548,20 +1573,6 @@ async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
             for row in markup.inline_keyboard for btn in row
         )
         if has_custom_emoji and msg and hasattr(msg, "chat") and hasattr(msg, "id"):
-            client = getattr(msg, "_client", None)
-            if is_media and len(text) > 950:
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                return await _send_or_edit_seller_bot_api(
-                    client=client,
-                    chat_id=msg.chat.id,
-                    text=text,
-                    markup=markup,
-                    message_id=None,
-                    is_media_edit=False
-                )
             ok = await _send_or_edit_seller_bot_api(
                 client=client,
                 chat_id=msg.chat.id,
@@ -1575,30 +1586,19 @@ async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
     except Exception as e:
         logger.debug(f"Bot API edit fallback: {e}")
 
+    # Fallback to Pyrogram native MTProto edit (with sanitized markup)
+    clean_kb = _clean_markup_for_pyrogram(markup)
     try:
         if is_media:
-            if len(text) > 950:
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                client = getattr(msg, "_client", None)
-                if client and hasattr(msg, "chat"):
-                    return await client.send_message(msg.chat.id, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-            return await msg.edit_caption(caption=text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-        return await msg.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+            return await msg.edit_caption(caption=text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+        return await msg.edit_text(text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
         return None
     except Exception as ex:
         logger.warning(f"_safe_edit fallback triggered: {ex}")
         try:
-            client = getattr(msg, "_client", None)
             if client and hasattr(msg, "chat"):
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                return await client.send_message(msg.chat.id, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+                return await client.send_message(msg.chat.id, text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
         except Exception:
             pass
         return None
@@ -7109,21 +7109,18 @@ async def _process_callback(client, query):
             # Cashfree Payment Gateway order flow
             logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
             try:
-                await query.answer("⏳ Generating Payment Link...", show_alert=False)
+                await query.answer()
             except Exception:
                 pass
 
-            from cashfree_helper import create_cashfree_order, get_cashfree_config
+            from cashfree_helper import create_cashfree_order
             bot_username = getattr(getattr(client, "me", None), "username", "")
             user_name = query.from_user.first_name or "Buyer"
             
             cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
             
             order_id = cf_res.get("order_id") or f"cf_{user_id}_{int(time.time())}"
-            pay_link = cf_res.get("payment_link")
-            if not pay_link:
-                # Direct fallback to Mini App payment wrapper
-                pay_link = f"https://aryapremium.store/app?story_id={s_id}&buy=cashfree&user_id={user_id}"
+            pay_link = cf_res.get("payment_link") or f"https://aryapremium.store/app?story_id={s_id}&buy=cashfree&user_id={user_id}"
 
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
             price = story.get('price', 0)
@@ -7155,19 +7152,7 @@ async def _process_callback(client, query):
                 [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
             ]
 
-            # In-place caption edit for zero flicker, with robust safe_edit fallback
-            try:
-                if query.message and getattr(query.message, "photo", None):
-                    await query.message.edit_caption(caption=desc_cf, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
-                    return
-            except Exception as _ex:
-                logger.debug(f"[PAY2] edit_caption fallback: {_ex}")
-
-            try:
-                await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
-            except Exception as _ex:
-                logger.debug(f"[PAY2] _safe_edit fallback: {_ex}")
-                await client.send_message(user_id, desc_cf, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+            await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
             return
 
         elif method == "upi":

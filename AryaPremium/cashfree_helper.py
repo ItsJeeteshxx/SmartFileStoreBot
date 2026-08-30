@@ -86,7 +86,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     url = f"{cf_cfg['base_url']}/orders"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=12.0)) as resp:
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
                 data = await resp.json()
                 if resp.status in (200, 201) and (data.get("payment_session_id") or data.get("order_id")):
                     payment_session_id = data.get("payment_session_id", "")
