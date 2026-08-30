@@ -5113,17 +5113,17 @@ async def run_pass_expiry_monitor_loop():
                 if is_hi:
                     template = random.choice(PASS_EXPIRY_TEMPLATES_HI)
                     rem_text = template.format(u_name=u_name, exp_str=exp_str, rem_mins=rem_mins)
-                    btn_renew = "👑 पास रिन्यू करें (Renew Pass)"
+                    btn_renew = "पास रिन्यू करें (Renew Pass)"
                 else:
                     template = random.choice(PASS_EXPIRY_TEMPLATES_EN)
                     rem_text = template.format(u_name=u_name, exp_str=exp_str, rem_mins=rem_mins)
-                    btn_renew = "👑 Renew Pass"
+                    btn_renew = "Renew Pass"
 
                 rem_api_buttons = [
                     [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "6007983438294949171"}]
                 ]
                 rem_buttons = [
-                    [InlineKeyboardButton(btn_renew, callback_data="pass#unlock_menu")]
+                    [InlineKeyboardButton(f"👑 {btn_renew}", callback_data="pass#unlock_menu")]
                 ]
 
                 try:
