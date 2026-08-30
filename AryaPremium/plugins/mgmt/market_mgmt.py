@@ -1,3 +1,98 @@
+def _clean_markup_for_pyrogram(markup: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return markup
+    cleaned_rows = []
+    for row in markup.inline_keyboard:
+        cleaned_row = []
+        for btn in row:
+            kwargs = {"text": getattr(btn, "text", "")}
+            if getattr(btn, "callback_data", None) is not None:
+                kwargs["callback_data"] = btn.callback_data
+            if getattr(btn, "url", None) is not None:
+                kwargs["url"] = btn.url
+            if getattr(btn, "switch_inline_query_current_chat", None) is not None:
+                kwargs["switch_inline_query_current_chat"] = btn.switch_inline_query_current_chat
+            elif getattr(btn, "switch_inline_query", None) is not None:
+                kwargs["switch_inline_query"] = btn.switch_inline_query
+            if getattr(btn, "web_app", None) is not None:
+                kwargs["web_app"] = btn.web_app
+            cleaned_row.append(InlineKeyboardButton(**kwargs))
+        cleaned_rows.append(cleaned_row)
+    return InlineKeyboardMarkup(cleaned_rows)
+
+
+def _ikb(text: str, callback_data: str = None, url: str = None, switch_inline_query_current_chat: str = None, switch_inline_query: str = None, icon_custom_emoji_id: str = None) -> InlineKeyboardButton:
+    kwargs = {"text": text}
+    if callback_data is not None: kwargs["callback_data"] = callback_data
+    if url is not None: kwargs["url"] = url
+    if switch_inline_query_current_chat is not None: kwargs["switch_inline_query_current_chat"] = switch_inline_query_current_chat
+    elif switch_inline_query is not None: kwargs["switch_inline_query"] = switch_inline_query
+    b = InlineKeyboardButton(**kwargs)
+    if icon_custom_emoji_id:
+        b.icon_custom_emoji_id = str(icon_custom_emoji_id)
+    return b
+
+
+def _get_top_mgmt_emoji_row() -> list:
+    return [
+        _ikb(" ", callback_data="mk#add_story", icon_custom_emoji_id="5920332557466997677"),
+        _ikb(" ", callback_data="mk#manage_stories", icon_custom_emoji_id="6026337676091726218"),
+        _ikb(" ", callback_data="mk#users", icon_custom_emoji_id="6021487472603568286"),
+        _ikb(" ", callback_data="mk#settings", icon_custom_emoji_id="6021637109264160908"),
+        _ikb(" ", callback_data="mk#fb_panel_0", icon_custom_emoji_id="5945256248390721326"),
+    ]
+
+
+async def _send_or_edit_mgmt_bot_api(client, chat_id: int, text: str, markup: InlineKeyboardMarkup, message_id: int = None) -> bool:
+    import aiohttp
+    import json
+    import re
+    bot_token = getattr(Config, "BOT_TOKEN", "") or getattr(client, "bot_token", "")
+    if not bot_token:
+        return False
+
+    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+    api_kb = []
+    for row in markup.inline_keyboard:
+        row_list = []
+        for btn in row:
+            d = {"text": btn.text}
+            if getattr(btn, "callback_data", None) is not None: d["callback_data"] = btn.callback_data
+            if getattr(btn, "url", None) is not None: d["url"] = btn.url
+            if getattr(btn, "switch_inline_query_current_chat", None) is not None:
+                d["switch_inline_query_current_chat"] = btn.switch_inline_query_current_chat
+            elif getattr(btn, "switch_inline_query", None) is not None:
+                d["switch_inline_query"] = btn.switch_inline_query
+            if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
+                d["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
+            row_list.append(d)
+        api_kb.append(row_list)
+
+    payload = {
+        "chat_id": int(chat_id),
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": api_kb
+        }
+    }
+    url = f"https://api.telegram.org/bot{bot_token}/"
+    method = "editMessageText" if message_id else "sendMessage"
+    if message_id:
+        payload["message_id"] = int(message_id)
+        payload["text"] = api_text
+    else:
+        payload["text"] = api_text
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}{method}", json=payload, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+                data = await resp.json()
+                return bool(data.get("ok"))
+    except Exception as e:
+        logger.debug(f"Bot API call exception: {e}")
+        return False
+
+
 """
 Management UI for Arya Premium
 ==============================
@@ -89,20 +184,35 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     pendings = await db.db.premium_checkout.count_documents({"status": "pending_admin_approval"})
     approved = await db.db.premium_checkout.count_documents({"status": "approved"})
     buyers = await db.db.users.count_documents({"purchases.0": {"$exists": True}})
+    total_users = await db.db.users.count_documents({})
     db_ch = await db.db.premium_channels.count_documents({"type": "db"})
     dl_ch = await db.db.premium_channels.count_documents({"type": "delivery"})
+    
+    # Story requests & support queries count
+    req_query = {"text": {"$regex": "^\[REQUEST\]", "$options": "i"}, "status": "open"}
+    reqs_count = await db.db.premium_feedback.count_documents(req_query)
+    supp_query = {"text": {"$not": {"$regex": "^\[REQUEST\]", "$options": "i"}}, "status": "open"}
+    supp_count = await db.db.premium_feedback.count_documents(supp_query)
 
     txt = (
-        f"<b>Arya Marketplace Dashboard</b>\n\n"
-        f"<b>⧉ SYSTEM OVERVIEW</b>\n"
-        f"<b>• TOTAL BOTS    ⟶</b> <code>{bots}</code>\n"
-        f"<b>• ACTIVE STORIES ⟶</b> <code>{stories}</code>\n"
-        f"<b>• TOTAL BUYERS   ⟶</b> <code>{buyers}</code>\n"
-        f"<b>• DB CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
-        f"<b>• DELIVERY POOL  ⟶</b> <code>{dl_ch}</code>"
+        "<b>Arya Marketplace Dashboard</b>\n\n"
+        "<b>⧉ SYSTEM OVERVIEW</b>\n"
+        f"<b>• TOTAL STORE BOTS  ⟶</b> <code>{bots}</code>\n"
+        f"<b>• ACTIVE STORIES     ⟶</b> <code>{stories}</code>\n"
+        f"<b>• TOTAL CUSTOMERS    ⟶</b> <code>{buyers}</code>\n"
+        f"<b>• REGISTERED USERS   ⟶</b> <code>{total_users}</code>\n"
+        f"<b>• SOURCE CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
+        f"<b>• DELIVERY POOL      ⟶</b> <code>{dl_ch}</code>\n\n"
+        "<b>⧉ MANAGEMENT DETAILS</b>\n"
+        f"<b>• PENDING ORDERS     ⟶</b> <code>{pendings}</code>\n"
+        f"<b>• COMPLETED SALES    ⟶</b> <code>{approved}</code>\n"
+        f"<b>• STORY REQUESTS     ⟶</b> <code>{reqs_count}</code>\n"
+        f"<b>• SUPPORT TICKETS    ⟶</b> <code>{supp_count}</code>\n"
+        f"<b>• ENGINE STATUS      ⟶</b> <code>Active &amp; Operational</code>"
     )
 
     kb = [
+        _get_top_mgmt_emoji_row(),
         [InlineKeyboardButton("Add New Story", callback_data="mk#add_story")],
         [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
         [InlineKeyboardButton("Approval", callback_data="mk#pending"),
@@ -112,13 +222,30 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
         [InlineKeyboardButton("Bots", callback_data="mk#accounts"),
          InlineKeyboardButton("Costumers", callback_data="mk#users")],
         [InlineKeyboardButton("Settings", callback_data="mk#settings")],
-        [InlineKeyboardButton("Close", callback_data="mk#close")]
+        [
+            InlineKeyboardButton("ᴄ", callback_data="mk#close"),
+            InlineKeyboardButton("ʟ", callback_data="mk#close"),
+            _ikb(" ", callback_data="mk#close", icon_custom_emoji_id="5774077015388852135"),
+            InlineKeyboardButton("ꜱ", callback_data="mk#close"),
+            InlineKeyboardButton("ᴇ", callback_data="mk#close")
+        ]
     ]
     markup = InlineKeyboardMarkup(kb)
 
+    # Try Bot API for rendering custom emojis
+    try:
+        msg_id = edit_message.id if edit_message else None
+        ok = await _send_or_edit_mgmt_bot_api(client, chat_id, txt, markup, message_id=msg_id)
+        if ok:
+            return
+    except Exception as e:
+        logger.debug(f"Mgmt Bot API render exception: {e}")
+
+    # Fallback to Pyrogram
+    clean_kb = _clean_markup_for_pyrogram(markup)
     if edit_message:
-        return await edit_message.edit_text(txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-    return await client.send_message(chat_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        return await edit_message.edit_text(txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+    return await client.send_message(chat_id, txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
 
 
 
