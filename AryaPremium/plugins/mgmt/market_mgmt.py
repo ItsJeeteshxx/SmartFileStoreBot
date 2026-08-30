@@ -301,8 +301,13 @@ def _cfg_list(cfg: dict, key: str):
 @Client.on_message(filters.command("start") & filters.private)
 async def mgmt_start(client, message):
     user_id = message.from_user.id
+    uname = getattr(message.from_user, "username", "") or ""
+    bot_un = getattr(client.me, "username", "UnknownBot")
+    logger.info(f"===> [MGMT_START] /start received from user_id={user_id} (@{uname}) on bot @{bot_un}")
     if await _deny_if_not_owner(client, user_id):
+        logger.warning(f"===> [MGMT_START] Denied user_id={user_id}")
         return
+    logger.info(f"===> [MGMT_START] Authorized user_id={user_id}. Rendering home dashboard...")
     return await _render_home(client, user_id)
 
 # Parse ID helper
