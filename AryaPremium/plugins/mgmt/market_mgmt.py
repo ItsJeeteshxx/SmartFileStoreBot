@@ -196,73 +196,92 @@ async def resolve_seller_client(target_user_id, bot_id_or_str=None):
 
 
 async def _render_home(client, chat_id: int, *, edit_message=None):
-    bots = await db.db.premium_bots.count_documents({})
-    stories = await db.db.premium_stories.count_documents({})
-    pendings = await db.db.premium_checkout.count_documents({"status": "pending_admin_approval"})
-    approved = await db.db.premium_checkout.count_documents({"status": "approved"})
-    buyers = await db.db.users.count_documents({"purchases.0": {"$exists": True}})
-    total_users = await db.db.users.count_documents({})
-    db_ch = await db.db.premium_channels.count_documents({"type": "db"})
-    dl_ch = await db.db.premium_channels.count_documents({"type": "delivery"})
-    
-    # Story requests & support queries count
-    req_query = {"text": {"$regex": "^\[REQUEST\]", "$options": "i"}, "status": "open"}
-    reqs_count = await db.db.premium_feedback.count_documents(req_query)
-    supp_query = {"text": {"$not": {"$regex": "^\[REQUEST\]", "$options": "i"}}, "status": "open"}
-    supp_count = await db.db.premium_feedback.count_documents(supp_query)
-
-    txt = (
-        "<b>Arya Marketplace Dashboard</b>\n\n"
-        "<b>⧉ SYSTEM OVERVIEW</b>\n"
-        f"<b>• TOTAL STORE BOTS  ⟶</b> <code>{bots}</code>\n"
-        f"<b>• ACTIVE STORIES     ⟶</b> <code>{stories}</code>\n"
-        f"<b>• TOTAL CUSTOMERS    ⟶</b> <code>{buyers}</code>\n"
-        f"<b>• REGISTERED USERS   ⟶</b> <code>{total_users}</code>\n"
-        f"<b>• SOURCE CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
-        f"<b>• DELIVERY POOL      ⟶</b> <code>{dl_ch}</code>\n\n"
-        "<b>⧉ MANAGEMENT DETAILS</b>\n"
-        f"<b>• PENDING ORDERS     ⟶</b> <code>{pendings}</code>\n"
-        f"<b>• COMPLETED SALES    ⟶</b> <code>{approved}</code>\n"
-        f"<b>• STORY REQUESTS     ⟶</b> <code>{reqs_count}</code>\n"
-        f"<b>• SUPPORT TICKETS    ⟶</b> <code>{supp_count}</code>\n"
-        f"<b>• ENGINE STATUS      ⟶</b> <code>Active &amp; Operational</code>"
-    )
-
-    kb = [
-        _get_top_mgmt_emoji_row(),
-        [InlineKeyboardButton("Add New Story", callback_data="mk#add_story")],
-        [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
-        [InlineKeyboardButton("Approval", callback_data="mk#pending"),
-         InlineKeyboardButton("Requests", callback_data="mk#reqs_0")],
-        [InlineKeyboardButton("Support Tab", callback_data="mk#fb_panel_0"),
-         InlineKeyboardButton("Channels", callback_data="mk#channels")],
-        [InlineKeyboardButton("Bots", callback_data="mk#accounts"),
-         InlineKeyboardButton("Costumers", callback_data="mk#users")],
-        [InlineKeyboardButton("Settings", callback_data="mk#settings")],
-        [
-            InlineKeyboardButton("ᴄ", callback_data="mk#close"),
-            InlineKeyboardButton("ʟ", callback_data="mk#close"),
-            _ikb(" ", callback_data="mk#close", icon_custom_emoji_id="5774077015388852135"),
-            InlineKeyboardButton("ꜱ", callback_data="mk#close"),
-            InlineKeyboardButton("ᴇ", callback_data="mk#close")
-        ]
-    ]
-    markup = InlineKeyboardMarkup(kb)
-
-    # Try Bot API for rendering custom emojis
     try:
-        msg_id = edit_message.id if edit_message else None
-        ok = await _send_or_edit_mgmt_bot_api(client, chat_id, txt, markup, message_id=msg_id)
-        if ok:
-            return
-    except Exception as e:
-        logger.debug(f"Mgmt Bot API render exception: {e}")
+        bots = await db.db.premium_bots.count_documents({})
+        stories = await db.db.premium_stories.count_documents({})
+        pendings = await db.db.premium_checkout.count_documents({"status": "pending_admin_approval"})
+        approved = await db.db.premium_checkout.count_documents({"status": "approved"})
+        buyers = await db.db.users.count_documents({"purchases.0": {"$exists": True}})
+        total_users = await db.db.users.count_documents({})
+        db_ch = await db.db.premium_channels.count_documents({"type": "db"})
+        dl_ch = await db.db.premium_channels.count_documents({"type": "delivery"})
+        
+        try:
+            req_query = {"text": {"$regex": "^\\[REQUEST\\]", "$options": "i"}, "status": "open"}
+            reqs_count = await db.db.premium_feedback.count_documents(req_query)
+        except Exception:
+            reqs_count = 0
+            
+        try:
+            total_fbs = await db.db.premium_feedback.count_documents({"status": "open"})
+            supp_count = max(0, total_fbs - reqs_count)
+        except Exception:
+            supp_count = 0
 
-    # Fallback to Pyrogram
-    clean_kb = _clean_markup_for_pyrogram(markup)
-    if edit_message:
-        return await edit_message.edit_text(txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
-    return await client.send_message(chat_id, txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+        txt = (
+            "<b>Arya Marketplace Dashboard</b>\n\n"
+            "<b>⧉ SYSTEM OVERVIEW</b>\n"
+            f"<b>• TOTAL STORE BOTS  ⟶</b> <code>{bots}</code>\n"
+            f"<b>• ACTIVE STORIES     ⟶</b> <code>{stories}</code>\n"
+            f"<b>• TOTAL CUSTOMERS    ⟶</b> <code>{buyers}</code>\n"
+            f"<b>• REGISTERED USERS   ⟶</b> <code>{total_users}</code>\n"
+            f"<b>• SOURCE CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
+            f"<b>• DELIVERY POOL      ⟶</b> <code>{dl_ch}</code>\n\n"
+            "<b>⧉ MANAGEMENT DETAILS</b>\n"
+            f"<b>• PENDING ORDERS     ⟶</b> <code>{pendings}</code>\n"
+            f"<b>• COMPLETED SALES    ⟶</b> <code>{approved}</code>\n"
+            f"<b>• STORY REQUESTS     ⟶</b> <code>{reqs_count}</code>\n"
+            f"<b>• SUPPORT TICKETS    ⟶</b> <code>{supp_count}</code>\n"
+            f"<b>• ENGINE STATUS      ⟶</b> <code>Active &amp; Operational</code>"
+        )
+
+        kb = [
+            _get_top_mgmt_emoji_row(),
+            [InlineKeyboardButton("Add New Story", callback_data="mk#add_story")],
+            [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
+            [InlineKeyboardButton("Approval", callback_data="mk#pending"),
+             InlineKeyboardButton("Requests", callback_data="mk#reqs_0")],
+            [InlineKeyboardButton("Support Tab", callback_data="mk#fb_panel_0"),
+             InlineKeyboardButton("Channels", callback_data="mk#channels")],
+            [InlineKeyboardButton("Bots", callback_data="mk#accounts"),
+             InlineKeyboardButton("Costumers", callback_data="mk#users")],
+            [InlineKeyboardButton("Settings", callback_data="mk#settings")],
+            [
+                InlineKeyboardButton("ᴄ", callback_data="mk#close"),
+                InlineKeyboardButton("ʟ", callback_data="mk#close"),
+                _ikb(" ", callback_data="mk#close", icon_custom_emoji_id="5774077015388852135"),
+                InlineKeyboardButton("ꜱ", callback_data="mk#close"),
+                InlineKeyboardButton("ᴇ", callback_data="mk#close")
+            ]
+        ]
+        markup = InlineKeyboardMarkup(kb)
+
+        # Try Bot API for rendering custom emojis
+        try:
+            msg_id = edit_message.id if edit_message else None
+            ok = await _send_or_edit_mgmt_bot_api(client, chat_id, txt, markup, message_id=msg_id)
+            if ok:
+                return
+        except Exception as e:
+            logger.debug(f"Mgmt Bot API render exception: {e}")
+
+        # Fallback to Pyrogram
+        clean_kb = _clean_markup_for_pyrogram(markup)
+        if edit_message:
+            return await edit_message.edit_text(txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+        return await client.send_message(chat_id, txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Critical error in _render_home: {e}", exc_info=True)
+        emergency_txt = "<b>Arya Marketplace Dashboard</b>\n\n<i>Ecosystem Active &amp; Operational.</i>"
+        emergency_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Add New Story", callback_data="mk#add_story")],
+            [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
+            [InlineKeyboardButton("Settings", callback_data="mk#settings")],
+            [InlineKeyboardButton("Close", callback_data="mk#close")]
+        ])
+        if edit_message:
+            return await edit_message.edit_text(emergency_txt, reply_markup=emergency_kb, parse_mode=enums.ParseMode.HTML)
+        return await client.send_message(chat_id, emergency_txt, reply_markup=emergency_kb, parse_mode=enums.ParseMode.HTML)
 
 
 
