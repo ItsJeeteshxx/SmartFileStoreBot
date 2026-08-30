@@ -2023,7 +2023,7 @@ async def settings_query(bot, query):
     try:
         details = await db.get_customer_full_details(cust_uid)
     except Exception as ex:
-        details = {'name': f"User {cust_uid}", 'pass_info': {}, 'transactions': []}
+        details = {'name': f"User {cust_uid}", 'pass_info': {}, 'transactions': [], 'joined_ts': None, 'first_buy_ts': None, 'language': 'en'}
 
     name = details.get('name', f"User {cust_uid}")
     pass_info = details.get('pass_info', {})
@@ -2031,27 +2031,45 @@ async def settings_query(bot, query):
     expires_at = pass_info.get('expires_at', 0)
 
     import datetime
-    exp_str = "None"
-    if expires_at > 0:
+    try:
+        import pytz
+        ist_tz = pytz.timezone('Asia/Kolkata')
+    except Exception:
+        ist_tz = None
+
+    def format_dt(ts: float) -> str:
+        if not ts or ts <= 0:
+            return "N/A"
         try:
-            import pytz
-            ist_tz = pytz.timezone('Asia/Kolkata')
-            exp_dt = datetime.datetime.fromtimestamp(expires_at, tz=ist_tz)
-            exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+            if ist_tz:
+                dt = datetime.datetime.fromtimestamp(ts, tz=ist_tz)
+            else:
+                dt = datetime.datetime.fromtimestamp(ts)
+            return dt.strftime('%d/%m/%Y | %I:%M %p IST')
         except Exception:
-            try: exp_str = datetime.datetime.fromtimestamp(expires_at).strftime('%d-%m-%Y %I:%M %p')
-            except Exception: exp_str = "N/A"
+            return "N/A"
+
+    joined_ts = details.get('joined_ts')
+    joined_str = format_dt(joined_ts)
+
+    first_buy_ts = details.get('first_buy_ts')
+    first_buy_str = format_dt(first_buy_ts) if first_buy_ts else "No Purchases Yet"
+
+    lang_code = details.get('language', 'en')
+    lang_display = "Hindi (हिन्दी)" if lang_code == 'hi' else "English"
+
+    exp_str = format_dt(expires_at) if expires_at > 0 else "None"
 
     if active:
         sub_status = (
-            f"<b>Status:</b> 🟢 <b>ACTIVE SUBSCRIPTION</b>\n"
-            f"• <b>Remaining Time:</b> <code>{pass_info.get('time_left_str', 'Active')}</code>\n"
-            f"• <b>Valid Until:</b> <code>{exp_str} IST</code>"
+            f"• <emoji id=\"6032604359794104706\">📊</emoji> <b>Status:-</b> <emoji id=\"5809949600152296075\">🟢</emoji> <b>ACTIVE SUBSCRIPTION</b>\n"
+            f"• <emoji id=\"5807879906951960923\">⏳</emoji> <b>Remaining Time:-</b> <code>{pass_info.get('time_left_str', 'Active')}</code>\n"
+            f"• <emoji id=\"5807427071370075099\">📅</emoji> <b>Valid Until:-</b> <code>{exp_str}</code>"
         )
     else:
         sub_status = (
-            f"<b>Status:</b> 🔴 <b>EXPIRED / INACTIVE</b>\n"
-            f"• <b>Last Expiry:</b> <code>{exp_str} IST</code>"
+            f"• <emoji id=\"6032604359794104706\">📊</emoji> <b>Status:-</b> <emoji id=\"5970055887774028039\">🔴</emoji> <b>EXPIRED / INACTIVE</b>\n"
+            f"• <emoji id=\"5807427071370075099\">📅</emoji> <b>Valid Until:-</b> <code>{exp_str}</code>"
         )
 
     txns = details.get('transactions', [])
@@ -2064,15 +2082,7 @@ async def settings_query(bot, query):
     else:
         for idx, txn in enumerate(txns[:10], 1):
             t_time = txn.get('time', 0)
-            t_str = "N/A"
-            if t_time > 0:
-                try:
-                    import pytz
-                    ist_tz = pytz.timezone('Asia/Kolkata')
-                    t_str = datetime.datetime.fromtimestamp(t_time, tz=ist_tz).strftime('%d-%m-%Y %I:%M %p')
-                except Exception:
-                    try: t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d-%m-%Y %I:%M %p')
-                    except Exception: t_str = "N/A"
+            t_str = format_dt(t_time)
             
             p_name = str(txn.get('plan') or 'Pass')
             dur_verb = p_name
@@ -2088,20 +2098,28 @@ async def settings_query(bot, query):
             gw = txn.get('gateway', 'Pay Via UPI (INR)')
             oid = txn.get('id', 'N/A')
             txns_text += (
-                f"<b>{idx}. Order :-</b> <code>{oid}</code>\n"
-                f"   • <b>Plan:</b> {str(dur_verb).title()} ({amt}) , ({gw}) | <b>Status -</b> ✅ Paid , <code>{t_str} IST</code>\n\n"
+                f"<b>{idx}.</b> <emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
+                f"   • <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
+                f"   • <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
+                f"   • <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
+                f"   • <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>\n\n"
             )
 
     body = (
-        f"<b>👤 CUSTOMER SUBSCRIPTION & ORDERS</b>\n"
-        f"────────────────────\n"
-        f"• <b>Customer Name:</b> {name}\n"
-        f"• <b>Telegram ID:</b> <code>{cust_uid}</code>\n"
-        f"• <b>Profile Link:</b> <a href=\"tg://user?id={cust_uid}\">View Telegram Account</a>\n\n"
-        f"<b>📊 LIVE SUBSCRIPTION:</b>\n"
+        f'<emoji id="5778145208411624388">👤</emoji> <b>Costumer Overview</b>\n'
+        f"────────────────────\n\n"
+        f"• <emoji id=\"5904630315946611415\">👤</emoji> <b>Name:-</b> {name}\n"
+        f"• <emoji id=\"6021683099773966917\">🆔</emoji> <b>TG ID:-</b> <code>{cust_uid}</code>\n"
+        f"• <emoji id=\"6023880246128810031\">📅</emoji> <b>Joined Date:-</b> <code>{joined_str}</code>\n"
+        f"• <emoji id=\"6030664675253820292\">🛍</emoji> <b>First Buy:-</b> <code>{first_buy_str}</code>\n"
+        f"• <emoji id=\"6030768072296502910\">🌐</emoji> <b>Language:-</b> {lang_display}\n"
+        f"• <emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"tg://user?id={cust_uid}\">View User TG</a>\n\n"
+        f'<emoji id="6007983438294949171">👑</emoji> <b>Subscription Status</b>\n'
+        f"────────────────────\n\n"
         f"{sub_status}\n"
         f"────────────────────\n"
-        f"<b>📜 ORDER & TRANSACTION HISTORY:</b>\n"
+        f'<emoji id="6021745995275048956">📜</emoji> <b>Transaction History:-</b>\n'
+        f"────────────────────\n"
         f"{txns_text}"
     )
 

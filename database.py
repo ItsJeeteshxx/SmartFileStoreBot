@@ -2073,39 +2073,71 @@ class Database:
         return results
 
     async def get_customer_full_details(self, user_id: int) -> dict:
-        """Fetch customer profile, pass status, and full transaction history (Telegram name prioritized)."""
+        """Fetch customer profile, pass status, joined date, first buy date, language, and full transaction history."""
         user_id = int(user_id)
         pass_info = await self.get_user_unlimited_pass(user_id)
         
         name = ""
+        joined_ts = None
         # Priority 1: Check Telegram users collection (self.col)
         try:
             u_doc = await self.col.find_one({'id': user_id})
-            if u_doc and u_doc.get('name'):
-                name = u_doc['name']
+            if u_doc:
+                if u_doc.get('name'):
+                    name = u_doc['name']
+                if u_doc.get('created_at'):
+                    joined_ts = float(u_doc['created_at'])
+                elif u_doc.get('_id'):
+                    joined_ts = u_doc['_id'].generation_time.timestamp()
         except Exception:
             pass
 
         # Priority 2: Check unlimited_passes
-        if not name:
+        pass_doc = None
+        try:
             pass_doc = await self.unlimited_passes.find_one({'user_id': user_id})
-            if pass_doc and pass_doc.get('user_name'):
-                name = pass_doc['user_name']
+            if pass_doc:
+                if not name and pass_doc.get('user_name'):
+                    name = pass_doc['user_name']
+                if not joined_ts and pass_doc.get('_id'):
+                    joined_ts = pass_doc['_id'].generation_time.timestamp()
+        except Exception:
+            pass
 
         # Priority 3: Check pass_orders
         if not name:
-            order_doc = await self.pass_orders.find_one({'user_id': user_id, 'user_name': {'$exists': True, '$ne': ''}})
-            if order_doc and order_doc.get('user_name'):
-                name = order_doc['user_name']
+            try:
+                order_doc = await self.pass_orders.find_one({'user_id': user_id, 'user_name': {'$exists': True, '$ne': ''}})
+                if order_doc and order_doc.get('user_name'):
+                    name = order_doc['user_name']
+            except Exception:
+                pass
 
         if not name:
             name = f"User {user_id}"
 
         txns = await self.get_user_pass_transactions(user_id, limit=25)
 
+        # First Buy Timestamp: earliest paid transaction
+        first_buy_ts = None
+        if txns:
+            valid_times = [t.get('time', 0) for t in txns if t.get('time', 0) > 0]
+            if valid_times:
+                first_buy_ts = min(valid_times)
+
+        # Language
+        user_lang = "en"
+        try:
+            user_lang = await self.get_language(user_id) or "en"
+        except Exception:
+            pass
+
         return {
             'user_id': user_id,
             'name': name,
+            'joined_ts': joined_ts,
+            'first_buy_ts': first_buy_ts,
+            'language': user_lang,
             'pass_info': pass_info,
             'transactions': txns
         }
