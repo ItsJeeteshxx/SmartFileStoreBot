@@ -1,3 +1,35 @@
+
+import asyncio
+import logging
+import json
+import tempfile
+import time
+from datetime import datetime, timezone
+from bson.objectid import ObjectId
+from pymongo.errors import PyMongoError
+from pyrogram import Client, filters, enums
+from pyrogram.errors import MessageNotModified
+from pyrogram.types import (
+    InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    CallbackQuery
+)
+from database import db
+from config import Config
+import utils
+from utils import native_ask
+def _is_cancel(msg):
+    if hasattr(msg, "data") and msg.data == "ask_cancel":
+        return True
+    if hasattr(msg, "text") and msg.text and ("c\u1d00\u0274\u1d04\u1d07\u029f" in msg.text.lower() or "/cancel" in msg.text.lower()):
+        return True
+    return False
+
+import time
+
+logger = logging.getLogger(__name__)
+
+
 def _clean_markup_for_pyrogram(markup: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     if not markup or not getattr(markup, "inline_keyboard", None):
         return markup
@@ -93,41 +125,6 @@ async def _send_or_edit_mgmt_bot_api(client, chat_id: int, text: str, markup: In
         return False
 
 
-"""
-Management UI for Arya Premium
-==============================
-Provides the exact Batch-Links style Inline Keyboard Menu 
-for configuring the Marketplace instead of manual commands!
-"""
-import asyncio
-import logging
-import json
-import tempfile
-import time
-from datetime import datetime, timezone
-from bson.objectid import ObjectId
-from pymongo.errors import PyMongoError
-from pyrogram import Client, filters, enums
-from pyrogram.errors import MessageNotModified
-from pyrogram.types import (
-    InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove,
-    CallbackQuery
-)
-from database import db
-from config import Config
-import utils
-from utils import native_ask
-def _is_cancel(msg):
-    if hasattr(msg, "data") and msg.data == "ask_cancel":
-        return True
-    if hasattr(msg, "text") and msg.text and ("c\u1d00\u0274\u1d04\u1d07\u029f" in msg.text.lower() or "/cancel" in msg.text.lower()):
-        return True
-    return False
-
-import time
-
-logger = logging.getLogger(__name__)
 
 
 def _is_owner(user_id: int) -> bool:
