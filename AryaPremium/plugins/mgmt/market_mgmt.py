@@ -36,7 +36,15 @@ logger = logging.getLogger(__name__)
 
 
 def _is_owner(user_id: int) -> bool:
-    return int(user_id) in set(Config.OWNER_IDS or [])
+    try:
+        uid = int(user_id)
+        owner_set = set(getattr(Config, "OWNER_IDS", []) or []) | set(getattr(Config, "SUDO_USERS", []) or [])
+        bot_owner = getattr(Config, "BOT_OWNER_ID", "")
+        if bot_owner and str(bot_owner).strip().isdigit():
+            owner_set.add(int(str(bot_owner).strip()))
+        return uid in owner_set
+    except Exception:
+        return False
 
 
 async def _deny_if_not_owner(client, user_id: int):
@@ -199,7 +207,7 @@ async def _render_settings(client, query):
     chk_v2_btn = f"🛒 Checkout Page 2 (UPI+Crypto): {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
     
     cf_enabled = cfg.get("cashfree_enabled", False)
-    cf_app_id = cfg.get("cashfree_app_id", "")
+    cf_app_id = cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")
     cf_status = "✅ ON" if cf_enabled and cf_app_id else ("⚠️ Setup" if cf_app_id else "❌ OFF")
     
     gmail_user_status = f"✅ Set ({gmail_user[:8]}…)" if gmail_user else "❌ Not Set"
@@ -302,22 +310,78 @@ async def market_callback(client, query):
             return await _render_cashfree_settings(client, query)
 
         elif cmd == "set_cf_app_id":
+            from pyrogram.types import CallbackQuery as _CQ
             await _safe_answer(query)
-            msg = await native_ask(client, user_id, "<b>🔑 Enter your Cashfree App ID / Client ID:</b>", reply_markup=cancel_kb)
-            if getattr(msg, 'text', None) and "Cᴀɴᴄᴇʟ" not in msg.text:
-                val = msg.text.strip()
-                await db.db.mini_app_config.update_one({"_key": "feature_toggles"}, {"$set": {"cashfree_app_id": val}}, upsert=True)
-                await client.send_message(user_id, f"✅ Cashfree App ID saved: <code>{val[:10]}…</code>")
-            return await _render_cashfree_settings(client, query)
+            cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Cancel", callback_data="ask_cancel")]])
+            
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            curr_app_id = cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")
+            curr_hint = f"\n\n<i>Current App ID: <code>{curr_app_id}</code></i>" if curr_app_id else ""
+            
+            msg = await native_ask(
+                client, user_id, 
+                f"<b>🔑 Enter your Cashfree App ID / Client ID:</b>{curr_hint}\n\n"
+                "<i>Paste your Cashfree PG App ID / Client ID below:</i>", 
+                reply_markup=cancel_kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+            if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
+                return await client.send_message(
+                    user_id, 
+                    "<i>Process Cancelled. Cashfree App ID unchanged.</i>",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back to Cashfree Settings", callback_data="mk#cashfree_menu")]])
+                )
+            
+            val = msg.text.strip()
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"}, 
+                {"$set": {"cashfree_app_id": val, "cashfree_api_id": val}}, 
+                upsert=True
+            )
+            await client.send_message(
+                user_id, 
+                f"✅ <b>Cashfree App ID saved successfully!</b>\n<code>{val}</code>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Cashfree Settings", callback_data="mk#cashfree_menu")]]),
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
 
         elif cmd == "set_cf_secret":
+            from pyrogram.types import CallbackQuery as _CQ
             await _safe_answer(query)
-            msg = await native_ask(client, user_id, "<b>🔒 Enter your Cashfree Client Secret Key:</b>", reply_markup=cancel_kb)
-            if getattr(msg, 'text', None) and "Cᴀɴᴄᴇʟ" not in msg.text:
-                val = msg.text.strip()
-                await db.db.mini_app_config.update_one({"_key": "feature_toggles"}, {"$set": {"cashfree_secret_key": val}}, upsert=True)
-                await client.send_message(user_id, "✅ Cashfree Secret Key saved securely!")
-            return await _render_cashfree_settings(client, query)
+            cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Cancel", callback_data="ask_cancel")]])
+            
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            curr_secret = cfg.get("cashfree_secret_key", "")
+            curr_hint = f"\n\n<i>Current Secret Key: <code>{curr_secret[:6]}••••••••</code></i>" if curr_secret else ""
+            
+            msg = await native_ask(
+                client, user_id, 
+                f"<b>🔒 Enter your Cashfree Client Secret Key:</b>{curr_hint}\n\n"
+                "<i>Paste your Cashfree Secret Key below:</i>", 
+                reply_markup=cancel_kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+            if isinstance(msg, _CQ) or not getattr(msg, 'text', None):
+                return await client.send_message(
+                    user_id, 
+                    "<i>Process Cancelled. Cashfree Secret Key unchanged.</i>",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back to Cashfree Settings", callback_data="mk#cashfree_menu")]])
+                )
+            
+            val = msg.text.strip()
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"}, 
+                {"$set": {"cashfree_secret_key": val}}, 
+                upsert=True
+            )
+            await client.send_message(
+                user_id, 
+                "✅ <b>Cashfree Secret Key saved securely!</b>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Cashfree Settings", callback_data="mk#cashfree_menu")]]),
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
 
         if cmd == "close":
             return await query.message.delete()
