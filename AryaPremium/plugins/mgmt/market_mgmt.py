@@ -289,8 +289,6 @@ async def _render_settings(client, query):
     await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
 
-@Client.on_callback_query(filters.regex(r'^mk#'))
-
 async def _render_cashfree_settings(client, query):
     """Renders the Cashfree Payment Gateway settings menu."""
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
@@ -323,6 +321,7 @@ async def _render_cashfree_settings(client, query):
     await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
 
+@Client.on_callback_query(filters.regex(r'^mk#'))
 async def market_callback(client, query):
     try:
         user_id = query.from_user.id

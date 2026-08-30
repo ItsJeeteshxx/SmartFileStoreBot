@@ -1549,6 +1549,19 @@ async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
         )
         if has_custom_emoji and msg and hasattr(msg, "chat") and hasattr(msg, "id"):
             client = getattr(msg, "_client", None)
+            if is_media and len(text) > 950:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return await _send_or_edit_seller_bot_api(
+                    client=client,
+                    chat_id=msg.chat.id,
+                    text=text,
+                    markup=markup,
+                    message_id=None,
+                    is_media_edit=False
+                )
             ok = await _send_or_edit_seller_bot_api(
                 client=client,
                 chat_id=msg.chat.id,
@@ -1564,9 +1577,30 @@ async def _safe_edit(msg, *, text: str, markup: InlineKeyboardMarkup):
 
     try:
         if is_media:
+            if len(text) > 950:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                client = getattr(msg, "_client", None)
+                if client and hasattr(msg, "chat"):
+                    return await client.send_message(msg.chat.id, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
             return await msg.edit_caption(caption=text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
         return await msg.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
     except MessageNotModified:
+        return None
+    except Exception as ex:
+        logger.warning(f"_safe_edit fallback triggered: {ex}")
+        try:
+            client = getattr(msg, "_client", None)
+            if client and hasattr(msg, "chat"):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return await client.send_message(msg.chat.id, text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
         return None
     except Exception as e:
         logger.warning(f"Safe edit failed: {e}")
@@ -5068,23 +5102,18 @@ async def _show_help_menu(client, query):
         txt = (
             f"<b>⟦ {_sc('सपोर्ट एवं सहायता केंद्र')} ⟧</b>\n\n"
             f"<blockquote expandable>"
-            f"<i>{_sc('आर्या प्रीमियम स्टोर के आधिकारिक गाइड में आपका स्वागत है।')}</i>\n\n"
-            f"<u>{_sc('प्रमुख फीचर्स एवं नेविगेशन:')}</u>\n"
-            f"• <b>{_sc('Search Your Story:')}</b> {_sc('होम मेनू पर सर्च बटन दबाकर किसी भी कहानी को कीवर्ड द्वारा तुरंत पोस्टर प्रीव्यू के साथ खोजें।')}\n"
-            f"• <b>{_sc('Marketplace:')}</b> {_sc('प्लेटफॉर्म (Pocket FM, Kuku FM आदि) के अनुसार सभी कहानियाँ देखें (प्रति पेज 70 कहानियाँ और View All विकल्प)।')}\n"
-            f"• <b>{_sc('My Stories:')}</b> {_sc('अपनी खरीदी हुई सभी कहानियों की पर्सनल लाइब्रेरी देखें और कभी भी दोबारा डाउनलोड करें।')}\n"
-            f"• <b>{_sc('Profile & Settings:')}</b> {_sc('खाता आईडी देखें, नई स्टोरी की रिक्वेस्ट करें, भाषा बदलें (EN/HI/TE) और अबाउट देखें।')}\n\n"
-            f"<u>{_sc('कहानी खरीदने का तरीका व पेमेंट विकल्प:')}</u>\n"
-            f"<i><b>1.</b></i> {_sc('मार्केटप्लेस या सर्च द्वारा अपनी पसंद की कहानी चुनें।')}\n"
-            f"<i><b>2.</b></i> {_sc('अपना पसंदीदा पेमेंट विकल्प चुनें:')}\n"
-            f"   • <b>कैशफ्री (तुरंत):</b> {_sc('क्रेडिट/डेबिट कार्ड, नेटबैंकिंग या UPI (GPay/PhonePe/Paytm) से भुगतान करें।')}\n"
-            f"   • <b>डायरेक्ट UPI (UTR):</b> {_sc('दिए गए UPI ID/QR पर भुगतान करें और 12-अंकों का UTR डालकर ऑटो-वेरिफाई करें।')}\n"
-            f"   • <b>क्रिप्टो (OxaPay):</b> {_sc('BTC, USDT, ETH सहित 300+ क्रिप्टो कॉइन्स से भुगतान करें।')}\n"
-            f"<i><b>3.</b></i> {_sc('पेमेंट पूरा होते ही आपकी फाइलें तुरंत DM या चैनल में डिलीवर हो जाएंगी।')}\n\n"
-            f"<u>{_sc('डिलीवरी एवं रीजेनरेशन:')}</u>\n"
-            f"• <b>भाग चयन:</b> {_sc('अपनी पसंद के अनुसार एपिसोड्स बैच (जैसे Files 1-50, 51-100) या Full Delivery चुनें।')}\n"
-            f"• <b>Regenerate Files:</b> {_sc('यदि कोई फाइल मिस हो जाए, तो मैसेज के नीचे दिए गए Regenerate बटन का उपयोग करें।')}\n\n"
-            f"<i>{_sc('किसी भी सहायता के लिए नीचे दिए गए सपोर्ट बटनों का उपयोग करें।')}</i>"
+            f"<i>{_sc('आर्या प्रीमियम स्टोर गाइड में आपका स्वागत है।')}</i>\n\n"
+            f"<u>{_sc('प्रमुख फीचर्स:')}</u>\n"
+            f"• <b>Search Your Story:</b> {_sc('होम मेनू से सीधे कीवर्ड डालकर पोस्टर के साथ खोजें।')}\n"
+            f"• <b>Marketplace:</b> {_sc('70 प्रति पेज व View All से सभी स्टोरीज ब्राउज़ करें।')}\n"
+            f"• <b>My Stories:</b> {_sc('अपनी खरीदी हुई सभी स्टोरीज को कभी भी डाउनलोड करें।')}\n"
+            f"• <b>Profile / Settings:</b> {_sc('खाता आईडी देखें, नई स्टोरी रिक्वेस्ट करें व भाषा बदलें।')}\n\n"
+            f"<u>{_sc('पेमेंट व डिलीवरी:')}</u>\n"
+            f"• <b>Cashfree:</b> {_sc('Cards, NetBanking, UPI द्वारा तुरंत 100% सुरक्षित भुगतान।')}\n"
+            f"• <b>Direct UPI:</b> {_sc('दिए गए UPI पर भेजें और 12-अंक UTR से ऑटो-वेरिफाई करें।')}\n"
+            f"• <b>Crypto (OxaPay):</b> {_sc('BTC, USDT, ETH व अन्य कॉइन्स से भुगतान।')}\n"
+            f"• <b>Instant Delivery:</b> {_sc('पेमेंट के बाद फाइलें तुरंत DM या चैनल में प्राप्त करें।')}\n"
+            f"• <b>Regenerate Files:</b> {_sc('मिस हुई फाइलों को दोबारा प्राप्त करने के लिए।')}\n"
             f"</blockquote>"
         )
         kb = [
@@ -5098,23 +5127,18 @@ async def _show_help_menu(client, query):
         txt = (
             f"<b>⟦ {_sc('SUPPORT & HELP CENTER')} ⟧</b>\n\n"
             f"<blockquote expandable>"
-            f"<i>{_sc('Welcome to the complete official guide for Arya Premium Store.')}</i>\n\n"
-            f"<u>{_sc('CORE FEATURES & NAVIGATION:')}</u>\n"
-            f"• <b>{_sc('Search Your Story:')}</b> {_sc('Tap the search button on Home Menu to instantly search stories by keyword with live thumbnail previews.')}\n"
-            f"• <b>{_sc('Marketplace:')}</b> {_sc('Browse all available stories categorized by platform (Pocket FM, Kuku FM, etc.) with 70 stories per page and View All.')}\n"
-            f"• <b>{_sc('My Stories:')}</b> {_sc('Access your personal library of all purchased audio stories anytime for instant redownload.')}\n"
-            f"• <b>{_sc('Profile & Settings:')}</b> {_sc('Check your account ID, request new stories, switch language (EN/HI/TE), and view About info.')}\n\n"
-            f"<u>{_sc('HOW TO BUY & PAYMENT OPTIONS:')}</u>\n"
-            f"<i><b>1.</b></i> {_sc('Select your desired story from Marketplace or Search Your Story.')}\n"
-            f"<i><b>2.</b></i> {_sc('Choose your preferred payment method:')}\n"
-            f"   • <b>Cashfree (Instant):</b> {_sc('Pay via Cards (Credit/Debit), NetBanking, or UPI (GPay/PhonePe/Paytm).')}\n"
-            f"   • <b>Direct UPI (UTR):</b> {_sc('Pay to displayed UPI ID/QR and enter the 12-digit UTR for automatic verification.')}\n"
-            f"   • <b>Crypto (OxaPay):</b> {_sc('Pay with BTC, USDT, ETH, and 300+ cryptocurrencies.')}\n"
-            f"<i><b>3.</b></i> {_sc('Upon successful payment, your files are delivered instantly into your DM or Channel.')}\n\n"
-            f"<u>{_sc('DELIVERY & REGENERATION:')}</u>\n"
-            f"• <b>Chunk Selection:</b> {_sc('Choose specific episode batches (e.g. Files 1-50, 51-100) or Full Delivery.')}\n"
-            f"• <b>Regenerate Files:</b> {_sc('If any file is missed due to Telegram limits, use the Regenerate button below delivery.')}\n\n"
-            f"<i>{_sc('For technical help or order queries, use the support buttons below.')}</i>"
+            f"<i>{_sc('Welcome to Arya Premium Official Guide.')}</i>\n\n"
+            f"<u>{_sc('KEY FEATURES:')}</u>\n"
+            f"• <b>Search Your Story:</b> {_sc('Search stories instantly by keyword with cover preview.')}\n"
+            f"• <b>Marketplace:</b> {_sc('Browse 70 stories per page or use View All.')}\n"
+            f"• <b>My Stories:</b> {_sc('Access your library and redownload files anytime.')}\n"
+            f"• <b>Profile / Settings:</b> {_sc('View account ID, request stories & switch language.')}\n\n"
+            f"<u>{_sc('PAYMENT & DELIVERY:')}</u>\n"
+            f"• <b>Cashfree:</b> {_sc('Pay instantly via Cards, NetBanking, or UPI.')}\n"
+            f"• <b>Direct UPI:</b> {_sc('Pay via UPI and auto-verify using 12-digit UTR.')}\n"
+            f"• <b>Crypto (OxaPay):</b> {_sc('Pay with BTC, USDT, ETH & 300+ coins.')}\n"
+            f"• <b>Instant Delivery:</b> {_sc('Automated batch/DM file delivery upon payment.')}\n"
+            f"• <b>Regenerate Files:</b> {_sc('Easily re-fetch missed episodes.')}\n"
             f"</blockquote>"
         )
         kb = [
