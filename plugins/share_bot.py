@@ -2672,7 +2672,9 @@ async def _handle_share_bot_utr_message(client, message):
         order_id = pending_info.get('order_id') or f"PASS-{user_id}-1D-1"
         await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
         _cancel_cooldown_reminders(user_id)
-        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
+        b_id = getattr(getattr(client, "me", None), "id", None)
+        b_uname = getattr(getattr(client, "me", None), "username", "")
+        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname)
 
         from database import format_duration_verbose, parse_duration_to_seconds
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -3171,7 +3173,9 @@ async def start_pass_cashfree_auto_verifier(
                 if claimed:
                     _cancel_cooldown_reminders(user_id)
                     _active_order_reminders[f"done_{task_key}"] = True
-                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name)
+                    b_id = getattr(getattr(client, "me", None), "id", None)
+                    b_uname = getattr(getattr(client, "me", None), "username", "")
+                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname)
                     
                     import datetime
                     try:
@@ -4247,7 +4251,9 @@ async def _process_pass_callback(client, query):
             order_id = pending.get('order_id') or f"UPI_{user_id}_{int(time.time())}"
             await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
             _cancel_cooldown_reminders(user_id)
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name)
+            b_id = getattr(getattr(client, "me", None), "id", None)
+            b_uname = getattr(getattr(client, "me", None), "username", "")
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname)
             
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -4425,7 +4431,9 @@ async def _process_pass_callback(client, query):
 
         if v_res.get("paid"):
             _cancel_cooldown_reminders(user_id)
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
+            b_id = getattr(getattr(client, "me", None), "id", None)
+            b_uname = getattr(getattr(client, "me", None), "username", "")
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname)
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
             dur_verbose = format_duration_verbose(dur_sec)
@@ -4511,7 +4519,9 @@ async def _process_pass_callback(client, query):
         dur_verbose = format_duration_verbose(dur_sec)
 
         from plugins.cashfree_helper import create_cashfree_pass_order
-        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount)
+        b_id = getattr(getattr(client, "me", None), "id", None)
+        b_uname = getattr(getattr(client, "me", None), "username", "")
+        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount, bot_id=b_id, bot_username=b_uname)
 
         if not res.get("success"):
             err_text = res.get('error', 'Failed to generate payment link')
@@ -4629,7 +4639,9 @@ async def _process_pass_callback(client, query):
             if claimed:
                 # First-time claim -> activate pass duration
                 _cancel_cooldown_reminders(user_id)
-                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name)
+                b_id = getattr(getattr(client, "me", None), "id", None)
+                b_uname = getattr(getattr(client, "me", None), "username", "")
+                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname)
                 
                 import datetime
                 try:
@@ -4959,6 +4971,127 @@ def register_share_handlers(app: Client):
     logger.info(f"Handlers registered on {app.name}")
 
 
+_expiry_monitor_running = False
+
+async def run_pass_expiry_monitor_loop():
+    """
+    Background worker that continuously monitors all user passes in unlimited_passes.
+    1. Checks passes expiring within 1 hour (0 < expires_at - now <= 3600).
+    2. Sends renewal reminder to user from the EXACT delivery bot where the pass was purchased.
+    3. Guarantees message is sent only once per expiry cycle using reminded_1h_expiry timestamp in DB.
+    """
+    global _expiry_monitor_running
+    if _expiry_monitor_running:
+        return
+    _expiry_monitor_running = True
+    logger.info("[PASS-EXPIRY-MONITOR] Started 1-hour Pass Expiry Monitor Worker Loop.")
+
+    while True:
+        try:
+            await asyncio.sleep(60) # check every minute
+            now = time.time()
+            one_hour_ahead = now + 3600
+
+            # Find active passes expiring in next 1 hour that haven't received the 1h reminder
+            cursor = db.unlimited_passes.find({
+                'expires_at': {'$gt': now, '$lte': one_hour_ahead}
+            })
+
+            async for pass_doc in cursor:
+                uid = pass_doc.get('user_id')
+                if not uid:
+                    continue
+                exp_ts = pass_doc.get('expires_at', 0)
+                reminded_ts = pass_doc.get('reminded_1h_expiry')
+                if reminded_ts == exp_ts:
+                    continue # already reminded for this exact expiry period
+
+                # Determine which delivery bot client to use (match the one user subscribed on)
+                bot_id_saved = str(pass_doc.get('bot_id') or '')
+                bot_uname_saved = str(pass_doc.get('bot_username') or '').lstrip('@').lower()
+                
+                target_client = None
+                if bot_id_saved and bot_id_saved in share_clients:
+                    target_client = share_clients[bot_id_saved]
+                elif bot_uname_saved:
+                    for cl in share_clients.values():
+                        if cl.me and cl.me.username and cl.me.username.lower() == bot_uname_saved:
+                            target_client = cl
+                            break
+                
+                # Fallback to any active delivery bot if specific one isn't currently loaded
+                if not target_client and share_clients:
+                    target_client = next(iter(share_clients.values()), None)
+
+                if not target_client:
+                    continue
+
+                rem_sec = max(0, int(exp_ts - now))
+                rem_mins = max(1, rem_sec // 60)
+                u_name = pass_doc.get('user_name') or "there"
+
+                import datetime
+                try:
+                    import pytz
+                    ist_tz = pytz.timezone('Asia/Kolkata')
+                    exp_dt = datetime.datetime.fromtimestamp(exp_ts, tz=ist_tz)
+                    exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+                except Exception:
+                    exp_str = datetime.datetime.fromtimestamp(exp_ts).strftime('%d-%m-%Y %I:%M %p')
+
+                user_lang = await db.get_language(uid)
+                is_hi = bool(user_lang == 'hi')
+
+                if is_hi:
+                    rem_text = (
+                        f'<emoji id="6034898821517940846">⏳</emoji> <b>आपका अनलिमिटेड पास 1 घंटे में समाप्त हो रहा है!</b>\n\n'
+                        f"नमस्ते <b>{u_name}</b>, आपका अनलिमिटेड डिलीवरी पास आज <b>{exp_str}</b> (लगभग <b>{rem_mins} मिनट</b> बाद) समाप्त होने वाला है।\n\n"
+                        f"<blockquote>बिना किसी कूलडाउन और रुकावट के अपनी पसंदीदा कहानियों का आनंद जारी रखने के लिए, अभी अपना पास रिन्यू (Renew) करें!</blockquote>"
+                    )
+                    btn_renew = "👑 पास रिन्यू करें (Renew Pass)"
+                else:
+                    rem_text = (
+                        f'<emoji id="6034898821517940846">⏳</emoji> <b>Your Unlimited Pass is Expiring in 1 Hour!</b>\n\n'
+                        f"Hey <b>{u_name}</b>, your Unlimited Delivery Pass is set to expire at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n"
+                        f"<blockquote>To keep enjoying instant downloads with zero cooldown, renew your pass now!</blockquote>"
+                    )
+                    btn_renew = "👑 Renew Pass"
+
+                rem_api_buttons = [
+                    [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "5773677501825945508"}]
+                ]
+                rem_buttons = [
+                    [InlineKeyboardButton(btn_renew, callback_data="pass#unlock_menu")]
+                ]
+
+                try:
+                    sent_ok = await send_or_edit_with_custom_icons(
+                        client=target_client,
+                        chat_id=uid,
+                        text=rem_text,
+                        inline_keyboard=rem_api_buttons
+                    )
+                    if not sent_ok:
+                        await target_client.send_message(
+                            chat_id=uid,
+                            text=rem_text,
+                            reply_markup=InlineKeyboardMarkup(rem_buttons)
+                        )
+                    # Mark reminded in DB so it never repeats for this expiry
+                    await db.unlimited_passes.update_one(
+                        {'user_id': int(uid)},
+                        {'$set': {'reminded_1h_expiry': exp_ts}}
+                    )
+                    logger.info(f"[PASS-EXPIRY-MONITOR] Sent 1-hour expiry reminder to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
+                except Exception as ex:
+                    logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send reminder to user {uid}: {ex}")
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[PASS-EXPIRY-MONITOR] Error in monitor loop: {e}")
+
+
 async def start_share_bot():
     """Start all Share Bot clients from DB."""
     global share_clients
@@ -4997,4 +5130,7 @@ async def start_share_bot():
             logger.info(f"Share Bot started: @{sc.me.username} [{b['name']}]")
         except Exception as e:
             logger.error(f"Failed to start Share Bot '{b['name']}': {e}")
+
+    # Launch background pass expiry monitor loop
+    asyncio.create_task(run_pass_expiry_monitor_loop())
 

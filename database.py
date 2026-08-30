@@ -1680,9 +1680,9 @@ class Database:
         for k, v in doc.items():
             if k != '_id':
                 res[k] = v if v is not None else defaults.get(k, '')
-        # Upgrade old/legacy plans to the new 5 default plans: 1d:15, 3d:30, 7d:55, 1mo:250, 6mo:1199
+        # If prices is not set or empty, set default
         p = res.get('prices')
-        if not isinstance(p, dict) or len(p) < 5 or '1mo' not in p or '6mo' not in p or p.get('7d') == 50 or '30d' in p or '15d' in p:
+        if not isinstance(p, dict) or not p:
             res['prices'] = defaults['prices']
         # Ensure window_seconds is properly initialized and synced
         if 'window_seconds' not in doc and 'window_hours' in doc:
@@ -1880,22 +1880,29 @@ class Database:
             'expires_at': expires_at,
             'days_left': round(days_left, 1),
             'rem_seconds': rem_sec,
-            'time_left_str': time_left_str
+            'time_left_str': time_left_str,
+            'bot_id': doc.get('bot_id') if doc else None,
+            'bot_username': doc.get('bot_username') if doc else None,
+            'user_name': doc.get('user_name') if doc else ""
         }
 
-    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = ""):
+    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = "", bot_id: int = None, bot_username: str = ""):
         """Set or update unlimited pass expiry."""
         import time
         doc = {'expires_at': float(expiry_timestamp), 'updated_at': time.time()}
         if user_name:
             doc['user_name'] = str(user_name).strip()
+        if bot_id:
+            doc['bot_id'] = int(bot_id)
+        if bot_username:
+            doc['bot_username'] = str(bot_username).strip()
         await self.unlimited_passes.update_one(
             {'user_id': int(user_id)},
             {'$set': doc},
             upsert=True
         )
 
-    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "") -> float:
+    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "", bot_id: int = None, bot_username: str = "") -> float:
         """Extend or activate unlimited pass for specified duration (days int or duration str like '30m', '2h', '7d') and return new expiry."""
         import time
         if isinstance(duration, (int, float)) and duration < 1000:
@@ -1909,7 +1916,9 @@ class Database:
         now = time.time()
         base_time = cur['expires_at'] if (cur['active'] and cur['expires_at'] > now) else now
         new_expiry = base_time + duration_seconds
-        await self.set_user_unlimited_pass(user_id, new_expiry, user_name=user_name)
+        b_id = bot_id or cur.get('bot_id')
+        b_uname = bot_username or cur.get('bot_username')
+        await self.set_user_unlimited_pass(user_id, new_expiry, user_name=user_name, bot_id=b_id, bot_username=b_uname)
         return new_expiry
 
     async def activate_user_unlimited_pass(self, user_id: int, duration_seconds: float, order_id: str = "", amount: float = 0.0, gateway: str = "", user_name: str = "") -> float:

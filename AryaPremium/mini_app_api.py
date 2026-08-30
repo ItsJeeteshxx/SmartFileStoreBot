@@ -3803,10 +3803,14 @@ async def cashfree_webhook(request: Request):
             cur_pass = await arya_db.db.unlimited_passes.find_one({'user_id': p_uid})
             now_ts = time.time()
             base_t = cur_pass.get('expires_at', 0) if (cur_pass and cur_pass.get('expires_at', 0) > now_ts) else now_ts
-            new_exp = base_t + dur_sec
+            pass_fields = {'expires_at': new_exp, 'user_name': p_uname, 'updated_at': now_ts}
+            if pass_order.get("bot_id"):
+                pass_fields['bot_id'] = int(pass_order.get("bot_id"))
+            if pass_order.get("bot_username"):
+                pass_fields['bot_username'] = str(pass_order.get("bot_username"))
             await arya_db.db.unlimited_passes.update_one(
                 {'user_id': p_uid},
-                {'$set': {'expires_at': new_exp, 'user_name': p_uname, 'updated_at': now_ts}},
+                {'$set': pass_fields},
                 upsert=True
             )
             logger.info(f"[CF-WEBHOOK] Pass order {order_id} activated for user {p_uid}, new_expiry={new_exp}")

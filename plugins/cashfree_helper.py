@@ -63,7 +63,7 @@ async def get_cashfree_credentials() -> dict:
     }
 
 
-async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str, amount: float) -> dict:
+async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str, amount: float, bot_id: int = None, bot_username: str = "") -> dict:
     """
     Create a Cashfree PG order for an Unlimited Delivery Pass.
     Returns dictionary with order_id, payment_session_id, and checkout_pay_link.
@@ -137,6 +137,8 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str
                     "payment_session_id": payment_session_id,
                     "user_id": int(user_id),
                     "user_name": customer_name,
+                    "bot_id": int(bot_id) if bot_id else None,
+                    "bot_username": str(bot_username) if bot_username else "",
                     "duration": dur_str,
                     "duration_seconds": dur_sec,
                     "days": round(dur_sec / 86400.0, 2),
