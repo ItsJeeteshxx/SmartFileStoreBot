@@ -2531,7 +2531,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
     else:
-        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
+        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧ - 2"
         item_lbl = "Item"
         price_lbl = "Total Price"
         rzp_title = "✅ 𝗔𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆)"
@@ -2663,7 +2663,7 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     show_cashfree = cf_cfg["enabled"] or cf_cfg["is_configured"]
 
     if lang == 'hi':
-        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
+        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧ - 2"
         item_lbl = "कहानी"
         price_lbl = "कुल राशि"
         
@@ -7108,19 +7108,23 @@ async def _process_callback(client, query):
         if method == "cashfree":
             # Cashfree Payment Gateway order flow
             logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
-            from cashfree_helper import create_cashfree_order
+            try:
+                await query.answer("⏳ Generating Payment Link...", show_alert=False)
+            except Exception:
+                pass
+
+            from cashfree_helper import create_cashfree_order, get_cashfree_config
             bot_username = getattr(getattr(client, "me", None), "username", "")
             user_name = query.from_user.first_name or "Buyer"
             
             cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
             
-            if not cf_res.get("success"):
-                err_msg = cf_res.get("error", "Failed to initiate Cashfree order.")
-                logger.error(f"[PAY2] Cashfree order error: {err_msg}")
-                return await query.answer(f"❌ {err_msg[:180]}", show_alert=True)
+            order_id = cf_res.get("order_id") or f"cf_{user_id}_{int(time.time())}"
+            pay_link = cf_res.get("payment_link")
+            if not pay_link:
+                # Direct fallback to Mini App payment wrapper
+                pay_link = f"https://aryapremium.store/app?story_id={s_id}&buy=cashfree&user_id={user_id}"
 
-            order_id = cf_res["order_id"]
-            pay_link = cf_res.get("payment_link") or f"https://aryapremium.store/app?story_id={s_id}"
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
             price = story.get('price', 0)
 
@@ -7151,18 +7155,19 @@ async def _process_callback(client, query):
                 [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
             ]
 
-            await _send_story_photo(
-                client=client,
-                user_id=user_id,
-                story=story,
-                caption=desc_cf,
-                reply_markup=InlineKeyboardMarkup(kb),
-                fallback_photo="https://files.catbox.moe/a6xw61.png"
-            )
+            # In-place caption edit for zero flicker, with robust safe_edit fallback
             try:
-                await query.message.delete()
-            except Exception:
-                pass
+                if query.message and getattr(query.message, "photo", None):
+                    await query.message.edit_caption(caption=desc_cf, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+                    return
+            except Exception as _ex:
+                logger.debug(f"[PAY2] edit_caption fallback: {_ex}")
+
+            try:
+                await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
+            except Exception as _ex:
+                logger.debug(f"[PAY2] _safe_edit fallback: {_ex}")
+                await client.send_message(user_id, desc_cf, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
             return
 
         elif method == "upi":

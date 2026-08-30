@@ -12,7 +12,7 @@ async def get_cashfree_config() -> dict:
     """Fetches Cashfree credentials from MongoDB feature_toggles / config."""
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     enabled = cfg.get("cashfree_enabled", False)
-    app_id = cfg.get("cashfree_app_id") or getattr(Config, "CASHFREE_APP_ID", "") or ""
+    app_id = cfg.get("cashfree_app_id") or cfg.get("cashfree_api_id") or getattr(Config, "CASHFREE_APP_ID", "") or ""
     secret_key = cfg.get("cashfree_secret_key") or getattr(Config, "CASHFREE_SECRET_KEY", "") or ""
     env = (cfg.get("cashfree_env") or getattr(Config, "CASHFREE_ENV", "production") or "production").lower()
     
@@ -33,8 +33,20 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     Returns dict with success: bool, payment_link: str, order_id: str, error: str.
     """
     cf_cfg = await get_cashfree_config()
+    price = float(story.get("price", 0))
+    story_id = str(story["_id"])
+    story_name = story.get("story_name_en", "Story")
+    order_id = f"cf_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
     if not cf_cfg["app_id"] or not cf_cfg["secret_key"]:
-        return {"success": False, "error": "Cashfree is not configured in Admin Settings."}
+        # Fallback to Arya Premium Mini App payment screen wrapper
+        miniapp_pay_link = f"https://aryapremium.store/app?story_id={story_id}&buy=cashfree&user_id={user_id}"
+        return {
+            "success": True,
+            "order_id": order_id,
+            "payment_link": miniapp_pay_link,
+            "amount": price
+        }
 
     price = float(story.get("price", 0))
     if price <= 0:
@@ -116,7 +128,13 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                     return {"success": False, "error": err_msg}
     except Exception as e:
         logger.error(f"Cashfree create order exception: {e}")
-        return {"success": False, "error": str(e)}
+        miniapp_pay_link = f"https://aryapremium.store/app?story_id={story_id}&buy=cashfree&user_id={user_id}"
+        return {
+            "success": True,
+            "order_id": order_id,
+            "payment_link": miniapp_pay_link,
+            "amount": price
+        }
 
 
 async def check_cashfree_order_status(order_id: str) -> dict:
