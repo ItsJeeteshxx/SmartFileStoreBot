@@ -2025,7 +2025,28 @@ async def settings_query(bot, query):
     except Exception as ex:
         details = {'name': f"User {cust_uid}", 'pass_info': {}, 'transactions': [], 'joined_ts': None, 'first_buy_ts': None, 'language': 'en'}
 
-    name = details.get('name', f"User {cust_uid}")
+    name = details.get('name')
+    username = str(details.get('username', '')).strip().lstrip('@')
+    if not name or name.startswith("User "):
+        try:
+            tg_user = await bot.get_users(cust_uid)
+            if tg_user:
+                full_name = f"{tg_user.first_name or ''} {tg_user.last_name or ''}".strip()
+                if full_name:
+                    name = full_name
+                if tg_user.username:
+                    username = tg_user.username.strip().lstrip('@')
+                    details['username'] = username
+                await db.col.update_one(
+                    {'id': int(cust_uid)},
+                    {'$set': {'name': name, 'username': tg_user.username or ''}},
+                    upsert=True
+                )
+        except Exception:
+            pass
+    if not name:
+        name = f"User {cust_uid}"
+
     pass_info = details.get('pass_info', {})
     active = pass_info.get('active', False)
     expires_at = pass_info.get('expires_at', 0)
@@ -2061,8 +2082,7 @@ async def settings_query(bot, query):
     lang_code = details.get('language', 'en')
     lang_display = "Hindi (हिन्दी)" if lang_code == 'hi' else "English"
 
-    username = str(details.get('username', '')).strip().lstrip('@')
-    profile_url = f"https://t.me/{username}" if username else f"tg://user?id={cust_uid}"
+    profile_url = f"https://t.me/{username}" if username else f"tg://openmessage?user_id={cust_uid}"
 
     exp_str = format_dt(expires_at, show_ist=True) if expires_at > 0 else "None"
 
@@ -2111,7 +2131,7 @@ async def settings_query(bot, query):
                 f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
                 f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
             )
-        txns_text = "\n┄┄┄┄┄┄┄┄┄┄┄┄\n".join(t_items)
+        txns_text = "\n┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n".join(t_items)
 
     body = (
         f'<emoji id="5778145208411624388">👤</emoji> <b>Costumer Overview</b>\n'
@@ -2122,7 +2142,7 @@ async def settings_query(bot, query):
         f"<emoji id=\"6030664675253820292\">🛍</emoji> <b>First Buy:-</b> <code>{first_buy_str}</code>\n"
         f"<emoji id=\"6030768072296502910\">🌐</emoji> <b>Language:-</b> {lang_display}\n"
         f"<emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"{profile_url}\">View User TG</a>\n"
-        f"{sub_status}\n"
+        f"{sub_status}\n\n"
         f"────────────────────\n"
         f'<emoji id="6021745995275048956">📜</emoji> <b>Transaction History:-</b>\n'
         f"────────────────────\n"
@@ -2135,55 +2155,78 @@ async def settings_query(bot, query):
     from database import parse_duration_to_seconds, format_duration_friendly
     
     buttons = []
+    api_buttons = []
     
-    # 1. Dynamic Grant buttons (➕ Plan Duration)
+    # 1. Dynamic Grant buttons (➕ Plan Duration with icon_custom_emoji_id="5882207227997066107")
     grant_row = []
+    api_grant_row = []
     for k in configured_prices.keys():
         dur_sec = parse_duration_to_seconds(k, default_unit='d')
         lbl = format_duration_friendly(dur_sec).title()
         grant_row.append(InlineKeyboardButton(f"➕ {lbl}", callback_data=f"settings#sb_rl_g_{cust_uid}_{k}_{page}"))
+        api_grant_row.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_g_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
         if len(grant_row) == 3:
             buttons.append(grant_row)
+            api_buttons.append(api_grant_row)
             grant_row = []
+            api_grant_row = []
     if grant_row:
         if len(grant_row) < 3:
             grant_row.append(InlineKeyboardButton("➕ Custom", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}"))
+            api_grant_row.append({"text": "Custom", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"})
             buttons.append(grant_row)
-            grant_row = []
+            api_buttons.append(api_grant_row)
         else:
             buttons.append(grant_row)
-            grant_row = []
+            api_buttons.append(api_grant_row)
             buttons.append([InlineKeyboardButton("➕ Custom Grant", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}")])
+            api_buttons.append([{"text": "Custom Grant", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"}])
     else:
         buttons.append([InlineKeyboardButton("➕ Custom Grant", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}")])
+        api_buttons.append([{"text": "Custom Grant", "callback_data": f"settings#sb_rl_cg_{cust_uid}_{page}", "icon_custom_emoji_id": "5882207227997066107"}])
 
-    # 2. Dynamic Revoke / Deduct buttons (➖ Plan Duration)
+    # 2. Dynamic Revoke / Deduct buttons (➖ Plan Duration with icon_custom_emoji_id="5350814400754236833")
     revoke_row = []
+    api_revoke_row = []
     for k in list(configured_prices.keys())[:3]:
         dur_sec = parse_duration_to_seconds(k, default_unit='d')
         lbl = format_duration_friendly(dur_sec).title()
         revoke_row.append(InlineKeyboardButton(f"➖ {lbl}", callback_data=f"settings#sb_rl_red_{cust_uid}_{k}_{page}"))
+        api_revoke_row.append({"text": f"{lbl}", "callback_data": f"settings#sb_rl_red_{cust_uid}_{k}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
     revoke_row.append(InlineKeyboardButton("➖ Custom", callback_data=f"settings#sb_rl_cred_{cust_uid}_{page}"))
+    api_revoke_row.append({"text": "Custom", "callback_data": f"settings#sb_rl_cred_{cust_uid}_{page}", "icon_custom_emoji_id": "5350814400754236833"})
     buttons.append(revoke_row)
+    api_buttons.append(api_revoke_row)
 
     # 3. Actions & Navigation
     buttons.append([
         InlineKeyboardButton("❌ Full Revoke", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
-        InlineKeyboardButton("🔗 View User TG Profile", url=profile_url)
-    ])
-    buttons.append([
         InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data=f"settings#sb_rl_cust_{page}")
     ])
-    try:
-        await query.message.edit_text(body, reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception as ex:
+    api_buttons.append([
+        {"text": "Full Revoke", "callback_data": f"settings#sb_rl_r_{cust_uid}_{page}", "icon_custom_emoji_id": "5774077015388852135"},
+        {"text": "❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", "callback_data": f"settings#sb_rl_cust_{page}"}
+    ])
+
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=body,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
         try:
-            await query.message.edit_text(
-                f"<b>👤 CUSTOMER PROFILE</b>\n\n<b>ID:</b> <code>{cust_uid}</code>\n<b>Name:</b> {name}\n\n{sub_status}",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-        except Exception:
-            pass
+            await query.message.edit_text(body, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception as ex:
+            try:
+                await query.message.edit_text(
+                    f"<b>👤 CUSTOMER PROFILE</b>\n\n<b>ID:</b> <code>{cust_uid}</code>\n<b>Name:</b> {name}\n\n{sub_status}",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            except Exception:
+                pass
 
   elif type.startswith("sb_rl_g_"):
     parts = type.split('_')
