@@ -17,9 +17,11 @@ async def get_cashfree_config() -> dict:
     env = (cfg.get("cashfree_env") or getattr(Config, "CASHFREE_ENV", "production") or "production").lower()
     
     base_url = "https://sandbox.cashfree.com/pg" if env == "sandbox" else "https://api.cashfree.com/pg"
+    is_configured = bool(app_id and secret_key)
+    logger.info(f"[CF] Config: enabled={enabled}, app_id={'SET' if app_id else 'MISSING'}, secret={'SET' if secret_key else 'MISSING'}, env={env}, is_configured={is_configured}")
     return {
         "enabled": bool(enabled and app_id and secret_key),
-        "is_configured": bool(app_id and secret_key),
+        "is_configured": is_configured,
         "app_id": str(app_id).strip(),
         "secret_key": str(secret_key).strip(),
         "env": env,
@@ -84,10 +86,12 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     }
 
     url = f"{cf_cfg['base_url']}/orders"
+    logger.info(f"[CF] Creating order: order_id={order_id}, amount={price}, env={cf_cfg['env']}, url={url}")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
                 data = await resp.json()
+                logger.info(f"[CF] API Response: status={resp.status}, data={data}")
                 if resp.status in (200, 201) and (data.get("payment_session_id") or data.get("order_id")):
                     payment_session_id = data.get("payment_session_id", "")
                     is_sb = (cf_cfg["env"] == "sandbox")
@@ -98,6 +102,8 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                         (data.get("payment_link") or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None))
                     )
                     
+                    logger.info(f"[CF] Order created successfully: order_id={order_id}, pay_link={payment_link}")
+
                     # Store order in MongoDB
                     await db.db.orders.insert_one({
                         "order_id": order_id,
@@ -124,11 +130,12 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                     }
                 else:
                     err_msg = data.get("message") or data.get("description") or str(data)
-                    logger.error(f"Cashfree create order failed: {data}")
+                    logger.error(f"[CF] Create order FAILED: status={resp.status}, response={data}")
                     return {"success": False, "error": err_msg}
     except Exception as e:
-        logger.error(f"Cashfree create order exception: {e}")
+        logger.error(f"[CF] Create order EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
         miniapp_pay_link = f"https://aryapremium.store/app?story_id={story_id}&buy=cashfree&user_id={user_id}"
+        logger.info(f"[CF] Falling back to mini app link: {miniapp_pay_link}")
         return {
             "success": True,
             "order_id": order_id,
