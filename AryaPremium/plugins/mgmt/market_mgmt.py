@@ -113,7 +113,6 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
          InlineKeyboardButton("CHANNELS", callback_data="mk#channels")],
         [InlineKeyboardButton("ACCOUNTS", callback_data="mk#accounts"),
          InlineKeyboardButton("BUYERS", callback_data="mk#users")],
-        [InlineKeyboardButton("🖼 MINI APP BANNERS", callback_data="mk#banners")],
         [InlineKeyboardButton("SETTINGS", callback_data="mk#settings")],
         [InlineKeyboardButton("CLOSE PANEL", callback_data="mk#close")]
     ]
@@ -166,57 +165,7 @@ def parse_chat_from_link(text: str):
 
 
 # In-memory state: users waiting to send banner photo
-BANNER_AWAIT_USERS: set = set()
-MAX_MANUAL_BANNERS = 8
 
-
-async def _render_banners_menu(client, message, *, edit: bool = False):
-    """Show the banner management sub-menu."""
-    count = await db.db.mini_app_banners.count_documents({})
-    banners = await db.db.mini_app_banners.find({}).sort("order", 1).to_list(MAX_MANUAL_BANNERS)
-
-    lines = [
-        "<b>🖼 Mini App Hero Banners</b>",
-        "",
-        f"<b>Manual:</b> {count}/{MAX_MANUAL_BANNERS}",
-        "<b>Auto:</b> 1 Trending + 1 Newest (always auto-added)",
-        "",
-        "<b>📐 Required image size: 1184 × 556 px</b>",
-        "",
-    ]
-
-    kb = []
-    if banners:
-        lines.append("<b>Current manual banners (tap 🗑 to delete):</b>")
-        for b in banners:
-            bid = str(b["_id"])
-            title = b.get("title") or "Untitled"
-            subtitle = b.get("subtitle") or ""
-            label = f"{b['order']}. {title[:22]}"
-            if subtitle:
-                label += f" — {subtitle[:15]}"
-            kb.append([
-                InlineKeyboardButton(f"  {label}", callback_data="mk#banners"),
-                InlineKeyboardButton("🗑", callback_data=f"mk#banner_del_{bid}"),
-            ])
-    else:
-        lines.append("<i>No manual banners yet. Add up to 8.</i>")
-
-    if count < MAX_MANUAL_BANNERS:
-        kb.append([InlineKeyboardButton("➕ Add Banner Image", callback_data="mk#banner_add")])
-    else:
-        kb.append([InlineKeyboardButton(f"❌ Limit reached ({MAX_MANUAL_BANNERS}/{MAX_MANUAL_BANNERS})", callback_data="mk#banners")])
-
-    kb.append([InlineKeyboardButton("« Back to Dashboard", callback_data="mk#back")])
-
-    txt = "\n".join(lines)
-    if edit:
-        try:
-            await message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
-        except MessageNotModified:
-            pass
-    else:
-        await client.send_message(message.chat.id, txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
 
 async def _render_settings(client, query):
@@ -373,55 +322,7 @@ async def market_callback(client, query):
         if cmd == "close":
             return await query.message.delete()
 
-        # ════════════════════════════════════════════
-        # MINI APP BANNERS
-        # ════════════════════════════════════════════
-        elif cmd == "banners":
-            await _safe_answer(query)
-            await _render_banners_menu(client, query.message, edit=True)
-            return
 
-        elif cmd == "banner_add":
-            await _safe_answer(query)
-            BANNER_AWAIT_USERS.add(query.from_user.id)
-            await query.message.edit_text(
-                "<b>🖼 Add Hero Banner</b>\n\n"
-                "Send the banner image now.\n\n"
-                "<b>📐 Required Size: 1184 × 556 px</b>\n"
-                "📏 Aspect ratio: ~2.13:1 (wide/horizontal)\n"
-                "📦 Format: JPG or PNG\n\n"
-                "<i>Optionally add caption: <code>Title | Subtitle</code></i>\n\n"
-                "⚠️ Send as <b>Photo</b> (not as file/document).\n"
-                "To cancel, press the button below.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="mk#banner_cancel")]
-                ])
-            )
-            return
-
-        elif cmd == "banner_cancel":
-            await _safe_answer(query)
-            BANNER_AWAIT_USERS.discard(query.from_user.id)
-            await _render_banners_menu(client, query.message, edit=True)
-            return
-
-        elif cmd.startswith("banner_del_"):
-            await _safe_answer(query)
-            try:
-                bid = cmd.replace("banner_del_", "")
-                deleted = await db.db.mini_app_banners.find_one_and_delete({"_id": ObjectId(bid)})
-                if not deleted:
-                    await _safe_answer(query, "Banner not found!", show_alert=True)
-                    return
-                # Re-order remaining
-                remaining = await db.db.mini_app_banners.find({}).sort("order", 1).to_list(8)
-                for i, b in enumerate(remaining, 1):
-                    await db.db.mini_app_banners.update_one({"_id": b["_id"]}, {"$set": {"order": i}})
-            except Exception as e:
-                await _safe_answer(query, f"Error: {e}", show_alert=True)
-                return
-            await _render_banners_menu(client, query.message, edit=True)
-            return
 
         elif cmd == "back":
             await _safe_answer(query)
@@ -4007,72 +3908,7 @@ async def _bot_broadcast_flow(client, user_id: int, b_id: str):
         await client.send_message(user_id, f"❌ Broadcast failed: {e}", reply_markup=ReplyKeyboardRemove())
 
 
-# ═══════════════════════════════════════════════════════════════════
-# BANNER PHOTO UPLOAD HANDLER
-# Triggered when owner sends a photo while in "add banner" mode
-# ═══════════════════════════════════════════════════════════════════
-@Client.on_message(filters.photo & filters.private)
-async def handle_banner_photo(client, message):
-    user_id = message.from_user.id
-    if not _is_owner(user_id):
-        return
-    if user_id not in BANNER_AWAIT_USERS:
-        return  # Not in banner-add flow — ignore
 
-    BANNER_AWAIT_USERS.discard(user_id)
-
-    count = await db.db.mini_app_banners.count_documents({})
-    if count >= MAX_MANUAL_BANNERS:
-        await message.reply(
-            f"❌ <b>Max {MAX_MANUAL_BANNERS} banners reached.</b>\n"
-            "Delete one first from 🖼 Mini App Banners menu.",
-            parse_mode=enums.ParseMode.HTML
-        )
-        return
-
-    # Parse caption: "Title | Subtitle"
-    caption = (message.caption or "").strip()
-    title, subtitle = "", ""
-    if "|" in caption:
-        parts = caption.split("|", 1)
-        title    = parts[0].strip()
-        subtitle = parts[1].strip()
-    elif caption:
-        title = caption
-
-    photo = message.photo
-    doc = {
-        "file_id":   photo.file_id,
-        "title":     title,
-        "subtitle":  subtitle,
-        "badge":     "",
-        "order":     count + 1,
-        "added_by":  user_id,
-        "added_at":  datetime.now(timezone.utc),
-    }
-    result = await db.db.mini_app_banners.insert_one(doc)
-    banner_id = str(result.inserted_id)
-
-    # Size info
-    size_note = ""
-    if photo.width and photo.height:
-        size_note = f"\n📐 Uploaded: {photo.width}×{photo.height} px"
-        if photo.width != 1184 or photo.height != 556:
-            size_note += f"\n⚠️ Ideal: 1184×556 px for best quality"
-
-    await message.reply(
-        f"<b>✅ Banner #{count + 1} added!</b>\n"
-        f"🆔 <code>{banner_id}</code>"
-        f"{size_note}\n"
-        f"{'📝 ' + title if title else ''}\n"
-        f"{'💬 ' + subtitle if subtitle else ''}\n\n"
-        f"🖼 Tap below to manage banners.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🖼 View Banners", callback_data="mk#banners")],
-            [InlineKeyboardButton("🏠 Dashboard", callback_data="mk#back")],
-        ]),
-        parse_mode=enums.ParseMode.HTML
-    )
 
 
 # ── Message Single Buyer Flow ─────────────────────────────────────────────────
