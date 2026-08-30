@@ -223,20 +223,22 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
             supp_count = 0
 
         txt = (
-            "<b>Arya Marketplace Dashboard</b>\n\n"
+            "<b>🏪 Arya Marketplace Dashboard</b>\n"
+            "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n\n"
             "<b>⧉ SYSTEM OVERVIEW</b>\n"
-            f"<b>• TOTAL STORE BOTS  ⟶</b> <code>{bots}</code>\n"
-            f"<b>• ACTIVE STORIES     ⟶</b> <code>{stories}</code>\n"
-            f"<b>• TOTAL CUSTOMERS    ⟶</b> <code>{buyers}</code>\n"
-            f"<b>• REGISTERED USERS   ⟶</b> <code>{total_users}</code>\n"
-            f"<b>• SOURCE CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
-            f"<b>• DELIVERY POOL      ⟶</b> <code>{dl_ch}</code>\n\n"
+            f"<code>  Store Bots       ›  {bots}</code>\n"
+            f"<code>  Active Stories   ›  {stories}</code>\n"
+            f"<code>  Total Customers  ›  {buyers}</code>\n"
+            f"<code>  Registered Users ›  {total_users}</code>\n"
+            f"<code>  Source Channels  ›  {db_ch}</code>\n"
+            f"<code>  Delivery Pool    ›  {dl_ch}</code>\n\n"
             "<b>⧉ MANAGEMENT DETAILS</b>\n"
-            f"<b>• PENDING ORDERS     ⟶</b> <code>{pendings}</code>\n"
-            f"<b>• COMPLETED SALES    ⟶</b> <code>{approved}</code>\n"
-            f"<b>• STORY REQUESTS     ⟶</b> <code>{reqs_count}</code>\n"
-            f"<b>• SUPPORT TICKETS    ⟶</b> <code>{supp_count}</code>\n"
-            f"<b>• ENGINE STATUS      ⟶</b> <code>Active &amp; Operational</code>"
+            f"<code>  Pending Orders   ›  {pendings}</code>\n"
+            f"<code>  Completed Sales  ›  {approved}</code>\n"
+            f"<code>  Story Requests   ›  {reqs_count}</code>\n"
+            f"<code>  Support Tickets  ›  {supp_count}</code>\n"
+            f"<code>  Engine Status    ›  Online ✅</code>\n"
+            "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>"
         )
 
         kb = [
