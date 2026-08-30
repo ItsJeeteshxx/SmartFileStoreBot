@@ -3775,6 +3775,44 @@ async def cashfree_webhook(request: Request):
         return {"success": False, "message": "Payment not verified"}
 
     arya_db = getattr(app.state, "db", None) or db
+
+    # Check if this is a Delivery Bot Unlimited Pass order
+    if order_id.startswith("PASS-") or await arya_db.db.pass_orders.count_documents({"order_id": order_id}) > 0:
+        pass_order = await arya_db.db.pass_orders.find_one({"order_id": order_id})
+        if not pass_order:
+            logger.warning(f"Cashfree webhook: pass_order not found for order_id={order_id}")
+            return {"success": False, "message": "Pass order not found"}
+
+        if pass_order.get("status") == "PAID":
+            return {"success": True, "message": "Pass order already processed"}
+
+        # Atomically claim pass order
+        claimed = await arya_db.db.pass_orders.find_one_and_update(
+            {"order_id": order_id, "status": {"$ne": "PAID"}},
+            {"$set": {"status": "PAID", "paid_at": time.time(), "payment_details": status_res}},
+            return_document=False
+        )
+        if claimed:
+            p_uid = int(pass_order.get("user_id"))
+            p_dur = pass_order.get("duration", "1d")
+            p_uname = pass_order.get("user_name", "User")
+            p_amt = float(pass_order.get("amount", 0))
+
+            from database import parse_duration_to_seconds
+            dur_sec = parse_duration_to_seconds(str(p_dur), default_unit='d')
+            cur_pass = await arya_db.db.unlimited_passes.find_one({'user_id': p_uid})
+            now_ts = time.time()
+            base_t = cur_pass.get('expires_at', 0) if (cur_pass and cur_pass.get('expires_at', 0) > now_ts) else now_ts
+            new_exp = base_t + dur_sec
+            await arya_db.db.unlimited_passes.update_one(
+                {'user_id': p_uid},
+                {'$set': {'expires_at': new_exp, 'user_name': p_uname, 'updated_at': now_ts}},
+                upsert=True
+            )
+            logger.info(f"[CF-WEBHOOK] Pass order {order_id} activated for user {p_uid}, new_expiry={new_exp}")
+
+        return {"success": True, "message": "Pass order processed successfully"}
+
     order = await arya_db.db.orders.find_one({"order_id": order_id})
     if not order:
         logger.warning(f"Cashfree webhook: order not found for order_id={order_id}")

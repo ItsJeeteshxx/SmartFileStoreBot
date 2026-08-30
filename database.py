@@ -1936,6 +1936,20 @@ class Database:
             {'$set': {'status': 'PAID', 'paid_at': time.time(), 'payment_details': payment_details or {}}}
         )
 
+    async def mark_pass_order_paid_atomic(self, order_id: str, payment_details: dict = None) -> dict:
+        """
+        Atomically marks a pass order as PAID only if it is currently NOT PAID.
+        Returns the order document if transition succeeded, or None if already PAID/processed.
+        This provides strict idempotency and completely prevents double credit / multiple activations.
+        """
+        import time
+        doc = await self.pass_orders.find_one_and_update(
+            {'order_id': order_id, 'status': {'$ne': 'PAID'}},
+            {'$set': {'status': 'PAID', 'paid_at': time.time(), 'payment_details': payment_details or {}}},
+            return_document=False
+        )
+        return doc
+
 
     async def get_all_pass_customers(self) -> list:
         """

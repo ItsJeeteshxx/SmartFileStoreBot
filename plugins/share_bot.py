@@ -3126,6 +3126,105 @@ async def schedule_pass_payment_reminder(
 
     asyncio.create_task(_reminder_coro())
 
+
+async def start_pass_cashfree_auto_verifier(
+    client,
+    user_id: int,
+    user_name: str,
+    order_id: str,
+    dur_key: str,
+    amount: float,
+    dur_verbose: str,
+    invoice_msg_id: int = None
+):
+    """
+    Background automated real-time verifier for Cashfree Pass Orders.
+    Checks Cashfree API every 5 seconds for up to 10 minutes.
+    As soon as the payment is completed, it automatically:
+      1. Claims order atomically via database (strictly preventing double credit).
+      2. Activates the unlimited pass.
+      3. Edits the invoice message in-place to the success celebration screen.
+      4. Cancels reminders and logs transaction to log channel.
+    """
+    task_key = f"{user_id}_{order_id}"
+    logger.info(f"[PASS-AUTO-VERIFY] Started real-time auto-verifier for user {user_id}, order {order_id}")
+    for _ in range(120): # 120 * 5s = 600s (10 mins)
+        await asyncio.sleep(5)
+        try:
+            if task_key not in _active_order_reminders and _active_order_reminders.get(f"done_{task_key}"):
+                break
+            
+            order_doc = await db.get_pass_order(order_id)
+            if not order_doc:
+                break
+            if order_doc.get("status") == "PAID":
+                logger.info(f"[PASS-AUTO-VERIFY] Order {order_id} already marked PAID. Exiting auto-verifier.")
+                break
+            if order_doc.get("status") in ("CANCELLED", "EXPIRED"):
+                logger.info(f"[PASS-AUTO-VERIFY] Order {order_id} is {order_doc.get('status')}. Stopping auto-verifier.")
+                break
+
+            from plugins.cashfree_helper import verify_cashfree_pass_order
+            v_res = await verify_cashfree_pass_order(order_id)
+            if v_res.get("is_paid"):
+                claimed = await db.mark_pass_order_paid_atomic(order_id, v_res)
+                if claimed:
+                    _cancel_cooldown_reminders(user_id)
+                    _active_order_reminders[f"done_{task_key}"] = True
+                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name)
+                    
+                    import datetime
+                    try:
+                        import pytz
+                        ist_tz = pytz.timezone('Asia/Kolkata')
+                        exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+                        exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+                    except Exception:
+                        exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+                    success_text = (
+                        f'<emoji id="5224607267797606837">🎉</emoji> <b>Unlimited Pass Activated Automatically!</b>\n\n'
+                        f"Hey <b>{user_name}</b>, your payment of <b>₹{amount:.2f}</b> was <b>automatically verified</b>!\n\n"
+                        f"<b>Plan:</b> {dur_verbose.title()} Unlimited Access Pass\n"
+                        f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+                        f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
+                        f"You can now access any batch and story links without cooldown. Enjoy!"
+                    )
+
+                    # Try editing invoice message in-place
+                    edited = False
+                    if invoice_msg_id:
+                        try:
+                            await client.edit_message_text(user_id, invoice_msg_id, success_text)
+                            edited = True
+                        except Exception:
+                            pass
+                    if not edited:
+                        try:
+                            await client.send_message(user_id, success_text)
+                        except Exception:
+                            pass
+
+                    # Log to dedicated pass log channel
+                    rl_cfg = await db.get_delivery_rate_limit_config()
+                    log_ch = rl_cfg.get('log_channel')
+                    from plugins.arya_logger import log_pass_purchased
+                    asyncio.create_task(log_pass_purchased(
+                        user_id=user_id,
+                        user_name=user_name,
+                        duration_str=dur_verbose.title(),
+                        amount=amount,
+                        order_id=order_id,
+                        expiry_ts=new_expiry,
+                        log_channel=log_ch,
+                        gateway="Cashfree PG (Auto-Verified)"
+                    ))
+                break
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"[PASS-AUTO-VERIFY] Exception while polling order {order_id}: {e}")
+
 async def send_or_edit_with_custom_icons(
     client,
     chat_id: int,
@@ -4482,7 +4581,19 @@ async def _process_pass_callback(client, query):
         if not sent_ok:
             await query.message.edit_text(inv_text, reply_markup=inv_kb)
 
-        # Schedule automatic reminder (max 2 times under 10 minutes) if Cashfree invoice not completed
+        # 1. Launch real-time background auto-verifier (polls Cashfree every 5s & auto-activates on payment)
+        asyncio.create_task(start_pass_cashfree_auto_verifier(
+            client=client,
+            user_id=user_id,
+            user_name=user_name,
+            order_id=order_id,
+            dur_key=dur_key,
+            amount=amount,
+            dur_verbose=dur_verbose,
+            invoice_msg_id=query.message.id
+        ))
+
+        # 2. Schedule automatic reminder (max 2 times under 10 minutes) if Cashfree invoice not completed
         asyncio.create_task(schedule_pass_payment_reminder(
             client=client,
             user_id=user_id,
@@ -4514,52 +4625,79 @@ async def _process_pass_callback(client, query):
         v_res = await verify_cashfree_pass_order(order_id)
 
         if v_res.get("is_paid"):
-            await db.mark_pass_order_paid(order_id, v_res)
-            _cancel_cooldown_reminders(user_id)
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key)
-            
-            import datetime
-            try:
-                import pytz
-                ist_tz = pytz.timezone('Asia/Kolkata')
-                exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
-                exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
-            except Exception:
-                exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+            claimed = await db.mark_pass_order_paid_atomic(order_id, v_res)
+            if claimed:
+                # First-time claim -> activate pass duration
+                _cancel_cooldown_reminders(user_id)
+                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name)
+                
+                import datetime
+                try:
+                    import pytz
+                    ist_tz = pytz.timezone('Asia/Kolkata')
+                    exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+                    exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+                except Exception:
+                    exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
-            success_text = (
-                f'<emoji id="5224607267797606837">🎉</emoji> <b>Unlimited Pass Activated Successfully!</b>\n\n'
-                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
-                f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-                f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
-                f"You can now access any batch and story links without cooldown. Enjoy!"
-            )
-            await query.message.edit_text(success_text)
+                success_text = (
+                    f'<emoji id="5224607267797606837">🎉</emoji> <b>Unlimited Pass Activated Successfully!</b>\n\n'
+                    f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                    f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+                    f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
+                    f"You can now access any batch and story links without cooldown. Enjoy!"
+                )
+                await query.message.edit_text(success_text)
 
-            # Log to dedicated pass log channel in Quoteblock format
-            rl_cfg = await db.get_delivery_rate_limit_config()
-            log_ch = rl_cfg.get('log_channel')
-            from plugins.arya_logger import log_pass_purchased
-            asyncio.create_task(log_pass_purchased(
-                user_id=user_id,
-                user_name=user_name,
-                duration_str=dur_verbose.title(),
-                amount=amount,
-                order_id=order_id,
-                expiry_ts=new_expiry,
-                log_channel=log_ch,
-                gateway="Cashfree PG"
-            ))
+                # Log to dedicated pass log channel in Quoteblock format
+                rl_cfg = await db.get_delivery_rate_limit_config()
+                log_ch = rl_cfg.get('log_channel')
+                from plugins.arya_logger import log_pass_purchased
+                asyncio.create_task(log_pass_purchased(
+                    user_id=user_id,
+                    user_name=user_name,
+                    duration_str=dur_verbose.title(),
+                    amount=amount,
+                    order_id=order_id,
+                    expiry_ts=new_expiry,
+                    log_channel=log_ch,
+                    gateway="Cashfree PG"
+                ))
+            else:
+                # Already claimed (e.g. by auto-verifier or earlier tap). DO NOT ADD EXTRA DURATION!
+                cur_pass = await db.get_user_unlimited_pass(user_id)
+                new_expiry = cur_pass.get("expires_at", time.time())
+                import datetime
+                try:
+                    import pytz
+                    ist_tz = pytz.timezone('Asia/Kolkata')
+                    exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+                    exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+                except Exception:
+                    exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+                already_text = (
+                    f'<emoji id="5224607267797606837">✅</emoji> <b>Unlimited Pass is Already Active!</b>\n\n'
+                    f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is already active.\n\n"
+                    f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
+                    f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access Active\n\n'
+                    f"Enjoy unlimited access with zero cooldown!"
+                )
+                await query.message.edit_text(already_text)
         else:
             try:
                 await query.answer(
-                    "⚠️ Payment Not Received: If you have made the payment, please wait 5-10 seconds for the gateway to confirm and tap Verify again.",
+                    "⚠️ Payment Not Received: If you have made the payment, please wait 5-10 seconds for gateway confirmation.",
                     show_alert=True
                 )
             except Exception:
                 pass
 
     elif data.startswith("pass#cancel_"):
+        parts = data.split("_")
+        cancel_order_id = "_".join(parts[1:])
+        if cancel_order_id:
+            await db.pass_orders.update_one({"order_id": cancel_order_id}, {"$set": {"status": "CANCELLED"}})
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
         await query.message.edit_text("पेमेंट इनवॉइस कैंसिल कर दिया गया।" if is_hi else "Payment invoice cancelled.")
