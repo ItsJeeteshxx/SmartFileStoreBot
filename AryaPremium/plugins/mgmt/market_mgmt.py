@@ -2611,480 +2611,649 @@ async def _add_store_bot_flow(client, user_id):
 async def _add_story_flow(client, user_id):
     try:
         sj = {}
-        cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
-
-        # Select Store Bot
-        bots = await db.db.premium_bots.find().to_list(length=None)
-        if not bots:
-            return await client.send_message(user_id, "<b>‣ No Connected Bots available. Please Add Connected Bot first.</b>")
-
-        bot_kb = [[f"@{b['username']}"] for b in bots] + [["⛔ Cᴀɴᴄᴇʟ"]]
-        while True:
-            msg_bot = await native_ask(
-                client,
-                user_id,
-                "<b>❪ STEP 1: SELECT STORE BOT ❫</b>\n\nChoose the bot to sell this via:",
-                reply_markup=ReplyKeyboardMarkup(bot_kb, resize_keyboard=True)
-            )
-            if getattr(msg_bot, "text", None) and "Cᴀɴᴄᴇʟ" in msg_bot.text:
-                return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            usr = (msg_bot.text or "").replace("@", "").strip()
-            sel_bot = next((b for b in bots if b["username"] == usr), None)
-            if sel_bot:
-                sj["bot_id"] = sel_bot["id"]
-                sj["bot_username"] = sel_bot["username"]
-                break
-            await client.send_message(user_id, "❌ Invalid bot selection. Please choose from keyboard.")
-
-        # Source channel preference from Channels registry
-        db_channels = await db.db.premium_channels.find({"type": "db"}).to_list(length=None)
+        step = 1
         source_chat = None
-        if db_channels:
-            src_kb = [[f"{c.get('name', c['channel_id'])} ({c['channel_id']})"] for c in db_channels]
-            src_kb += [["Manual / Forward / Link"], ["⛔ Cᴀɴᴄᴇʟ"]]
-            msg_src = await native_ask(
-                client,
-                user_id,
-                "<b>❪ STEP 2: SOURCE DB CHANNEL ❫</b>\n\nSelect a source channel or choose Manual mode:",
-                reply_markup=ReplyKeyboardMarkup(src_kb, resize_keyboard=True),
-            )
-            if getattr(msg_src, "text", None) and "Cᴀɴᴄᴇʟ" in msg_src.text:
-                return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>")
-            picked = (msg_src.text or "").strip()
-            if picked != "Manual / Forward / Link":
-                for ch in db_channels:
-                    key = f"{ch.get('name', ch['channel_id'])} ({ch['channel_id']})"
-                    if key == picked:
-                        source_chat = ch["channel_id"]
-                        break
+        undo_cancel_kb = ReplyKeyboardMarkup([["↩️ Undo", "⛔ Cancel"]], resize_keyboard=True)
 
-        # Start message
-        while True:
-            msg_s = await native_ask(
-                client,
-                user_id,
-                "<b>❪ STEP 3: START MESSAGE ❫</b>\n\nForward the first message of the story (or send its link / message id):",
-                reply_markup=cancel_kb,
-            )
-            if getattr(msg_s, "text", None) and "Cᴀɴᴄᴇʟ" in msg_s.text:
-                return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            try:
-                sj["start_id"] = parse_id(msg_s)
-                if getattr(msg_s, "forward_from_chat", None):
-                    source_chat = msg_s.forward_from_chat.id
-                elif getattr(msg_s, "text", None):
-                    ch, _mid = parse_chat_from_link(msg_s.text)
-                    if ch:
-                        source_chat = ch
-                break
-            except Exception:
-                await client.send_message(user_id, "❌ Invalid start message. Please forward a message or send a valid link/id.")
+        while step <= 14:
+            # ── STEP 1: SELECT STORE BOT ──────────────────────────────────────
+            if step == 1:
+                bots = await db.db.premium_bots.find().to_list(length=None)
+                if not bots:
+                    return await client.send_message(user_id, "<b>‣ No Connected Bots available. Please Add Connected Bot first.</b>", reply_markup=ReplyKeyboardRemove())
 
-        # End message
-        while True:
-            msg_e = await native_ask(
-                client,
-                user_id,
-                "<b>❪ STEP 4: LAST MESSAGE ❫</b>\n\nForward the last message of the story (or send its link / message id):",
-                reply_markup=cancel_kb,
-            )
-            if getattr(msg_e, "text", None) and "Cᴀɴᴄᴇʟ" in msg_e.text:
-                return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            try:
-                sj["end_id"] = parse_id(msg_e)
-                if getattr(msg_e, "forward_from_chat", None) and not source_chat:
-                    source_chat = msg_e.forward_from_chat.id
-                elif getattr(msg_e, "text", None) and not source_chat:
-                    ch, _mid = parse_chat_from_link(msg_e.text)
-                    if ch:
-                        source_chat = ch
-                break
-            except Exception:
-                await client.send_message(user_id, "❌ Invalid end message. Please forward a message or send a valid link/id.")
+                # All available store bots in one row
+                bot_row = [f"@{b['username']}" for b in bots]
+                bot_kb = ReplyKeyboardMarkup([bot_row, ["⛔ Cancel"]], resize_keyboard=True)
 
-        if sj["start_id"] > sj["end_id"]:
-            sj["start_id"], sj["end_id"] = sj["end_id"], sj["start_id"]
-
-        if isinstance(source_chat, str):
-            try:
-                source_chat = (await client.get_chat(source_chat)).id
-            except Exception:
-                source_chat = None
-
-        if not source_chat:
-            return await client.send_message(
-                user_id,
-                "❌ Could not detect source channel. Forward at least one episode message from the source channel.",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-        sj["source"] = source_chat
-
-        # Meta Data
-        # Meta Data
-        msg_name_en = await native_ask(client, user_id, "<b>❪ STEP 5: STORY NAME ❫</b>\n\nEnter the story name:\n<i>(Groq AI will transliterate to Hindi automatically)</i>", reply_markup=cancel_kb)
-        if getattr(msg_name_en, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_name_en.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        
-        name_input = (msg_name_en.text or "").strip()
-        waiting_msg = await client.send_message(user_id, "⏳ <i>Processing name with Groq AI...</i>")
-        sj['story_name_en'] = utils.translate_to_english(name_input)
-        # Use Groq AI for accurate Hindi transliteration
-        sj['story_name_hi'] = await utils.groq_transliterate_hindi(name_input)
-        await waiting_msg.delete()
-
-        # ── Hindi name confirmation ───────────────────────────────────────────
-        confirm_kb = ReplyKeyboardMarkup(
-            [["✅ Correct, Continue"], ["✏️ Type Correct Hindi Name"], ["⛔ Cᴀɴᴄᴇʟ"]],
-            resize_keyboard=True, one_time_keyboard=True
-        )
-        msg_hi_conf = await native_ask(
-            client, user_id,
-            f"<b>❪ STEP 5.1: HINDI NAME CONFIRM ❫</b>\n\n"
-            f"<b>EN:</b> {sj['story_name_en']}\n"
-            f"<b>HI (Auto):</b> {sj['story_name_hi']}\n\n"
-            f"Is the Hindi name correct?\n"
-            f"<i>(Tap 'Correct' to continue or 'Type' to enter manually)</i>",
-            reply_markup=confirm_kb
-        )
-        _conf_txt = getattr(msg_hi_conf, 'text', '') or ''
-        if 'Cᴀɴᴄᴇʟ' in _conf_txt:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        if '✏️' in _conf_txt or 'Type' in _conf_txt:
-            # Ask user to type the correct Hindi name
-            msg_hi_manual = await native_ask(
-                client, user_id,
-                "<b>✏️ Enter the correct Hindi/transliterated name:</b>",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            _manual = (getattr(msg_hi_manual, 'text', '') or '').strip()
-            if _manual:
-                sj['story_name_hi'] = _manual
-        # If '✅ Correct' or anything else — keep auto-generated name
-
-        msg_img = await native_ask(client, user_id, f"<b>❪ STEP 6: STORY IMAGE ❫</b>\n\n<b>EN:</b> {sj['story_name_en']}\n<b>HI:</b> {sj['story_name_hi']}\n\nSend the cover image for this story:", reply_markup=cancel_kb)
-        if getattr(msg_img, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_img.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_img, 'photo', None):
-            await client.send_message(user_id, "<i>Uploading image to store bot and CDN...</i>")
-            try:
-                from plugins.userbot.market_seller import market_clients
-                from utils import upload_to_catbox
-                store_cli = market_clients.get(str(sj["bot_id"]))
-                dl = await client.download_media(msg_img.photo.file_id)
-                
-                # Upload to CDN for Mini App & cross-bot universal access
-                catbox_url = await upload_to_catbox(dl)
-                if catbox_url:
-                    sj['poster_url'] = catbox_url
-                    sj['image_url'] = catbox_url
-                    
-                # Upload to Store Bot for Telegram delivery
-                uploaded = False
-                if store_cli:
-                    try:
-                        ul = await store_cli.send_photo(user_id, photo=dl)
-                        sj['image'] = ul.photo.file_id
-                        uploaded = True
-                    except Exception:
-                        pass
-                    
-                    if not uploaded:
-                        # Fallback to store bot upload via log channel if user hasn't started store bot
-                        log_ch = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "ARYA_LOGS_CHANNEL", None)
-                        if log_ch:
-                            try:
-                                ul = await store_cli.send_photo(int(log_ch), photo=dl)
-                                sj['image'] = ul.photo.file_id
-                                uploaded = True
-                                try: await ul.delete()
-                                except Exception: pass
-                            except Exception: pass
-
-                if not uploaded:
-                    sj['image'] = catbox_url or msg_img.photo.file_id
-                
-                try:
-                    import os; os.remove(dl)
-                except Exception: pass
-            except Exception as e:
-                sj['image'] = msg_img.photo.file_id # fallback
-        else:
-            sj['image'] = None
-
-        msg_desc = await native_ask(
-            client,
-            user_id,
-            "<b>❪ STEP 7: STORY DESCRIPTION ❫</b>\n\n"
-            "<blockquote expandable='true'>"
-            "Enter the description/synopsis of the story.\n\n"
-            "Tip: It will be automatically translated to both English and Hindi."
-            "</blockquote>",
-            reply_markup=cancel_kb
-        )
-        if getattr(msg_desc, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_desc.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        
-        desc_input = (msg_desc.text or "None").strip()
-        waiting_msg = await client.send_message(user_id, "⏳ <i>Translating description with Groq AI...</i>")
-        sj['description'] = utils.translate_to_english(desc_input)
-        # Use Groq AI for description translation (with fallback)
-        sj['description_hi'] = await utils.groq_translate_description(desc_input, target_lang='hi')
-        await waiting_msg.delete()
-
-        msg_eps = await native_ask(client, user_id, "<b>❪ STEP 6.3: EPISODES ❫</b>\n\nHow many episodes? e.g. '595 / 595' or '100+':", reply_markup=cancel_kb)
-        if getattr(msg_eps, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_eps.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        sj['episodes'] = (msg_eps.text or "N/A").strip()
-
-        kb_status = ReplyKeyboardMarkup([["Completed", "Ongoing"], ["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True)
-        msg_status = await native_ask(client, user_id, "<b>❪ STEP 6.4: STATUS ❫</b>\n\nIs the story Completed or Ongoing?", reply_markup=kb_status)
-        if getattr(msg_status, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_status.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        sj['status'] = (msg_status.text or "Unknown").strip()
-
-        # reset to normal cancel kb
-        msg_genre = await native_ask(client, user_id, "<b>❪ STEP 6.5: GENRE ❫</b>\n\nEnter genre e.g. 'Romance', 'Thriller':", reply_markup=cancel_kb)
-        if getattr(msg_genre, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_genre.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        sj['genre'] = (msg_genre.text or "Unknown").strip()
-
-        # Language selection
-        kb_lang = ReplyKeyboardMarkup([["Hindi", "English", "Hinglish"], ["Tamil", "Telugu", "Marathi"], ["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True)
-        msg_lang = await native_ask(client, user_id, "<b>❪ STEP 6.6: LANGUAGE ❫</b>\n\nSelect or type the language of this story:", reply_markup=kb_lang)
-        if getattr(msg_lang, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_lang.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        sj['language'] = (msg_lang.text or "Hindi").strip()
-
-        while True:
-            msg_price = await native_ask(client, user_id, "<b>❪ STEP 7: PRICE IN INR ❫</b>\n\nEnter price (e.g. 100):", reply_markup=cancel_kb)
-            if getattr(msg_price, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_price.text:
-                return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            try:
-                price = int((msg_price.text or "").strip())
-                if price < 1:
-                    raise ValueError("price")
-                sj["price"] = price
-                break
-            except Exception:
-                await client.send_message(user_id, "❌ Price must be a positive number.")
-
-        # ── Payment Methods Selection ──────────────────────────────────────────
-        pay_kb = ReplyKeyboardMarkup(
-            [["✅ Both (UPI + Razorpay)"], ["🏦 Manual UPI Only"], ["💳 Razorpay Only"], ["⛔ Cᴀɴᴄᴇʟ"]],
-            resize_keyboard=True, one_time_keyboard=True
-        )
-        msg_pay = await native_ask(
-            client, user_id,
-            "<b>❪ STEP 7.5: PAYMENT METHODS ❫</b>\n\n"
-            "Choose which payment methods to enable for this story:\n"
-            "<i>• Both: Show UPI and Razorpay (default)\n"
-            "• Manual UPI Only: Only manual screenshot verification\n"
-            "• Razorpay Only: Auto gateway payment only</i>",
-            reply_markup=pay_kb
-        )
-        if getattr(msg_pay, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_pay.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        pay_choice = (msg_pay.text or "").strip()
-        if "UPI Only" in pay_choice:
-            sj["payment_methods"] = ["upi"]
-        elif "Razorpay Only" in pay_choice:
-            sj["payment_methods"] = ["razorpay"]
-        else:
-            sj["payment_methods"] = ["upi", "razorpay"]  # default: both
-
-        pf_kb = ReplyKeyboardMarkup(
-
-            [
-
-                ["Pocket FM", "Eight FM"],
-
-                ["Kuku FM", "Kuku TV"],
-
-                ["Pratilipi FM", "Headfone"],
-
-                ["Story TV", "Custom"],
-                ["⛔ Cᴀɴᴄᴇʟ"],
-
-            ],
-
-            resize_keyboard=True
-
-        )
-
-        msg_plat = await native_ask(client, user_id, "<b>❪ STEP 8: PLATFORM ❫</b>\n\nSelect the platform this story is from:", reply_markup=pf_kb)
-
-        if getattr(msg_plat, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_plat.text:
-
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-
-        plat_choice = (msg_plat.text or "Pocket FM").strip()
-
-        if plat_choice == "Custom":
-
-            msg_custom_plat = await native_ask(
-
-                client, user_id,
-
-                "<b>❪ CUSTOM PLATFORM ❫</b>\n\nType the platform name (e.g. Audible, Spotify, etc.):",
-
-                reply_markup=cancel_kb
-
-            )
-
-            if getattr(msg_custom_plat, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_custom_plat.text:
-
-                return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-
-            sj['platform'] = (msg_custom_plat.text or 'Custom').strip()
-
-        else:
-
-            sj['platform'] = plat_choice
-
-        # Delivery channel strategy (supports 100-200 channels via pool/rotation)
-        sj["delivery_mode"] = "pool"
-        sj["channel_id"] = None
-        sj["channel_pool"] = []
-
-        delivery_channels = await db.db.premium_channels.find({"type": "delivery"}).to_list(length=300)
-        kb_mode = ReplyKeyboardMarkup(
-            [["Use GLOBAL Pool (Auto-Rotate)"], ["Single Delivery Channel"], ["DM Only"], ["⛔ Cᴀɴᴄᴇʟ"]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        msg_mode = await native_ask(
-            client,
-            user_id,
-            "<b>❪ STEP 9: DELIVERY MODE ❫</b>\n\n"
-            "Choose how buyers will receive the one-time channel link:",
-            reply_markup=kb_mode,
-        )
-        if getattr(msg_mode, "text", None) and "Cᴀɴᴄᴇʟ" in msg_mode.text:
-            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        picked_mode = (msg_mode.text or "").strip()
-
-        if picked_mode == "DM Only":
-            sj["delivery_mode"] = "dm_only"
-        elif picked_mode == "Single Delivery Channel":
-            sj["delivery_mode"] = "single"
-            if delivery_channels:
-                # Search-based selection (scales)
-                ask = await native_ask(
+                msg_bot = await native_ask(
                     client,
                     user_id,
-                    "<b>❪ DELIVERY CHANNEL PICKER ❫</b>\n\n"
-                    "Send a delivery channel ID, or type part of its saved name to search.\n"
-                    "<i>Tip: Use Channels → Bulk Add Delivery to import many channels fast.</i>",
-                    reply_markup=cancel_kb,
+                    "<b>❪ STEP 1: SELECT STORE BOT ❫</b>\n\nChoose the bot to sell this story via:",
+                    reply_markup=bot_kb
                 )
-                if getattr(ask, "text", None) and "Cᴀɴᴄᴇʟ" in ask.text:
-                    return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-                q = (ask.text or "").strip()
-                chosen = None
-                if q.lstrip("-").isdigit():
-                    chosen = int(q)
+                txt = (getattr(msg_bot, "text", "") or "").strip()
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                usr = txt.replace("@", "").strip()
+                sel_bot = next((b for b in bots if b["username"] == usr), None)
+                if sel_bot:
+                    sj["bot_id"] = sel_bot["id"]
+                    sj["bot_username"] = sel_bot["username"]
+                    step = 2
                 else:
-                    ql = q.lower()
-                    matches = []
-                    for ch in delivery_channels:
-                        nm = (ch.get("name") or "").lower()
-                        if ql and (ql in nm):
-                            matches.append(ch)
-                    if matches:
-                        # pick first match
-                        chosen = matches[0]["channel_id"]
-                sj["channel_id"] = chosen
-            else:
-                # No saved channels yet, accept custom
-                custom = await native_ask(
+                    await client.send_message(user_id, "❌ Invalid bot selection. Please choose from the keyboard.")
+                continue
+
+            # ── STEP 2: SOURCE DB CHANNEL ─────────────────────────────────────
+            elif step == 2:
+                db_channels = await db.db.premium_channels.find({"type": "db"}).to_list(length=None)
+                if db_channels:
+                    src_kb_list = [[f"{c.get('name', c['channel_id'])} ({c['channel_id']})"] for c in db_channels]
+                    src_kb_list += [["Manual / Forward / Link"], ["↩️ Undo", "⛔ Cancel"]]
+                    prompt = "<b>❪ STEP 2: SOURCE CHANNEL ❫</b>\n\nSelect a Source (DB) channel or choose Manual mode:"
+                else:
+                    src_kb_list = [["Manual / Forward / Link"], ["↩️ Undo", "⛔ Cancel"]]
+                    prompt = "<b>❪ STEP 2: SOURCE CHANNEL ❫</b>\n\nNo saved source channels. Select Manual mode or forward a message:"
+
+                msg_src = await native_ask(
                     client,
                     user_id,
-                    "<b>❪ CUSTOM DELIVERY CHANNEL ❫</b>\n\nForward any message from the delivery channel or send its numeric chat id:",
-                    reply_markup=cancel_kb,
+                    prompt,
+                    reply_markup=ReplyKeyboardMarkup(src_kb_list, resize_keyboard=True),
                 )
-                if getattr(custom, "text", None) and "Cᴀɴᴄᴇʟ" in custom.text:
-                    return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                txt = (getattr(msg_src, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 1
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if getattr(msg_src, "forward_from_chat", None):
+                    source_chat = msg_src.forward_from_chat.id
+                    sj["source"] = source_chat
+                    step = 3
+                    continue
+
+                if txt != "Manual / Forward / Link":
+                    for ch in db_channels:
+                        key = f"{ch.get('name', ch['channel_id'])} ({ch['channel_id']})"
+                        if key == txt:
+                            source_chat = ch["channel_id"]
+                            sj["source"] = source_chat
+                            break
+                    if not source_chat and txt.lstrip("-").isdigit():
+                        source_chat = int(txt)
+                        sj["source"] = source_chat
+                step = 3
+                continue
+
+            # ── STEP 3: START MESSAGE ─────────────────────────────────────────
+            elif step == 3:
+                msg_s = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 3: START MESSAGE ❫</b>\n\nForward the <b>first message</b> of the story (or send its link / message ID):",
+                    reply_markup=undo_cancel_kb,
+                )
+                txt = (getattr(msg_s, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 2
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
                 try:
-                    sj["channel_id"] = custom.forward_from_chat.id if getattr(custom, "forward_from_chat", None) else int((custom.text or "").strip())
+                    sj["start_id"] = parse_id(msg_s)
+                    if getattr(msg_s, "forward_from_chat", None):
+                        source_chat = msg_s.forward_from_chat.id
+                    elif getattr(msg_s, "text", None):
+                        ch, _mid = parse_chat_from_link(msg_s.text)
+                        if ch:
+                            source_chat = ch
+                    step = 4
                 except Exception:
-                    sj["channel_id"] = None
-        else:
-            # GLOBAL pool (default). Optional per-story pool selection from saved list.
-            sj["delivery_mode"] = "pool"
-            sj["channel_pool"] = [c["channel_id"] for c in delivery_channels] if delivery_channels else []
+                    await client.send_message(user_id, "❌ Invalid start message. Please forward an episode or send a valid link.")
+                continue
 
-        # Save (forwarding_enabled defaults to True)
-        sj.setdefault("forwarding_enabled", True)
-        result = await db.db.premium_stories.insert_one(sj)
-        story_id = str(result.inserted_id)
-        try:
-            from utils import scan_and_index_story
-            asyncio.create_task(scan_and_index_story(store_cli or client, sj, save_to_db=True, db=db))
-        except Exception: pass
-        story_id = str(result.inserted_id)
-        bt_doc = await db.db.premium_bots.find_one({"id": int(sj.get("bot_id", 0))}) if sj.get("bot_id") else None
-        bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
-        _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
-        if _mini_app_on is None:
-            _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-            _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
-        if _mini_app_on:
-            deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
-        else:
-            deep_link = f"https://t.me/{sj['bot_username']}?start=story_{story_id}"
-        
-        await client.send_message(user_id, f"✅ **Story successfully added to Storefront!**\n\nThe Connected bot `@{(sj['bot_username'])}` is now actively selling `{sj['story_name_en']}` for ₹{sj['price']}!\n\n🔗 **Direct Purchase Link:**\n`{deep_link}`", reply_markup=ReplyKeyboardRemove())
-
-        # New Story Notification — only to users who opted IN
-        from plugins.userbot.market_seller import market_clients
-        store_cli = market_clients.get(str(sj["bot_id"]))
-        if store_cli:
-            async def _send_sub_alert():
-                # Only users who explicitly turned notifications ON
-                all_users = await db.db.users.find(
-                    {"alerts_subscribed": True},
-                    {"id": 1, "lang": 1}
-                ).to_list(length=None)
-
-                story_name    = sj.get("story_name_en", "Unknown")
-                story_name_hi = sj.get("story_name_hi", story_name)
-                price         = sj.get("price", 0)
-                image         = sj.get("image")
-
-                caption_en = (
-                    f"<b>New Story Available</b>\n\n"
-                    f"<b>{story_name}</b>\n"
-                    f"<i>Price: ₹{price}</i>\n\n"
-                    f"<a href='{deep_link}'>Tap to View & Purchase</a>\n\n"
-                    f"<i>To stop receiving these alerts, go to Settings → Notifications.</i>"
+            # ── STEP 4: LAST MESSAGE ──────────────────────────────────────────
+            elif step == 4:
+                msg_e = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 4: LAST MESSAGE ❫</b>\n\nForward the <b>last message</b> of the story (or send its link / message ID):",
+                    reply_markup=undo_cancel_kb,
                 )
+                txt = (getattr(msg_e, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 3
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
 
-                caption_hi = (
-                    f"<b>नई कहानी उपलब्ध है</b>\n\n"
-                    f"<b>{story_name_hi}</b>\n"
-                    f"<i>कीमत: ₹{price}</i>\n\n"
-                    f"<a href='{deep_link}'>देखने और खरीदने के लिए टैप करें</a>\n\n"
-                    f"<i>आगे अलर्ट नहीं चाहते? Settings → Notifications बंद करें.</i>"
+                try:
+                    sj["end_id"] = parse_id(msg_e)
+                    if getattr(msg_e, "forward_from_chat", None) and not source_chat:
+                        source_chat = msg_e.forward_from_chat.id
+                    elif getattr(msg_e, "text", None) and not source_chat:
+                        ch, _mid = parse_chat_from_link(msg_e.text)
+                        if ch:
+                            source_chat = ch
+
+                    if sj["start_id"] > sj["end_id"]:
+                        sj["start_id"], sj["end_id"] = sj["end_id"], sj["start_id"]
+
+                    if isinstance(source_chat, str):
+                        try:
+                            source_chat = (await client.get_chat(source_chat)).id
+                        except Exception:
+                            pass
+
+                    if not source_chat:
+                        await client.send_message(
+                            user_id,
+                            "❌ Could not detect source channel ID. Please forward an episode message from the source channel."
+                        )
+                        continue
+                    sj["source"] = source_chat
+                    step = 5
+                except Exception:
+                    await client.send_message(user_id, "❌ Invalid last message. Please forward an episode or send a valid link.")
+                continue
+
+            # ── STEP 5: LANGUAGE ──────────────────────────────────────────────
+            elif step == 5:
+                kb_lang = ReplyKeyboardMarkup(
+                    [["Hindi", "English", "Hinglish"], ["Telugu", "Tamil", "Marathi"], ["↩️ Undo", "⛔ Cancel"]],
+                    resize_keyboard=True
                 )
+                msg_lang = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 5: LANGUAGE ❫</b>\n\nSelect or type the language of this story:",
+                    reply_markup=kb_lang
+                )
+                txt = (getattr(msg_lang, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 4
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
 
-                for u in all_users:
-                    uid = u.get("id")
-                    if not uid: continue
-                    cap = caption_hi if u.get("lang") == 'hi' else caption_en
+                sj["language"] = txt or "Hindi"
+                step = 6
+                continue
+
+            # ── STEP 6: STORY NAME ────────────────────────────────────────────
+            elif step == 6:
+                msg_name = await native_ask(
+                    client,
+                    user_id,
+                    f"<b>❪ STEP 6: STORY NAME ❫</b>\n\nEnter the story name:\n<i>(Language: <b>{sj.get('language', 'Hindi')}</b>)</i>",
+                    reply_markup=undo_cancel_kb
+                )
+                txt = (getattr(msg_name, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 5
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                name_input = txt
+                lang_sel = (sj.get("language") or "").lower()
+
+                # For Telugu: Do NOT transliterate or translate into Hindi! Keep original
+                if lang_sel == "telugu":
+                    sj["story_name_en"] = name_input
+                    sj["story_name_hi"] = name_input
+                    sj["story_name_te"] = name_input
+                    step = 7
+                    continue
+
+                # For Hindi / English / Hinglish: Transliterate with Groq AI
+                waiting_msg = await client.send_message(user_id, "⏳ <i>Processing name with Groq AI...</i>")
+                sj["story_name_en"] = utils.translate_to_english(name_input)
+                sj["story_name_hi"] = await utils.groq_transliterate_hindi(name_input)
+                try: await waiting_msg.delete()
+                except Exception: pass
+
+                # Quick Hindi name confirmation
+                confirm_kb = ReplyKeyboardMarkup(
+                    [["✅ Correct, Continue"], ["✏️ Type Correct Hindi Name"], ["↩️ Undo", "⛔ Cancel"]],
+                    resize_keyboard=True
+                )
+                msg_hi_conf = await native_ask(
+                    client, user_id,
+                    f"<b>❪ STEP 6.1: HINDI NAME CONFIRM ❫</b>\n\n"
+                    f"<b>EN:</b> {sj['story_name_en']}\n"
+                    f"<b>HI (Auto):</b> {sj['story_name_hi']}\n\n"
+                    f"Is the Hindi name correct?",
+                    reply_markup=confirm_kb
+                )
+                conf_txt = (getattr(msg_hi_conf, "text", "") or "").strip()
+                if conf_txt in ("↩️ Undo", "Undo"):
+                    step = 6
+                    continue
+                if conf_txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if "✏️" in conf_txt or "Type" in conf_txt:
+                    msg_hi_manual = await native_ask(
+                        client, user_id,
+                        "<b>✏️ Enter the correct Hindi name:</b>",
+                        reply_markup=undo_cancel_kb
+                    )
+                    man_txt = (getattr(msg_hi_manual, "text", "") or "").strip()
+                    if man_txt in ("↩️ Undo", "Undo"):
+                        step = 6
+                        continue
+                    if man_txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                        return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                    if man_txt:
+                        sj["story_name_hi"] = man_txt
+                step = 7
+                continue
+
+            # ── STEP 7: STORY IMAGE ───────────────────────────────────────────
+            elif step == 7:
+                img_kb = ReplyKeyboardMarkup([["⏩ Skip Image"], ["↩️ Undo", "⛔ Cancel"]], resize_keyboard=True)
+                msg_img = await native_ask(
+                    client,
+                    user_id,
+                    f"<b>❪ STEP 7: STORY IMAGE ❫</b>\n\n<b>EN:</b> {sj.get('story_name_en')}\n<b>HI:</b> {sj.get('story_name_hi')}\n\nSend the cover image for this story (or tap Skip):",
+                    reply_markup=img_kb
+                )
+                txt = (getattr(msg_img, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 6
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if getattr(msg_img, "photo", None):
+                    await client.send_message(user_id, "<i>Uploading image to CDN and store bot...</i>")
                     try:
-                        if image:
-                            await store_cli.send_photo(uid, photo=image, caption=cap)
+                        from plugins.userbot.market_seller import market_clients
+                        from utils import upload_to_catbox
+                        store_cli = market_clients.get(str(sj["bot_id"]))
+                        dl = await client.download_media(msg_img.photo.file_id)
+
+                        catbox_url = await upload_to_catbox(dl)
+                        if catbox_url:
+                            sj["poster_url"] = catbox_url
+                            sj["image_url"] = catbox_url
+
+                        uploaded = False
+                        if store_cli:
+                            try:
+                                ul = await store_cli.send_photo(user_id, photo=dl)
+                                sj["image"] = ul.photo.file_id
+                                uploaded = True
+                            except Exception:
+                                pass
+
+                            if not uploaded:
+                                log_ch = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "ARYA_LOGS_CHANNEL", None)
+                                if log_ch:
+                                    try:
+                                        ul = await store_cli.send_photo(int(log_ch), photo=dl)
+                                        sj["image"] = ul.photo.file_id
+                                        uploaded = True
+                                        try: await ul.delete()
+                                        except Exception: pass
+                                    except Exception: pass
+
+                        if not uploaded:
+                            sj["image"] = catbox_url or msg_img.photo.file_id
+
+                        try:
+                            import os; os.remove(dl)
+                        except Exception: pass
+                    except Exception as e:
+                        sj["image"] = msg_img.photo.file_id
+                else:
+                    sj["image"] = None
+                step = 8
+                continue
+
+            # ── STEP 8: STORY DESCRIPTION ─────────────────────────────────────
+            elif step == 8:
+                desc_kb = ReplyKeyboardMarkup([["⏩ Skip Description"], ["↩️ Undo", "⛔ Cancel"]], resize_keyboard=True)
+                msg_desc = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 8: STORY DESCRIPTION ❫</b>\n\nEnter the description/synopsis of the story (or tap Skip):",
+                    reply_markup=desc_kb
+                )
+                txt = (getattr(msg_desc, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 7
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if "Skip" in txt:
+                    sj["description"] = "None"
+                    sj["description_hi"] = "None"
+                else:
+                    desc_input = txt
+                    lang_sel = (sj.get("language") or "").lower()
+                    if lang_sel == "telugu":
+                        sj["description"] = desc_input
+                        sj["description_hi"] = desc_input
+                    else:
+                        waiting_msg = await client.send_message(user_id, "⏳ <i>Translating description with Groq AI...</i>")
+                        sj["description"] = utils.translate_to_english(desc_input)
+                        sj["description_hi"] = await utils.groq_translate_description(desc_input, target_lang="hi")
+                        try: await waiting_msg.delete()
+                        except Exception: pass
+                step = 9
+                continue
+
+            # ── STEP 9: EPISODES ──────────────────────────────────────────────
+            elif step == 9:
+                msg_eps = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 9: EPISODES ❫</b>\n\nHow many episodes? e.g. '595 / 595' or '100+':",
+                    reply_markup=undo_cancel_kb
+                )
+                txt = (getattr(msg_eps, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 8
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                sj["episodes"] = txt or "N/A"
+                step = 10
+                continue
+
+            # ── STEP 10: STATUS ───────────────────────────────────────────────
+            elif step == 10:
+                kb_status = ReplyKeyboardMarkup([["Completed", "Ongoing"], ["↩️ Undo", "⛔ Cancel"]], resize_keyboard=True)
+                msg_status = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 10: STATUS ❫</b>\n\nIs the story Completed or Ongoing?",
+                    reply_markup=kb_status
+                )
+                txt = (getattr(msg_status, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 9
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                sj["status"] = txt or "Completed"
+                step = 11
+                continue
+
+            # ── STEP 11: GENRE ────────────────────────────────────────────────
+            elif step == 11:
+                kb_genre = ReplyKeyboardMarkup(
+                    [
+                        ["Drama", "Fantasy"],
+                        ["Romance", "Horror"],
+                        ["Suspense & Thriller", "Rebirth"],
+                        ["Suspense", "Other"],
+                        ["↩️ Undo", "⛔ Cancel"]
+                    ],
+                    resize_keyboard=True
+                )
+                msg_genre = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 11: GENRE ❫</b>\n\nSelect a genre from the options or choose Other:",
+                    reply_markup=kb_genre
+                )
+                txt = (getattr(msg_genre, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 10
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if txt == "Other":
+                    msg_custom_genre = await native_ask(
+                        client,
+                        user_id,
+                        "<b>Enter custom genre name (e.g. Action, Comedy, Sci-Fi):</b>",
+                        reply_markup=undo_cancel_kb
+                    )
+                    c_txt = (getattr(msg_custom_genre, "text", "") or "").strip()
+                    if c_txt in ("↩️ Undo", "Undo"):
+                        step = 11
+                        continue
+                    if c_txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                        return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                    sj["genre"] = c_txt or "Other"
+                else:
+                    sj["genre"] = txt or "Drama"
+                step = 12
+                continue
+
+            # ── STEP 12: PRICE IN INR ─────────────────────────────────────────
+            elif step == 12:
+                msg_price = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 12: PRICE IN INR ❫</b>\n\nEnter the price (e.g. <code>100</code>):",
+                    reply_markup=undo_cancel_kb
+                )
+                txt = (getattr(msg_price, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 11
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                try:
+                    price = int(txt)
+                    if price < 1:
+                        raise ValueError("price")
+                    sj["price"] = price
+                    step = 13
+                except Exception:
+                    await client.send_message(user_id, "❌ Price must be a positive integer number.")
+                continue
+
+            # ── STEP 13: PLATFORM ─────────────────────────────────────────────
+            elif step == 13:
+                pf_kb = ReplyKeyboardMarkup(
+                    [
+                        ["Pocket FM", "Eight FM"],
+                        ["Kuku FM", "Kuku TV"],
+                        ["Pratilipi FM", "Headfone"],
+                        ["Story TV", "Custom"],
+                        ["↩️ Undo", "⛔ Cancel"],
+                    ],
+                    resize_keyboard=True
+                )
+                msg_plat = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 13: PLATFORM ❫</b>\n\nSelect the platform this story is from:",
+                    reply_markup=pf_kb
+                )
+                txt = (getattr(msg_plat, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 12
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if txt == "Custom":
+                    msg_custom_plat = await native_ask(
+                        client,
+                        user_id,
+                        "<b>❪ CUSTOM PLATFORM ❫</b>\n\nType the platform name (e.g. Audible, Spotify, etc.):",
+                        reply_markup=undo_cancel_kb
+                    )
+                    c_txt = (getattr(msg_custom_plat, "text", "") or "").strip()
+                    if c_txt in ("↩️ Undo", "Undo"):
+                        step = 13
+                        continue
+                    if c_txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                        return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                    sj["platform"] = c_txt or "Custom"
+                else:
+                    sj["platform"] = txt or "Pocket FM"
+                step = 14
+                continue
+
+            # ── STEP 14: DELIVERY MODE ────────────────────────────────────────
+            elif step == 14:
+                delivery_channels = await db.db.premium_channels.find({"type": "delivery"}).to_list(length=300)
+                kb_mode = ReplyKeyboardMarkup(
+                    [["Use GLOBAL Pool (Auto-Rotate)"], ["Single Delivery Channel"], ["DM Only"], ["↩️ Undo", "⛔ Cancel"]],
+                    resize_keyboard=True
+                )
+                msg_mode = await native_ask(
+                    client,
+                    user_id,
+                    "<b>❪ STEP 14: DELIVERY MODE ❫</b>\n\nChoose how buyers will receive the one-time channel link:",
+                    reply_markup=kb_mode,
+                )
+                txt = (getattr(msg_mode, "text", "") or "").strip()
+                if txt in ("↩️ Undo", "Undo"):
+                    step = 13
+                    continue
+                if txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                    return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                if txt == "DM Only":
+                    sj["delivery_mode"] = "dm_only"
+                    sj["channel_id"] = None
+                elif txt == "Single Delivery Channel":
+                    sj["delivery_mode"] = "single"
+                    if delivery_channels:
+                        ask = await native_ask(
+                            client,
+                            user_id,
+                            "<b>❪ DELIVERY CHANNEL PICKER ❫</b>\n\nSend a delivery channel ID, or type part of its saved name to search:",
+                            reply_markup=undo_cancel_kb,
+                        )
+                        a_txt = (getattr(ask, "text", "") or "").strip()
+                        if a_txt in ("↩️ Undo", "Undo"):
+                            step = 14
+                            continue
+                        if a_txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                            return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+                        chosen = None
+                        if a_txt.lstrip("-").isdigit():
+                            chosen = int(a_txt)
                         else:
-                            await store_cli.send_message(uid, cap)
-                        await asyncio.sleep(0.07)
-                    except Exception:
-                        pass
+                            ql = a_txt.lower()
+                            matches = [ch for ch in delivery_channels if ql in (ch.get("name") or "").lower()]
+                            if matches:
+                                chosen = matches[0]["channel_id"]
+                        sj["channel_id"] = chosen
+                    else:
+                        custom = await native_ask(
+                            client,
+                            user_id,
+                            "<b>❪ CUSTOM DELIVERY CHANNEL ❫</b>\n\nForward any message from the delivery channel or send its numeric chat ID:",
+                            reply_markup=undo_cancel_kb,
+                        )
+                        c_txt = (getattr(custom, "text", "") or "").strip()
+                        if c_txt in ("↩️ Undo", "Undo"):
+                            step = 14
+                            continue
+                        if c_txt in ("⛔ Cancel", "Cancel", "Cᴀɴᴄᴇʟ"):
+                            return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                        try:
+                            sj["channel_id"] = custom.forward_from_chat.id if getattr(custom, "forward_from_chat", None) else int(c_txt)
+                        except Exception:
+                            sj["channel_id"] = None
+                else:
+                    sj["delivery_mode"] = "pool"
+                    sj["channel_pool"] = [c["channel_id"] for c in delivery_channels] if delivery_channels else []
 
-            asyncio.create_task(_send_sub_alert())
+                # Default payment methods
+                sj.setdefault("payment_methods", ["upi", "razorpay", "cashfree"])
+                sj.setdefault("forwarding_enabled", True)
 
+                # Save Story to DB
+                result = await db.db.premium_stories.insert_one(sj)
+                story_id = str(result.inserted_id)
+
+                try:
+                    from utils import scan_and_index_story
+                    store_cli_obj = market_clients.get(str(sj.get("bot_id")))
+                    asyncio.create_task(scan_and_index_story(store_cli_obj or client, sj, save_to_db=True, db=db))
+                except Exception:
+                    pass
+
+                bt_doc = await db.db.premium_bots.find_one({"id": int(sj.get("bot_id", 0))}) if sj.get("bot_id") else None
+                bt_cfg_val = (bt_doc.get("config") or {}) if bt_doc else {}
+                _mini_app_on = bt_cfg_val.get("mini_app_deep_links", None)
+                if _mini_app_on is None:
+                    _ml_cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+                    _mini_app_on = _ml_cfg.get("mini_app_enabled", True)
+
+                if _mini_app_on:
+                    deep_link = f"https://t.me/{sj['bot_username']}/apminibyarya?startapp=story_{story_id}"
+                else:
+                    deep_link = f"https://t.me/{sj['bot_username']}?start=story_{story_id}"
+
+                await client.send_message(
+                    user_id,
+                    f"✅ <b>Story successfully added to Storefront!</b>\n\n"
+                    f"The Connected bot <code>@{sj['bot_username']}</code> is now actively selling <b>{sj['story_name_en']}</b> for ₹{sj['price']}!\n\n"
+                    f"🔗 <b>Direct Purchase Link:</b>\n<code>{deep_link}</code>",
+                    reply_markup=ReplyKeyboardRemove(),
+                    parse_mode=enums.ParseMode.HTML
+                )
+
+                # Broadcast alert to opted-in users
+                store_cli = market_clients.get(str(sj["bot_id"]))
+                if store_cli:
+                    async def _send_sub_alert():
+                        all_users = await db.db.users.find(
+                            {"alerts_subscribed": True},
+                            {"id": 1, "lang": 1}
+                        ).to_list(length=None)
+
+                        story_name = sj.get("story_name_en", "Unknown")
+                        story_name_hi = sj.get("story_name_hi", story_name)
+                        price = sj.get("price", 0)
+                        image = sj.get("image")
+
+                        caption_en = (
+                            f"<b>New Story Available</b>\n\n"
+                            f"<b>{story_name}</b>\n"
+                            f"<i>Price: ₹{price}</i>\n\n"
+                            f"<a href='{deep_link}'>Tap to View & Purchase</a>"
+                        )
+                        caption_hi = (
+                            f"<b>नई कहानी उपलब्ध है</b>\n\n"
+                            f"<b>{story_name_hi}</b>\n"
+                            f"<i>कीमत: ₹{price}</i>\n\n"
+                            f"<a href='{deep_link}'>देखने और खरीदने के लिए टैप करें</a>"
+                        )
+
+                        for u in all_users:
+                            uid = u.get("id")
+                            if not uid: continue
+                            cap = caption_hi if u.get("lang") == "hi" else caption_en
+                            try:
+                                if image:
+                                    await store_cli.send_photo(uid, photo=image, caption=cap)
+                                else:
+                                    await store_cli.send_message(uid, cap)
+                                await asyncio.sleep(0.07)
+                            except Exception:
+                                pass
+
+                    asyncio.create_task(_send_sub_alert())
+                return
     except Exception as e:
-        logger.error(f"Story creation error: {e}")
-        await client.send_message(user_id, f"<b>⚠️ Error adding story:</b> Please ensure all settings (like Store Bots) are correctly configured first.", reply_markup=ReplyKeyboardRemove())
+        logger.error(f"Error in _add_story_flow: {e}")
+        await client.send_message(user_id, f"❌ An error occurred during story creation: {e}", reply_markup=ReplyKeyboardRemove())
+
 
 async def _edit_story_flow(client, user_id, s_id, action):
     from bson.objectid import ObjectId
