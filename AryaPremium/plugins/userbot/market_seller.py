@@ -6516,20 +6516,25 @@ async def _process_callback(client, query):
                 return await query.answer(f"❌ {err_msg}", show_alert=True)
 
             order_id = cf_res["order_id"]
-            pay_link = cf_res["payment_link"]
+            pay_link = cf_res.get("payment_link")
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
             price = story.get('price', 0)
 
-            title_cf = "<b>⟦ 💳 CASHFREE PAYMENT ⟧</b>" if lang == 'en' else "<b>⟦ 💳 कैशफ्री भुगतान ⟧</b>"
+            if not pay_link:
+                logger.error(f"[CF] pay_link is None/empty! cf_res={cf_res}")
+                return await query.answer("❌ Payment link not generated. Please try again.", show_alert=True)
+
+            logger.info(f"[CF] Showing payment screen to user {user_id}: order={order_id}, link={pay_link}")
+
             desc_cf = (
-                f"<b>{title_cf}</b>\n\n"
+                f"<b>⟦ 💳 CASHFREE PAYMENT ⟧</b>\n\n"
                 f"<b>• Story:</b> {to_mathbold(s_name)}\n"
                 f"<b>• Amount:</b> ₹{price}\n"
                 f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
                 f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
                 f"<i>After completing payment, tap <b>Check Status</b> or simply wait for instant auto-delivery.</i>"
             ) if lang == 'en' else (
-                f"<b>{title_cf}</b>\n\n"
+                f"<b>⟦ 💳 कैशफ्री भुगतान ⟧</b>\n\n"
                 f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
                 f"<b>• राशि:</b> ₹{price}\n"
                 f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
@@ -7120,21 +7125,26 @@ async def _process_callback(client, query):
             cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
             
             order_id = cf_res.get("order_id") or f"cf_{user_id}_{int(time.time())}"
-            pay_link = cf_res.get("payment_link") or f"https://aryapremium.store/app?story_id={s_id}&buy=cashfree&user_id={user_id}"
+            pay_link = cf_res.get("payment_link")
 
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
             price = story.get('price', 0)
 
-            title_cf = "⟦ 💳 PAYMENT GATEWAY ⟧" if lang == 'en' else "⟦ 💳 पेमेंट गेटवे ⟧"
+            if not pay_link:
+                logger.error(f"[PAY2-CF] pay_link is None/empty! cf_res={cf_res}")
+                return await query.answer("❌ Payment link not generated. Please try again.", show_alert=True)
+
+            logger.info(f"[PAY2-CF] Showing payment screen to user {user_id}: order={order_id}, link={pay_link}")
+
             desc_cf = (
-                f"<b>{title_cf}</b>\n\n"
+                f"<b>⟦ 💳 PAYMENT GATEWAY ⟧</b>\n\n"
                 f"<b>• Story:</b> {to_mathbold(s_name)}\n"
                 f"<b>• Amount:</b> ₹{price}\n"
                 f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
                 f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
                 f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
             ) if lang == 'en' else (
-                f"<b>{title_cf}</b>\n\n"
+                f"<b>⟦ 💳 पेमेंट गेटवे ⟧</b>\n\n"
                 f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
                 f"<b>• राशि:</b> ₹{price}\n"
                 f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
