@@ -793,20 +793,21 @@ async def market_callback(client, query):
             db_channels = await db.db.premium_channels.find({"type": "db"}).to_list(length=None)
             delivery_channels = await db.db.premium_channels.find({"type": "delivery"}).to_list(length=None)
             kb = [
-                [InlineKeyboardButton(f"🗄 DB Channels ({len(db_channels)})", callback_data="mk#ch_list_db"),
-                 InlineKeyboardButton(f"📢 Delivery Channels ({len(delivery_channels)})", callback_data="mk#ch_list_delivery")],
-                [InlineKeyboardButton("➕ Add DB Channel", callback_data="mk#ch_add_db"),
-                 InlineKeyboardButton("➕ Add Delivery Channel", callback_data="mk#ch_add_delivery")],
-                [InlineKeyboardButton("📥 Bulk Add Delivery", callback_data="mk#ch_bulk_delivery")],
-                [InlineKeyboardButton("🔄 Sync Names", callback_data="mk#ch_sync_db"),
-                 InlineKeyboardButton("🔄 Sync Delivery", callback_data="mk#ch_sync_delivery")],
+                [InlineKeyboardButton(f"Source Channels ({len(db_channels)})", callback_data="mk#ch_list_db")],
+                [InlineKeyboardButton("Add Source", callback_data="mk#ch_add_db"),
+                 InlineKeyboardButton("Add Bulk", callback_data="mk#ch_bulk_db")],
+                [InlineKeyboardButton(f"Delivery Channels ({len(delivery_channels)})", callback_data="mk#ch_list_delivery")],
+                [InlineKeyboardButton("Add DC", callback_data="mk#ch_add_delivery"),
+                 InlineKeyboardButton("Add Bulk", callback_data="mk#ch_bulk_delivery")],
+                [InlineKeyboardButton("Sync Names", callback_data="mk#ch_sync_db"),
+                 InlineKeyboardButton("Sync Delivery", callback_data="mk#ch_sync_delivery")],
                 [InlineKeyboardButton("« Back", callback_data="mk#back")]
             ]
             await query.message.edit_text(
-                "<b>📡 Channels Manager</b>\n\n"
-                "<b>DB Channels:</b> Source channels containing story files.\n"
-                "<b>Delivery Channels:</b> Channels used to generate one-time invite links for buyers.\n\n"
-                "<i>Like main Arya Bot, manage channels from one panel and reuse them in story setup.</i>",
+                "<b>Channels Manager</b>\n\n"
+                "• <b>Source Channels:</b> Storage channels containing story files.\n"
+                "• <b>Delivery Channels:</b> Private channels used to deliver instant invite links for buyers.\n\n"
+                "<i>Manage your channels from one central panel.</i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
 
@@ -817,7 +818,7 @@ async def market_callback(client, query):
             page = int(parts[3]) if len(parts) > 3 else 0
             
             channels = await db.db.premium_channels.find({"type": ch_type}).to_list(length=None)
-            label = "🗄 DB" if ch_type == "db" else "📢 Delivery"
+            label = "Source" if ch_type == "db" else "Delivery"
             
             items_per_page = 10
             total_pages = max(1, (len(channels) + items_per_page - 1) // items_per_page)
@@ -844,10 +845,13 @@ async def market_callback(client, query):
             if nav_row:
                 kb.append(nav_row)
 
-            kb.append([InlineKeyboardButton(f"➕ Add {label}", callback_data=f"mk#ch_add_{ch_type}")])
+            kb.append([
+                InlineKeyboardButton(f"Add {label}", callback_data=f"mk#ch_add_{ch_type}"),
+                InlineKeyboardButton("Add Bulk", callback_data=f"mk#ch_bulk_{ch_type}")
+            ])
             if len(channels) > 1:
-                kb.append([InlineKeyboardButton("🗑 Delete All", callback_data=f"mk#ch_delall_{ch_type}")])
-            kb.append([InlineKeyboardButton("🔄 Sync Names", callback_data=f"mk#ch_sync_{ch_type}")])
+                kb.append([InlineKeyboardButton("Delete All", callback_data=f"mk#ch_delall_{ch_type}")])
+            kb.append([InlineKeyboardButton("Sync Names", callback_data=f"mk#ch_sync_{ch_type}")])
             kb.append([InlineKeyboardButton("« Back", callback_data="mk#channels")])
             
             ch_lines = "\n".join(f"• <code>{c['channel_id']}</code> — {c.get('name', '?')}" for c in pg_chans) or "<i>None added yet.</i>"
@@ -910,7 +914,11 @@ async def market_callback(client, query):
             await query.message.delete()
             asyncio.create_task(_add_channel_flow(client, user_id, ch_type))
 
-        elif cmd == "ch_bulk_delivery":
+        elif cmd == "ch_bulk_db":
+            await query.message.delete()
+            asyncio.create_task(_bulk_add_source_channels(client, user_id))
+
+        elif cmd in ("ch_bulk_delivery", "ch_bulk_del"):
             await query.message.delete()
             asyncio.create_task(_bulk_add_delivery_channels(client, user_id))
 
@@ -3738,19 +3746,21 @@ async def _add_channel_flow(client, user_id, ch_type):
         await client.send_message(user_id, f"❌ Error: {e}", reply_markup=ReplyKeyboardRemove())
 
 
-async def _bulk_add_delivery_channels(client, user_id: int):
+async def _bulk_add_source_channels(client, user_id: int):
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
     msg = await native_ask(
         client,
         user_id,
-        "<b>❪ BULK ADD DELIVERY CHANNELS ❫</b>\n\n"
-        "Send delivery channel IDs separated by spaces/new lines.\n\n"
-        "Example:\n<code>-100111...\n-100222...\n-100333...</code>\n\n"
-        "<i>Tip: bot must be admin in those channels.</i>",
+        "<b>❪ BULK ADD SOURCE CHANNELS ❫</b>\n\n"
+        "Send Source (DB) channel IDs separated by spaces, commas, or new lines.\n\n"
+        "<b>Example:</b>\n"
+        "<code>-1001234567890\n-1009876543210\n-1001122334455</code>\n\n"
+        "<i>💡 Tip: Ensure this bot is an Admin in the source channels.</i>",
         reply_markup=cancel_kb,
+        parse_mode=enums.ParseMode.HTML
     )
     if not msg or (getattr(msg, "text", None) and "Cᴀɴᴄᴇʟ" in msg.text):
-        return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>")
+        return await client.send_message(user_id, "<i>Process Cancelled.</i>")
 
     raw = (msg.text or "").replace(",", " ").replace("\t", " ")
     parts = [p.strip() for p in raw.split() if p.strip()]
@@ -3760,7 +3770,71 @@ async def _bulk_add_delivery_channels(client, user_id: int):
             ids.append(int(p))
 
     if not ids:
-        return await client.send_message(user_id, "❌ No valid numeric channel IDs found.", reply_markup=ReplyKeyboardRemove())
+        return await client.send_message(
+            user_id, 
+            "❌ <b>No valid numeric channel IDs found.</b>\n<i>Please send IDs starting with <code>-100...</code></i>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Channels", callback_data="mk#channels")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    added = exists = failed = 0
+    for cid in ids:
+        try:
+            ex = await db.db.premium_channels.find_one({"channel_id": cid, "type": "db"})
+            if ex:
+                exists += 1
+                continue
+            try:
+                chat = await client.get_chat(cid)
+                name = getattr(chat, "title", None) or str(cid)
+            except Exception:
+                name = str(cid)
+            await db.db.premium_channels.insert_one({"channel_id": cid, "name": name, "type": "db"})
+            added += 1
+        except Exception:
+            failed += 1
+
+    await client.send_message(
+        user_id,
+        f"✅ <b>Bulk Source Channels Added!</b>\n\n"
+        f"• Added: <b>{added}</b>\n"
+        f"• Already Existed: <b>{exists}</b>\n"
+        f"• Failed: <b>{failed}</b>",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Channels Menu", callback_data="mk#channels")]]),
+        parse_mode=enums.ParseMode.HTML
+    )
+
+
+async def _bulk_add_delivery_channels(client, user_id: int):
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
+    msg = await native_ask(
+        client,
+        user_id,
+        "<b>❪ BULK ADD DELIVERY CHANNELS ❫</b>\n\n"
+        "Send delivery channel IDs separated by spaces, commas, or new lines.\n\n"
+        "<b>Example:</b>\n"
+        "<code>-100111...\n-100222...\n-100333...</code>\n\n"
+        "<i>💡 Tip: Ensure this bot is an Admin in the delivery channels.</i>",
+        reply_markup=cancel_kb,
+        parse_mode=enums.ParseMode.HTML
+    )
+    if not msg or (getattr(msg, "text", None) and "Cᴀɴᴄᴇʟ" in msg.text):
+        return await client.send_message(user_id, "<i>Process Cancelled.</i>")
+
+    raw = (msg.text or "").replace(",", " ").replace("\t", " ")
+    parts = [p.strip() for p in raw.split() if p.strip()]
+    ids = []
+    for p in parts:
+        if p.lstrip("-").isdigit():
+            ids.append(int(p))
+
+    if not ids:
+        return await client.send_message(
+            user_id, 
+            "❌ <b>No valid numeric channel IDs found.</b>\n<i>Please send IDs starting with <code>-100...</code></i>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Channels", callback_data="mk#channels")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
 
     added = exists = failed = 0
     for cid in ids:
@@ -3781,11 +3855,12 @@ async def _bulk_add_delivery_channels(client, user_id: int):
 
     await client.send_message(
         user_id,
-        f"✅ Bulk add complete.\n\n"
+        f"✅ <b>Bulk Delivery Channels Added!</b>\n\n"
         f"• Added: <b>{added}</b>\n"
-        f"• Already existed: <b>{exists}</b>\n"
+        f"• Already Existed: <b>{exists}</b>\n"
         f"• Failed: <b>{failed}</b>",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Channels Menu", callback_data="mk#channels")]]),
+        parse_mode=enums.ParseMode.HTML
     )
 
 
