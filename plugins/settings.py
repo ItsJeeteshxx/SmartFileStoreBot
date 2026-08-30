@@ -2037,7 +2037,7 @@ async def settings_query(bot, query):
     except Exception:
         ist_tz = None
 
-    def format_dt(ts: float) -> str:
+    def format_dt(ts: float, show_ist: bool = True) -> str:
         if not ts or ts <= 0:
             return "N/A"
         try:
@@ -2045,15 +2045,18 @@ async def settings_query(bot, query):
                 dt = datetime.datetime.fromtimestamp(ts, tz=ist_tz)
             else:
                 dt = datetime.datetime.fromtimestamp(ts)
-            return dt.strftime('%d/%m/%Y | %I:%M %p IST')
+            if show_ist:
+                return dt.strftime('%d/%m/%Y | %I:%M %p IST')
+            else:
+                return dt.strftime('%d/%m/%Y | %I:%M %p')
         except Exception:
             return "N/A"
 
     joined_ts = details.get('joined_ts')
-    joined_str = format_dt(joined_ts)
+    joined_str = format_dt(joined_ts, show_ist=True)
 
     first_buy_ts = details.get('first_buy_ts')
-    first_buy_str = format_dt(first_buy_ts) if first_buy_ts else "No Purchases Yet"
+    first_buy_str = format_dt(first_buy_ts, show_ist=False) if first_buy_ts else "No Purchases Yet"
 
     lang_code = details.get('language', 'en')
     lang_display = "Hindi (हिन्दी)" if lang_code == 'hi' else "English"
@@ -2061,7 +2064,7 @@ async def settings_query(bot, query):
     username = str(details.get('username', '')).strip().lstrip('@')
     profile_url = f"https://t.me/{username}" if username else f"tg://user?id={cust_uid}"
 
-    exp_str = format_dt(expires_at) if expires_at > 0 else "None"
+    exp_str = format_dt(expires_at, show_ist=True) if expires_at > 0 else "None"
 
     if active:
         sub_status = (
@@ -2083,9 +2086,10 @@ async def settings_query(bot, query):
         else:
             txns_text = "<i>No paid transactions found.</i>\n"
     else:
+        t_items = []
         for idx, txn in enumerate(txns[:10], 1):
             t_time = txn.get('time', 0)
-            t_str = format_dt(t_time)
+            t_str = format_dt(t_time, show_ist=True)
             
             p_name = str(txn.get('plan') or 'Pass')
             dur_verb = p_name
@@ -2100,13 +2104,14 @@ async def settings_query(bot, query):
 
             gw = txn.get('gateway', 'Pay Via UPI (INR)')
             oid = txn.get('id', 'N/A')
-            txns_text += (
+            t_items.append(
                 f"<b>{idx}.</b> <emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
                 f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                 f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
                 f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
-                f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>\n\n"
+                f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
             )
+        txns_text = "\n┄┄┄┄┄┄┄┄┄┄┄┄\n".join(t_items)
 
     body = (
         f'<emoji id="5778145208411624388">👤</emoji> <b>Costumer Overview</b>\n'
@@ -2116,9 +2121,7 @@ async def settings_query(bot, query):
         f"<emoji id=\"6023880246128810031\">📅</emoji> <b>Joined Date:-</b> <code>{joined_str}</code>\n"
         f"<emoji id=\"6030664675253820292\">🛍</emoji> <b>First Buy:-</b> <code>{first_buy_str}</code>\n"
         f"<emoji id=\"6030768072296502910\">🌐</emoji> <b>Language:-</b> {lang_display}\n"
-        f"<emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"{profile_url}\">View User TG</a>\n\n"
-        f'<emoji id="6007983438294949171">👑</emoji> <b>Subscription Status</b>\n'
-        f"────────────────────\n\n"
+        f"<emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"{profile_url}\">View User TG</a>\n"
         f"{sub_status}\n"
         f"────────────────────\n"
         f'<emoji id="6021745995275048956">📜</emoji> <b>Transaction History:-</b>\n'
@@ -2126,24 +2129,51 @@ async def settings_query(bot, query):
         f"{txns_text}"
     )
 
-    buttons = [
-        [
-            InlineKeyboardButton("➕ Grant 1 Day", callback_data=f"settings#sb_rl_g_{cust_uid}_1d_{page}"),
-            InlineKeyboardButton("➕ Grant 3 Days", callback_data=f"settings#sb_rl_g_{cust_uid}_3d_{page}"),
-            InlineKeyboardButton("➕ Grant 7 Days", callback_data=f"settings#sb_rl_g_{cust_uid}_7d_{page}")
-        ],
-        [
-            InlineKeyboardButton("➕ Grant 1 Month", callback_data=f"settings#sb_rl_g_{cust_uid}_1mo_{page}"),
-            InlineKeyboardButton("➕ Grant 1 Year", callback_data=f"settings#sb_rl_g_{cust_uid}_365d_{page}")
-        ],
-        [
-            InlineKeyboardButton("🔗 View User TG Profile", url=profile_url),
-            InlineKeyboardButton("❌ Revoke Pass", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}")
-        ],
-        [
-            InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data=f"settings#sb_rl_cust_{page}")
-        ]
-    ]
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    configured_prices = rl_cfg.get('prices') or {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199}
+    
+    from database import parse_duration_to_seconds, format_duration_friendly
+    
+    buttons = []
+    
+    # 1. Dynamic Grant buttons (➕ Plan Duration)
+    grant_row = []
+    for k in configured_prices.keys():
+        dur_sec = parse_duration_to_seconds(k, default_unit='d')
+        lbl = format_duration_friendly(dur_sec).title()
+        grant_row.append(InlineKeyboardButton(f"➕ {lbl}", callback_data=f"settings#sb_rl_g_{cust_uid}_{k}_{page}"))
+        if len(grant_row) == 3:
+            buttons.append(grant_row)
+            grant_row = []
+    if grant_row:
+        if len(grant_row) < 3:
+            grant_row.append(InlineKeyboardButton("➕ Custom", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}"))
+            buttons.append(grant_row)
+            grant_row = []
+        else:
+            buttons.append(grant_row)
+            grant_row = []
+            buttons.append([InlineKeyboardButton("➕ Custom Grant", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}")])
+    else:
+        buttons.append([InlineKeyboardButton("➕ Custom Grant", callback_data=f"settings#sb_rl_cg_{cust_uid}_{page}")])
+
+    # 2. Dynamic Revoke / Deduct buttons (➖ Plan Duration)
+    revoke_row = []
+    for k in list(configured_prices.keys())[:3]:
+        dur_sec = parse_duration_to_seconds(k, default_unit='d')
+        lbl = format_duration_friendly(dur_sec).title()
+        revoke_row.append(InlineKeyboardButton(f"➖ {lbl}", callback_data=f"settings#sb_rl_red_{cust_uid}_{k}_{page}"))
+    revoke_row.append(InlineKeyboardButton("➖ Custom", callback_data=f"settings#sb_rl_cred_{cust_uid}_{page}"))
+    buttons.append(revoke_row)
+
+    # 3. Actions & Navigation
+    buttons.append([
+        InlineKeyboardButton("❌ Full Revoke", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
+        InlineKeyboardButton("🔗 View User TG Profile", url=profile_url)
+    ])
+    buttons.append([
+        InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Cᴜsᴛᴏᴍᴇʀs", callback_data=f"settings#sb_rl_cust_{page}")
+    ])
     try:
         await query.message.edit_text(body, reply_markup=InlineKeyboardMarkup(buttons))
     except Exception as ex:
@@ -2218,12 +2248,107 @@ async def settings_query(bot, query):
     query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
     return await settings_query(bot, query)
 
+  elif type.startswith("sb_rl_cg_"):
+    parts = type.split('_')
+    cust_uid = int(parts[3])
+    page = int(parts[4]) if len(parts) > 4 else 0
+    uid = query.from_user.id
+    
+    ask_msg = await query.message.reply_text(
+        "✍️ <b>Custom Pass Duration:</b>\n\n"
+        f"Send the duration to grant/extend for user <code>{cust_uid}</code> (e.g. <code>30m</code>, <code>2h</code>, <code>12h</code>, <code>5d</code>, <code>15d</code>, <code>30d</code>):\n\n"
+        "<i>Or send /cancel to cancel.</i>"
+    )
+    resp = await _ask(bot, uid, timeout=120)
+    try: await ask_msg.delete()
+    except Exception: pass
+    
+    if not resp or resp.text.startswith("/cancel"):
+        try: await query.answer("Custom grant cancelled.", show_alert=True)
+        except Exception: pass
+        query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+        return await settings_query(bot, query)
+
+    custom_dur = resp.text.strip()
+    try:
+        from database import parse_duration_to_seconds
+        sec = parse_duration_to_seconds(custom_dur, default_unit='d')
+        if sec <= 0:
+            raise ValueError()
+    except Exception:
+        try: await query.message.reply_text("❌ Invalid duration format. Example formats: <code>30m</code>, <code>2h</code>, <code>5d</code>, <code>30d</code>")
+        except Exception: pass
+        query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+        return await settings_query(bot, query)
+
+    query.data = f"settings#sb_rl_g_{cust_uid}_{custom_dur}_{page}"
+    return await settings_query(bot, query)
+
+  elif type.startswith("sb_rl_red_"):
+    parts = type.split('_')
+    cust_uid = int(parts[3])
+    dur = parts[4]
+    page = int(parts[5]) if len(parts) > 5 else 0
+    
+    new_exp = await db.reduce_user_unlimited_pass(cust_uid, dur)
+    try:
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_verb = format_duration_verbose(parse_duration_to_seconds(dur, default_unit='d'))
+    except Exception:
+        dur_verb = dur
+
+    if new_exp > 0:
+        try: await query.answer(f"Pass reduced by {dur_verb}!", show_alert=True)
+        except Exception: pass
+    else:
+        try: await query.answer("Pass reduced and is now expired/inactive.", show_alert=True)
+        except Exception: pass
+
+    query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+    return await settings_query(bot, query)
+
+  elif type.startswith("sb_rl_cred_"):
+    parts = type.split('_')
+    cust_uid = int(parts[3])
+    page = int(parts[4]) if len(parts) > 4 else 0
+    uid = query.from_user.id
+    
+    ask_msg = await query.message.reply_text(
+        "✍️ <b>Custom Deduct / Revoke Duration:</b>\n\n"
+        f"Send the duration to deduct from user <code>{cust_uid}</code>'s pass (e.g. <code>30m</code>, <code>2h</code>, <code>1d</code>, <code>3d</code>):\n\n"
+        "<i>Or send /cancel to cancel.</i>"
+    )
+    resp = await _ask(bot, uid, timeout=120)
+    try: await ask_msg.delete()
+    except Exception: pass
+    
+    if not resp or resp.text.startswith("/cancel"):
+        try: await query.answer("Custom revoke cancelled.", show_alert=True)
+        except Exception: pass
+        query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+        return await settings_query(bot, query)
+
+    custom_dur = resp.text.strip()
+    try:
+        from database import parse_duration_to_seconds
+        sec = parse_duration_to_seconds(custom_dur, default_unit='d')
+        if sec <= 0:
+            raise ValueError()
+    except Exception:
+        try: await query.message.reply_text("❌ Invalid duration format. Example formats: <code>30m</code>, <code>2h</code>, <code>1d</code>, <code>7d</code>")
+        except Exception: pass
+        query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
+        return await settings_query(bot, query)
+
+    query.data = f"settings#sb_rl_red_{cust_uid}_{custom_dur}_{page}"
+    return await settings_query(bot, query)
+
   elif type.startswith("sb_rl_r_"):
     parts = type.split('_')
     cust_uid = int(parts[3])
     page = int(parts[4]) if len(parts) > 4 else 0
     await db.revoke_user_unlimited_pass(cust_uid)
-    try: await query.answer("Customer pass revoked!", show_alert=True)
+    try: await query.answer("Customer pass completely revoked!", show_alert=True)
     except Exception: pass
     query.data = f"settings#sb_rl_u_{cust_uid}_{page}"
     return await settings_query(bot, query)

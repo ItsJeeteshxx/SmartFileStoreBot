@@ -1925,6 +1925,29 @@ class Database:
         """Helper to activate or extend user pass by duration seconds."""
         return await self.grant_user_unlimited_pass(user_id=user_id, duration=duration_seconds, user_name=user_name)
 
+    async def reduce_user_unlimited_pass(self, user_id: int, duration) -> float:
+        """Reduce user's unlimited pass by specified duration (days int or duration str like '1d', '3h', '30m')."""
+        import time
+        if isinstance(duration, (int, float)) and duration < 1000:
+            duration_seconds = float(duration) * 86400.0
+        elif isinstance(duration, str):
+            duration_seconds = float(parse_duration_to_seconds(duration, default_unit='d'))
+        else:
+            duration_seconds = float(duration)
+
+        cur = await self.get_user_unlimited_pass(user_id)
+        now = time.time()
+        if not cur['active']:
+            return 0.0
+
+        new_expiry = cur['expires_at'] - duration_seconds
+        if new_expiry <= now:
+            await self.revoke_user_unlimited_pass(user_id)
+            return 0.0
+        else:
+            await self.set_user_unlimited_pass(user_id, new_expiry)
+            return new_expiry
+
     async def revoke_user_unlimited_pass(self, user_id: int):
         """Revoke user's unlimited pass."""
         await self.unlimited_passes.delete_one({'user_id': int(user_id)})
