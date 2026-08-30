@@ -1949,8 +1949,13 @@ class Database:
             return new_expiry
 
     async def revoke_user_unlimited_pass(self, user_id: int):
-        """Revoke user's unlimited pass."""
-        await self.unlimited_passes.delete_one({'user_id': int(user_id)})
+        """Revoke user's unlimited pass while preserving history and records."""
+        import time
+        await self.unlimited_passes.update_one(
+            {'user_id': int(user_id)},
+            {'$set': {'expires_at': 0.0, 'revoked_at': time.time()}},
+            upsert=False
+        )
 
     async def create_pass_order(self, order_dict: dict):
         """Save a pending pass order."""

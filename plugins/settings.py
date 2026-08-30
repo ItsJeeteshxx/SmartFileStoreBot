@@ -2208,18 +2208,13 @@ async def settings_query(bot, query):
     buttons.append(revoke_row_2)
     api_buttons.append(api_revoke_row_2)
 
-    # 3. Actions & Navigation
+    # 3. Actions & Navigation (Full Revoke & Back in the same row)
     buttons.append([
-        InlineKeyboardButton("Full Revoke", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}")
-    ])
-    api_buttons.append([
-        {"text": "Full Revoke", "callback_data": f"settings#sb_rl_r_{cust_uid}_{page}", "icon_custom_emoji_id": "5774077015388852135"}
-    ])
-
-    buttons.append([
+        InlineKeyboardButton("Full Revoke", callback_data=f"settings#sb_rl_r_{cust_uid}_{page}"),
         InlineKeyboardButton("Back", callback_data=f"settings#sb_rl_cust_{page}")
     ])
     api_buttons.append([
+        {"text": "Full Revoke", "callback_data": f"settings#sb_rl_r_{cust_uid}_{page}", "icon_custom_emoji_id": "5774077015388852135"},
         {"text": "Back", "callback_data": f"settings#sb_rl_cust_{page}"}
     ])
 
