@@ -2531,7 +2531,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
     else:
-        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧ - 2"
+        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
         item_lbl = "Item"
         price_lbl = "Total Price"
         rzp_title = "✅ 𝗔𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆)"
@@ -2660,10 +2660,10 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
 
     from cashfree_helper import get_cashfree_config
     cf_cfg = await get_cashfree_config()
-    show_cashfree = cf_cfg["enabled"] or cf_cfg["is_configured"]
+    show_cashfree = bool(cf_cfg.get("enabled", False))
 
     if lang == 'hi':
-        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧ - 2"
+        title = "⟦ सुरक्षित चेकआउट ⟧"
         item_lbl = "कहानी"
         price_lbl = "कुल राशि"
         
@@ -2716,45 +2716,49 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
                     f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी उपलब्ध नहीं है।</b>\n\n"
                     f"• रात्रि 9 बजे से सुबह 6 बजे के बीच सुरक्षा कारणों से डायरेक्ट UPI बंद रहता है।\n"
                     f"• UPI फिर से उपलब्ध होगा: <b>{until_note}</b>\n\n"
-                    f"कृपया Cashfree या Crypto विकल्प का उपयोग करें।</blockquote>"
+                    f"कृपया अन्य उपलब्ध भुगतान विकल्प का उपयोग करें।</blockquote>"
                 )
             else:
                 upi_block = (
                     f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is currently unavailable.</b>\n\n"
                     f"• Direct UPI is paused between 9 PM – 6 AM IST for security.\n"
                     f"• UPI will be available again at: <b>{until_note}</b>\n\n"
-                    f"Please use Cashfree or Crypto methods.</blockquote>"
+                    f"Please use another available payment method.</blockquote>"
                 )
         else:
             if lang == 'hi':
                 upi_block = (
                     f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
                     f"• एडमिन ने फिलहाल डायरेक्ट UPI बंद किया है।\n"
-                    f"• कृपया Cashfree या क्रिप्टो विकल्प का उपयोग करें।</blockquote>"
+                    f"• कृपया अन्य उपलब्ध भुगतान विकल्प का उपयोग करें।</blockquote>"
                 )
             else:
                 upi_block = (
                     f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is temporarily unavailable.</b>\n\n"
                     f"• The admin has disabled Direct UPI for now.\n"
-                    f"• Please use Cashfree or Crypto to complete your payment.</blockquote>"
+                    f"• Please use another available payment method.</blockquote>"
                 )
-
-    cf_block = f"<blockquote expandable=\"true\">{cf_title}\n{cf_desc}</blockquote>"
-    crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>"
-
-    txt = (
-        f"<b>{title}</b>\n\n"
-        f"<b>{item_lbl} :</b> <code>{name}</code>\n"
-        f"<b>{price_lbl} :</b> {p_str}\n\n"
-        f"{upi_block}\n"
-        f"{cf_block}\n"
-        f"{crypto_block}"
-    )
 
     story_methods = story.get("payment_methods", ["upi", "razorpay"])
     show_upi = "upi" in story_methods
     oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
     show_crypto = bool(oxapay_key)
+
+    cf_block = f"<blockquote expandable=\"true\">{cf_title}\n{cf_desc}</blockquote>" if show_cashfree else ""
+    crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>" if show_crypto else ""
+
+    content_blocks = [upi_block]
+    if show_cashfree and cf_block:
+        content_blocks.append(cf_block)
+    if show_crypto and crypto_block:
+        content_blocks.append(crypto_block)
+
+    txt = (
+        f"<b>{title}</b>\n\n"
+        f"<b>{item_lbl} :</b> <code>{name}</code>\n"
+        f"<b>{price_lbl} :</b> {p_str}\n\n"
+        + "\n".join(content_blocks)
+    )
 
     kb = []
     if show_upi:
@@ -2768,13 +2772,8 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
 
     if show_crypto:
         kb.append([InlineKeyboardButton(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}")])
-    else:
-        if lang == 'hi':
-            kb.append([InlineKeyboardButton("⚠️ क्रिप्टो भुगतान अभी अनुपलब्ध है", callback_data="mb#noop")])
-        else:
-            kb.append([InlineKeyboardButton("⚠️ Crypto Payment Unavailable", callback_data="mb#noop")])
 
-    kb.append([InlineKeyboardButton(back_btn, callback_data="mb#return_main")])
+    kb.append([InlineKeyboardButton(back_btn, callback_data=f"mb#view_{str(story['_id'])}")])
     markup = InlineKeyboardMarkup(kb)
 
     IMG_URL = "https://files.catbox.moe/a6xw61.png"
@@ -6551,7 +6550,7 @@ async def _process_callback(client, query):
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
                 [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}")],
-                [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
+                [InlineKeyboardButton(back_lbl, callback_data=f"mb#pay_back#{s_id}")]
             ])
 
             try:
@@ -6929,54 +6928,20 @@ async def _process_callback(client, query):
 
 
     elif cmd == "pay_back":
-
         s_id = data[2]
-
         await query.answer()
 
-        # 1. Cleanup current QR message
-
-        try: await query.message.delete()
-
-        except: pass
-
-
-
-        # 2. Show temporary loading message
-
-        wait = await client.send_message(user_id, f"« ❮ ⏳ {_sc('Returning to payment section')}...")
-
-
-
-        # 3. Reload Payment Selection Screen
+        try:
+            await query.message.delete()
+        except:
+            pass
 
         from bson.objectid import ObjectId
-
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-
         if story:
-
-            _bt = await db.db.premium_bots.find_one({"id": client.me.id})
-
-            _bt_cfg = (_bt or {}).get("config", {})
-
-            # We call this with the message object to trigger a NEW message send (reply_text)
-
-            # since the QR was a photo and cannot be edited into text.
-
-            await _show_story_details(client, query.message, story, lang, bot_cfg=_bt_cfg)
-
-            
-
-        # 4. Auto-delete loading message
-
-        await asyncio.sleep(0.5)
-
-        try: await wait.delete()
-
-        except: pass
-
-        return
+            return await _show_story_profile(client, user_id, story, lang)
+        else:
+            return await _edit_main_menu_in_place(client, query, query.from_user, lang)
 
 
 
@@ -7170,7 +7135,7 @@ async def _process_callback(client, query):
             kb = [
                 [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
                 [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
-                [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
+                [InlineKeyboardButton(back_lbl, callback_data=f"mb#pay_back#{s_id}")]
             ]
 
             await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
@@ -7390,7 +7355,7 @@ async def _process_callback(client, query):
 
             if lang == "hi":
                 check_txt = (
-                    f'<emoji id="5472030678633684592">💸</emoji> <b>सुरक्षित चेकआउट - 2</b>\n\n'
+                    f'<emoji id="5472030678633684592">💸</emoji> <b>सुरक्षित चेकआउट</b>\n\n'
                     f'<b><emoji id="6023962911364357003">📖</emoji> कहानी:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
                     f'<b><emoji id="5283232570660634549">💰</emoji> कुल कीमत:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
                     f"<blockquote expandable>"
@@ -7405,7 +7370,7 @@ async def _process_callback(client, query):
                 )
             else:
                 check_txt = (
-                    f'<emoji id="5472030678633684592">💸</emoji> <b>SECURE CHECKOUT - 2</b>\n\n'
+                    f'<emoji id="5472030678633684592">💸</emoji> <b>SECURE CHECKOUT</b>\n\n'
                     f'<b><emoji id="6023962911364357003">📖</emoji> Story Name:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
                     f'<b><emoji id="5283232570660634549">💰</emoji> Total Price:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
                     f"<blockquote expandable>"
