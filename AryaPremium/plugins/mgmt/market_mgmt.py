@@ -182,7 +182,7 @@ async def _render_settings(client, query):
         "<b>Settings Panel</b>\n\n"
         "Select a section below to configure system parameters:\n\n"
         "• <b>Payments:</b> UPI slots, Checkout Pages (1 &amp; 2), Cashfree Gateway, and Gmail Auto-Verification.\n"
-        "• <b>More:</b> Groq AI Key, T&amp;C requirement, and Mini App deep link settings.\n\n"
+        "• <b>More:</b> Groq AI Key and T&amp;C requirement settings.\n\n"
         "<i>Tap any option below:</i>"
     )
     kb = [
@@ -260,28 +260,24 @@ async def _render_payments_settings(client, query):
 
 
 async def _render_more_settings(client, query):
-    """Renders the More Settings panel: Groq AI, T&C requirement, Mini App deep links."""
+    """Renders the More Settings panel: Groq AI and T&C requirement."""
     groq_key_raw = await db.get_config("groq_api_key")
     groq_status = "✅" if groq_key_raw else "❌"
 
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    mini_app_on = cfg.get("mini_app_enabled", True)
     tnc_on = cfg.get("tnc_enabled", True)
 
-    mini_app_btn = f"Mini App Deep Links: {'✅' if mini_app_on else '❌'}"
     tnc_btn = f"T&C Requirement: {'✅' if tnc_on else '❌'}"
 
     kb = [
         [InlineKeyboardButton(f"Groq AI Key: {groq_status}", callback_data="mk#set_groq")],
         [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
-        [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
         [InlineKeyboardButton("« Back to Settings", callback_data="mk#settings")]
     ]
     txt = (
         "<b>More System Settings</b>\n\n"
         "• <b>Groq AI:</b> Transliterate story names and translate descriptions.\n"
-        "• <b>T&amp;C Requirement:</b> Require users to accept terms before purchasing.\n"
-        "• <b>Mini App Deep Links:</b> Open stories in Mini App when enabled, or in Telegram bot when disabled.\n\n"
+        "• <b>T&amp;C Requirement:</b> Require users to accept terms before purchasing.\n\n"
         "<i>Tap any option below:</i>"
     )
     if hasattr(query, "message") and query.message:
@@ -449,19 +445,7 @@ async def market_callback(client, query):
             await _safe_answer(query)
             await _render_more_settings(client, query)
 
-        elif cmd == "toggle_miniapp":
-            await _safe_answer(query)
-            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-            current = cfg.get("mini_app_enabled", True)
-            new_val = not current
-            await db.db.mini_app_config.update_one(
-                {"_key": "feature_toggles"},
-                {"$set": {"mini_app_enabled": new_val}},
-                upsert=True
-            )
-            status = "✅ ON" if new_val else "❌ OFF"
-            await query.answer(f"Mini App Deep Links: {status}", show_alert=True)
-            await _render_more_settings(client, query)
+
 
         elif cmd == "toggle_tnc":
             await _safe_answer(query)
