@@ -179,15 +179,15 @@ def parse_chat_from_link(text: str):
 async def _render_settings(client, query):
     """Renders the top-level settings categories."""
     txt = (
-        "<b>⚙️ Settings Panel</b>\n\n"
-        "Select a section below to configure your system:\n\n"
-        "• <b>💳 Payments:</b> UPI slots, Checkout Page 1 &amp; 2, Cashfree gateway, Gmail settings &amp; auto-verification.\n"
-        "• <b>⚙️ More:</b> Groq AI keys, T&amp;C requirement, and Mini App deep links.\n\n"
-        "<i>Tap any category below to proceed:</i>"
+        "<b>Settings Panel</b>\n\n"
+        "Select a section below to configure system parameters:\n\n"
+        "• <b>Payments:</b> UPI slots, Checkout Pages (1 &amp; 2), Cashfree Gateway, and Gmail Auto-Verification.\n"
+        "• <b>More:</b> Groq AI Key, T&amp;C requirement, and Mini App deep link settings.\n\n"
+        "<i>Tap any option below:</i>"
     )
     kb = [
-        [InlineKeyboardButton("💳 Payments", callback_data="mk#settings_payments")],
-        [InlineKeyboardButton("⚙️ More", callback_data="mk#settings_more")],
+        [InlineKeyboardButton("Payments", callback_data="mk#settings_payments")],
+        [InlineKeyboardButton("More", callback_data="mk#settings_more")],
         [InlineKeyboardButton("« Back to Dashboard", callback_data="mk#back")]
     ]
     if hasattr(query, "message") and query.message:
@@ -210,48 +210,48 @@ async def _render_payments_settings(client, query):
     upi3 = cfg.get("upi_id_3", "")
     upi4 = cfg.get("upi_id_4", "")
 
-    upi1_status = f"✅ ({upi1[:8]}…)" if upi1 else "❌"
-    upi2_status = f"✅ ({upi2[:8]}…)" if upi2 else "❌"
-    upi3_status = f"✅ ({upi3[:8]}…)" if upi3 else "❌"
-    upi4_status = f"✅ ({upi4[:8]}…)" if upi4 else "❌"
+    upi1_status = "✅" if upi1 else "❌"
+    upi2_status = "✅" if upi2 else "❌"
+    upi3_status = "✅" if upi3 else "❌"
+    upi4_status = "✅" if upi4 else "❌"
 
-    chk_v1_btn = f"🛒 Checkout Page 1: {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
-    chk_v2_btn = f"🛒 Checkout Page 2: {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
+    chk_v1_btn = f"Checkout Page 1: {'✅' if checkout_mode == 'v1' else '❌'}"
+    chk_v2_btn = f"Checkout Page 2: {'✅' if checkout_mode == 'v2' else '❌'}"
     
     cf_enabled = cfg.get("cashfree_enabled", False)
     cf_app_id = cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")
-    cf_status = "✅ ON" if cf_enabled and cf_app_id else ("⚠️ Setup" if cf_app_id else "❌ OFF")
+    cf_status = "✅" if cf_enabled and cf_app_id else "❌"
     
-    gmail_user_status = f"✅ Set ({gmail_user[:8]}…)" if gmail_user else "❌ Not Set"
-    gmail_pwd_status = "✅ Set" if gmail_pwd else "❌ Not Set"
-    gmail_verify_btn = f"🔌 Gmail Auto-Verify: {'✅ ON' if gmail_verify_on else '❌ OFF'}"
+    gmail_user_status = "✅" if gmail_user else "❌"
+    gmail_pwd_status = "✅" if gmail_pwd else "❌"
+    gmail_verify_btn = f"Gmail Auto-Verify: {'✅' if gmail_verify_on else '❌'}"
 
     kb = [
         [
-            InlineKeyboardButton(f"💳 UPI 1: {upi1_status}", callback_data="mk#set_upi_1"),
-            InlineKeyboardButton(f"💳 UPI 2: {upi2_status}", callback_data="mk#set_upi_2")
+            InlineKeyboardButton(f"UPI 1: {upi1_status}", callback_data="mk#set_upi_1"),
+            InlineKeyboardButton(f"UPI 2: {upi2_status}", callback_data="mk#set_upi_2")
         ],
         [
-            InlineKeyboardButton(f"💳 UPI 3: {upi3_status}", callback_data="mk#set_upi_3"),
-            InlineKeyboardButton(f"💳 UPI 4: {upi4_status}", callback_data="mk#set_upi_4")
+            InlineKeyboardButton(f"UPI 3: {upi3_status}", callback_data="mk#set_upi_3"),
+            InlineKeyboardButton(f"UPI 4: {upi4_status}", callback_data="mk#set_upi_4")
         ],
         [
             InlineKeyboardButton(chk_v1_btn, callback_data="mk#toggle_checkout_v1"),
             InlineKeyboardButton(chk_v2_btn, callback_data="mk#toggle_checkout_v2")
         ],
-        [InlineKeyboardButton(f"💳 Cashfree Settings [{cf_status}]", callback_data="mk#cashfree_menu")],
-        [InlineKeyboardButton(f"📧 Set Gmail [{gmail_user_status}]", callback_data="mk#set_gmail_user")],
-        [InlineKeyboardButton(f"🔑 Set Gmail Pwd [{gmail_pwd_status}]", callback_data="mk#set_gmail_pwd")],
+        [InlineKeyboardButton(f"Cashfree Settings: {cf_status}", callback_data="mk#cashfree_menu")],
+        [InlineKeyboardButton(f"Set Gmail: {gmail_user_status}", callback_data="mk#set_gmail_user")],
+        [InlineKeyboardButton(f"Set Gmail Pwd: {gmail_pwd_status}", callback_data="mk#set_gmail_pwd")],
         [InlineKeyboardButton(gmail_verify_btn, callback_data="mk#toggle_gmail_verify")],
-        [InlineKeyboardButton("« Back to Payments", callback_data="mk#settings_payments")]
+        [InlineKeyboardButton("« Back to Settings", callback_data="mk#settings")]
     ]
     txt = (
-        "<b>💳 Payments &amp; Gateway Settings</b>\n\n"
-        "<b>• UPI IDs:</b> Rotate up to 4 UPI IDs for direct payments.\n"
-        "<b>• Checkout Pages:</b> Switch between <b>Page 1</b> (Razorpay + Manual UPI) and <b>Page 2</b> (Direct UPI + Cashfree + Crypto).\n"
-        "<b>• Cashfree:</b> Configure Cards, NetBanking, and UPI gateway keys.\n"
-        "<b>• Gmail Verification:</b> Auto-verify UPI payments via IMAP alerts.\n\n"
-        "<i>Tap any button to configure or toggle.</i>"
+        "<b>Payments &amp; Gateway Settings</b>\n\n"
+        "• <b>UPI Slots:</b> Rotate up to 4 UPI IDs for direct transfer.\n"
+        "• <b>Checkout Mode:</b> Page 1 (Razorpay + Manual UPI) / Page 2 (Direct UPI + Cashfree + Crypto).\n"
+        "• <b>Cashfree:</b> Cards, NetBanking, and UPI payment gateway.\n"
+        "• <b>Gmail Verification:</b> Automated verification for Direct UPI payments.\n\n"
+        "<i>Tap any option below to configure or toggle:</i>"
     )
     if hasattr(query, "message") and query.message:
         await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -262,27 +262,27 @@ async def _render_payments_settings(client, query):
 async def _render_more_settings(client, query):
     """Renders the More Settings panel: Groq AI, T&C requirement, Mini App deep links."""
     groq_key_raw = await db.get_config("groq_api_key")
-    groq_status = f"✅ Set ({(groq_key_raw or '')[:8]}…)" if groq_key_raw else "❌ Not Set"
+    groq_status = "✅" if groq_key_raw else "❌"
 
     cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     mini_app_on = cfg.get("mini_app_enabled", True)
     tnc_on = cfg.get("tnc_enabled", True)
 
-    mini_app_btn = f"📱 Mini App Deep Links: {'✅ ON' if mini_app_on else '❌ OFF'}"
-    tnc_btn = f"📜 T&C Requirement: {'✅ ON' if tnc_on else '❌ OFF'}"
+    mini_app_btn = f"Mini App Deep Links: {'✅' if mini_app_on else '❌'}"
+    tnc_btn = f"T&C Requirement: {'✅' if tnc_on else '❌'}"
 
     kb = [
-        [InlineKeyboardButton(f"🤖 Groq AI Key [{groq_status}]", callback_data="mk#set_groq")],
+        [InlineKeyboardButton(f"Groq AI Key: {groq_status}", callback_data="mk#set_groq")],
         [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
         [InlineKeyboardButton(mini_app_btn, callback_data="mk#toggle_miniapp")],
         [InlineKeyboardButton("« Back to Settings", callback_data="mk#settings")]
     ]
     txt = (
-        "<b>⚙️ More System Settings</b>\n\n"
-        "<b>• Groq AI:</b> Transliterate story names and translate descriptions.\n"
-        "<b>• T&amp;C Requirement:</b> Require users to accept terms before purchasing.\n"
-        "<b>• Mini App Deep Links:</b> Open stories in Mini App when enabled, or in Telegram bot when disabled.\n\n"
-        "<i>Tap any button to configure or toggle.</i>"
+        "<b>More System Settings</b>\n\n"
+        "• <b>Groq AI:</b> Transliterate story names and translate descriptions.\n"
+        "• <b>T&amp;C Requirement:</b> Require users to accept terms before purchasing.\n"
+        "• <b>Mini App Deep Links:</b> Open stories in Mini App when enabled, or in Telegram bot when disabled.\n\n"
+        "<i>Tap any option below:</i>"
     )
     if hasattr(query, "message") and query.message:
         await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -298,10 +298,10 @@ async def _render_cashfree_settings(client, query):
     cf_secret = cfg.get("cashfree_secret_key", "")
     cf_env = cfg.get("cashfree_env", "production")
 
-    cf_toggle_btn = f"💳 Cashfree Gateway: {'✅ ON' if cf_enabled else '❌ OFF'}"
-    app_id_lbl = f"🔑 App ID: {cf_app_id[:10]}…" if cf_app_id else "🔑 App ID: ❌ Not Set"
-    secret_lbl = f"🔒 Secret Key: {'✅ Set' if cf_secret else '❌ Not Set'}"
-    env_lbl = f"🌐 Environment: {cf_env.upper()}"
+    cf_toggle_btn = f"Cashfree Gateway: {'✅' if cf_enabled else '❌'}"
+    app_id_lbl = f"App ID: {'✅' if cf_app_id else '❌'}"
+    secret_lbl = f"Secret Key: {'✅' if cf_secret else '❌'}"
+    env_lbl = f"Environment: {cf_env.upper()}"
 
     kb = [
         [InlineKeyboardButton(cf_toggle_btn, callback_data="mk#toggle_cashfree")],
