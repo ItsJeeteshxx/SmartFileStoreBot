@@ -6505,16 +6505,18 @@ async def _process_callback(client, query):
 
         if method == "cashfree":
             # Cashfree Payment Gateway order flow
-            logger.info(f"[PAY2] User {user_id} clicked Cashfree option for story {s_id}")
+            logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
+            try:
+                await query.answer()
+            except Exception:
+                pass
+
             from cashfree_helper import create_cashfree_order
             bot_username = getattr(getattr(client, "me", None), "username", "")
             user_name = query.from_user.first_name or "Buyer"
+            
             cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
             
-            if not cf_res.get("success"):
-                err_msg = cf_res.get("error", "Failed to initiate Cashfree order.")
-                return await query.answer(f"❌ {err_msg}", show_alert=True)
-
             order_id = cf_res["order_id"]
             pay_link = cf_res.get("payment_link")
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
@@ -6531,27 +6533,36 @@ async def _process_callback(client, query):
                 f"<b>• Story:</b> {to_mathbold(s_name)}\n"
                 f"<b>• Amount:</b> ₹{price}\n"
                 f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
-                f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
-                f"<i>After completing payment, tap <b>Check Status</b> or simply wait for instant auto-delivery.</i>"
+                f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI.</i>\n\n"
+                f"<i>After payment, tap <b>Check Status</b> for instant delivery.</i>"
             ) if lang == 'en' else (
                 f"<b>⟦ 💳 कैशफ्री भुगतान ⟧</b>\n\n"
                 f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
                 f"<b>• राशि:</b> ₹{price}\n"
                 f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
-                f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
-                f"<i>भुगतान पूरा करने के बाद, <b>Check Status</b> पर टैप करें या ऑटोमैटिक डिलीवरी की प्रतीक्षा करें।</i>"
+                f"<i>Cards, NetBanking या UPI से भुगतान के लिए <b>Pay Now</b> दबाएं।</i>\n\n"
+                f"<i>भुगतान के बाद <b>Check Status</b> दबाएं।</i>"
             )
 
-            pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें (Cards/UPI/NetBanking)"
+            pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें"
             check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
-            back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
+            back_lbl = "« Back" if lang == 'en' else "« वापस"
 
-            kb = [
+            kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
-                [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
+                [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}")],
                 [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
-            ]
-            await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
+            ])
+
+            try:
+                await query.message.edit_text(desc_cf, reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+            except Exception as ex:
+                logger.error(f"[CF] edit_text failed: {ex} — trying send_message fallback")
+                try:
+                    await client.send_message(query.message.chat.id, desc_cf, reply_markup=kb, parse_mode=enums.ParseMode.HTML)
+                except Exception as ex2:
+                    logger.error(f"[CF] send_message also failed: {ex2}")
+                    await query.answer(f"✅ Order created! Order ID: {order_id}\n\nPay here: {pay_link}", show_alert=True)
             return
 
         elif method == "upi":
