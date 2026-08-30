@@ -93,35 +93,25 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     dl_ch = await db.db.premium_channels.count_documents({"type": "delivery"})
 
     txt = (
-        f"<b>╔══════════════════════╗</b>\n"
-        f"<b>        𝗠𝗔𝗥𝗞𝗘𝗧𝗣𝗟𝗔𝗖𝗘 𝗗𝗔𝗦𝗛𝗕𝗢𝗔𝗥𝗗</b>\n"
-        f"<b>╚══════════════════════╝</b>\n\n"
+        f"<b>Arya Marketplace Dashboard</b>\n\n"
         f"<b>⧉ SYSTEM OVERVIEW</b>\n"
-        f'<blockquote expandable="true">'
         f"<b>• TOTAL BOTS    ⟶</b> <code>{bots}</code>\n"
         f"<b>• ACTIVE STORIES ⟶</b> <code>{stories}</code>\n"
         f"<b>• TOTAL BUYERS   ⟶</b> <code>{buyers}</code>\n"
         f"<b>• DB CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
-        f"<b>• DELIVERY POOL  ⟶</b> <code>{dl_ch}</code>\n"
-        f'</blockquote>\n'
-        f"<b>⧉ TRANSACTION SUMMARY</b>\n"
-        f'<blockquote expandable="true">'
-        f"<b>• APPROVED       ⟶</b> <code>{approved}</code>\n"
-        f"<b>• PENDING        ⟶</b> <code>{pendings}</code>\n"
-        f'</blockquote>\n'
-        f'<i>💡 <b>𝗧𝗶𝗽:</b> Monitor "Support Panel" for new user feedbacks.</i>'
+        f"<b>• DELIVERY POOL  ⟶</b> <code>{dl_ch}</code>"
     )
 
     kb = [
-        [InlineKeyboardButton("Add", callback_data="mk#add_story"),
-         InlineKeyboardButton("Approval", callback_data="mk#pending")],
-        [InlineKeyboardButton("Requests", callback_data="mk#reqs_0"),
-         InlineKeyboardButton("Support Tab", callback_data="mk#fb_panel_0")],
+        [InlineKeyboardButton("Add New Story", callback_data="mk#add_story")],
         [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
-        [InlineKeyboardButton("Channels", callback_data="mk#channels"),
-         InlineKeyboardButton("Bots", callback_data="mk#accounts")],
-        [InlineKeyboardButton("Costumers", callback_data="mk#users"),
-         InlineKeyboardButton("Settings", callback_data="mk#settings")],
+        [InlineKeyboardButton("Approval", callback_data="mk#pending"),
+         InlineKeyboardButton("Requests", callback_data="mk#reqs_0")],
+        [InlineKeyboardButton("Support Tab", callback_data="mk#fb_panel_0"),
+         InlineKeyboardButton("Channels", callback_data="mk#channels")],
+        [InlineKeyboardButton("Bots", callback_data="mk#accounts"),
+         InlineKeyboardButton("Costumers", callback_data="mk#users")],
+        [InlineKeyboardButton("Settings", callback_data="mk#settings")],
         [InlineKeyboardButton("Close", callback_data="mk#close")]
     ]
     markup = InlineKeyboardMarkup(kb)
