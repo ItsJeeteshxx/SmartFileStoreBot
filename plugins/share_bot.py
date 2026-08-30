@@ -4971,6 +4971,72 @@ def register_share_handlers(app: Client):
     logger.info(f"Handlers registered on {app.name}")
 
 
+PASS_EXPIRY_TEMPLATES_HI = [
+    # 1. Suspense / Cliffhanger
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>कहानी के क्लाइमेक्स पर सन्नाटा नहीं चाहिए!</b>\n\n'
+        'नमस्ते <b>{u_name}</b>, आपका अनलिमिटेड पास <b>{exp_str}</b> (लगभग <b>{rem_mins} मिनट</b> बाद) समाप्त होने वाला है।\n\n'
+        '<blockquote><emoji id="5850689125891448128">🫢</emoji> सोचो कहानी का सबसे बड़ा राज़ खुलने ही वाला हो और बीच में कूलडाउन लग जाए! अपनी पसंदीदा ऑडियो कहानियों को बिना किसी रुकावट लगातार सुनते रहने के लिए अभी रिन्यू करें।</blockquote>'
+    ),
+    # 2. Comedy / Fun
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>घड़ी की टिक-टिक शुरू... सिर्फ 1 घंटा बाकी!</b>\n\n'
+        'अरे <b>{u_name}</b>, आपका अनलिमिटेड पास आज <b>{exp_str}</b> (~<b>{rem_mins} मिनट</b> में) समाप्त होने वाला है!\n\n'
+        '<blockquote><emoji id="5850506340673264483">😜</emoji> फिर मत कहना कि ट्विस्ट के टाइम पर ब्रेक लग गया! नो कूलडाउन, नॉन-स्टॉप स्टोरी सुनने का मज़ा जारी रखने के लिए तुरंत पास रिन्यू करो!</blockquote>'
+    ),
+    # 3. Sarcasm / Witty
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>सबर का फल मीठा होता है, पर कहानियों में नहीं!</b>\n\n'
+        'सुनो <b>{u_name}</b>, आपका अनलिमिटेड एक्सेस <b>{exp_str}</b> (सिर्फ <b>{rem_mins} मिनट</b> में) एक्सपायर हो रहा है।\n\n'
+        '<blockquote><emoji id="5850651721021267320">😏</emoji> इंतज़ार किसे पसंद है जब कहानी का अगला एपिसोड तुरंत सुनना हो? बिना कूलडाउन अपनी धुन में सुनते रहने के लिए पास रीचार्ज कर लो!</blockquote>'
+    ),
+    # 4. Horror / Mystery Drama
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>रहस्यमयी कहानियों का सफर रुकने वाला है!</b>\n\n'
+        '<b>{u_name}</b>, आपका अनलिमिटेड पास <b>{exp_str}</b> (~<b>{rem_mins} मिनट</b> बाद) समाप्त हो जाएगा।\n\n'
+        '<blockquote><emoji id="5850306568859425667">😳</emoji> कहीं ऐसा न हो कि सस्पेंस के बीच में कहानी रुक जाए! नॉन-स्टॉप ऑडियो एक्सेस के साथ कहानियों की दुनिया में बने रहें।</blockquote>'
+    ),
+    # 5. One-Liner / Direct Punch
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>1 घंटा बाकी — अनलिमिटेड कहानियों का पास रिन्यू करें!</b>\n\n'
+        'नमस्ते <b>{u_name}</b>, आपका अनलिमिटेड पास आज <b>{exp_str}</b> को समाप्त हो रहा है।\n\n'
+        '<blockquote><emoji id="5850502041411000133">😎</emoji> नो लिमिट्स, नो वेटिंग — अपनी सभी ऑडियो स्टोरीज़ को बिना रुके सुनते रहने के लिए अभी रिन्यू करें।</blockquote>'
+    )
+]
+
+PASS_EXPIRY_TEMPLATES_EN = [
+    # 1. Suspense / Cliffhanger
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>Don\'t let the cliffhanger leave you hanging!</b>\n\n'
+        'Hey <b>{u_name}</b>, your Unlimited Story Pass will expire at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n'
+        '<blockquote><emoji id="5850689125891448128">🫢</emoji> Imagine the biggest mystery is about to unfold and you hit a cooldown! Renew now to keep listening to your favorite audio stories non-stop.</blockquote>'
+    ),
+    # 2. Comedy / Fun
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>Tick-Tock! Only 1 Hour Left on Your Pass!</b>\n\n'
+        'Hey <b>{u_name}</b>, your unlimited pass is about to say goodbye at <b>{exp_str}</b> (~<b>{rem_mins} mins</b> left).\n\n'
+        '<blockquote><emoji id="5850506340673264483">😜</emoji> Don\'t let cooldowns ruin your storytelling groove! Renew your pass now for uninterrupted listening joy.</blockquote>'
+    ),
+    # 3. Sarcasm / Witty
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>Patience is a virtue... but not in stories!</b>\n\n'
+        'Hey <b>{u_name}</b>, your pass expires at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n'
+        '<blockquote><emoji id="5850651721021267320">😏</emoji> Who wants to wait between episodes when you can binge seamlessly? Keep zero-cooldown access by renewing today!</blockquote>'
+    ),
+    # 4. Drama / Thriller
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>Your story journey pauses in 1 hour!</b>\n\n'
+        'Hey <b>{u_name}</b>, your unlimited listening pass will end at <b>{exp_str}</b>.\n\n'
+        '<blockquote><emoji id="5850306568859425667">😳</emoji> Don\'t get locked out right before the big reveal! Renew your pass to keep discovering every mystery without delay.</blockquote>'
+    ),
+    # 5. One-Liner / Direct
+    (
+        '<emoji id="5258113901106580375">⏳</emoji> <b>1 Hour Remaining — Renew Your Story Pass!</b>\n\n'
+        'Hey <b>{u_name}</b>, your unlimited pass expires at <b>{exp_str}</b>.\n\n'
+        '<blockquote><emoji id="5850502041411000133">😎</emoji> No waiting, zero limits — renew now and keep listening to unlimited stories smoothly!</blockquote>'
+    )
+]
+
 _expiry_monitor_running = False
 
 async def run_pass_expiry_monitor_loop():
@@ -4979,6 +5045,7 @@ async def run_pass_expiry_monitor_loop():
     1. Checks passes expiring within 1 hour (0 < expires_at - now <= 3600).
     2. Sends renewal reminder to user from the EXACT delivery bot where the pass was purchased.
     3. Guarantees message is sent only once per expiry cycle using reminded_1h_expiry timestamp in DB.
+    4. Delivers varied tone/mood messages (Comedy, Suspense, Sarcasm, Drama, One-Liner).
     """
     global _expiry_monitor_running
     if _expiry_monitor_running:
@@ -5042,23 +5109,18 @@ async def run_pass_expiry_monitor_loop():
                 user_lang = await db.get_language(uid)
                 is_hi = bool(user_lang == 'hi')
 
+                import random
                 if is_hi:
-                    rem_text = (
-                        f'<emoji id="6034898821517940846">⏳</emoji> <b>आपका अनलिमिटेड पास 1 घंटे में समाप्त हो रहा है!</b>\n\n'
-                        f"नमस्ते <b>{u_name}</b>, आपका अनलिमिटेड डिलीवरी पास आज <b>{exp_str}</b> (लगभग <b>{rem_mins} मिनट</b> बाद) समाप्त होने वाला है।\n\n"
-                        f"<blockquote>बिना किसी कूलडाउन और रुकावट के अपनी पसंदीदा कहानियों का आनंद जारी रखने के लिए, अभी अपना पास रिन्यू (Renew) करें!</blockquote>"
-                    )
+                    template = random.choice(PASS_EXPIRY_TEMPLATES_HI)
+                    rem_text = template.format(u_name=u_name, exp_str=exp_str, rem_mins=rem_mins)
                     btn_renew = "👑 पास रिन्यू करें (Renew Pass)"
                 else:
-                    rem_text = (
-                        f'<emoji id="6034898821517940846">⏳</emoji> <b>Your Unlimited Pass is Expiring in 1 Hour!</b>\n\n'
-                        f"Hey <b>{u_name}</b>, your Unlimited Delivery Pass is set to expire at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n"
-                        f"<blockquote>To keep enjoying instant downloads with zero cooldown, renew your pass now!</blockquote>"
-                    )
+                    template = random.choice(PASS_EXPIRY_TEMPLATES_EN)
+                    rem_text = template.format(u_name=u_name, exp_str=exp_str, rem_mins=rem_mins)
                     btn_renew = "👑 Renew Pass"
 
                 rem_api_buttons = [
-                    [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "5773677501825945508"}]
+                    [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "6007983438294949171"}]
                 ]
                 rem_buttons = [
                     [InlineKeyboardButton(btn_renew, callback_data="pass#unlock_menu")]
