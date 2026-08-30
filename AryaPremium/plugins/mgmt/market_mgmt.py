@@ -249,6 +249,10 @@ async def _render_settings(client, query):
     chk_v1_btn = f"🛒 Checkout Page 1 (Razorpay+UPI): {'✅ ON' if checkout_mode == 'v1' else '❌ OFF'}"
     chk_v2_btn = f"🛒 Checkout Page 2 (UPI+Crypto): {'✅ ON' if checkout_mode == 'v2' else '❌ OFF'}"
     
+    cf_enabled = cfg.get("cashfree_enabled", False)
+    cf_app_id = cfg.get("cashfree_app_id", "")
+    cf_status = "✅ ON" if cf_enabled and cf_app_id else ("⚠️ Setup" if cf_app_id else "❌ OFF")
+    
     gmail_user_status = f"✅ Set ({gmail_user[:8]}…)" if gmail_user else "❌ Not Set"
     gmail_pwd_status = "✅ Set" if gmail_pwd else "❌ Not Set"
     gmail_verify_btn = f"🔌 Gmail Auto-Verify: {'✅ ON' if gmail_verify_on else '❌ OFF'}"
@@ -267,6 +271,7 @@ async def _render_settings(client, query):
         [InlineKeyboardButton(tnc_btn, callback_data="mk#toggle_tnc")],
         [InlineKeyboardButton(chk_v1_btn, callback_data="mk#toggle_checkout_v1")],
         [InlineKeyboardButton(chk_v2_btn, callback_data="mk#toggle_checkout_v2")],
+        [InlineKeyboardButton(f"💳 Cashfree Settings [{cf_status}]", callback_data="mk#cashfree_menu")],
         [InlineKeyboardButton(f"📧 Set Gmail [{gmail_user_status}]", callback_data="mk#set_gmail_user")],
         [InlineKeyboardButton(f"🔑 Set Gmail Pwd [{gmail_pwd_status}]", callback_data="mk#set_gmail_pwd")],
         [InlineKeyboardButton(gmail_verify_btn, callback_data="mk#toggle_gmail_verify")],
@@ -285,6 +290,39 @@ async def _render_settings(client, query):
 
 
 @Client.on_callback_query(filters.regex(r'^mk#'))
+
+async def _render_cashfree_settings(client, query):
+    """Renders the Cashfree Payment Gateway settings menu."""
+    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    cf_enabled = cfg.get("cashfree_enabled", False)
+    cf_app_id = cfg.get("cashfree_app_id", "")
+    cf_secret = cfg.get("cashfree_secret_key", "")
+    cf_env = cfg.get("cashfree_env", "production")
+
+    cf_toggle_btn = f"💳 Cashfree Gateway: {'✅ ON' if cf_enabled else '❌ OFF'}"
+    app_id_lbl = f"🔑 App ID: {cf_app_id[:10]}…" if cf_app_id else "🔑 App ID: ❌ Not Set"
+    secret_lbl = f"🔒 Secret Key: {'✅ Set' if cf_secret else '❌ Not Set'}"
+    env_lbl = f"🌐 Environment: {cf_env.upper()}"
+
+    kb = [
+        [InlineKeyboardButton(cf_toggle_btn, callback_data="mk#toggle_cashfree")],
+        [InlineKeyboardButton(app_id_lbl, callback_data="mk#set_cf_app_id")],
+        [InlineKeyboardButton(secret_lbl, callback_data="mk#set_cf_secret")],
+        [InlineKeyboardButton(env_lbl, callback_data="mk#toggle_cf_env")],
+        [InlineKeyboardButton("« Back to Settings", callback_data="mk#settings")]
+    ]
+    txt = (
+        "<b>💳 Cashfree Payment Gateway Settings</b>\n\n"
+        f"<b>Status:</b> {'✅ Active & Accepting Payments' if cf_enabled and cf_app_id and cf_secret else '❌ Inactive / Disabled'}\n"
+        f"<b>Environment:</b> <code>{cf_env}</code>\n"
+        f"<b>App ID:</b> <code>{cf_app_id or 'Not Set'}</code>\n"
+        f"<b>Secret Key:</b> <code>{'••••••••••••••••' if cf_secret else 'Not Set'}</code>\n\n"
+        "<i>💡 Customers can pay instantly via Credit/Debit Cards, NetBanking, and UPI (GPay, PhonePe, Paytm). "
+        "Upon successful payment, digital files are delivered automatically.</i>"
+    )
+    await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+
+
 async def market_callback(client, query):
     try:
         user_id = query.from_user.id
@@ -292,6 +330,46 @@ async def market_callback(client, query):
             return await _safe_answer(query, "Access denied.", show_alert=True)
         data = query.data.split('#')
         cmd = data[1]
+
+        # ════════════════════════════════════════════
+        # CASHFREE GATEWAY SETTINGS
+        # ════════════════════════════════════════════
+        if cmd == "cashfree_menu":
+            return await _render_cashfree_settings(client, query)
+
+        elif cmd == "toggle_cashfree":
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            curr = cfg.get("cashfree_enabled", False)
+            new_st = not curr
+            await db.db.mini_app_config.update_one({"_key": "feature_toggles"}, {"$set": {"cashfree_enabled": new_st}}, upsert=True)
+            await _safe_answer(query, f"Cashfree Payments set to: {'ON' if new_st else 'OFF'}", show_alert=True)
+            return await _render_cashfree_settings(client, query)
+
+        elif cmd == "toggle_cf_env":
+            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+            curr_env = cfg.get("cashfree_env", "production")
+            new_env = "sandbox" if curr_env == "production" else "production"
+            await db.db.mini_app_config.update_one({"_key": "feature_toggles"}, {"$set": {"cashfree_env": new_env}}, upsert=True)
+            await _safe_answer(query, f"Cashfree Environment set to: {new_env.upper()}", show_alert=True)
+            return await _render_cashfree_settings(client, query)
+
+        elif cmd == "set_cf_app_id":
+            await _safe_answer(query)
+            msg = await native_ask(client, user_id, "<b>🔑 Enter your Cashfree App ID / Client ID:</b>", reply_markup=cancel_kb)
+            if getattr(msg, 'text', None) and "Cᴀɴᴄᴇʟ" not in msg.text:
+                val = msg.text.strip()
+                await db.db.mini_app_config.update_one({"_key": "feature_toggles"}, {"$set": {"cashfree_app_id": val}}, upsert=True)
+                await client.send_message(user_id, f"✅ Cashfree App ID saved: <code>{val[:10]}…</code>")
+            return await _render_cashfree_settings(client, query)
+
+        elif cmd == "set_cf_secret":
+            await _safe_answer(query)
+            msg = await native_ask(client, user_id, "<b>🔒 Enter your Cashfree Client Secret Key:</b>", reply_markup=cancel_kb)
+            if getattr(msg, 'text', None) and "Cᴀɴᴄᴇʟ" not in msg.text:
+                val = msg.text.strip()
+                await db.db.mini_app_config.update_one({"_key": "feature_toggles"}, {"$set": {"cashfree_secret_key": val}}, upsert=True)
+                await client.send_message(user_id, "✅ Cashfree Secret Key saved securely!")
+            return await _render_cashfree_settings(client, query)
 
         if cmd == "close":
             return await query.message.delete()
@@ -1699,10 +1777,12 @@ async def market_callback(client, query):
             )
             kb = [
                 [InlineKeyboardButton("Name (EN)", callback_data=f"mk#st_edit_{s_id}_name"),
-                 InlineKeyboardButton("Name (HI)", callback_data=f"mk#st_edit_{s_id}_namehi")],
+                 InlineKeyboardButton("Name (HI)", callback_data=f"mk#st_edit_{s_id}_namehi"),
+                 InlineKeyboardButton("Telugu Name", callback_data=f"mk#st_edit_{s_id}_namete")],
                 [InlineKeyboardButton("Price", callback_data=f"mk#st_edit_{s_id}_price"),
                  InlineKeyboardButton("Image", callback_data=f"mk#st_edit_{s_id}_image")],
                 [InlineKeyboardButton("Description", callback_data=f"mk#st_edit_{s_id}_desc"),
+                 InlineKeyboardButton("Telugu Desc", callback_data=f"mk#st_edit_{s_id}_descte"),
                  InlineKeyboardButton("Status", callback_data=f"mk#st_edit_{s_id}_status")],
                 [InlineKeyboardButton("Genre", callback_data=f"mk#st_edit_{s_id}_genre"),
                  InlineKeyboardButton("Episodes", callback_data=f"mk#st_edit_{s_id}_episodes")],
@@ -3140,6 +3220,12 @@ async def _edit_story_flow(client, user_id, s_id, action):
         elif action == "namehi":
             # Direct update — admin typed the Hindi name manually
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"story_name_hi": msg.text.strip()}})
+        elif action == "namete":
+            # Direct update — admin typed the Telugu name manually
+            await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"story_name_te": msg.text.strip()}})
+        elif action == "descte":
+            # Direct update — admin typed the Telugu description manually
+            await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"description_te": msg.text.strip()}})
         elif action == "image":
             if getattr(msg, 'photo', None):
                 await client.send_message(user_id, "<i>Uploading image to store bot and CDN...</i>")

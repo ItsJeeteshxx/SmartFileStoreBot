@@ -120,6 +120,55 @@ async def groq_transliterate_hindi(text: str) -> str:
     return transliterate_to_hindi(text)  # fallback
 
 
+async def groq_transliterate_telugu(text: str) -> str:
+    """
+    Uses Groq AI to transliterate a story title from English/Hindi to
+    accurate Telugu script. Falls back to deep_translator.
+    """
+    if not text: return ""
+    if any('\u0c00' <= c <= '\u0c7f' for c in text):
+        return text
+
+    api_key = await _get_groq_key()
+    if not api_key:
+        try:
+            from deep_translator import GoogleTranslator
+            return GoogleTranslator(source='auto', target='te').translate(text)
+        except Exception:
+            return text
+
+    try:
+        import httpx
+        prompt = (
+            "You are a Telugu transliteration and translation expert. Your task is to convert the given story title "
+            "from English/Hindi into natural, accurate Telugu script. "
+            "Preserve the original meaning and phonetics. "
+            "Return ONLY the transliterated/translated Telugu text, nothing else — no explanation, no quotes.\n\n"
+            f"Title: {text}"
+        )
+        payload = {
+            "model": "llama3-70b-8192",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 100,
+        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
+            if resp.status_code == 200:
+                result = resp.json()["choices"][0]["message"]["content"].strip()
+                if result:
+                    return result
+    except Exception:
+        pass
+
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='auto', target='te').translate(text)
+    except Exception:
+        return text
+
+
 async def groq_translate_description(text: str, target_lang: str = "hi") -> str:
     """
     Uses Groq AI to translate a story description.
@@ -137,7 +186,7 @@ async def groq_translate_description(text: str, target_lang: str = "hi") -> str:
 
     try:
         import httpx
-        lang_name = "Hindi" if target_lang == "hi" else "English"
+        lang_name = "Telugu" if target_lang == "te" else ("Hindi" if target_lang == "hi" else "English")
         prompt = (
             f"You are a professional story translator. Translate the following story description into natural, "
             f"engaging {lang_name}. Keep names of characters and places as they are. "
@@ -159,7 +208,13 @@ async def groq_translate_description(text: str, target_lang: str = "hi") -> str:
     except Exception:
         pass
     # fallback
-    if target_lang == "hi":
+    if target_lang == "te":
+        try:
+            from deep_translator import GoogleTranslator
+            return GoogleTranslator(source='auto', target='te').translate(text)
+        except Exception:
+            return text
+    elif target_lang == "hi":
         return smart_translate_meaning(text)
     return translate_to_english(text)
 

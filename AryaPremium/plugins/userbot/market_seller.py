@@ -1062,7 +1062,7 @@ def _get_main_menu(lang='en'):
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
              InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help")],
-            [_ikb("स्टोरी खोजें", switch_inline_query_current_chat="", icon_custom_emoji_id="5258274739041883702")],
+            [_ikb("अपनी स्टोरी खोजें", switch_inline_query_current_chat="", icon_custom_emoji_id="5282843764451195532")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1078,7 +1078,7 @@ def _get_main_menu(lang='en'):
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
              InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help")],
-            [_ikb(f"{_sc('Search Story')}", switch_inline_query_current_chat="", icon_custom_emoji_id="5258274739041883702")],
+            [_ikb(f"{_sc('Search Your Story')}", switch_inline_query_current_chat="", icon_custom_emoji_id="5282843764451195532")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -2615,53 +2615,54 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
 
 
 async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dict = None):
-    from pyrogram.types import Message, CallbackQuery
-    from pyrogram import enums
-    is_msg = isinstance(msg_or_query, Message)
-    user_id = msg_or_query.chat.id if is_msg else msg_or_query.from_user.id
-    
-    bot_cfg = bot_cfg or {}
+    """
+    Shows V2 Checkout Page with Direct UPI, Cashfree (Cards/NetBanking/UPI), and Crypto (OxaPay).
+    """
+    is_msg = hasattr(msg_or_query, "text") and not hasattr(msg_or_query, "data")
+    user_id = msg_or_query.from_user.id
     name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
-    price = int(story.get('price', 1))
-    
-    if price > 0:
-        if price <= 50: mrp = 149
-        elif price <= 100: mrp = 299
-        elif price <= 200: mrp = 599
-        elif price <= 300: mrp = 899
-        else: mrp = int(price * 2.5)
-        calc_off = int(((mrp - price) / mrp) * 100)
-        p_str = f"<s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>"
-    else:
-        p_str = f"<b>₹{price}</b>"
-    
+    price = story.get('price', 0)
+    p_str = f"₹{price}" if price > 0 else "FREE"
+
+    from cashfree_helper import get_cashfree_config
+    cf_cfg = await get_cashfree_config()
+    show_cashfree = cf_cfg["enabled"] or cf_cfg["is_configured"]
+
     if lang == 'hi':
-        title = "⟦ सुरक्षित चेकआउट ⟧ - 2"
-        item_lbl = "आइटम"
-        price_lbl = "कुल कीमत"
+        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
+        item_lbl = "कहानी"
+        price_lbl = "कुल राशि"
         
-        upi_title = '<emoji id="5264895611517300926">🏦</emoji> डायरेक्ट UPI ट्रांसफर (Direct UPI)'
-        upi_desc = "• <b>प्रोसेस:</b> अपने UPI ऐप से भुगतान करें → 12-अंकों का UTR दर्ज करें → तत्काल सत्यापन।\n• <b>पेमेंट मोड:</b> PhonePe, GPay, Paytm, BHIM, आदि।\n• <b>वेरिफिकेशन:</b> स्वचालित वेरिफिकेशन (1-2 मिनट में)।"
+        upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
+        upi_desc = "• <b>प्रक्रिया:</b> किसी भी UPI ऐप से भुगतान करें → 12-अंकों का UTR दर्ज करें → ऑटो-वेरिफाई।\n• <b>माध्यम:</b> PhonePe, GPay, Paytm, BHIM आदि।\n• <b>सत्यापन:</b> स्वचालित सत्यापन (1-2 मिनट)।"
         
-        crypto_title = "₿ क्रिप्टो से भुगतान (Pay with Crypto)"
-        crypto_desc = "• <b>फायदे:</b> स्वचालित वेरिफिकेशन (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> BTC, USDT, ETH, LTC, Doge & 300+ अन्य।\n• <b>वेरिफिकेशन:</b> भुगतान सफल होते ही तत्काल डिलीवरी।"
+        cf_title = "💳 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)"
+        cf_desc = "• <b>लाभ:</b> तुरंत एक्सेस, 100% सुरक्षित पेमेंट गेटवे।\n• <b>माध्यम:</b> कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, UPI (GPay, PhonePe, Paytm), वॉलेट्स।\n• <b>सत्यापन:</b> तत्काल ऑटोमैटिक वेरिफिकेशन और डिलीवरी।"
+        
+        crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
+        crypto_desc = "• <b>लाभ:</b> तुरंत एक्सेस (कोई प्रतीक्षा नहीं), 24/7 उपलब्ध।\n• <b>माध्यम:</b> BTC, USDT, ETH, LTC और 300+ अन्य कॉइन्स।\n• <b>सत्यापन:</b> भुगतान के तुरंत बाद स्वचालित।"
         
         pay_upi_btn = "Pay Via UPI"
+        pay_cf_btn = "Pay Via Cashfree"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
     else:
-        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧ - 2"
+        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
         item_lbl = "Item"
         price_lbl = "Total Price"
         
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>Process:</b> Pay directly using any UPI App → Enter 12-digit UTR → Auto Verify.\n• <b>Modes:</b> PhonePe, GPay, Paytm, BHIM, etc.\n• <b>Verification:</b> Automatic verification (Takes 1-2 mins)."
         
+        cf_title = "💳 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)"
+        cf_desc = "• <b>Benefits:</b> Instant Access, 100% Secure Payment Gateway.\n• <b>Modes:</b> Cards (Credit/Debit), NetBanking, UPI (GPay, PhonePe, Paytm), Wallets.\n• <b>Verification:</b> Instant automated verification & immediate delivery."
+        
         crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
         
         pay_upi_btn = "Pay Via UPI"
+        pay_cf_btn = "Pay Via Cashfree"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
         unavailable_upi = "UPI Currently Unavailable"
         back_btn = f"❮ {_sc('BACK')}"
@@ -2681,29 +2682,30 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
                     f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी उपलब्ध नहीं है।</b>\n\n"
                     f"• रात्रि 9 बजे से सुबह 6 बजे के बीच सुरक्षा कारणों से डायरेक्ट UPI बंद रहता है।\n"
                     f"• UPI फिर से उपलब्ध होगा: <b>{until_note}</b>\n\n"
-                    f"कृपया 'Pay with Crypto' या अन्य माध्यम का उपयोग करें।</blockquote>"
+                    f"कृपया Cashfree या Crypto विकल्प का उपयोग करें।</blockquote>"
                 )
             else:
                 upi_block = (
                     f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is currently unavailable.</b>\n\n"
                     f"• Direct UPI is paused between 9 PM – 6 AM IST for security.\n"
                     f"• UPI will be available again at: <b>{until_note}</b>\n\n"
-                    f"Please use 'Pay with Crypto' or other methods.</blockquote>"
+                    f"Please use Cashfree or Crypto methods.</blockquote>"
                 )
         else:
             if lang == 'hi':
                 upi_block = (
                     f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
                     f"• एडमिन ने फिलहाल डायरेक्ट UPI बंद किया है।\n"
-                    f"• कृपया भुगतान के लिए क्रिप्टो विकल्प का उपयोग करें।</blockquote>"
+                    f"• कृपया Cashfree या क्रिप्टो विकल्प का उपयोग करें।</blockquote>"
                 )
             else:
                 upi_block = (
                     f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is temporarily unavailable.</b>\n\n"
                     f"• The admin has disabled Direct UPI for now.\n"
-                    f"• Please use 'Pay with Crypto' to complete your payment.</blockquote>"
+                    f"• Please use Cashfree or Crypto to complete your payment.</blockquote>"
                 )
 
+    cf_block = f"<blockquote expandable=\"true\">{cf_title}\n{cf_desc}</blockquote>"
     crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>"
 
     txt = (
@@ -2711,11 +2713,11 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         f"<b>{item_lbl} :</b> <code>{name}</code>\n"
         f"<b>{price_lbl} :</b> {p_str}\n\n"
         f"{upi_block}\n"
+        f"{cf_block}\n"
         f"{crypto_block}"
     )
 
     story_methods = story.get("payment_methods", ["upi", "razorpay"])
-    # For V2 checkout, we map 'upi' to upi, and we always allow 'crypto' if OXAPAY_KEY is configured
     show_upi = "upi" in story_methods
     oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
     show_crypto = bool(oxapay_key)
@@ -2727,10 +2729,12 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         else:
             kb.append([InlineKeyboardButton(f"⏸ {unavailable_upi}", callback_data="mb#noop")])
 
+    if show_cashfree:
+        kb.append([_ikb(pay_cf_btn, callback_data=f"mb#pay2#cashfree#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
+
     if show_crypto:
         kb.append([InlineKeyboardButton(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}")])
     else:
-        # If admin didn't configure OXAPAY_KEY but user wants V2 checkout
         if lang == 'hi':
             kb.append([InlineKeyboardButton("⚠️ क्रिप्टो भुगतान अभी अनुपलब्ध है", callback_data="mb#noop")])
         else:
@@ -2820,6 +2824,36 @@ async def _process_start(client, message):
     lang = user.get('lang', 'en')
 
 
+
+    # ── Deep Link Handler: /start cf_<order_id> (Cashfree Payment Return) ──
+    if len(args) > 1 and args[1].startswith("cf_"):
+        order_id = args[1].strip()
+        from cashfree_helper import check_cashfree_order_status
+        from bson.objectid import ObjectId
+        import time
+
+        ord_doc = await db.db.orders.find_one({"order_id": order_id})
+        if ord_doc:
+            s_id = ord_doc.get("story_id") or (ord_doc.get("story_ids")[0] if ord_doc.get("story_ids") else None)
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)}) if s_id else None
+            status_res = await check_cashfree_order_status(order_id)
+            if status_res.get("is_paid") and story:
+                await db.db.orders.update_one({"order_id": order_id}, {"$set": {"status": "paid", "paid_at": time.time()}})
+                await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": ObjectId(s_id)}})
+                await db.db.premium_purchases.update_one(
+                    {"user_id": int(user_id), "story_id": ObjectId(s_id)},
+                    {"$set": {"user_id": int(user_id), "story_id": ObjectId(s_id), "source": "cashfree", "amount": story.get("price", 0), "order_id": order_id, "created_at": time.time()}},
+                    upsert=True
+                )
+                from utils import log_payment
+                asyncio.create_task(log_payment(
+                    amount=story.get("price", 0),
+                    user_id=user_id,
+                    story_name=story.get('story_name_en', 'Story'),
+                    payment_method="Cashfree",
+                    order_id=order_id
+                ))
+                return await dispatch_delivery_choice(client, user_id, story)
 
     # ── Deep Link Handler (Bypass Force Join & Lang Prompt) ──
 
@@ -5034,20 +5068,23 @@ async def _show_help_menu(client, query):
         txt = (
             f"<b>⟦ {_sc('सपोर्ट एवं सहायता केंद्र')} ⟧</b>\n\n"
             f"<blockquote expandable>"
-            f"<i>{_sc('आर्या प्रीमियम के विस्तृत गाइड में आपका स्वागत है।')}</i>\n\n"
-            f"<u>{_sc('कमांड्स:')}</u>\n"
-            f"• /start — {_sc('मुख्य मेनू खोलने के लिए।')}\n\n"
-            f"<u>{_sc('मेनू बटन:')}</u>\n"
-            f"• <b>{_sc('Marketplace:')}</b> {_sc('पसंदीदा प्लेटफार्म द्वारा सभी कहानियों को ब्राउज़ करें।')}\n"
-            f"• <b>{_sc('My Stories:')}</b> {_sc('अपनी खरीदी हुई कहानियों तक पहुँचें और उन्हें फिर से डाउनलोड करें।')}\n"
-            f"• <b>{_sc('Profile:')}</b> {_sc('अपनी खाता जानकारी और कुल खरीदारी देखें।')}\n"
-            f"• <b>{_sc('Settings:')}</b> {_sc('अपनी पसंदीदा भाषा बदलें।')}\n\n"
-            f"<u>{_sc('कहानी कैसे खरीदें:')}</u>\n"
-            f"<i><b>1.</b></i> {_sc('Marketplace में कहानी चुनें।')}\n"
-            f"<i><b>2.</b></i> {_sc('Razorpay (ऑटोमैटिक) या UPI (मैन्युअल) द्वारा सुरक्षित भुगतान करें।')}\n"
-            f"<i><b>3.</b></i> {_sc('UPI के मामले में सही राशि भेजें और अपनी रसीद/स्क्रीनशॉट अपलोड करें।')}\n"
-            f"<i><b>4.</b></i> {_sc('वेरिफिकेशन पूरा होने के बाद, ')}<b>{_sc('Get Delivery')}</b> {_sc('चुनें (सीधा DM या चैनल लिंक)।')}\n\n"
-            f"<i>{_sc('किसी भी समस्या के लिए नीचे दिए गए Terms या Refund बटन का उपयोग करें।')}</i>"
+            f"<i>{_sc('आर्या प्रीमियम स्टोर के आधिकारिक गाइड में आपका स्वागत है।')}</i>\n\n"
+            f"<u>{_sc('प्रमुख फीचर्स एवं नेविगेशन:')}</u>\n"
+            f"• <b>{_sc('Search Your Story:')}</b> {_sc('होम मेनू पर सर्च बटन दबाकर किसी भी कहानी को कीवर्ड द्वारा तुरंत पोस्टर प्रीव्यू के साथ खोजें।')}\n"
+            f"• <b>{_sc('Marketplace:')}</b> {_sc('प्लेटफॉर्म (Pocket FM, Kuku FM आदि) के अनुसार सभी कहानियाँ देखें (प्रति पेज 70 कहानियाँ और View All विकल्प)।')}\n"
+            f"• <b>{_sc('My Stories:')}</b> {_sc('अपनी खरीदी हुई सभी कहानियों की पर्सनल लाइब्रेरी देखें और कभी भी दोबारा डाउनलोड करें।')}\n"
+            f"• <b>{_sc('Profile & Settings:')}</b> {_sc('खाता आईडी देखें, नई स्टोरी की रिक्वेस्ट करें, भाषा बदलें (EN/HI/TE) और अबाउट देखें।')}\n\n"
+            f"<u>{_sc('कहानी खरीदने का तरीका व पेमेंट विकल्प:')}</u>\n"
+            f"<i><b>1.</b></i> {_sc('मार्केटप्लेस या सर्च द्वारा अपनी पसंद की कहानी चुनें।')}\n"
+            f"<i><b>2.</b></i> {_sc('अपना पसंदीदा पेमेंट विकल्प चुनें:')}\n"
+            f"   • <b>कैशफ्री (तुरंत):</b> {_sc('क्रेडिट/डेबिट कार्ड, नेटबैंकिंग या UPI (GPay/PhonePe/Paytm) से भुगतान करें।')}\n"
+            f"   • <b>डायरेक्ट UPI (UTR):</b> {_sc('दिए गए UPI ID/QR पर भुगतान करें और 12-अंकों का UTR डालकर ऑटो-वेरिफाई करें।')}\n"
+            f"   • <b>क्रिप्टो (OxaPay):</b> {_sc('BTC, USDT, ETH सहित 300+ क्रिप्टो कॉइन्स से भुगतान करें।')}\n"
+            f"<i><b>3.</b></i> {_sc('पेमेंट पूरा होते ही आपकी फाइलें तुरंत DM या चैनल में डिलीवर हो जाएंगी।')}\n\n"
+            f"<u>{_sc('डिलीवरी एवं रीजेनरेशन:')}</u>\n"
+            f"• <b>भाग चयन:</b> {_sc('अपनी पसंद के अनुसार एपिसोड्स बैच (जैसे Files 1-50, 51-100) या Full Delivery चुनें।')}\n"
+            f"• <b>Regenerate Files:</b> {_sc('यदि कोई फाइल मिस हो जाए, तो मैसेज के नीचे दिए गए Regenerate बटन का उपयोग करें।')}\n\n"
+            f"<i>{_sc('किसी भी सहायता के लिए नीचे दिए गए सपोर्ट बटनों का उपयोग करें।')}</i>"
             f"</blockquote>"
         )
         kb = [
@@ -5061,20 +5098,23 @@ async def _show_help_menu(client, query):
         txt = (
             f"<b>⟦ {_sc('SUPPORT & HELP CENTER')} ⟧</b>\n\n"
             f"<blockquote expandable>"
-            f"<i>{_sc('Welcome to the detailed guide for using Arya Premium.')}</i>\n\n"
-            f"<u>{_sc('COMMANDS:')}</u>\n"
-            f"• /start — {_sc('Launches the main interface menu.')}\n\n"
-            f"<u>{_sc('MENU BUTTONS:')}</u>\n"
-            f"• <b>{_sc('Marketplace:')}</b> {_sc('Browse all available stories filtered by platform.')}\n"
-            f"• <b>{_sc('My Stories:')}</b> {_sc('Access your previously purchased stories. You can instantly redownload them from here.')}\n"
-            f"• <b>{_sc('Profile:')}</b> {_sc('View your account details, Telegram ID, and purchase count.')}\n"
-            f"• <b>{_sc('Settings:')}</b> {_sc('Change your preferred bot language.')}\n\n"
-            f"<u>{_sc('HOW TO BUY:')}</u>\n"
-            f"<i><b>1.</b></i> {_sc('Find a story in the Marketplace.')}\n"
-            f"<i><b>2.</b></i> {_sc('Choose to pay securely via Razorpay (Instant) or Manual UPI.')}\n"
-            f"<i><b>3.</b></i> {_sc('For UPI, send the exact amount to the provided details and upload your screenshot.')}\n"
-            f"<i><b>4.</b></i> {_sc('Once verified, tap ')}<b>{_sc('Get Delivery')}</b> {_sc('and choose your method (Direct DM or Secure Channel Invite).')}\n\n"
-            f"<i>{_sc('For technical issues, use the Terms & Refund buttons below.')}</i>"
+            f"<i>{_sc('Welcome to the complete official guide for Arya Premium Store.')}</i>\n\n"
+            f"<u>{_sc('CORE FEATURES & NAVIGATION:')}</u>\n"
+            f"• <b>{_sc('Search Your Story:')}</b> {_sc('Tap the search button on Home Menu to instantly search stories by keyword with live thumbnail previews.')}\n"
+            f"• <b>{_sc('Marketplace:')}</b> {_sc('Browse all available stories categorized by platform (Pocket FM, Kuku FM, etc.) with 70 stories per page and View All.')}\n"
+            f"• <b>{_sc('My Stories:')}</b> {_sc('Access your personal library of all purchased audio stories anytime for instant redownload.')}\n"
+            f"• <b>{_sc('Profile & Settings:')}</b> {_sc('Check your account ID, request new stories, switch language (EN/HI/TE), and view About info.')}\n\n"
+            f"<u>{_sc('HOW TO BUY & PAYMENT OPTIONS:')}</u>\n"
+            f"<i><b>1.</b></i> {_sc('Select your desired story from Marketplace or Search Your Story.')}\n"
+            f"<i><b>2.</b></i> {_sc('Choose your preferred payment method:')}\n"
+            f"   • <b>Cashfree (Instant):</b> {_sc('Pay via Cards (Credit/Debit), NetBanking, or UPI (GPay/PhonePe/Paytm).')}\n"
+            f"   • <b>Direct UPI (UTR):</b> {_sc('Pay to displayed UPI ID/QR and enter the 12-digit UTR for automatic verification.')}\n"
+            f"   • <b>Crypto (OxaPay):</b> {_sc('Pay with BTC, USDT, ETH, and 300+ cryptocurrencies.')}\n"
+            f"<i><b>3.</b></i> {_sc('Upon successful payment, your files are delivered instantly into your DM or Channel.')}\n\n"
+            f"<u>{_sc('DELIVERY & REGENERATION:')}</u>\n"
+            f"• <b>Chunk Selection:</b> {_sc('Choose specific episode batches (e.g. Files 1-50, 51-100) or Full Delivery.')}\n"
+            f"• <b>Regenerate Files:</b> {_sc('If any file is missed due to Telegram limits, use the Regenerate button below delivery.')}\n\n"
+            f"<i>{_sc('For technical help or order queries, use the support buttons below.')}</i>"
             f"</blockquote>"
         )
         kb = [
@@ -5084,8 +5124,6 @@ async def _show_help_menu(client, query):
             [InlineKeyboardButton(_sc("Contact Support"), url="https://t.me/+gFudInzITpo1Yjg1")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
-
-        
 
     await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
 
@@ -5215,9 +5253,8 @@ async def _process_callback(client, query):
 
         elif cmd == "help_tc": act = "Viewed T&C from Support"
         elif cmd == "pay": act = f"Selected Payment Method: {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
-
+        elif cmd == "cf_status": act = f"Checked Cashfree Status for Order {data[2] if len(data)>2 else ''}"
         elif cmd == "pay2": act = f"Selected Payment Method (V2): {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
-
         elif cmd.endswith("_check"): act = f"Clicked Verify Payment for Story ID {data[2] if len(data)>2 else ''}"
 
         elif cmd == "upi_done": act = f"Clicked Payment Done for Manual UPI (Story ID {data[2] if len(data)>2 else ''})"
@@ -6440,7 +6477,53 @@ async def _process_callback(client, query):
 
         # Block UPI if time-restricted or admin has disabled it per-bot
 
-        if method == "upi":
+        if method == "cashfree":
+            # Cashfree Payment Gateway order flow
+            logger.info(f"[PAY2] User {user_id} clicked Cashfree option for story {s_id}")
+            from cashfree_helper import create_cashfree_order
+            bot_username = getattr(getattr(client, "me", None), "username", "")
+            user_name = query.from_user.first_name or "Buyer"
+            cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
+            
+            if not cf_res.get("success"):
+                err_msg = cf_res.get("error", "Failed to initiate Cashfree order.")
+                return await query.answer(f"❌ {err_msg}", show_alert=True)
+
+            order_id = cf_res["order_id"]
+            pay_link = cf_res["payment_link"]
+            s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+            price = story.get('price', 0)
+
+            title_cf = "<b>⟦ 💳 CASHFREE PAYMENT ⟧</b>" if lang == 'en' else "<b>⟦ 💳 कैशफ्री भुगतान ⟧</b>"
+            desc_cf = (
+                f"<b>{title_cf}</b>\n\n"
+                f"<b>• Story:</b> {to_mathbold(s_name)}\n"
+                f"<b>• Amount:</b> ₹{price}\n"
+                f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
+                f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
+                f"<i>After completing payment, tap <b>Check Status</b> or simply wait for instant auto-delivery.</i>"
+            ) if lang == 'en' else (
+                f"<b>{title_cf}</b>\n\n"
+                f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
+                f"<b>• राशि:</b> ₹{price}\n"
+                f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
+                f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
+                f"<i>भुगतान पूरा करने के बाद, <b>Check Status</b> पर टैप करें या ऑटोमैटिक डिलीवरी की प्रतीक्षा करें।</i>"
+            )
+
+            pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें (Cards/UPI/NetBanking)"
+            check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
+            back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
+
+            kb = [
+                [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
+                [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
+                [InlineKeyboardButton(back_lbl, callback_data=f"mb#show_tc#{s_id}")]
+            ]
+            await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
+            return
+
+        elif method == "upi":
 
             bt_cfg = (await db.db.premium_bots.find_one({"id": client.me.id}) or {}).get("config", {})
 
@@ -6898,6 +6981,68 @@ async def _process_callback(client, query):
             )
 
 
+
+    # ── CASHFREE PAYMENT STATUS VERIFIER ──
+    elif cmd == "cf_status":
+        order_id = data[2]
+        s_id = data[3]
+        from cashfree_helper import check_cashfree_order_status
+        from bson.objectid import ObjectId
+        import time
+
+        status_res = await check_cashfree_order_status(order_id)
+        if status_res.get("is_paid"):
+            await query.answer("✅ Payment Verified Successfully!", show_alert=False)
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            if not story:
+                story = await db.db.premium_stories.find_one({"_id": s_id})
+            
+            # Update order in DB
+            await db.db.orders.update_one(
+                {"order_id": order_id},
+                {"$set": {"status": "paid", "paid_at": time.time()}}
+            )
+            # Add purchase to user
+            await db.db.users.update_one(
+                {"id": int(user_id)},
+                {"$addToSet": {"purchases": ObjectId(s_id)}}
+            )
+            await db.db.premium_purchases.update_one(
+                {"user_id": int(user_id), "story_id": ObjectId(s_id)},
+                {"$set": {
+                    "user_id": int(user_id),
+                    "story_id": ObjectId(s_id),
+                    "source": "cashfree",
+                    "amount": story.get("price", 0) if story else 0,
+                    "order_id": order_id,
+                    "created_at": time.time()
+                }},
+                upsert=True
+            )
+            # Log payment
+            from utils import log_payment
+            s_name = story.get('story_name_en', 'Story') if story else 'Story'
+            asyncio.create_task(log_payment(
+                amount=story.get("price", 0) if story else 0,
+                user_id=user_id,
+                story_name=s_name,
+                payment_method="Cashfree (Cards/NetBanking/UPI)",
+                order_id=order_id
+            ))
+            # Delete payment prompt message
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            return await dispatch_delivery_choice(client, user_id, story)
+        else:
+            cf_st = status_res.get("status", "PENDING")
+            if cf_st == "FAILED":
+                return await query.answer("❌ Payment Failed. Please try again.", show_alert=True)
+            elif cf_st == "EXPIRED":
+                return await query.answer("⚠️ Payment Session Expired. Please initiate a new order.", show_alert=True)
+            else:
+                return await query.answer("⏳ Payment is still pending. Please complete the payment on Cashfree and tap Check Status.", show_alert=True)
 
     # ── SECURE CHECKOUT - 2 handlers ──
 

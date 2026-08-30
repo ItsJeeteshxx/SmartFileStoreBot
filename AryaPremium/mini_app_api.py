@@ -3751,6 +3751,81 @@ async def oxapay_webhook(request: Request):
     return {"success": True, "message": "Payment verified and processed"}
 
 
+# ===== Cashfree Payment Gateway Webhook =====
+@api_router.post("/cashfree-webhook")
+async def cashfree_webhook(request: Request):
+    """Webhook from Cashfree upon successful payment."""
+    from cashfree_helper import check_cashfree_order_status
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+
+    cf_data = data.get("data", {}) if isinstance(data.get("data"), dict) else data
+    order_info = cf_data.get("order", {}) if isinstance(cf_data.get("order"), dict) else {}
+    order_id = order_info.get("order_id") or cf_data.get("order_id")
+    
+    if not order_id:
+        return {"success": False, "message": "Missing order_id"}
+
+    # Verify via Cashfree API
+    status_res = await check_cashfree_order_status(order_id)
+    if not status_res.get("is_paid"):
+        logger.info(f"Cashfree webhook ignored: status={status_res.get('status')} order_id={order_id}")
+        return {"success": False, "message": "Payment not verified"}
+
+    arya_db = getattr(app.state, "db", None) or db
+    order = await arya_db.db.orders.find_one({"order_id": order_id})
+    if not order:
+        logger.warning(f"Cashfree webhook: order not found for order_id={order_id}")
+        return {"success": False, "message": "Order not found"}
+
+    if order.get("status") == "paid":
+        return {"success": True, "message": "Already processed"}
+
+    user_id = order.get("user_id")
+    story_id = order.get("story_id") or (order.get("story_ids")[0] if order.get("story_ids") else None)
+    
+    await arya_db.db.orders.update_one(
+        {"_id": order["_id"]},
+        {"$set": {
+            "status": "paid",
+            "paid_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
+        }}
+    )
+
+    if user_id and story_id:
+        from bson.objectid import ObjectId
+        await arya_db.db.users.update_one(
+            {"id": int(user_id)},
+            {"$addToSet": {"purchases": ObjectId(story_id)}}
+        )
+        await arya_db.db.premium_purchases.update_one(
+            {"user_id": int(user_id), "story_id": ObjectId(story_id)},
+            {"$set": {
+                "user_id": int(user_id),
+                "story_id": ObjectId(story_id),
+                "source": "cashfree",
+                "amount": order.get("amount", 0),
+                "order_id": order_id,
+                "created_at": time.time()
+            }},
+            upsert=True
+        )
+
+        from utils import log_payment
+        asyncio.create_task(log_payment(
+            amount=order.get("amount", 0),
+            user_id=user_id,
+            story_name=order.get("story_name", "Story"),
+            payment_method="Cashfree (Cards/NetBanking/UPI)",
+            order_id=order_id
+        ))
+
+    return {"success": True, "message": "Payment processed successfully"}
+
+
 # ===== Paytm Payment Gateway: Create Order =====
 @api_router.post("/create-paytm-order")
 async def create_paytm_order(payload: dict):
