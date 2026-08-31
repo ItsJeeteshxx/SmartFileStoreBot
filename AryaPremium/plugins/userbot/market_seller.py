@@ -5312,6 +5312,86 @@ async def _process_callback(client, query):
 
 
 
+    # ── Language Selection ──
+    if cmd == "lang":
+        chosen_lang = data[2] if len(data) > 2 else "en"
+        if chosen_lang not in ("en", "hi"):
+            chosen_lang = "en"
+
+        await db.db.users.update_one(
+            {"id": user_id},
+            {"$set": {"lang": chosen_lang}},
+            upsert=True
+        )
+        await query.answer("✓ Language set!" if chosen_lang == "en" else "✓ भाषा सेट हो गई!", show_alert=False)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        # After language selection, check pending arg (deep link), then force-join, then main menu
+        pending_arg = data[3] if len(data) > 3 else None
+
+        # Force join check
+        INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
+        is_joined = False
+        try:
+            chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
+            if chat_member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                is_joined = True
+        except Exception:
+            pass
+
+        if not is_joined:
+            arg_p = f"#{pending_arg}" if pending_arg else ""
+            if chosen_lang == 'hi':
+                join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
+                join_txt = (
+                    "𝗕𝗼𝘁 𝗸𝗼 𝘂𝘀𝗲 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗹𝗶𝘆𝗲 𝗮𝗮𝗽𝗸𝗼 𝗵𝘂𝗺𝗮𝗿𝗲 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝗺𝗲𝗶𝗻 𝗷𝗼𝗶𝗻 𝗵𝗼𝗻𝗮 𝗵𝗼𝗴𝗮।\n\n"
+                    "<blockquote expandable>"
+                    "𝗝𝗼𝗶𝗻 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗯𝗮𝗮𝗱 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝗽𝗮𝗿 𝗰𝗹𝗶𝗰𝗸 𝗸𝗮𝗿𝗲𝗻।\n"
+                    "</blockquote>"
+                )
+                join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥 𝗟𝗜𝗬𝗔"
+            else:
+                join_title = "𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                join_txt = (
+                    "𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝘁𝗼 𝘂𝘀𝗲 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁.\n\n"
+                    "<blockquote expandable>"
+                    "𝗔𝗳𝘁𝗲𝗿 𝗷𝗼𝗶𝗻𝗶𝗻𝗴, 𝗰𝗹𝗶𝗰𝗸 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝘁𝗼 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗲."
+                    "</blockquote>"
+                )
+                join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
+
+            join_kb = [
+                [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
+                [InlineKeyboardButton(joined_btn, callback_data=f"mb#jchk{arg_p}")]
+            ]
+            return await client.send_message(
+                user_id,
+                f"<b>{join_title}</b>\n\n{join_txt}",
+                reply_markup=InlineKeyboardMarkup(join_kb),
+                parse_mode=enums.ParseMode.HTML
+            )
+
+        # Already joined → go to main menu or process pending deep link
+        if pending_arg:
+            class MockMsg:
+                from_user = query.from_user
+                chat = query.message.chat
+                command = ["start", pending_arg]
+                id = query.message.id
+                async def reply_text(self, text, **kw):
+                    return await client.send_message(user_id, text, **kw)
+            from plugins.userbot.market_seller import _process_start
+            return await _process_start(client, MockMsg())
+
+        return await _send_main_menu(client, user_id, query.from_user, chosen_lang)
+
+
+
     # ── Joined Check ──
 
     if cmd == "jchk" or cmd == "joined_check":
