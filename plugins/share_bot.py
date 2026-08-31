@@ -3904,7 +3904,7 @@ async def _process_pass_callback(client, query):
 
         all_txns = await db.get_user_pass_transactions(user_id, limit=100, paid_only=False)
 
-        per_page = 5
+        per_page = 10
         import math
         total_pages = max(1, math.ceil(len(all_txns) / per_page)) if all_txns else 1
         t_page = max(0, min(t_page, total_pages - 1))
@@ -3981,7 +3981,7 @@ async def _process_pass_callback(client, query):
                         f"<emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
                         f"<emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
                     )
-            txns_body = "\n\n\n".join(t_items)
+            txns_body = "\n\n".join(t_items)
 
             if total_pages > 1:
                 p_row = []

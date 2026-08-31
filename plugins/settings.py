@@ -2390,7 +2390,7 @@ async def settings_query(bot, query):
             txns_text = "<i>No paid transactions found.</i>\n"
     else:
         import math
-        per_page = 5
+        per_page = 10
         total_txn_pages = max(1, math.ceil(len(txns) / per_page))
         txn_page = max(0, min(txn_page, total_txn_pages - 1))
         current_txns = txns[txn_page * per_page : (txn_page + 1) * per_page]
@@ -2443,7 +2443,7 @@ async def settings_query(bot, query):
                 f"<emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
                 f"<emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
             )
-        txns_text = "\n\n\n".join(t_items)
+        txns_text = "\n\n".join(t_items)
 
         if total_txn_pages > 1:
             if txn_page > 0:
