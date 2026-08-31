@@ -2288,7 +2288,8 @@ async def settings_query(bot, query):
   elif type.startswith("sb_rl_u_"):
     parts = type.split('_')
     cust_uid = int(parts[3])
-    page = int(parts[4]) if len(parts) > 4 else 0
+    page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+    txn_page = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0
 
     try:
         details = await db.get_customer_full_details(cust_uid)

@@ -1809,11 +1809,7 @@ class Database:
         """Fetch pass orders (PAID, PENDING, FAILED or PAID-only) and verified UTRs for user."""
         import time
         now = time.time()
-        if paid_only:
-            orders = await self.pass_orders.find({'user_id': int(user_id), 'status': 'PAID'}).sort('paid_at', -1).limit(limit).to_list(limit)
-        else:
-            orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit * 2).to_list(limit * 2)
-
+        orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit * 3).to_list(limit * 3)
         utrs = await self.used_utrs.find({'user_id': int(user_id)}).sort('used_at', -1).limit(limit).to_list(limit)
         results = []
         seen_order_ids = set()
