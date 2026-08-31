@@ -1152,7 +1152,9 @@ async def settings_query(bot, query):
     pass_log_str = str(pass_log_ch) if pass_log_ch else "None (Not Set)"
     hit_log_str  = str(hit_log_ch) if hit_log_ch else "None (Not Set)"
     status_str = '<emoji id="5809949600152296075">🟢</emoji> Enabled' if enabled else '<emoji id="5970055887774028039">🔴</emoji> Disabled'
-    toggle_lbl = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
+    toggle_icon_id = "5413643931139219521" if enabled else "5413424119007978384"
+    toggle_lbl_api = "( Enabled )" if enabled else "( Disabled )"
+    toggle_lbl_fb  = "🟢 ( Enabled )" if enabled else "🔴 ( Disabled )"
 
     all_custs    = await db.get_all_pass_customers()
     total_cust   = len(all_custs)
@@ -1172,39 +1174,39 @@ async def settings_query(bot, query):
     uiver_str = '<emoji id="5766975922620076409">💳</emoji> V1' if uiver == 'v1' else '<emoji id="5264895611517300926">⚡</emoji> V2'
 
     buttons = [
-        [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
-        [InlineKeyboardButton("💎 Pass UI Version & Flow", callback_data="settings#sb_rl_uiver_menu")],
+        [InlineKeyboardButton(toggle_lbl_fb, callback_data="settings#sb_rl_toggle")],
+        [InlineKeyboardButton("💎 Cheakout Version", callback_data="settings#sb_rl_uiver_menu")],
         [
-            InlineKeyboardButton("🔢 Download Limit", callback_data="settings#sb_rl_limit"),
-            InlineKeyboardButton("⏱ Cooldown Window", callback_data="settings#sb_rl_window"),
+            InlineKeyboardButton("🔢 Access Limit", callback_data="settings#sb_rl_limit"),
+            InlineKeyboardButton("⏱ Window", callback_data="settings#sb_rl_window"),
         ],
         [
-            InlineKeyboardButton("📋 Pass Purchase Logs", callback_data="settings#sb_rl_log_ch"),
-            InlineKeyboardButton("⚠️ Rate Limit Hit Logs", callback_data="settings#sb_rl_hit_log_ch"),
+            InlineKeyboardButton("📋 Purchase Logs", callback_data="settings#sb_rl_log_ch"),
+            InlineKeyboardButton("⚠️ Rate Limit Logs", callback_data="settings#sb_rl_hit_log_ch"),
         ],
-        [InlineKeyboardButton("👥 Customers & Subscriptions", callback_data="settings#sb_rl_cust_0")],
-        [InlineKeyboardButton("💰 Pass Pricing & Plans", callback_data="settings#sb_rl_pricing")],
+        [InlineKeyboardButton("👥 Costumers & Subscriptions", callback_data="settings#sb_rl_cust_0")],
+        [InlineKeyboardButton("💰 Pricing & Plans", callback_data="settings#sb_rl_pricing")],
         [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
-        [InlineKeyboardButton("⚡ Cashfree Gateway", callback_data="settings#sb_rl_cf_menu")],
-        [InlineKeyboardButton("🌐 OxaPay Crypto", callback_data="settings#sb_rl_oxa_menu")],
+        [InlineKeyboardButton("⚡ Cashfree Config", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton("🌐 Crypto Config", callback_data="settings#sb_rl_oxa_menu")],
         [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
     ]
     api_buttons = [
-        [{"text": toggle_lbl, "callback_data": "settings#sb_rl_toggle"}],
-        [{"text": "💎 Pass UI Version & Flow", "callback_data": "settings#sb_rl_uiver_menu"}],
+        [{"text": toggle_lbl_api, "callback_data": "settings#sb_rl_toggle", "icon_custom_emoji_id": toggle_icon_id}],
+        [{"text": "Cheakout Version", "callback_data": "settings#sb_rl_uiver_menu", "icon_custom_emoji_id": "6007983438294949171"}],
         [
-            {"text": "🔢 Download Limit", "callback_data": "settings#sb_rl_limit"},
-            {"text": "⏱ Cooldown Window", "callback_data": "settings#sb_rl_window"},
+            {"text": "Access Limit", "callback_data": "settings#sb_rl_limit", "icon_custom_emoji_id": "6034973034257848185"},
+            {"text": "Window", "callback_data": "settings#sb_rl_window", "icon_custom_emoji_id": "6034898821517940846"},
         ],
         [
-            {"text": "📋 Pass Purchase Logs", "callback_data": "settings#sb_rl_log_ch"},
-            {"text": "⚠️ Rate Limit Hit Logs", "callback_data": "settings#sb_rl_hit_log_ch"},
+            {"text": "Purchase Logs", "callback_data": "settings#sb_rl_log_ch", "icon_custom_emoji_id": "6021435576513730578"},
+            {"text": "Rate Limit Logs", "callback_data": "settings#sb_rl_hit_log_ch", "icon_custom_emoji_id": "6019102674832595118"},
         ],
-        [{"text": "👥 Customers & Subscriptions", "callback_data": "settings#sb_rl_cust_0"}],
-        [{"text": "💰 Pass Pricing & Plans", "callback_data": "settings#sb_rl_pricing"}],
-        [{"text": "💳 UPI & Gmail Config", "callback_data": "settings#sb_rl_upi_menu"}],
-        [{"text": "⚡ Cashfree Gateway", "callback_data": "settings#sb_rl_cf_menu"}],
-        [{"text": "🌐 OxaPay Crypto", "callback_data": "settings#sb_rl_oxa_menu"}],
+        [{"text": "Costumers & Subscriptions", "callback_data": "settings#sb_rl_cust_0", "icon_custom_emoji_id": "6032594876506312598"}],
+        [{"text": "Pricing & Plans", "callback_data": "settings#sb_rl_pricing", "icon_custom_emoji_id": "5904462880941545555"}],
+        [{"text": "UPI & Gmail Config", "callback_data": "settings#sb_rl_upi_menu", "icon_custom_emoji_id": "6019110229680068974"}],
+        [{"text": "Cashfree Config", "callback_data": "settings#sb_rl_cf_menu", "icon_custom_emoji_id": "5283232570660634549"}],
+        [{"text": "Crypto Config", "callback_data": "settings#sb_rl_oxa_menu", "icon_custom_emoji_id": "5800720664620961831"}],
         [{"text": "Back", "callback_data": "settings#sharebot"}],
     ]
 
