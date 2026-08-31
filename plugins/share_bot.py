@@ -2674,7 +2674,7 @@ async def _handle_share_bot_utr_message(client, message):
         _cancel_cooldown_reminders(user_id)
         b_id = getattr(getattr(client, "me", None), "id", None)
         b_uname = getattr(getattr(client, "me", None), "username", "")
-        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname)
+        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=expected_amount)
 
         from database import format_duration_verbose, parse_duration_to_seconds
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -3175,7 +3175,7 @@ async def start_pass_cashfree_auto_verifier(
                     _active_order_reminders[f"done_{task_key}"] = True
                     b_id = getattr(getattr(client, "me", None), "id", None)
                     b_uname = getattr(getattr(client, "me", None), "username", "")
-                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname)
+                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount)
                     
                     import datetime
                     try:
@@ -4253,7 +4253,7 @@ async def _process_pass_callback(client, query):
             _cancel_cooldown_reminders(user_id)
             b_id = getattr(getattr(client, "me", None), "id", None)
             b_uname = getattr(getattr(client, "me", None), "username", "")
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=expected_amount)
             
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -4433,7 +4433,7 @@ async def _process_pass_callback(client, query):
             _cancel_cooldown_reminders(user_id)
             b_id = getattr(getattr(client, "me", None), "id", None)
             b_uname = getattr(getattr(client, "me", None), "username", "")
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key)
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
             dur_verbose = format_duration_verbose(dur_sec)
@@ -4641,7 +4641,7 @@ async def _process_pass_callback(client, query):
                 _cancel_cooldown_reminders(user_id)
                 b_id = getattr(getattr(client, "me", None), "id", None)
                 b_uname = getattr(getattr(client, "me", None), "username", "")
-                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname)
+                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount)
                 
                 import datetime
                 try:
@@ -4971,112 +4971,311 @@ def register_share_handlers(app: Client):
     logger.info(f"Handlers registered on {app.name}")
 
 
+# ── 1-Hour Expiry Reminder Templates ──────────────────────────────────────────
 PASS_EXPIRY_TEMPLATES_HI = [
     # 1. Suspense / Cliffhanger
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>कहानी के क्लाइमेक्स पर सन्नाटा नहीं चाहिए!</b>\n\n'
-        'नमस्ते <b>{u_name}</b>, आपका अनलिमिटेड पास <b>{exp_str}</b> (लगभग <b>{rem_mins} मिनट</b> बाद) समाप्त होने वाला है।\n\n'
-        '<blockquote><emoji id="5850689125891448128">🫢</emoji> सोचो कहानी का सबसे बड़ा राज़ खुलने ही वाला हो और बीच में कूलडाउन लग जाए! अपनी पसंदीदा ऑडियो कहानियों को बिना किसी रुकावट लगातार सुनते रहने के लिए अभी रिन्यू करें।</blockquote>'
+        '<emoji id="5386367538735104399">⏳</emoji> <b>कहानी के क्लाइमेक्स पर सन्नाटा नहीं चाहिए!</b>\n\n'
+        'नमस्ते <b>{u_name}</b>, आपका {plan_name} <b>{exp_str}</b> (लगभग <b>{rem_mins} मिनट</b> बाद) समाप्त होने वाला है।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>बचत:</b> <emoji id="5233326571099534068">💸</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5201817814842755281">🫢</emoji> सोचो कहानी का सबसे बड़ा राज़ खुलने ही वाला हो और बीच में कूलडाउन लग जाए! अपनी पसंदीदा ऑडियो कहानियों को बिना किसी रुकावट लगातार सुनते रहने के लिए अभी रिन्यू करें।</blockquote>'
     ),
     # 2. Comedy / Fun
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>घड़ी की टिक-टिक शुरू... सिर्फ 1 घंटा बाकी!</b>\n\n'
-        'अरे <b>{u_name}</b>, आपका अनलिमिटेड पास आज <b>{exp_str}</b> (~<b>{rem_mins} मिनट</b> में) समाप्त होने वाला है!\n\n'
-        '<blockquote><emoji id="5850506340673264483">😜</emoji> फिर मत कहना कि ट्विस्ट के टाइम पर ब्रेक लग गया! नो कूलडाउन, नॉन-स्टॉप स्टोरी सुनने का मज़ा जारी रखने के लिए तुरंत पास रिन्यू करो!</blockquote>'
+        '<emoji id="5386367538735104399">⏳</emoji> <b>घड़ी की टिक-टिक शुरू... सिर्फ 1 घंटा बाकी!</b>\n\n'
+        'अरे <b>{u_name}</b>, आपका {plan_name} आज <b>{exp_str}</b> (~<b>{rem_mins} मिनट</b> में) समाप्त होने वाला है!\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>कुल बचत:</b> <emoji id="5409048419211682843">💵</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5361761791355398330">😜</emoji> फिर मत कहना कि ट्विस्ट के टाइम पर ब्रेक लग गया! नो कूलडाउन, नॉन-स्टॉप स्टोरी सुनने का मज़ा जारी रखने के लिए तुरंत पास रिन्यू करो!</blockquote>'
     ),
     # 3. Sarcasm / Witty
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>सबर का फल मीठा होता है, पर कहानियों में नहीं!</b>\n\n'
-        'सुनो <b>{u_name}</b>, आपका अनलिमिटेड एक्सेस <b>{exp_str}</b> (सिर्फ <b>{rem_mins} मिनट</b> में) एक्सपायर हो रहा है।\n\n'
-        '<blockquote><emoji id="5850651721021267320">😏</emoji> इंतज़ार किसे पसंद है जब कहानी का अगला एपिसोड तुरंत सुनना हो? बिना कूलडाउन अपनी धुन में सुनते रहने के लिए पास रीचार्ज कर लो!</blockquote>'
+        '<emoji id="5386367538735104399">⏳</emoji> <b>सबर का फल मीठा होता है, पर कहानियों में नहीं!</b>\n\n'
+        'सुनो <b>{u_name}</b>, आपका {plan_name} <b>{exp_str}</b> (सिर्फ <b>{rem_mins} मिनट</b> में) एक्सपायर हो रहा है।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>सेविंग्स:</b> <emoji id="5244837092042750681">📈</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5445091140514620351">😏</emoji> इंतज़ार किसे पसंद है जब कहानी का अगला एपिसोड तुरंत सुनना हो? बिना कूलडाउन अपनी धुन में सुनते रहने के लिए पास रीचार्ज कर लो!</blockquote>'
     ),
-    # 4. Horror / Mystery Drama
+    # 4. Savage / Drama
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>रहस्यमयी कहानियों का सफर रुकने वाला है!</b>\n\n'
-        '<b>{u_name}</b>, आपका अनलिमिटेड पास <b>{exp_str}</b> (~<b>{rem_mins} मिनट</b> बाद) समाप्त हो जाएगा।\n\n'
-        '<blockquote><emoji id="5850306568859425667">😳</emoji> कहीं ऐसा न हो कि सस्पेंस के बीच में कहानी रुक जाए! नॉन-स्टॉप ऑडियो एक्सेस के साथ कहानियों की दुनिया में बने रहें।</blockquote>'
+        '<emoji id="5395695537687123235">🚨</emoji> <b>रहस्यमयी कहानियों का VIP सफर रुकने वाला है!</b>\n\n'
+        '<b>{u_name}</b>, आपका {plan_name} <b>{exp_str}</b> (~<b>{rem_mins} मिनट</b> बाद) समाप्त हो जाएगा।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>सुरक्षित बचत:</b> <emoji id="5280818098960611598">🤑</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5208878706717636743">🗿</emoji> VIP लाइन से सीधे कूलडाउन कतार में जाने का कोई इरादा नहीं होना चाहिए! समय रहते रिन्यू करें और नॉन-स्टॉप सुनें।</blockquote>'
     ),
-    # 5. One-Liner / Direct Punch
+    # 5. Marketing / Direct
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>1 घंटा बाकी — अनलिमिटेड कहानियों का पास रिन्यू करें!</b>\n\n'
-        'नमस्ते <b>{u_name}</b>, आपका अनलिमिटेड पास आज <b>{exp_str}</b> को समाप्त हो रहा है।\n\n'
-        '<blockquote><emoji id="5850502041411000133">😎</emoji> नो लिमिट्स, नो वेटिंग — अपनी सभी ऑडियो स्टोरीज़ को बिना रुके सुनते रहने के लिए अभी रिन्यू करें।</blockquote>'
+        '<emoji id="5424972470023104089">🔥</emoji> <b>1 घंटा बाकी — अनलिमिटेड कहानियों का पास रिन्यू करें!</b>\n\n'
+        'नमस्ते <b>{u_name}</b>, आपका {plan_name} आज <b>{exp_str}</b> को समाप्त हो रहा है।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>स्मार्ट बचत:</b> <emoji id="5341498088408234504">💯</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5289650686319929628">😎</emoji> नो लिमिट्स, नो वेटिंग — अपनी सभी ऑडियो स्टोरीज़ को बिना रुके सुनते रहने के लिए अभी रिन्यू करें।</blockquote>'
     )
 ]
 
 PASS_EXPIRY_TEMPLATES_EN = [
     # 1. Suspense / Cliffhanger
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>Don\'t let the cliffhanger leave you hanging!</b>\n\n'
-        'Hey <b>{u_name}</b>, your Unlimited Story Pass will expire at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n'
-        '<blockquote><emoji id="5850689125891448128">🫢</emoji> Imagine the biggest mystery is about to unfold and you hit a cooldown! Renew now to keep listening to your favorite audio stories non-stop.</blockquote>'
+        '<emoji id="5386367538735104399">⏳</emoji> <b>Don\'t let the cliffhanger leave you hanging!</b>\n\n'
+        'Hey <b>{u_name}</b>, your {plan_name} will expire at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Savings:</b> <emoji id="5233326571099534068">💸</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5201817814842755281">🫢</emoji> Imagine the biggest mystery is about to unfold and you hit a cooldown! Renew now to keep listening to your favorite audio stories non-stop.</blockquote>'
     ),
     # 2. Comedy / Fun
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>Tick-Tock! Only 1 Hour Left on Your Pass!</b>\n\n'
-        'Hey <b>{u_name}</b>, your unlimited pass is about to say goodbye at <b>{exp_str}</b> (~<b>{rem_mins} mins</b> left).\n\n'
-        '<blockquote><emoji id="5850506340673264483">😜</emoji> Don\'t let cooldowns ruin your storytelling groove! Renew your pass now for uninterrupted listening joy.</blockquote>'
+        '<emoji id="5386367538735104399">⏳</emoji> <b>Tick-Tock! Only 1 Hour Left on Your Pass!</b>\n\n'
+        'Hey <b>{u_name}</b>, your {plan_name} is about to say goodbye at <b>{exp_str}</b> (~<b>{rem_mins} mins</b> left).\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Total Saved:</b> <emoji id="5409048419211682843">💵</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5361761791355398330">😜</emoji> Don\'t let cooldowns ruin your storytelling groove! Renew your pass now for uninterrupted listening joy.</blockquote>'
     ),
     # 3. Sarcasm / Witty
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>Patience is a virtue... but not in stories!</b>\n\n'
-        'Hey <b>{u_name}</b>, your pass expires at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n'
-        '<blockquote><emoji id="5850651721021267320">😏</emoji> Who wants to wait between episodes when you can binge seamlessly? Keep zero-cooldown access by renewing today!</blockquote>'
+        '<emoji id="5386367538735104399">⏳</emoji> <b>Patience is a virtue... but not in stories!</b>\n\n'
+        'Hey <b>{u_name}</b>, your {plan_name} expires at <b>{exp_str}</b> (in ~<b>{rem_mins} minutes</b>).\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Money Saved:</b> <emoji id="5244837092042750681">📈</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5445091140514620351">😏</emoji> Who wants to wait between episodes when you can binge seamlessly? Keep zero-cooldown access by renewing today!</blockquote>'
     ),
-    # 4. Drama / Thriller
+    # 4. Savage / Drama
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>Your story journey pauses in 1 hour!</b>\n\n'
-        'Hey <b>{u_name}</b>, your unlimited listening pass will end at <b>{exp_str}</b>.\n\n'
-        '<blockquote><emoji id="5850306568859425667">😳</emoji> Don\'t get locked out right before the big reveal! Renew your pass to keep discovering every mystery without delay.</blockquote>'
+        '<emoji id="5395695537687123235">🚨</emoji> <b>Your VIP story journey pauses in 1 hour!</b>\n\n'
+        'Hey <b>{u_name}</b>, your {plan_name} will end at <b>{exp_str}</b>.\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Total Saved:</b> <emoji id="5280818098960611598">🤑</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5208878706717636743">🗿</emoji> Going back to cooldown timers after enjoying VIP privilege? Renew your pass now and stay in power!</blockquote>'
     ),
-    # 5. One-Liner / Direct
+    # 5. Marketing / Direct
     (
-        '<emoji id="5258113901106580375">⏳</emoji> <b>1 Hour Remaining — Renew Your Story Pass!</b>\n\n'
-        'Hey <b>{u_name}</b>, your unlimited pass expires at <b>{exp_str}</b>.\n\n'
-        '<blockquote><emoji id="5850502041411000133">😎</emoji> No waiting, zero limits — renew now and keep listening to unlimited stories smoothly!</blockquote>'
+        '<emoji id="5424972470023104089">🔥</emoji> <b>1 Hour Remaining — Renew Your Story Pass!</b>\n\n'
+        'Hey <b>{u_name}</b>, your {plan_name} expires at <b>{exp_str}</b>.\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Smart Savings:</b> <emoji id="5341498088408234504">💯</emoji> ₹{saved_amount}\n\n'
+        '<blockquote><emoji id="5289650686319929628">😎</emoji> No waiting, zero limits — renew now and keep listening to unlimited stories smoothly!</blockquote>'
     )
 ]
+
+# ── Instant Pass Expired Templates (5 Distinct Tones) ─────────────────────────
+PASS_EXPIRED_IMMEDIATE_TEMPLATES_HI = [
+    # 1. Professional (प्रोफेशनल)
+    (
+        '<emoji id="5260293700088511294">⛔️</emoji> <b>आपका पास समाप्त (Expired) हो चुका है</b>\n\n'
+        'नमस्ते <b>{u_name}</b>, आपके <b>{plan_name}</b> की वैधता अब समाप्त हो गई है।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>स्टेटस:</b> <emoji id="5260293700088511294">⛔️</emoji> समाप्त (Expired)\n'
+        '• <b>कुल बचत:</b> <emoji id="5233326571099534068">💸</emoji> <b>₹{saved_amount}</b> की बचत की गई\n\n'
+        '<blockquote><emoji id="5402461597237004802">🧐</emoji> बिना किसी कूलडाउन व रुकावट के अपनी पसंदीदा सभी ऑडियो कहानियों को नॉन-स्टॉप सुनते रहने के लिए अभी पास रिन्यू करें।</blockquote>'
+    ),
+    # 2. Savage (सैवेज)
+    (
+        '<emoji id="5395695537687123235">🚨</emoji> <b>VIP Era Over — पास अभी-अभी एक्सपायर हो गया!</b>\n\n'
+        'सुनो <b>{u_name}</b>, आपका <b>{plan_name}</b> अब खत्म हो चुका है।\n\n'
+        '• <b>पिछला प्लान:</b> {plan_name}\n'
+        '• <b>जेब की बचत:</b> <emoji id="5280818098960611598">🤑</emoji> <b>₹{saved_amount}</b> सीधे बचाए\n'
+        '• <b>करंट स्टेटस:</b> <emoji id="5240241223632954241">🚫</emoji> नॉर्मल यूजर (कूलडाउन चालू)\n\n'
+        '<blockquote><emoji id="5208878706717636743">🗿</emoji> VIP जैसी शान से सुनने के बाद अब कूलडाउन लाइन में इंतज़ार करने का इरादा है क्या? तुरंत रिन्यू करो और बॉस की तरह नॉन-स्टॉप बिंज करो!</blockquote>'
+    ),
+    # 3. Sarcastic (व्यंग्यात्मक / सार्केस्टिक)
+    (
+        '<emoji id="5447644880824181073">⚠️</emoji> <b>मुबारक हो! कूलडाउन का इंतज़ार वापस आ गया!</b>\n\n'
+        'अरे <b>{u_name}</b>, आपका <b>{plan_name}</b> आधिकारिक तौर पर एक्सपायर हो गया है।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>आपने बचाए थे:</b> <emoji id="5244837092042750681">📈</emoji> <b>₹{saved_amount}</b>\n'
+        '• <b>स्टेटस:</b> <emoji id="5386367538735104399">⏳</emoji> अब हर एपिसोड पर टिक-टिक का इंतज़ार\n\n'
+        '<blockquote><emoji id="5445091140514620351">😏</emoji> सस्पेंस के बीच में अटकने और घड़ी देखने का बड़ा शौक है? अगर नहीं, तो रिन्यू बटन दबाओ और कूलडाउन को हमेशा के लिए बाय बोलो!</blockquote>'
+    ),
+    # 4. Humour (मज़ेदार / कॉमेडी)
+    (
+        '<emoji id="5276032951342088188">💥</emoji> <b>कहानी के क्लाइमेक्स पर पास ने बोला "टाटा, बाय-बाय"!</b>\n\n'
+        'अरे <b>{u_name}</b>, आपका <b>{plan_name}</b> अभी एक्सपायर हो गया!\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>टोटल बचत:</b> <emoji id="5409048419211682843">💵</emoji> पूरे <b>₹{saved_amount}</b> जेब में बचाए\n'
+        '• <b>हालत:</b> <emoji id="5456174445355875099">🙃</emoji> कूलडाउन मोड ऑन\n\n'
+        '<blockquote><emoji id="5361761791355398330">😜</emoji> पॉपकॉर्न तैयार था और पास खत्म हो गया! मज़ा किरकिरा मत होने दो, 1 सेकंड में रिन्यू करो और नॉन-स्टॉप सुनो!</blockquote>'
+    ),
+    # 5. Marketing (मार्केटिंग / ROI & FOMO)
+    (
+        '<emoji id="5424972470023104089">🔥</emoji> <b>अनलॉक करें सुपरफास्ट स्पीड — आपका पास समाप्त हुआ!</b>\n\n'
+        'प्रिय <b>{u_name}</b>, आपके <b>{plan_name}</b> की वैलिडिटी पूरी हो चुकी है।\n\n'
+        '• <b>प्लान:</b> {plan_name}\n'
+        '• <b>स्मार्ट सेविंग्स:</b> <emoji id="5341498088408234504">💯</emoji> <b>₹{saved_amount} की भारी बचत की</b>\n'
+        '• <b>प्रीमियम फायदा:</b> <emoji id="5456140674028019486">⚡️</emoji> 0s Cooldown + अनलिमिटेड डाउनलोड्स\n\n'
+        '<blockquote><emoji id="5427168083074628963">💎</emoji> <b>बिना रुके सुनते रहें:</b> अपनी ऑडियो स्टोरीज़ को बिना किसी ब्रेक के सुनने के लिए अभी सबसे किफायती प्लान में रिन्यू करें!</blockquote>'
+    )
+]
+
+PASS_EXPIRED_IMMEDIATE_TEMPLATES_EN = [
+    # 1. Professional
+    (
+        '<emoji id="5260293700088511294">⛔️</emoji> <b>Your Unlimited Pass Has Expired</b>\n\n'
+        'Hello <b>{u_name}</b>, your <b>{plan_name}</b> has reached its expiration.\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Status:</b> <emoji id="5260293700088511294">⛔️</emoji> Expired\n'
+        '• <b>Total Saved:</b> <emoji id="5233326571099534068">💸</emoji> <b>₹{saved_amount}</b>\n\n'
+        '<blockquote><emoji id="5402461597237004802">🧐</emoji> Continue enjoying uninterrupted, zero-cooldown access to all audio stories by renewing your pass today.</blockquote>'
+    ),
+    # 2. Savage
+    (
+        '<emoji id="5395695537687123235">🚨</emoji> <b>VIP Era Over — Your Pass Just Expired!</b>\n\n'
+        'Hey <b>{u_name}</b>, your <b>{plan_name}</b> just expired.\n\n'
+        '• <b>Previous Plan:</b> {plan_name}\n'
+        '• <b>Money Saved:</b> <emoji id="5280818098960611598">🤑</emoji> <b>₹{saved_amount}</b>\n'
+        '• <b>Current Status:</b> <emoji id="5240241223632954241">🚫</emoji> Standard Queue (Cooldown Active)\n\n'
+        '<blockquote><emoji id="5208878706717636743">🗿</emoji> Really going back to waiting in cooldown queues after living the VIP life? Renew now and claim your unlimited throne back!</blockquote>'
+    ),
+    # 3. Sarcastic
+    (
+        '<emoji id="5447644880824181073">⚠️</emoji> <b>Congratulations! Cooldown waiting lines are back!</b>\n\n'
+        'Hey <b>{u_name}</b>, your <b>{plan_name}</b> has officially expired.\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>You Saved:</b> <emoji id="5244837092042750681">📈</emoji> <b>₹{saved_amount}</b>\n'
+        '• <b>Status:</b> <emoji id="5386367538735104399">⏳</emoji> Mandatory waiting timer active\n\n'
+        '<blockquote><emoji id="5445091140514620351">😏</emoji> Missed watching the cooldown timer tick down episode by episode? If not, smash that Renew button and skip the wait!</blockquote>'
+    ),
+    # 4. Humour
+    (
+        '<emoji id="5276032951342088188">💥</emoji> <b>Right at the plot twist, your pass said "Goodbye"!</b>\n\n'
+        'Hey <b>{u_name}</b>, your <b>{plan_name}</b> just ran out of gas!\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Total Savings:</b> <emoji id="5409048419211682843">💵</emoji> <b>₹{saved_amount}</b> in your pocket\n'
+        '• <b>Status:</b> <emoji id="5456174445355875099">🙃</emoji> Cooldown mode turned ON\n\n'
+        '<blockquote><emoji id="5361761791355398330">😜</emoji> Popcorn\'s ready but cooldown just hit? Don\'t let the suspense kill you — renew now and binge non-stop!</blockquote>'
+    ),
+    # 5. Marketing
+    (
+        '<emoji id="5424972470023104089">🔥</emoji> <b>Unlock Non-Stop Superfast Audio Access!</b>\n\n'
+        'Dear <b>{u_name}</b>, your <b>{plan_name}</b> validity has completed.\n\n'
+        '• <b>Plan:</b> {plan_name}\n'
+        '• <b>Smart Savings:</b> <emoji id="5341498088408234504">💯</emoji> <b>₹{saved_amount} Saved</b>\n'
+        '• <b>Prime Benefits:</b> <emoji id="5456140674028019486">⚡️</emoji> Instant Delivery + 0s Cooldown + No Limits\n\n'
+        '<blockquote><emoji id="5427168083074628963">💎</emoji> <b>Keep the momentum going:</b> Renew your pass now to continue non-stop audio storytelling at the best affordable rates!</blockquote>'
+    )
+]
+
+
+async def get_user_pass_summary_details(uid: int, pass_doc: dict):
+    """Resolve user's name, purchased plan name, and calculated savings."""
+    u_name = pass_doc.get('user_name') or ""
+    if not u_name:
+        try:
+            tg_u = await db.col.find_one({'id': int(uid)})
+            if tg_u and tg_u.get('name'):
+                u_name = tg_u['name']
+        except Exception:
+            pass
+    if not u_name:
+        u_name = "User"
+
+    plan_name = pass_doc.get('plan_name') or ""
+    plan_key = pass_doc.get('plan_key') or ""
+
+    if not plan_name or not plan_key:
+        try:
+            latest_order = await db.pass_orders.find_one(
+                {'user_id': int(uid), 'status': 'PAID'},
+                sort=[('paid_at', -1), ('created_at', -1)]
+            )
+            if latest_order:
+                plan_key = latest_order.get('dur_key') or latest_order.get('plan') or plan_key
+                plan_name = latest_order.get('plan_name') or plan_name
+        except Exception:
+            pass
+
+    if not plan_name and plan_key:
+        from database import parse_duration_to_seconds, format_duration_verbose
+        try:
+            dur_sec = parse_duration_to_seconds(str(plan_key), default_unit='d')
+            plan_name = f"{format_duration_verbose(dur_sec).title()} Unlimited Pass"
+        except Exception:
+            plan_name = f"{plan_key} Unlimited Pass"
+
+    if not plan_name:
+        plan_name = "Unlimited Story Pass"
+
+    saved_amount = pass_doc.get('savings', 0)
+    if not saved_amount or saved_amount <= 0:
+        try:
+            rl_cfg = await db.get_delivery_rate_limit_config()
+            prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+            dur_k = plan_key or '7d'
+            from database import parse_duration_to_seconds
+            dur_sec = parse_duration_to_seconds(str(dur_k), default_unit='d')
+            dur_days = max(1.0, dur_sec / 86400.0)
+
+            base_p = float(prices.get('1d', 15))
+            plan_p = float(prices.get(dur_k, base_p * dur_days))
+            std_cost = dur_days * base_p
+            if std_cost > plan_p:
+                saved_amount = int(round(std_cost - plan_p))
+            else:
+                saved_amount = int(max(35, round(dur_days * 20)))
+        except Exception:
+            saved_amount = 50
+
+    return u_name, plan_name, saved_amount
+
+
+async def get_effective_notification_language(uid: int) -> bool:
+    """
+    Check if user selected a language ('hi' or 'en').
+    If not explicitly chosen, return random choice between True (Hindi) and False (English).
+    """
+    selected_lang = await db.get_user_selected_language(uid)
+    if selected_lang == 'hi':
+        return True
+    elif selected_lang == 'en':
+        return False
+    else:
+        return random.choice([True, False])
+
 
 _expiry_monitor_running = False
 
 async def run_pass_expiry_monitor_loop():
     """
-    Background worker that continuously monitors all user passes in unlimited_passes.
-    1. Checks passes expiring within 1 hour (0 < expires_at - now <= 3600).
-    2. Sends renewal reminder to user from the EXACT delivery bot where the pass was purchased.
-    3. Guarantees message is sent only once per expiry cycle using reminded_1h_expiry timestamp in DB.
-    4. Delivers varied tone/mood messages (Comedy, Suspense, Sarcasm, Drama, One-Liner).
+    Background worker that continuously monitors all user passes in unlimited_passes:
+    1. Pass Expiring Soon (1 hour before):
+       Sends renewal reminder (0 < expires_at - now <= 3600).
+    2. Pass Expired (Immediate):
+       Sends instant expiration alert as soon as expires_at <= now with user name,
+       plan name, money saved, 5 diverse tones (Professional, Savage, Sarcastic,
+       Humour, Marketing), and an interactive Renew Pass button.
+    3. Respects user-selected language; if not chosen, randomly picks Hindi or English.
+    4. Guarantees message is sent only once per expiry cycle using DB tracking timestamps.
     """
     global _expiry_monitor_running
     if _expiry_monitor_running:
         return
     _expiry_monitor_running = True
-    logger.info("[PASS-EXPIRY-MONITOR] Started 1-hour Pass Expiry Monitor Worker Loop.")
+    logger.info("[PASS-EXPIRY-MONITOR] Started Pass Expiry & Instant Expiration Monitor Worker Loop.")
 
     while True:
         try:
-            await asyncio.sleep(60) # check every minute
+            await asyncio.sleep(45)  # check every 45 seconds
             now = time.time()
             one_hour_ahead = now + 3600
 
-            # Find active passes expiring in next 1 hour that haven't received the 1h reminder
-            cursor = db.unlimited_passes.find({
+            # ── 1. Pass 1-Hour Reminder Check ───────────────────────────────
+            cursor_1h = db.unlimited_passes.find({
                 'expires_at': {'$gt': now, '$lte': one_hour_ahead}
             })
 
-            async for pass_doc in cursor:
+            async for pass_doc in cursor_1h:
                 uid = pass_doc.get('user_id')
                 if not uid:
                     continue
                 exp_ts = pass_doc.get('expires_at', 0)
                 reminded_ts = pass_doc.get('reminded_1h_expiry')
                 if reminded_ts == exp_ts:
-                    continue # already reminded for this exact expiry period
+                    continue
 
-                # Determine which delivery bot client to use (match the one user subscribed on)
+                # Determine which delivery bot client to use
                 bot_id_saved = str(pass_doc.get('bot_id') or '')
                 bot_uname_saved = str(pass_doc.get('bot_username') or '').lstrip('@').lower()
-                
+
                 target_client = None
                 if bot_id_saved and bot_id_saved in share_clients:
                     target_client = share_clients[bot_id_saved]
@@ -5085,8 +5284,7 @@ async def run_pass_expiry_monitor_loop():
                         if cl.me and cl.me.username and cl.me.username.lower() == bot_uname_saved:
                             target_client = cl
                             break
-                
-                # Fallback to any active delivery bot if specific one isn't currently loaded
+
                 if not target_client and share_clients:
                     target_client = next(iter(share_clients.values()), None)
 
@@ -5095,7 +5293,7 @@ async def run_pass_expiry_monitor_loop():
 
                 rem_sec = max(0, int(exp_ts - now))
                 rem_mins = max(1, rem_sec // 60)
-                u_name = pass_doc.get('user_name') or "there"
+                u_name, plan_name, saved_amount = await get_user_pass_summary_details(uid, pass_doc)
 
                 import datetime
                 try:
@@ -5106,21 +5304,19 @@ async def run_pass_expiry_monitor_loop():
                 except Exception:
                     exp_str = datetime.datetime.fromtimestamp(exp_ts).strftime('%d-%m-%Y %I:%M %p')
 
-                user_lang = await db.get_language(uid)
-                is_hi = bool(user_lang == 'hi')
+                is_hi = await get_effective_notification_language(uid)
 
-                import random
                 if is_hi:
                     template = random.choice(PASS_EXPIRY_TEMPLATES_HI)
-                    rem_text = template.format(u_name=u_name, exp_str=exp_str, rem_mins=rem_mins)
+                    rem_text = template.format(u_name=u_name, plan_name=plan_name, saved_amount=saved_amount, exp_str=exp_str, rem_mins=rem_mins)
                     btn_renew = "पास रिन्यू करें (Renew Pass)"
                 else:
                     template = random.choice(PASS_EXPIRY_TEMPLATES_EN)
-                    rem_text = template.format(u_name=u_name, exp_str=exp_str, rem_mins=rem_mins)
+                    rem_text = template.format(u_name=u_name, plan_name=plan_name, saved_amount=saved_amount, exp_str=exp_str, rem_mins=rem_mins)
                     btn_renew = "Renew Pass"
 
                 rem_api_buttons = [
-                    [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "6007983438294949171"}]
+                    [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "5217822164362739968"}]
                 ]
                 rem_buttons = [
                     [InlineKeyboardButton(f"👑 {btn_renew}", callback_data="pass#unlock_menu")]
@@ -5139,7 +5335,6 @@ async def run_pass_expiry_monitor_loop():
                             text=rem_text,
                             reply_markup=InlineKeyboardMarkup(rem_buttons)
                         )
-                    # Mark reminded in DB so it never repeats for this expiry
                     await db.unlimited_passes.update_one(
                         {'user_id': int(uid)},
                         {'$set': {'reminded_1h_expiry': exp_ts}}
@@ -5147,6 +5342,80 @@ async def run_pass_expiry_monitor_loop():
                     logger.info(f"[PASS-EXPIRY-MONITOR] Sent 1-hour expiry reminder to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
                 except Exception as ex:
                     logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send reminder to user {uid}: {ex}")
+
+            # ── 2. Pass Immediate Expired Notification Check ─────────────────
+            # Check passes where expires_at <= now, active within last 7 days, and not yet notified
+            cursor_expired = db.unlimited_passes.find({
+                'expires_at': {'$gt': 0, '$lte': now, '$gte': now - (86400 * 7)}
+            })
+
+            async for pass_doc in cursor_expired:
+                uid = pass_doc.get('user_id')
+                if not uid:
+                    continue
+                exp_ts = pass_doc.get('expires_at', 0)
+                notified_ts = pass_doc.get('notified_expired_ts')
+                if notified_ts == exp_ts:
+                    continue  # already notified for this exact expiration
+
+                # Determine target delivery bot
+                bot_id_saved = str(pass_doc.get('bot_id') or '')
+                bot_uname_saved = str(pass_doc.get('bot_username') or '').lstrip('@').lower()
+
+                target_client = None
+                if bot_id_saved and bot_id_saved in share_clients:
+                    target_client = share_clients[bot_id_saved]
+                elif bot_uname_saved:
+                    for cl in share_clients.values():
+                        if cl.me and cl.me.username and cl.me.username.lower() == bot_uname_saved:
+                            target_client = cl
+                            break
+
+                if not target_client and share_clients:
+                    target_client = next(iter(share_clients.values()), None)
+
+                if not target_client:
+                    continue
+
+                u_name, plan_name, saved_amount = await get_user_pass_summary_details(uid, pass_doc)
+                is_hi = await get_effective_notification_language(uid)
+
+                if is_hi:
+                    template = random.choice(PASS_EXPIRED_IMMEDIATE_TEMPLATES_HI)
+                    exp_text = template.format(u_name=u_name, plan_name=plan_name, saved_amount=saved_amount)
+                    btn_renew = "👑 पास रिन्यू करें (Renew Pass)"
+                else:
+                    template = random.choice(PASS_EXPIRED_IMMEDIATE_TEMPLATES_EN)
+                    exp_text = template.format(u_name=u_name, plan_name=plan_name, saved_amount=saved_amount)
+                    btn_renew = "👑 Renew Pass"
+
+                exp_api_buttons = [
+                    [{"text": btn_renew, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "5217822164362739968"}]
+                ]
+                exp_buttons = [
+                    [InlineKeyboardButton(btn_renew, callback_data="pass#unlock_menu")]
+                ]
+
+                try:
+                    sent_ok = await send_or_edit_with_custom_icons(
+                        client=target_client,
+                        chat_id=uid,
+                        text=exp_text,
+                        inline_keyboard=exp_api_buttons
+                    )
+                    if not sent_ok:
+                        await target_client.send_message(
+                            chat_id=uid,
+                            text=exp_text,
+                            reply_markup=InlineKeyboardMarkup(exp_buttons)
+                        )
+                    await db.unlimited_passes.update_one(
+                        {'user_id': int(uid)},
+                        {'$set': {'notified_expired_ts': exp_ts}}
+                    )
+                    logger.info(f"[PASS-EXPIRY-MONITOR] Sent INSTANT expiration alert to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
+                except Exception as ex:
+                    logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send instant expiry notice to user {uid}: {ex}")
 
         except asyncio.CancelledError:
             break

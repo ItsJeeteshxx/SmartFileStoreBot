@@ -1057,36 +1057,59 @@ async def settings_query(bot, query):
     enabled      = abuse_cfg.get('enabled', True)
     cooldown     = abuse_cfg.get('cooldown_secs', 60)
     max_strikes  = abuse_cfg.get('max_strikes', 5)
-    toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
-    status_icon  = "🟢" if enabled else "🔴"
+    status_str   = '<emoji id="5809949600152296075">🟢</emoji> Enabled' if enabled else '<emoji id="5970055887774028039">🔴</emoji> Disabled'
+    toggle_icon  = "5809949600152296075" if enabled else "5970055887774028039"
+    toggle_api   = "( Enabled )" if enabled else "( Disabled )"
+    toggle_fb    = f"{'🟢' if enabled else '🔴'} ( {'Enabled' if enabled else 'Disabled'} )"
+
     buttons = [
-        [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_abuse_toggle")],
+        [InlineKeyboardButton(toggle_fb, callback_data="settings#sb_abuse_toggle")],
         [
-            InlineKeyboardButton(f"⏱ Cooldown: {cooldown}s",      callback_data="settings#sb_abuse_cd"),
-            InlineKeyboardButton(f"⚠️ Max Strikes: {max_strikes}",  callback_data="settings#sb_abuse_ms"),
+            InlineKeyboardButton(f"⏱ Cooldown: {cooldown}s", callback_data="settings#sb_abuse_cd"),
+            InlineKeyboardButton(f"⚠️ Max Strikes: {max_strikes}", callback_data="settings#sb_abuse_ms"),
         ],
-        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
+        [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
     ]
-    await query.message.edit_text(
-        f"<b>🛡 ANTI-ABUSE SYSTEM</b>\n"
+    api_buttons = [
+        [{"text": toggle_api, "callback_data": "settings#sb_abuse_toggle", "icon_custom_emoji_id": toggle_icon}],
+        [
+            {"text": f"Cooldown: {cooldown}s", "callback_data": "settings#sb_abuse_cd", "icon_custom_emoji_id": "6034898821517940846"},
+            {"text": f"Max Strikes: {max_strikes}", "callback_data": "settings#sb_abuse_ms", "icon_custom_emoji_id": "6019102674832595118"},
+        ],
+        [{"text": "Back", "callback_data": "settings#sharebot"}],
+    ]
+    text = (
+        f'<emoji id="5893192487324880883">🛡</emoji> <b>Anti-Abuse Config</b>\n'
         f"────────────────────\n"
-        f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
-        f"<b>Cooldown:</b> <code>{cooldown}s</code> — re-requests within this window count as a strike\n"
-        f"<b>Max Strikes:</b> <code>{max_strikes}</code> — after this many, user gets silently auto-banned\n"
+        f"<b>Status:-</b> {status_str}\n"
+        f"<b>Cooldown:-</b> <code>{cooldown}s</code>\n"
+        f"<b>Max Strikes:-</b> <code>{max_strikes}</code>\n"
         f"────────────────────\n"
-        f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
+        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How Anti-Abuse Works:</b>\n\n"
         f"When a user requests files faster than the cooldown window, each request adds a strike. "
         f"After <b>{max_strikes} strikes</b> the user is <b>silently auto-banned</b> with no message sent. "
-        f"Owners, co-owners, and whitelisted users are always exempt regardless of this setting.</blockquote>",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        f"Owners, co-owners, and whitelisted users are always exempt regardless of this setting.</blockquote>"
     )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
 
   elif type == "sb_abuse_toggle":
     abuse_cfg = await db.get_anti_abuse_config()
     new_state = not abuse_cfg.get('enabled', True)
     await db.set_anti_abuse_config(enabled=new_state)
     try:
-        await query.answer(f"🛡 Anti-Abuse {'ENABLED ✅' if new_state else 'DISABLED ❌'}!", show_alert=True)
+        await query.answer(f"Anti-Abuse {'Enabled 🟢' if new_state else 'Disabled 🔴'}!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_anti_abuse"
@@ -1096,7 +1119,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>⏱ Set Anti-Abuse Cooldown</b>\n\n"
+        '<emoji id="6034898821517940846">⏱</emoji> <b>Set Anti-Abuse Cooldown</b>\n\n'
         "Enter cooldown in <b>seconds</b>.\n"
         "Re-requests within this window after a delivery count as a rapid re-request strike.\n\n"
         "<b>Recommended:</b> <code>60</code> (1 minute)\n"
@@ -1109,7 +1132,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")]])
             )
         val = int((resp.text or '').strip())
         if not (10 <= val <= 3600):
@@ -1118,27 +1141,27 @@ async def settings_query(bot, query):
         await resp.delete()
         await ask.edit_text(
             f"✅ Cooldown set to <code>{val}s</code>.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")]])
         )
     except ValueError:
         await ask.edit_text(
             "❌ Invalid value. Must be a number between 10 and 3600.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_abuse_cd"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_abuse_cd"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")
             ]])
         )
     except Exception:
         await ask.edit_text(
             "Timeout or error.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")]])
         )
 
   elif type == "sb_abuse_ms":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>⚠️ Set Max Strikes Before Auto-Ban</b>\n\n"
+        '<emoji id="6019102674832595118">⚠️</emoji> <b>Set Max Strikes</b>\n\n'
         "Enter the number of rapid-request strikes before a user is silently auto-banned.\n\n"
         "<b>Recommended:</b> <code>5</code>\n"
         "<b>Range:</b> 1 – 20 strikes\n\n"
@@ -1150,7 +1173,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")]])
             )
         val = int((resp.text or '').strip())
         if not (1 <= val <= 20):
@@ -1159,20 +1182,20 @@ async def settings_query(bot, query):
         await resp.delete()
         await ask.edit_text(
             f"✅ Max strikes set to <code>{val}</code>.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")]])
         )
     except ValueError:
         await ask.edit_text(
             "❌ Invalid value. Must be a number between 1 and 20.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_abuse_ms"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_abuse_ms"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")
             ]])
         )
     except Exception:
         await ask.edit_text(
             "Timeout or error.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_anti_abuse")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_anti_abuse")]])
         )
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -4198,122 +4221,192 @@ async def settings_query(bot, query):
           if ch_id:
               try:
                   if new_jr:
-                      lnk_obj = await bot.create_chat_invite_link(int(ch_id), creates_join_request=True)
-                      fsub_chs[idx]['invite_link'] = lnk_obj.invite_link
-                  else:
-                      try:
-                          lnk_obj = await bot.create_chat_invite_link(int(ch_id))
-                          fsub_chs[idx]['invite_link'] = lnk_obj.invite_link
-                      except Exception:
-                          fsub_chs[idx]['invite_link'] = await bot.export_chat_invite_link(int(ch_id))
-              except Exception as e:
-                  logger.warning(f"Could not regenerate invite link: {e}")
-          await db.set_bot_fsub_channels(b_id, fsub_chs)
-          status = "ON » " if new_jr else "OFF ‣ "
-          await query.answer(f"JR: {status}")
-      query.data = f"settings#sb_fsub_{b_id}"
-      return await settings_query(bot, query)
+                      lnk_obj = await bot.create_chat_i  elif type == "sb_logs_channel":
+      logs_cfg = await db.get_logs_config()
 
-  elif type.startswith("sb_fsub_del_"):
-      rest = type[len("sb_fsub_del_"):]
-      last_under = rest.rfind("_")
-      b_id = rest[:last_under]; idx = int(rest[last_under+1:])
-      fsub_chs = await db.get_bot_fsub_channels(b_id)
-      if 0 <= idx < len(fsub_chs):
-          fsub_chs.pop(idx)
-          await db.set_bot_fsub_channels(b_id, fsub_chs)
-          await query.answer("Removed.")
-      query.data = f"settings#sb_fsub_{b_id}"
-      return await settings_query(bot, query)
+      CH_DEFS = [
+          ('ch_bans',      "Bans & Warnings", "6019102674832595118"),
+          ('ch_new_users', "New Users",       "6030400221232501136"),
+          ('ch_batch',     "Batch Links",     "6021846918416571514"),
+          ('ch_live',      "Live Jobs",       "6129805465476929485"),
+          ('ch_cleaner',   "Cleaner Jobs",    "6021375494216226506"),
+          ('ch_errors',    "Error Alerts",    "5970055887774028039"),
+          ('ch_share',     "Share Logs",      "6037622221625626773"),
+      ]
 
-  elif type.startswith("sb_fsub_msg_"):
-      b_id = type.split("sb_fsub_msg_")[1]
-      await _sb_set_text_flow(bot, user_id, query, b_id, "fsub_msg",
-          "Fᴏʀᴄᴇ-Sᴜʙ Mᴇssᴀɢᴇ",
-          "Send the new message to prompt users to subscribe.\nAny font is accepted.",
-          f"settings#sb_fsub_{b_id}")
+      text = (
+          f'<emoji id="5920046907782074235">📋</emoji> <b>Logs Config</b>\n'
+          f"────────────────────\n"
+      )
 
-  elif type.startswith("sb_fsub_add_"):
-      b_id = type[len("sb_fsub_add_"):]
+      btns = []
+      api_buttons = []
+      
+      for i in range(0, len(CH_DEFS), 2):
+          row_btns = []
+          row_api = []
+          for key, label, emoji_id in CH_DEFS[i:i+2]:
+              val = logs_cfg.get(key, 0)
+              val_str = f"<code>{val}</code>" if val else '<emoji id="5970055887774028039">🔴</emoji> <i>Not Set</i>'
+              text += f'<emoji id="{emoji_id}">📁</emoji> <b>{label}:-</b> {val_str}\n'
+              
+              row_btns.append(InlineKeyboardButton(f"{label}", callback_data=f"settings#sb_logs_manage_{key}"))
+              row_api.append({"text": label, "callback_data": f"settings#sb_logs_manage_{key}", "icon_custom_emoji_id": emoji_id})
+          btns.append(row_btns)
+          api_buttons.append(row_api)
+
+      btns.append([InlineKeyboardButton("Back", callback_data="settings#sharebot")])
+      api_buttons.append([{"text": "Back", "callback_data": "settings#sharebot"}])
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_buttons,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+          except Exception:
+              pass
+
+  elif type.startswith("sb_logs_manage_"):
+      ch_key = type.split("sb_logs_manage_")[1]
+      CH_MAP = {
+          'ch_bans':      ("Bans & Warnings", "6019102674832595118"),
+          'ch_new_users': ("New Users",       "6030400221232501136"),
+          'ch_batch':     ("Batch Links",     "6021846918416571514"),
+          'ch_live':      ("Live Jobs",       "6129805465476929485"),
+          'ch_cleaner':   ("Cleaner Jobs",    "6021375494216226506"),
+          'ch_errors':    ("Error Alerts",    "5970055887774028039"),
+          'ch_share':     ("Share Logs",      "6037622221625626773"),
+      }
+      label, icon_id = CH_MAP.get(ch_key, (ch_key, "5920046907782074235"))
+      logs_cfg = await db.get_logs_config()
+      ch_id = logs_cfg.get(ch_key, 0)
+      ch_lbl = f"<code>{ch_id}</code>" if ch_id else '<emoji id="5970055887774028039">🔴</emoji> <i>Not Configured</i>'
+
+      text = (
+          f'<emoji id="{icon_id}">📁</emoji> <b>{label} Log</b>\n'
+          f"────────────────────\n"
+          f"<b>Current Channel:-</b> {ch_lbl}\n"
+          f"────────────────────\n"
+          f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Channel Setup:</b>\n"
+          f"Dedicated channel for {label.lower()} logs.\n"
+          f"Ensure Main Bot is an Administrator with post message permissions.</blockquote>"
+      )
+
+      btns = [
+          [InlineKeyboardButton("📋 Set Channel", callback_data=f"settings#sb_logs_set_{ch_key}")],
+      ]
+      api_btns = [
+          [{"text": "Set Channel", "callback_data": f"settings#sb_logs_set_{ch_key}", "icon_custom_emoji_id": "5766915217552315762"}],
+      ]
+      if ch_id:
+          btns.append([InlineKeyboardButton("🗑 Remove Channel", callback_data=f"settings#sb_logs_del_{ch_key}")])
+          api_btns.append([{"text": "Remove Channel", "callback_data": f"settings#sb_logs_del_{ch_key}", "icon_custom_emoji_id": "6030400221232501136"}])
+      btns.append([InlineKeyboardButton("Back", callback_data="settings#sb_logs_channel")])
+      api_btns.append([{"text": "Back", "callback_data": "settings#sb_logs_channel"}])
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_btns,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+          except Exception:
+              pass
+
+  elif type.startswith("sb_logs_set_"):
+      ch_key = type.split("sb_logs_set_")[1]
+      CH_MAP = {
+          'ch_bans':      ("Bans & Warnings", "6019102674832595118"),
+          'ch_new_users': ("New Users",       "6030400221232501136"),
+          'ch_batch':     ("Batch Links",     "6021846918416571514"),
+          'ch_live':      ("Live Jobs",       "6129805465476929485"),
+          'ch_cleaner':   ("Cleaner Jobs",    "6021375494216226506"),
+          'ch_errors':    ("Error Alerts",    "5970055887774028039"),
+          'ch_share':     ("Share Logs",      "6037622221625626773"),
+      }
+      label, icon_id = CH_MAP.get(ch_key, (ch_key, "5920046907782074235"))
       await query.message.delete()
-      ask = await bot.send_message(user_id,
-          "<b>Send the Channel/Group ID or @username</b>\n"
-          "Example: <code>-1001234567890</code> or <code>@mychannel</code>\n\n"
-          "<i>Tip: You can also forward any message from your private channel here!</i>\n\n"
-          "/cancel to abort"
+      ask = await bot.send_message(
+          user_id,
+          f'<emoji id="{icon_id}">📁</emoji> <b>Set {label} Channel</b>\n\n'
+          f"Send the Channel ID or username for <b>{label}</b> logs.\n\n"
+          "<b>Examples:</b>\n"
+          "  <code>-1001234567890</code> (private channel)\n"
+          "  <code>@mychannel</code> (public channel)\n\n"
+          "<i>Make sure the Main Bot is an admin in that channel.</i>\n\n"
+          "Send /cancel to abort."
       )
       try:
-          resp = await bot.listen(chat_id=user_id, timeout=120)
-          if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
-              await resp.delete()
-              return await ask.edit_text("<i>Process Cancelled Successfully!</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
-          
-          if resp.forward_from_chat:
-              raw_id_int = resp.forward_from_chat.id
-          else:
-              raw_id = (resp.text or "").strip()
-              if "t.me/" in raw_id or "http" in raw_id:
-                  await resp.delete()
-                  return await ask.edit_text(
-                      "<b>‣  Invalid Input!</b>\n\nPlease send the Channel ID (e.g. <code>-100...</code>) or a public username (<code>@mychannel</code>), <b>NOT an invite link</b>.\n\n"
-                      "<i>Tip: If it's a private channel, simply forward any message from that channel to me!</i>",
-                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
-                  )
-              try:
-                  raw_id_int = int(raw_id)
-              except ValueError:
-                  raw_id_int = raw_id
-                  
+          resp = await _ask(bot, user_id, timeout=120)
+          txt = (resp.text or "").strip()
           await resp.delete()
+          if txt.lower() in ("/cancel", "cancel"):
+              return await ask.edit_text(
+                  "<i>Cancelled.</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+              )
+          # Resolve and validate
           try:
-              ch_obj = await bot.get_chat(raw_id_int)
+              txt_int = int(txt)
+          except ValueError:
+              txt_int = txt
+          try:
+              ch_info = await bot.get_chat(txt_int)
+              ch_id_int = ch_info.id
+              ch_title = ch_info.title or str(ch_id_int)
           except Exception as e:
-              err_str = str(e).lower()
-              if "username_invalid" in err_str:
-                  msg = (
-                      "<b>‣  Invalid ID or Username.</b>\n"
-                      "If you are trying to add a private channel, please send its numerical ID (starts with <code>-100</code>) or forward a message from it."
-                  )
-              elif "private" in err_str or "peer_id_invalid" in err_str or "channel_invalid" in err_str:
-                  msg = "<b>‣  Cannot access this channel.</b>\nMake sure the Main Bot is admin."
-              else:
-                  msg = f"<b>‣  Error:</b> <code>{e}</code>"
-              return await ask.edit_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
-          
+              return await ask.edit_text(
+                  f"<b>Error:</b> <code>{e}</code>\n"
+                  "Make sure the Main Bot is an admin in that channel and the ID/username is correct.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+              )
+          await db.set_logs_config(**{ch_key: ch_id_int})
+          # Invalidate cache
           try:
-              lnk_obj = await bot.create_chat_invite_link(ch_obj.id)
-              invite = lnk_obj.invite_link
+              import plugins.arya_logger as _alog
+              _alog._invalidate_cfg_cache()
           except Exception:
-              try:
-                  invite = await bot.export_chat_invite_link(ch_obj.id)
-              except Exception:
-                  invite = getattr(ch_obj, 'invite_link', '') or ''
-          fsub_chs = await db.get_bot_fsub_channels(b_id)
-          fsub_chs.append({
-              'chat_id':     str(ch_obj.id),
-              'title':       ch_obj.title or ch_obj.username or str(ch_obj.id),
-              'invite_link': invite,
-              'join_request': False,
-          })
-          await db.set_bot_fsub_channels(b_id, fsub_chs)
+              pass
           await ask.edit_text(
-              f"<b>»  Added: {ch_obj.title}</b>\n<i>Toggle JR to enable join-request mode.</i>",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
+              f"✅ <b>{label} channel set to:</b> {ch_title} (<code>{ch_id_int}</code>)",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+          )
       except asyncio.TimeoutError:
-          await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
+          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+          except Exception: pass
 
-  elif type.startswith("sb_remove_"):
-      b_id = type.split("sb_remove_")[1]
-      await db.remove_share_bot(b_id)
-      await db.remove_share_bot_config(b_id)  # clean up per-bot config too
-      await query.answer("Bot Removed!")
-      query.data = "settings#sbt_manage"
-      return await settings_query(bot, query)
-
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Logs Channel Configuration UI
-  # ─────────────────────────────────────────────────────────────────────────
+  elif type.startswith("sb_logs_del_"):
+      ch_key = type.split("sb_logs_del_")[1]
+      CH_MAP = {
+          'ch_bans':      ("Bans & Warnings", "6019102674832595118"),
+          'ch_new_users': ("New Users",       "6030400221232501136"),
+          'ch_batch':     ("Batch Links",     "6021846918416571514"),
+          'ch_live':      ("Live Jobs",       "6129805465476929485"),
+          'ch_cleaner':   ("Cleaner Jobs",    "6021375494216226506"),
+          'ch_errors':    ("Error Alerts",    "5970055887774028039"),
+          'ch_share':     ("Share Logs",      "6037622221625626773"),
+      }
+      label, icon_id = CH_MAP.get(ch_key, (ch_key, "5920046907782074235"))
+      await db.set_logs_config(**{ch_key: 0})
+      try:
+          import plugins.arya_logger as _alog
+          _alog._invalidate_cfg_cache()
+      except Exception:
+          pass
+      await query.answer(f"{label} channel removed!", show_alert=True)
+      query.data = f"settings#sb_logs_manage_{ch_key}"
+      return await settings_query(bot, query)��───────────────────────────────────────────
 
   elif type == "sb_logs_channel":
       logs_cfg = await db.get_logs_config()

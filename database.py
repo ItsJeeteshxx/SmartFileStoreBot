@@ -1286,6 +1286,13 @@ class Database:
             return user.get('language', 'en')
         return 'en'
 
+    async def get_user_selected_language(self, user_id: int):
+        """Return user's explicitly chosen language ('hi', 'en', etc.) or None if not chosen."""
+        user = await self._get_user_doc(user_id)
+        if user and user.get('language'):
+            return str(user.get('language')).lower().strip()
+        return None
+
     async def set_language(self, user_id: int, lang: str):
         await self.col.update_one({'id': int(user_id)}, {'$set': {'language': lang}}, upsert=True)
         self._invalidate_user_cache(user_id)
@@ -1886,8 +1893,8 @@ class Database:
             'user_name': doc.get('user_name') if doc else ""
         }
 
-    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = "", bot_id: int = None, bot_username: str = ""):
-        """Set or update unlimited pass expiry."""
+    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = "", bot_id: int = None, bot_username: str = "", plan_key: str = "", plan_name: str = "", amount: float = 0.0, savings: float = 0.0):
+        """Set or update unlimited pass expiry and optional plan details."""
         import time
         doc = {'expires_at': float(expiry_timestamp), 'updated_at': time.time()}
         if user_name:
@@ -1896,21 +1903,41 @@ class Database:
             doc['bot_id'] = int(bot_id)
         if bot_username:
             doc['bot_username'] = str(bot_username).strip()
+        if plan_key:
+            doc['plan_key'] = str(plan_key).strip()
+        if plan_name:
+            doc['plan_name'] = str(plan_name).strip()
+        if amount > 0:
+            doc['amount'] = float(amount)
+        if savings > 0:
+            doc['savings'] = float(savings)
         await self.unlimited_passes.update_one(
             {'user_id': int(user_id)},
             {'$set': doc},
             upsert=True
         )
 
-    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "", bot_id: int = None, bot_username: str = "") -> float:
+    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "", bot_id: int = None, bot_username: str = "", plan_key: str = "", plan_name: str = "", amount: float = 0.0, savings: float = 0.0) -> float:
         """Extend or activate unlimited pass for specified duration (days int or duration str like '30m', '2h', '7d') and return new expiry."""
         import time
         if isinstance(duration, (int, float)) and duration < 1000:
             duration_seconds = float(duration) * 86400.0
+            dur_key_str = f"{int(duration)}d"
         elif isinstance(duration, str):
+            dur_key_str = duration
             duration_seconds = float(parse_duration_to_seconds(duration, default_unit='d'))
         else:
+            dur_key_str = str(duration)
             duration_seconds = float(duration)
+
+        p_key = plan_key or dur_key_str
+        if not plan_name and p_key:
+            try:
+                p_name = f"{format_duration_verbose(duration_seconds).title()} Unlimited Pass"
+            except Exception:
+                p_name = f"{p_key} Unlimited Pass"
+        else:
+            p_name = plan_name
 
         cur = await self.get_user_unlimited_pass(user_id)
         now = time.time()
@@ -1918,7 +1945,17 @@ class Database:
         new_expiry = base_time + duration_seconds
         b_id = bot_id or cur.get('bot_id')
         b_uname = bot_username or cur.get('bot_username')
-        await self.set_user_unlimited_pass(user_id, new_expiry, user_name=user_name, bot_id=b_id, bot_username=b_uname)
+        await self.set_user_unlimited_pass(
+            user_id=user_id,
+            expiry_timestamp=new_expiry,
+            user_name=user_name,
+            bot_id=b_id,
+            bot_username=b_uname,
+            plan_key=p_key,
+            plan_name=p_name,
+            amount=amount,
+            savings=savings
+        )
         return new_expiry
 
     async def activate_user_unlimited_pass(self, user_id: int, duration_seconds: float, order_id: str = "", amount: float = 0.0, gateway: str = "", user_name: str = "") -> float:

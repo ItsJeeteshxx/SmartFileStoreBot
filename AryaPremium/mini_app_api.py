@@ -3751,121 +3751,6 @@ async def oxapay_webhook(request: Request):
     return {"success": True, "message": "Payment verified and processed"}
 
 
-# ===== Cashfree Payment Gateway Webhook =====
-@api_router.post("/cashfree-webhook")
-async def cashfree_webhook(request: Request):
-    """Webhook from Cashfree upon successful payment."""
-    from cashfree_helper import check_cashfree_order_status
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
-
-    cf_data = data.get("data", {}) if isinstance(data.get("data"), dict) else data
-    order_info = cf_data.get("order", {}) if isinstance(cf_data.get("order"), dict) else {}
-    order_id = order_info.get("order_id") or cf_data.get("order_id")
-    
-    if not order_id:
-        return {"success": False, "message": "Missing order_id"}
-
-    # Verify via Cashfree API
-    status_res = await check_cashfree_order_status(order_id)
-    if not status_res.get("is_paid"):
-        logger.info(f"Cashfree webhook ignored: status={status_res.get('status')} order_id={order_id}")
-        return {"success": False, "message": "Payment not verified"}
-
-    arya_db = getattr(app.state, "db", None) or db
-
-    # Check if this is a Delivery Bot Unlimited Pass order
-    if order_id.startswith("PASS-") or await arya_db.db.pass_orders.count_documents({"order_id": order_id}) > 0:
-        pass_order = await arya_db.db.pass_orders.find_one({"order_id": order_id})
-        if not pass_order:
-            logger.warning(f"Cashfree webhook: pass_order not found for order_id={order_id}")
-            return {"success": False, "message": "Pass order not found"}
-
-        if pass_order.get("status") == "PAID":
-            return {"success": True, "message": "Pass order already processed"}
-
-        # Atomically claim pass order
-        claimed = await arya_db.db.pass_orders.find_one_and_update(
-            {"order_id": order_id, "status": {"$ne": "PAID"}},
-            {"$set": {"status": "PAID", "paid_at": time.time(), "payment_details": status_res}},
-            return_document=False
-        )
-        if claimed:
-            p_uid = int(pass_order.get("user_id"))
-            p_dur = pass_order.get("duration", "1d")
-            p_uname = pass_order.get("user_name", "User")
-            p_amt = float(pass_order.get("amount", 0))
-
-            from database import parse_duration_to_seconds
-            dur_sec = parse_duration_to_seconds(str(p_dur), default_unit='d')
-            cur_pass = await arya_db.db.unlimited_passes.find_one({'user_id': p_uid})
-            now_ts = time.time()
-            base_t = cur_pass.get('expires_at', 0) if (cur_pass and cur_pass.get('expires_at', 0) > now_ts) else now_ts
-            pass_fields = {'expires_at': new_exp, 'user_name': p_uname, 'updated_at': now_ts}
-            if pass_order.get("bot_id"):
-                pass_fields['bot_id'] = int(pass_order.get("bot_id"))
-            if pass_order.get("bot_username"):
-                pass_fields['bot_username'] = str(pass_order.get("bot_username"))
-            await arya_db.db.unlimited_passes.update_one(
-                {'user_id': p_uid},
-                {'$set': pass_fields},
-                upsert=True
-            )
-            logger.info(f"[CF-WEBHOOK] Pass order {order_id} activated for user {p_uid}, new_expiry={new_exp}")
-
-        return {"success": True, "message": "Pass order processed successfully"}
-
-    order = await arya_db.db.orders.find_one({"order_id": order_id})
-    if not order:
-        logger.warning(f"Cashfree webhook: order not found for order_id={order_id}")
-        return {"success": False, "message": "Order not found"}
-
-    if order.get("status") == "paid":
-        return {"success": True, "message": "Already processed"}
-
-    user_id = order.get("user_id")
-    story_id = order.get("story_id") or (order.get("story_ids")[0] if order.get("story_ids") else None)
-    
-    await arya_db.db.orders.update_one(
-        {"_id": order["_id"]},
-        {"$set": {
-            "status": "paid",
-            "paid_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }}
-    )
-
-    if user_id and story_id:
-        from bson.objectid import ObjectId
-        await arya_db.db.users.update_one(
-            {"id": int(user_id)},
-            {"$addToSet": {"purchases": ObjectId(story_id)}}
-        )
-        await arya_db.db.premium_purchases.update_one(
-            {"user_id": int(user_id), "story_id": ObjectId(story_id)},
-            {"$set": {
-                "user_id": int(user_id),
-                "story_id": ObjectId(story_id),
-                "source": "cashfree",
-                "amount": order.get("amount", 0),
-                "order_id": order_id,
-                "created_at": time.time()
-            }},
-            upsert=True
-        )
-
-        from utils import log_payment
-        asyncio.create_task(log_payment(
-            amount=order.get("amount", 0),
-            user_id=user_id,
-            story_name=order.get("story_name", "Story"),
-            payment_method="Cashfree (Cards/NetBanking/UPI)",
-            order_id=order_id
-        ))
-
-    return {"success": True, "message": "Payment processed successfully"}
 
 
 # ===== Paytm Payment Gateway: Create Order =====
@@ -4958,7 +4843,7 @@ async def cashfree_pay_page(session_id: str = Query(""), sandbox: bool = Query(F
 @api_router.post("/verify-cashfree-payment")
 @api_router.get("/verify-cashfree-payment")
 async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
-    """Verify Cashfree payment status by querying Cashfree API server-to-server."""
+    """Verify Cashfree payment status by querying Cashfree API server-to-server with strict isolation between Delivery Bot Pass orders and Mini App Story orders."""
     if not payload and not order_id:
         return {"success": False, "detail": "Missing order_id"}
         
@@ -4966,11 +4851,117 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
     if not oid:
         return {"success": False, "detail": "Missing order_id in request"}
 
-    arya_db = app.state.db
+    oid = str(oid).strip()
+    arya_db = getattr(app.state, "db", None) or db
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Branch 1: Delivery Bot Unlimited Pass Order Isolation
+    # ─────────────────────────────────────────────────────────────────────────
+    is_pass_order = bool(
+        oid.startswith("PASS-") or
+        await arya_db.db.delivery_pass_orders.count_documents({"order_id": oid}) > 0 or
+        await arya_db.db.pass_orders.count_documents({"order_id": oid}) > 0
+    )
+
+    if is_pass_order:
+        pass_order = (
+            await arya_db.db.delivery_pass_orders.find_one({"order_id": oid}) or
+            await arya_db.db.pass_orders.find_one({"order_id": oid})
+        )
+
+        if not pass_order:
+            logger.warning(f"[CF-PASS] Pass order document not found for {oid}")
+            return {"success": False, "detail": "Pass order not found", "is_pass": True}
+
+        if pass_order.get("status") == "PAID":
+            return {"success": True, "status": "paid", "order_id": oid, "is_pass": True}
+
+        # Check Cashfree credentials
+        cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+        app_id = (cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")).strip()
+        secret_key = cfg.get("cashfree_secret_key", "").strip()
+        cf_env = cfg.get("cashfree_env", "sandbox").strip().lower()
+        is_sandbox = (cf_env in ("sandbox", "staging", "test") or "TEST" in app_id.upper() or "SANDBOX" in app_id.upper())
+
+        if not app_id or not secret_key:
+            return {"success": False, "detail": "Cashfree credentials missing", "is_pass": True}
+
+        base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
+        check_url = f"{base_url}/orders/{oid}"
+        headers = {
+            "x-client-id": app_id,
+            "x-client-secret": secret_key,
+            "x-api-version": "2023-08-01",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(check_url, headers=headers)
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    cf_status = str(res_json.get("order_status", "")).upper()
+                    if cf_status in ("PAID", "SUCCESS"):
+                        # Atomically claim pass order to guarantee idempotency across both collections
+                        claimed = await arya_db.db.delivery_pass_orders.find_one_and_update(
+                            {"order_id": oid, "status": {"$ne": "PAID"}},
+                            {"$set": {"status": "PAID", "paid_at": time.time(), "payment_details": res_json}},
+                            return_document=False
+                        )
+                        if not claimed:
+                            claimed = await arya_db.db.pass_orders.find_one_and_update(
+                                {"order_id": oid, "status": {"$ne": "PAID"}},
+                                {"$set": {"status": "PAID", "paid_at": time.time(), "payment_details": res_json}},
+                                return_document=False
+                            )
+
+                        if claimed:
+                            p_uid = int(pass_order.get("user_id"))
+                            p_dur = str(pass_order.get("duration", "1d"))
+                            p_uname = pass_order.get("user_name", "User")
+                            p_amt = float(pass_order.get("amount", 0))
+
+                            from database import parse_duration_to_seconds, format_duration_verbose
+                            dur_sec = parse_duration_to_seconds(p_dur, default_unit='d')
+                            cur_pass = await arya_db.db.unlimited_passes.find_one({'user_id': p_uid})
+                            now_ts = time.time()
+                            base_t = cur_pass.get('expires_at', 0) if (cur_pass and cur_pass.get('expires_at', 0) > now_ts) else now_ts
+                            new_exp = base_t + dur_sec
+                            pass_fields = {
+                                'expires_at': new_exp,
+                                'user_name': p_uname,
+                                'updated_at': now_ts,
+                                'plan_key': p_dur,
+                                'plan_name': f"{format_duration_verbose(dur_sec).title()} Unlimited Pass",
+                                'amount': p_amt
+                            }
+                            if pass_order.get("bot_id"):
+                                pass_fields['bot_id'] = int(pass_order.get("bot_id"))
+                            if pass_order.get("bot_username"):
+                                pass_fields['bot_username'] = str(pass_order.get("bot_username"))
+                            await arya_db.db.unlimited_passes.update_one({'user_id': p_uid}, {'$set': pass_fields}, upsert=True)
+                            logger.info(f"[CF-PASS-ACTIVATE] Pass order {oid} claimed and activated for user {p_uid}, new_exp={new_exp}")
+
+                        return {"success": True, "status": "paid", "order_id": oid, "is_pass": True}
+                    else:
+                        return {"success": False, "status": cf_status, "order_id": oid, "is_pass": True}
+                else:
+                    return {"success": False, "detail": f"Cashfree API returned HTTP {resp.status_code}", "is_pass": True}
+        except Exception as e:
+            logger.error(f"[CF-PASS-ERROR] Exception verifying pass order {oid}: {e}")
+            return {"success": False, "detail": str(e), "is_pass": True}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Branch 2: Mini App Story Order Processing
+    # ─────────────────────────────────────────────────────────────────────────
     order = await arya_db.db.orders.find_one({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]})
 
-    if order and order.get("status") == "paid":
-        return {"success": True, "status": "paid", "order_id": oid, "payment_id": order.get("payment_id", "")}
+    if not order:
+        logger.warning(f"[CF-STORY] No registered story order found for order_id={oid}. Skipping story order creation to prevent duplicate fake orders.")
+        return {"success": False, "detail": "Story order not found in database"}
+
+    if order.get("status") == "paid":
+        return {"success": True, "status": "paid", "order_id": order.get("order_id", oid), "payment_id": order.get("payment_id", "")}
 
     cfg = await arya_db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     app_id     = (cfg.get("cashfree_app_id", "") or cfg.get("cashfree_api_id", "")).strip()
@@ -4982,7 +4973,7 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
         return {"success": False, "detail": "Cashfree credentials missing"}
 
     base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
-    cf_query_id = (order.get("order_id") if order else None) or oid
+    cf_query_id = order.get("order_id") or oid
     check_url = f"{base_url}/orders/{cf_query_id}"
 
     headers = {
@@ -5003,80 +4994,36 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                 if cf_status in ("PAID", "SUCCESS"):
                     payment_id = res_json.get("cf_order_id") or cf_query_id
                     
-                    # 1. Delivery Bot Unlimited Pass Order Isolation (DO NOT log as story or create mini app order)
-                    if oid.startswith("PASS-") or await arya_db.db.pass_orders.count_documents({"order_id": oid}) > 0:
-                        pass_order = await arya_db.db.pass_orders.find_one({"order_id": oid})
-                        if pass_order and pass_order.get("status") != "PAID":
-                            claimed = await arya_db.db.pass_orders.find_one_and_update(
-                                {"order_id": oid, "status": {"$ne": "PAID"}},
-                                {"$set": {"status": "PAID", "paid_at": time.time(), "payment_details": res_json}},
-                                return_document=False
-                            )
-                            if claimed:
-                                p_uid = int(pass_order.get("user_id"))
-                                p_dur = pass_order.get("duration", "1d")
-                                p_uname = pass_order.get("user_name", "User")
-                                from database import parse_duration_to_seconds
-                                dur_sec = parse_duration_to_seconds(str(p_dur), default_unit='d')
-                                cur_pass = await arya_db.db.unlimited_passes.find_one({'user_id': p_uid})
-                                now_ts = time.time()
-                                base_t = cur_pass.get('expires_at', 0) if (cur_pass and cur_pass.get('expires_at', 0) > now_ts) else now_ts
-                                new_exp = base_t + dur_sec
-                                pass_fields = {'expires_at': new_exp, 'user_name': p_uname, 'updated_at': now_ts}
-                                if pass_order.get("bot_id"):
-                                    pass_fields['bot_id'] = int(pass_order.get("bot_id"))
-                                if pass_order.get("bot_username"):
-                                    pass_fields['bot_username'] = str(pass_order.get("bot_username"))
-                                await arya_db.db.unlimited_passes.update_one({'user_id': p_uid}, {'$set': pass_fields}, upsert=True)
-                        return {"success": True, "status": "paid", "order_id": oid, "is_pass": True}
-
-                    # 2. Mini App Story Order Processing
-                    cust_details = res_json.get("customer_details", {})
-                    cust_id_str = str(cust_details.get("customer_id", ""))
-                    user_id = order.get("user_id") if order else (int(cust_id_str.replace("cust_", "")) if "cust_" in cust_id_str and cust_id_str.replace("cust_", "").isdigit() else None)
-                    story_ids = order.get("story_ids", []) if order else []
-
-                    if order:
-                        await arya_db.db.orders.update_one(
-                            {"_id": order["_id"]},
-                            {"$set": {
-                                "status": "paid",
-                                "payment_id": str(payment_id),
-                                "paid_at": datetime.now(timezone.utc),
-                            }}
-                        )
-                    elif story_ids or (oid.startswith("AM-") or oid.startswith("DODO-")):
-                        order_doc = {
-                            "order_id": oid,
-                            "cf_order_id": str(payment_id),
-                            "user_id": user_id,
-                            "total": float(res_json.get("order_amount", 0.0)),
-                            "gateway": "cashfree",
+                    # Atomic transition from non-paid to paid guarantees single execution
+                    claimed = await arya_db.db.orders.find_one_and_update(
+                        {"_id": order["_id"], "status": {"$ne": "paid"}},
+                        {"$set": {
                             "status": "paid",
                             "payment_id": str(payment_id),
                             "paid_at": datetime.now(timezone.utc),
-                            "created_at": datetime.now(timezone.utc)
-                        }
-                        await arya_db.db.orders.insert_one(order_doc)
-                    else:
-                        # Unrecognized order with no story associations — do not pollute story orders
-                        return {"success": True, "status": "paid", "order_id": oid}
-                    
-                    if user_id and story_ids:
-                        for sid in story_ids:
-                            try:
-                                await arya_db.add_purchase(user_id, sid)
-                            except Exception as e:
-                                logger.error(f"add_purchase error for {sid}: {e}")
-                                
-                    story_names = order.get("story_names", []) if order else []
-                    if story_ids or story_names:
+                            "updated_at": datetime.now(timezone.utc)
+                        }},
+                        return_document=False
+                    )
+
+                    if claimed:
+                        user_id = order.get("user_id")
+                        story_ids = order.get("story_ids", [])
+                        if user_id and story_ids:
+                            for sid in story_ids:
+                                try:
+                                    await arya_db.add_purchase(user_id, sid)
+                                except Exception as e:
+                                    logger.error(f"add_purchase error for {sid}: {e}")
+                                    
+                        story_names = order.get("story_names", [])
                         updated_order = {
-                            "order_id": oid,
+                            **order,
+                            "order_id": order.get("order_id", oid),
                             "user_id": user_id,
                             "story_ids": story_ids,
                             "story_names": story_names,
-                            "total": float(res_json.get("order_amount", 0.0)),
+                            "total": float(res_json.get("order_amount", order.get("total", 0.0))),
                             "status": "paid",
                             "payment_id": str(payment_id),
                             "payment_method": "Cashfree",
@@ -5086,9 +5033,9 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                         asyncio.create_task(record_purchased_stories(updated_order))
                         asyncio.create_task(send_purchase_receipt_to_user(updated_order))
 
-                    return {"success": True, "status": "paid", "order_id": oid, "payment_id": str(payment_id)}
+                    return {"success": True, "status": "paid", "order_id": order.get("order_id", oid), "payment_id": str(payment_id)}
                 else:
-                    return {"success": False, "status": cf_status, "order_id": oid}
+                    return {"success": False, "status": cf_status, "order_id": order.get("order_id", oid)}
             else:
                 return {"success": False, "detail": f"Cashfree API returned HTTP {resp.status_code}"}
     except Exception as e:
