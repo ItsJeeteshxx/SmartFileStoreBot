@@ -97,7 +97,7 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str
             "customer_phone": "9999999999"
         },
         "order_meta": {
-            "return_url": f"https://aryapremium.store/api/cashfree-pay?session_id={{payment_session_id}}&sandbox={'true' if creds['is_sandbox'] else 'false'}",
+            "return_url": f"https://t.me/{bot_username}?start=cf_{order_id}" if bot_username else "https://t.me/AryaV2XBot",
             "notify_url": "https://aryapremium.store/api/cashfree-webhook"
         },
         "order_note": f"{dur_verbose.title()} Unlimited Delivery Pass"

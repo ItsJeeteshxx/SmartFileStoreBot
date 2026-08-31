@@ -4857,14 +4857,14 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
     # ─────────────────────────────────────────────────────────────────────────
     is_pass_order = bool(
         oid.startswith("PASS-") or
-        await arya_db.db.delivery_pass_orders.count_documents({"order_id": oid}) > 0 or
-        await arya_db.db.pass_orders.count_documents({"order_id": oid}) > 0
+        await arya_db.db.delivery_pass_orders.count_documents({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]}) > 0 or
+        await arya_db.db.pass_orders.count_documents({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]}) > 0
     )
 
     if is_pass_order:
         pass_order = (
-            await arya_db.db.delivery_pass_orders.find_one({"order_id": oid}) or
-            await arya_db.db.pass_orders.find_one({"order_id": oid})
+            await arya_db.db.delivery_pass_orders.find_one({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]}) or
+            await arya_db.db.pass_orders.find_one({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]})
         )
 
         if not pass_order:
@@ -4950,11 +4950,14 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
             return {"success": False, "detail": str(e), "is_pass": True}
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Branch 2: Mini App Story Order Processing
+    # Branch 2: Mini App Story Order Processing (Strictly isolated from Pass orders)
     # ─────────────────────────────────────────────────────────────────────────
+    if str(oid).startswith("PASS-"):
+        return {"success": False, "detail": "Pass order must not be processed as story order", "is_pass": True}
+
     order = await arya_db.db.orders.find_one({"$or": [{"order_id": oid}, {"cf_order_id": oid}, {"payment_session_id": oid}]})
 
-    if not order:
+    if not order or str(order.get("order_id", "")).startswith("PASS-"):
         logger.warning(f"[CF-STORY] No registered story order found for order_id={oid}. Skipping story order creation to prevent duplicate fake orders.")
         return {"success": False, "detail": "Story order not found in database"}
 
@@ -12152,9 +12155,9 @@ async def trigger_payment_log_from_order(order: dict):
         if not arya_db:
             return
 
-        order_id = order.get("order_id")
-        if not order_id:
-            logger.warning("Order has no order_id, cannot de-duplicate payment log")
+        order_id = str(order.get("order_id") or "")
+        if not order_id or order_id.startswith("PASS-"):
+            logger.info(f"Skipping Arya Premium payment log for pass order: {order_id}")
             return
 
         res = await arya_db.db.orders.find_one_and_update(
@@ -12338,6 +12341,8 @@ async def record_purchased_stories(order: dict):
     the bot can find the purchase records and properly log the deliveries.
     """
     try:
+        if str(order.get("order_id", "")).startswith("PASS-"):
+            return
         arya_db = app.state.db
         if not arya_db:
             return
@@ -12351,6 +12356,8 @@ async def record_purchased_stories(order: dict):
             return
             
         story_ids = order.get("story_ids", [])
+        if not story_ids:
+            return
         from bson.objectid import ObjectId
         
         # Get default bot_id
@@ -12419,6 +12426,8 @@ async def record_purchased_stories(order: dict):
 async def send_purchase_receipt_to_user(order: dict):
     """Sends standardized Purchase Complete DM to user - same format as UPI/manual payments."""
     try:
+        if str(order.get("order_id", "")).startswith("PASS-"):
+            return
         arya_db = app.state.db
         user_id = order.get("user_id")
         if not user_id:

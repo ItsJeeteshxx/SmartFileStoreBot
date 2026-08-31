@@ -3190,6 +3190,7 @@ async def start_pass_cashfree_auto_verifier(
                         f'<emoji id="5224607267797606837">🎉</emoji> <b>Unlimited Pass Activated Automatically!</b>\n\n'
                         f"Hey <b>{user_name}</b>, your payment of <b>₹{amount:.2f}</b> was <b>automatically verified</b>!\n\n"
                         f"<b>Plan:</b> {dur_verbose.title()} Unlimited Access Pass\n"
+                        f"<b>Order ID:</b> <code>{order_id}</code>\n"
                         f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
                         f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
                         f"You can now access any batch and story links without cooldown. Enjoy!"
@@ -4655,6 +4656,7 @@ async def _process_pass_callback(client, query):
                 success_text = (
                     f'<emoji id="5224607267797606837">🎉</emoji> <b>Unlimited Pass Activated Successfully!</b>\n\n'
                     f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                    f"<b>Order ID:</b> <code>{order_id}</code>\n"
                     f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
                     f'<b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
                     f"You can now access any batch and story links without cooldown. Enjoy!"
