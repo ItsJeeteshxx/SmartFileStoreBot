@@ -1284,45 +1284,45 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
 
             if is_queued:
                 row.append(InlineKeyboardButton(f"⚡ Force [{short}]", callback_data=f"mj#force_ask#{jid}"))
-                api_row.append({"text": f"Force [{short}]", "callback_data": f"mj#force_ask#{jid}", "icon_custom_emoji_id": "5264895611517300926"})
+                api_row.append({"text": f"⚡ Force [{short}]", "callback_data": f"mj#force_ask#{jid}", "icon_custom_emoji_id": "5264895611517300926"})
                 row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"mj#stop#{jid}"))
-                api_row.append({"text": f"Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
+                api_row.append({"text": f"⏹ Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
             elif st == "running":
                 row.append(InlineKeyboardButton(f"⏸ Pause [{short}]", callback_data=f"mj#pause#{jid}"))
-                api_row.append({"text": f"Pause [{short}]", "callback_data": f"mj#pause#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
+                api_row.append({"text": f"⏸ Pause [{short}]", "callback_data": f"mj#pause#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
                 row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"mj#stop#{jid}"))
-                api_row.append({"text": f"Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
+                api_row.append({"text": f"⏹ Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
             elif st == "paused":
                 row.append(InlineKeyboardButton(f"▶️ Resume [{short}]", callback_data=f"mj#resume#{jid}"))
-                api_row.append({"text": f"Resume [{short}]", "callback_data": f"mj#resume#{jid}", "icon_custom_emoji_id": "5413643931139219521"})
+                api_row.append({"text": f"▶️ Resume [{short}]", "callback_data": f"mj#resume#{jid}", "icon_custom_emoji_id": "5413643931139219521"})
                 row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"mj#stop#{jid}"))
-                api_row.append({"text": f"Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
+                api_row.append({"text": f"⏹ Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
             else:
                 row.append(InlineKeyboardButton(f"▶️ Start [{short}]", callback_data=f"mj#start#{jid}"))
-                api_row.append({"text": f"Start [{short}]", "callback_data": f"mj#start#{jid}", "icon_custom_emoji_id": "5413643931139219521"})
+                api_row.append({"text": f"▶️ Start [{short}]", "callback_data": f"mj#start#{jid}", "icon_custom_emoji_id": "5413643931139219521"})
                 row.append(InlineKeyboardButton(f"🔁 Reset [{short}]", callback_data=f"mj#reset#{jid}"))
-                api_row.append({"text": f"Reset [{short}]", "callback_data": f"mj#reset#{jid}", "icon_custom_emoji_id": "6030657343744644592"})
+                api_row.append({"text": f"🔁 Reset [{short}]", "callback_data": f"mj#reset#{jid}", "icon_custom_emoji_id": "6030657343744644592"})
             
             row.append(InlineKeyboardButton(f"ℹ️ Info [{short}]", callback_data=f"mj#info#{jid}"))
-            api_row.append({"text": f"Info [{short}]", "callback_data": f"mj#info#{jid}", "icon_custom_emoji_id": "5807700854060357972"})
+            api_row.append({"text": f"ℹ️ Info [{short}]", "callback_data": f"mj#info#{jid}", "icon_custom_emoji_id": "5807700854060357972"})
             
             row.append(InlineKeyboardButton(f"✏️ Name [{short}]", callback_data=f"mj#rename#{jid}"))
-            api_row.append({"text": f"Name [{short}]", "callback_data": f"mj#rename#{jid}", "icon_custom_emoji_id": "6024110353296660793"})
+            api_row.append({"text": f"✏️ Name [{short}]", "callback_data": f"mj#rename#{jid}", "icon_custom_emoji_id": "6024110353296660793"})
             
             row.append(InlineKeyboardButton(f"🗑 Delete [{short}]",  callback_data=f"mj#del#{jid}"))
-            api_row.append({"text": f"Delete [{short}]", "callback_data": f"mj#del#{jid}", "icon_custom_emoji_id": "6030400221232501136"})
+            api_row.append({"text": f"🗑 Delete [{short}]", "callback_data": f"mj#del#{jid}", "icon_custom_emoji_id": "6030400221232501136"})
             
             btns_list.append(row)
             api_btns_list.append(api_row)
 
         btns_list.append([InlineKeyboardButton("➕ Create Multi Job", callback_data="mj#new")])
-        api_btns_list.append([{"text": "Create Multi Job", "callback_data": "mj#new", "icon_custom_emoji_id": "5807642902066634351"}])
+        api_btns_list.append([{"text": "➕ Create Multi Job", "callback_data": "mj#new", "icon_custom_emoji_id": "5807642902066634351"}])
         
         btns_list.append([InlineKeyboardButton("🔄 Refresh", callback_data="mj#list")])
-        api_btns_list.append([{"text": "Refresh", "callback_data": "mj#list", "icon_custom_emoji_id": "5893192487324880883"}])
+        api_btns_list.append([{"text": "🔄 Refresh", "callback_data": "mj#list", "icon_custom_emoji_id": "5893192487324880883"}])
         
-        btns_list.append([InlineKeyboardButton("Back", callback_data="back")])
-        api_btns_list.append([{"text": "Back", "callback_data": "back"}])
+        btns_list.append([InlineKeyboardButton("« Back", callback_data="back")])
+        api_btns_list.append([{"text": "« Back", "callback_data": "back"}])
         
         btns = btns_list
         api_btns = api_btns_list

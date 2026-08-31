@@ -985,10 +985,10 @@ async def settings_query(bot, query):
      buttons.append([InlineKeyboardButton("──── Delivery Bots ────", callback_data="settings#noop")])
 
      api_buttons = [
-         [{"text": f"Protection - {'ON' if protect else 'OFF'}", "callback_data": "settings#sharebotprotect", "icon_custom_emoji_id": "5778570255555105942"}],
-         [{"text": "Logs", "callback_data": "settings#sb_logs_channel", "icon_custom_emoji_id": "5920046907782074235"}],
-         [{"text": "Anti Abuse", "callback_data": "settings#sb_anti_abuse", "icon_custom_emoji_id": "5893192487324880883"}],
-         [{"text": "Rate Limit & Pass", "callback_data": "settings#sb_ratelimit", "icon_custom_emoji_id": "5258113901106580375"}],
+         [{"text": f"🛡 Protection - {'ON' if protect else 'OFF'}", "callback_data": "settings#sharebotprotect", "icon_custom_emoji_id": "5778570255555105942"}],
+         [{"text": "📋 Logs", "callback_data": "settings#sb_logs_channel", "icon_custom_emoji_id": "5920046907782074235"}],
+         [{"text": "🛡 Anti Abuse", "callback_data": "settings#sb_anti_abuse", "icon_custom_emoji_id": "5893192487324880883"}],
+         [{"text": "⏳ Rate Limit & Pass", "callback_data": "settings#sb_ratelimit", "icon_custom_emoji_id": "5258113901106580375"}],
          [{"text": "──── Delivery Bots ────", "callback_data": "settings#noop"}],
      ]
 
@@ -1001,25 +1001,25 @@ async def settings_query(bot, query):
              name2 = str(b2.get('name', 'Bot')).strip()
              if len(name1) <= 7 and len(name2) <= 7:
                  buttons.append([
-                     InlineKeyboardButton(name1, callback_data=f"settings#sb_view_{b1['id']}"),
-                     InlineKeyboardButton(name2, callback_data=f"settings#sb_view_{b2['id']}")
+                     InlineKeyboardButton(f"🤖 {name1}", callback_data=f"settings#sb_view_{b1['id']}"),
+                     InlineKeyboardButton(f"🤖 {name2}", callback_data=f"settings#sb_view_{b2['id']}")
                  ])
                  api_buttons.append([
-                     {"text": name1, "callback_data": f"settings#sb_view_{b1['id']}"},
-                     {"text": name2, "callback_data": f"settings#sb_view_{b2['id']}"}
+                     {"text": f"🤖 {name1}", "callback_data": f"settings#sb_view_{b1['id']}"},
+                     {"text": f"🤖 {name2}", "callback_data": f"settings#sb_view_{b2['id']}"}
                  ])
                  i += 2
                  continue
-         buttons.append([InlineKeyboardButton(name1, callback_data=f"settings#sb_view_{b1['id']}")])
-         api_buttons.append([{"text": name1, "callback_data": f"settings#sb_view_{b1['id']}"}])
+         buttons.append([InlineKeyboardButton(f"🤖 {name1}", callback_data=f"settings#sb_view_{b1['id']}")])
+         api_buttons.append([{"text": f"🤖 {name1}", "callback_data": f"settings#sb_view_{b1['id']}"}])
          i += 1
 
      if len(bots) < 10:
          buttons.append([InlineKeyboardButton("➕ Add Share Bot", callback_data="settings#sb_add")])
-         api_buttons.append([{"text": "Add Share Bot", "callback_data": "settings#sb_add", "icon_custom_emoji_id": "5807642902066634351"}])
+         api_buttons.append([{"text": "➕ Add Share Bot", "callback_data": "settings#sb_add", "icon_custom_emoji_id": "5807642902066634351"}])
 
-     buttons.append([InlineKeyboardButton('Back', callback_data="settings#main")])
-     api_buttons.append([{"text": "Back", "callback_data": "settings#main"}])
+     buttons.append([InlineKeyboardButton('« Back', callback_data="settings#main")])
+     api_buttons.append([{"text": "« Back", "callback_data": "settings#main"}])
 
      text = (
          f'<emoji id="6037622221625626773">🤖</emoji> <b>Share Bot Config</b>\n'
