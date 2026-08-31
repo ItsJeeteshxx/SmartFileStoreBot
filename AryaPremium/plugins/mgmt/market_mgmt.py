@@ -1488,8 +1488,15 @@ async def market_callback(client, query):
 
             b_id_int = int(b_id)
             bot_mode = cfg.get("bot_mode", "full")
-            mode_btn_text = "🟢 STORE: ON (Full)" if bot_mode == "full" else "🔴 STORE: OFF (Mini App)"
-            mode_desc = "🟢 <b>Full Store Mode</b> (All bot menus active)" if bot_mode == "full" else "🔴 <b>Mini App Only Mode</b> (Store off, /mystories & delivery active)"
+            if bot_mode == "show_store":
+                mode_btn_text = "🎬 STORE: Show Store (OTT)"
+                mode_desc = "🎬 <b>Show Store Mode</b> (Pay-Per-Show OTT, Auto-Indexer, 600×720 Showcase)"
+            elif bot_mode == "full":
+                mode_btn_text = "🟢 STORE: ON (Full)"
+                mode_desc = "🟢 <b>Full Store Mode</b> (All bot menus active)"
+            else:
+                mode_btn_text = "🔴 STORE: OFF (Mini App)"
+                mode_desc = "🔴 <b>Mini App Only Mode</b> (Store off, /mystories & delivery active)"
             story_count = await db.db.premium_stories.count_documents({"bot_id": b_id_int})
 
             log_ch_val = cfg.get("log_channel", None)
@@ -1534,6 +1541,11 @@ async def market_callback(client, query):
 
             kb = [
                 [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
+            ]
+            if bot_mode == "show_store":
+                kb.append([InlineKeyboardButton("🔄 Auto-Index Catalog (800+ Shows)", callback_data=f"mk#bot_show_idx_{b_id}")])
+
+            kb.extend([
                 [InlineKeyboardButton(f"📱 Mini App Deep Links: {ma_links_state}", callback_data=f"mk#bot_toggle_malinks_{b_id}")],
                 [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
                 [InlineKeyboardButton("📊 " + utils.to_smallcap('Detailed Live Stats'), callback_data=f"mk#bot_stats_{b_id}")],
@@ -1548,7 +1560,7 @@ async def market_callback(client, query):
                 [InlineKeyboardButton(f"UPI: {upi_state}", callback_data=f"mk#p_upi_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap('Remove Bot'), callback_data=f"mk#bot_confirm_rm_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data="mk#accounts")],
-            ]
+            ])
             await query.message.edit_text(
                 f"<b>❪ PREMIUM BOT PROFILE & STATS ❫</b>\n\n"
                 f"<b>» Name:</b> {bt.get('name')}\n"
@@ -1672,21 +1684,30 @@ async def market_callback(client, query):
             story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
 
             kb = [
-                [InlineKeyboardButton("🟢 Turn ON Full Store Mode", callback_data=f"mk#bot_set_mode_{b_id}_full")],
+                [InlineKeyboardButton("🟢 Full Store Mode (Normal)", callback_data=f"mk#bot_set_mode_{b_id}_full")],
+                [InlineKeyboardButton("🎬 Show Store Mode (Pay-Per-Show OTT)", callback_data=f"mk#bot_set_mode_{b_id}_show_store")],
                 [InlineKeyboardButton("🔴 Turn OFF Store (Mini App Only)", callback_data=f"mk#bot_mode_confirm_off_{b_id}")],
                 [InlineKeyboardButton("« " + utils.to_smallcap("Back"), callback_data=f"mk#bot_view_{b_id}")],
             ]
-            curr_label = "🟢 FULL STORE (ACTIVE)" if curr_mode == "full" else "🔴 MINI APP ONLY (LITE / STORE OFF)"
+            if curr_mode == "show_store":
+                curr_label = "🎬 SHOW STORE (PAY-PER-SHOW OTT)"
+            elif curr_mode == "full":
+                curr_label = "🟢 FULL STORE (ACTIVE)"
+            else:
+                curr_label = "🔴 MINI APP ONLY (LITE / STORE OFF)"
+
             await query.message.edit_text(
                 f"<b>⚡ BOT MODE SETTINGS (@{bt.get('username')})</b>\n\n"
                 f"<b>Current Mode:</b> <code>{curr_label}</code>\n"
                 f"<b>Assigned Stories:</b> <code>{story_count}</code>\n\n"
                 "<b>Description of Modes:</b>\n"
-                "• <b>🟢 Full Store Mode:</b>\n"
-                "  Full Telegram bot store with category browsing, inline search, language selection & channel join requirements.\n\n"
+                "• <b>🟢 Full Store Mode (Normal):</b>\n"
+                "  Standard Telegram bot store with category browsing, inline search, language selection.\n\n"
+                "• <b>🎬 Show Store Mode (Pay-Per-Show OTT):</b>\n"
+                "  Auto-Indexer enabled, single combined episode shows, 600×720 showcase posts with deep links, My Shows library.\n\n"
                 "• <b>🔴 Mini App Only (Store OFF):</b>\n"
-                "  Disables all store browsing & channel join requirements. When users start the bot, they receive the Arya Premium Mini App welcome poster & 'Open App' button.\n"
-                "  <i>⚠️ <b>/mystories command and automatic story delivery will remain 100% active!</b></i>",
+                "  Disables bot store browsing. Users receive Mini App welcome poster & button.\n"
+                "  <i>⚠️ <b>Delivery and purchases remain 100% active!</b></i>",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
 
@@ -1738,14 +1759,247 @@ async def market_callback(client, query):
         elif cmd.startswith("bot_set_mode_"):
             parts = cmd.split("_")
             b_id = int(parts[3])
-            target_mode = parts[4] # "full" or "miniapp"
+            target_mode = parts[4]
+            if len(parts) > 5:
+                target_mode = f"{parts[4]}_{parts[5]}" # show_store
             
             bt = await db.db.premium_bots.find_one({"id": b_id})
             if not bt: return await _safe_answer(query, "Bot not found!")
             
             await db.db.premium_bots.update_one({"id": b_id}, {"$set": {"config.bot_mode": target_mode}})
-            label = "Mini App Only (Lite / Store OFF)" if target_mode == "miniapp" else "Full Store"
+            if target_mode == "show_store":
+                label = "🎬 Show Store Mode (Pay-Per-Show OTT)"
+            elif target_mode == "miniapp":
+                label = "🔴 Mini App Only (Lite / Store OFF)"
+            else:
+                label = "🟢 Full Store Mode"
             await _safe_answer(query, f"✅ Bot Mode set to: {label}", show_alert=True)
+            query.data = f"mk#bot_view_{b_id}"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("bot_show_idx_"):
+            b_id = cmd.split("bot_show_idx_")[1]
+            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            cfg = bt.get("config", {}) or {}
+            
+            src_ch = cfg.get("db_channel_id", "Not Configured")
+            dst_ch = cfg.get("showcase_channel_id", "Not Configured")
+            plat = cfg.get("platform_name", "Story TV")
+            def_price = cfg.get("default_price", 19)
+            total_shows = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
+
+            kb = [
+                [
+                    InlineKeyboardButton(f"📁 Source DB: {src_ch}", callback_data=f"mk#bot_show_src_{b_id}"),
+                    InlineKeyboardButton(f"📢 Showcase: {dst_ch}", callback_data=f"mk#bot_show_dst_{b_id}")
+                ],
+                [
+                    InlineKeyboardButton(f"🖥 Platform: {plat}", callback_data=f"mk#bot_show_plat_{b_id}"),
+                    InlineKeyboardButton(f"💰 Price: ₹{def_price}", callback_data=f"mk#bot_show_price_{b_id}")
+                ],
+                [InlineKeyboardButton("🚀 Scan & Index Database Channel (800+ Shows)", callback_data=f"mk#bot_show_scan_{b_id}")],
+                [InlineKeyboardButton("📤 Publish Shows to Public Showcase Channel", callback_data=f"mk#bot_show_pub_{b_id}")],
+                [InlineKeyboardButton("« " + utils.to_smallcap("Back"), callback_data=f"mk#bot_view_{b_id}")]
+            ]
+
+            await query.message.edit_text(
+                f"<b>🔄 AUTO-INDEXER & SHOWCASE PUBLISHER (@{bt.get('username')})</b>\n\n"
+                f"• <b>Total Catalog Shows:</b> <code>{total_shows}</code>\n"
+                f"• <b>Source DB Channel:</b> <code>{src_ch}</code>\n"
+                f"• <b>Showcase Channel:</b> <code>{dst_ch}</code>\n"
+                f"• <b>Default Platform:</b> <code>{plat}</code>\n"
+                f"• <b>Default Price:</b> <code>₹{def_price}</code>\n\n"
+                "<i>Database channel ke poster aur video files ko auto-scan karke catalog index karein aur public showcase channel me 600×720 enhanced posters publish karein.</i>",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("bot_show_src_"):
+            b_id = cmd.split("bot_show_src_")[1]
+            await query.message.delete()
+            ask = await client.send_message(
+                user_id,
+                "<b>📁 Set Source Database Channel</b>\n\n"
+                "Enter the Database Channel ID (e.g. <code>-1001234567890</code>) where your shows & videos are stored:\n\n"
+                "Send /cancel to abort."
+            )
+            try:
+                from utils import ask_user
+                resp = await ask_user(client, user_id, timeout=60)
+                if getattr(resp, 'text', None) and '/cancel' in resp.text:
+                    await resp.delete()
+                    return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+                ch_id_val = int((resp.text or '').strip())
+                await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config.db_channel_id": ch_id_val}})
+                await resp.delete()
+                await ask.edit_text(f"✅ Source Database Channel set to <code>{ch_id_val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+            except Exception as e:
+                await ask.edit_text(f"❌ Error: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"mk#bot_show_src_{b_id}")]]))
+
+        elif cmd.startswith("bot_show_dst_"):
+            b_id = cmd.split("bot_show_dst_")[1]
+            await query.message.delete()
+            ask = await client.send_message(
+                user_id,
+                "<b>📢 Set Public Showcase Destination Channel</b>\n\n"
+                "Enter the Public Channel ID (e.g. <code>-1009876543210</code>) where posters with [Buy Now] buttons will be posted:\n\n"
+                "Send /cancel to abort."
+            )
+            try:
+                from utils import ask_user
+                resp = await ask_user(client, user_id, timeout=60)
+                if getattr(resp, 'text', None) and '/cancel' in resp.text:
+                    await resp.delete()
+                    return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+                ch_id_val = int((resp.text or '').strip())
+                await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config.showcase_channel_id": ch_id_val}})
+                await resp.delete()
+                await ask.edit_text(f"✅ Public Showcase Channel set to <code>{ch_id_val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+            except Exception as e:
+                await ask.edit_text(f"❌ Error: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"mk#bot_show_dst_{b_id}")]]))
+
+        elif cmd.startswith("bot_show_plat_"):
+            b_id = cmd.split("bot_show_plat_")[1]
+            await query.message.delete()
+            ask = await client.send_message(
+                user_id,
+                "<b>🖥 Set Default Platform Name</b>\n\n"
+                "Enter the platform name for this show store (e.g. <code>Story TV</code> or <code>Pocket FM</code>):\n\n"
+                "Send /cancel to abort."
+            )
+            try:
+                from utils import ask_user
+                resp = await ask_user(client, user_id, timeout=60)
+                if getattr(resp, 'text', None) and '/cancel' in resp.text:
+                    await resp.delete()
+                    return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+                plat_val = (resp.text or '').strip()
+                await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config.platform_name": plat_val}})
+                await resp.delete()
+                await ask.edit_text(f"✅ Default Platform set to <b>{plat_val}</b>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+            except Exception as e:
+                await ask.edit_text(f"❌ Error: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"mk#bot_show_plat_{b_id}")]]))
+
+        elif cmd.startswith("bot_show_price_"):
+            b_id = cmd.split("bot_show_price_")[1]
+            await query.message.delete()
+            ask = await client.send_message(
+                user_id,
+                "<b>💰 Set Default Show Price (₹)</b>\n\n"
+                "Enter the default price for newly indexed shows (in INR):\n"
+                "<b>Example:</b> <code>19</code> or <code>29</code>\n\n"
+                "Send /cancel to abort."
+            )
+            try:
+                from utils import ask_user
+                resp = await ask_user(client, user_id, timeout=60)
+                if getattr(resp, 'text', None) and '/cancel' in resp.text:
+                    await resp.delete()
+                    return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+                price_val = int((resp.text or '').strip())
+                if price_val < 1: raise ValueError('Invalid price')
+                await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config.default_price": price_val}})
+                await resp.delete()
+                await ask.edit_text(f"✅ Default Show Price set to <b>₹{price_val}</b>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]]))
+            except Exception as e:
+                await ask.edit_text(f"❌ Error: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"mk#bot_show_price_{b_id}")]]))
+
+        elif cmd.startswith("bot_show_scan_"):
+            b_id = cmd.split("bot_show_scan_")[1]
+            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            cfg = bt.get("config", {}) or {} if bt else {}
+            src_ch = cfg.get("db_channel_id")
+            if not src_ch:
+                return await _safe_answer(query, "⚠️ Please set Source Database Channel first!", show_alert=True)
+
+            await query.answer("🚀 Starting Auto-Scanner...", show_alert=False)
+            status_msg = await query.message.edit_text(
+                "<b>⏳ Scanning Database Channel...</b>\n\n"
+                "• <i>Reading messages sequentially...</i>\n"
+                "• <i>Pairing posters & video files...</i>\n"
+                "• <i>Deduplicating titles...</i>"
+            )
+
+            try:
+                from AryaPremium.plugins.mgmt.store_indexer import scan_and_index_channel
+            except ImportError:
+                from plugins.mgmt.store_indexer import scan_and_index_channel
+
+            async def _prog_cb(indexed, dups):
+                try:
+                    await status_msg.edit_text(
+                        f"<b>⏳ Scanning in Progress...</b>\n\n"
+                        f"• <b>Indexed Shows:</b> <code>{indexed}</code>\n"
+                        f"• <b>Duplicates Skipped:</b> <code>{dups}</code>"
+                    )
+                except Exception: pass
+
+            res = await scan_and_index_channel(
+                client=client,
+                channel_id=src_ch,
+                bot_id=int(b_id),
+                default_price=cfg.get("default_price", 19),
+                default_platform=cfg.get("platform_name", "Story TV"),
+                progress_callback=_prog_cb
+            )
+
+            await status_msg.edit_text(
+                f"<b>✅ Scan & Indexing Completed!</b>\n\n"
+                f"• <b>Total Newly Indexed:</b> <code>{res['indexed']}</code>\n"
+                f"• <b>Duplicates Skipped:</b> <code>{res['duplicates']}</code>\n"
+                f"• <b>Database Channel:</b> <code>{src_ch}</code>\n\n"
+                f"<i>Ab aap 'Publish to Public Showcase Channel' button se in sabhi shows ko public channel me post kar sakte hain!</i>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📤 Publish to Public Showcase Channel", callback_data=f"mk#bot_show_pub_{b_id}")],
+                    [InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]
+                ])
+            )
+
+        elif cmd.startswith("bot_show_pub_"):
+            b_id = cmd.split("bot_show_pub_")[1]
+            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            cfg = bt.get("config", {}) or {} if bt else {}
+            dst_ch = cfg.get("showcase_channel_id")
+            if not dst_ch:
+                return await _safe_answer(query, "⚠️ Please set Public Showcase Channel first!", show_alert=True)
+
+            b_uname = bt.get("username", "StoreBot") if bt else "StoreBot"
+            await query.answer("📤 Publishing shows to Showcase Channel...", show_alert=False)
+            status_msg = await query.message.edit_text("<b>⏳ Publishing 600×720 Showcase Posters...</b>\n\n<i>Processing shows...</i>")
+
+            try:
+                from AryaPremium.plugins.mgmt.store_indexer import publish_show_to_showcase
+            except ImportError:
+                from plugins.mgmt.store_indexer import publish_show_to_showcase
+
+            shows = await db.db.premium_stories.find({"bot_id": int(b_id), "is_show": True}).to_list(length=1000)
+            pub_count = 0
+
+            for sh in shows:
+                try:
+                    ok = await publish_show_to_showcase(
+                        client=client,
+                        target_channel_id=dst_ch,
+                        show=sh,
+                        store_bot_username=b_uname,
+                        tutorial_link=cfg.get("tutorial_url", "https://t.me/UseAryaBot")
+                    )
+                    if ok: pub_count += 1
+                    if pub_count % 10 == 0:
+                        try: await status_msg.edit_text(f"<b>⏳ Publishing in Progress...</b>\n\n• <b>Published:</b> <code>{pub_count} / {len(shows)}</code>")
+                        except Exception: pass
+                    await asyncio.sleep(1.5)
+                except Exception as e:
+                    logger.error(f"Failed publishing show {sh.get('title')}: {e}")
+
+            await status_msg.edit_text(
+                f"<b>🎉 Publishing Complete!</b>\n\n"
+                f"• <b>Total Shows Published:</b> <code>{pub_count}</code>\n"
+                f"• <b>Destination Channel:</b> <code>{dst_ch}</code>\n"
+                f"• <b>Deep-Link Bot:</b> @{b_uname}\n\n"
+                f"<i>Har post me 600×720 enhanced poster, bilingual expandable note, aur [🛍️ Buy Now] deep link buttons add ho chuke hain!</i>",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"mk#bot_show_idx_{b_id}")]])
+            )
             query.data = f"mk#bot_view_{b_id}"
             return await market_callback(client, query)
 

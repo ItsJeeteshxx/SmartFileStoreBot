@@ -1054,15 +1054,19 @@ def _get_top_emoji_row() -> list:
     ]
 
 
-def _get_main_menu(lang='en'):
+def _get_main_menu(lang='en', is_show_store=False):
+    my_shows_lbl = ("• मेरे शोज़ •" if lang == 'hi' else f"• {_bs('MY SHOWS')} •") if is_show_store else ("• मेरी स्टोरीज •" if lang == 'hi' else f"• {_bs('MY STORIES')} •")
+    search_lbl = ("शो खोजें" if lang == 'hi' else "Search Shows") if is_show_store else ("अपनी स्टोरी खोजें" if lang == 'hi' else f"{_sc('Search Your Story')}")
+    search_icon = "6266794310671275367" if is_show_store else "5282843764451195532"
+
     if lang == 'hi':
         kb = [
             _get_top_emoji_row(),
             [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
-             InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
+             InlineKeyboardButton(my_shows_lbl, callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
              InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help")],
-            [_ikb("अपनी स्टोरी खोजें", switch_inline_query_current_chat="", icon_custom_emoji_id="5282843764451195532")],
+            [_ikb(search_lbl, switch_inline_query_current_chat="", icon_custom_emoji_id=search_icon)],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1075,10 +1079,10 @@ def _get_main_menu(lang='en'):
         kb = [
             _get_top_emoji_row(),
             [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
-             InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
+             InlineKeyboardButton(my_shows_lbl, callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
              InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help")],
-            [_ikb(f"{_sc('Search Your Story')}", switch_inline_query_current_chat="", icon_custom_emoji_id="5282843764451195532")],
+            [_ikb(search_lbl, switch_inline_query_current_chat="", icon_custom_emoji_id=search_icon)],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1098,6 +1102,7 @@ def _get_premium_menu_markup(bt_cfg: dict, lang: str):
     rows = []
     updates_url = (bt_cfg.get("updates_url") or "").strip()
     support_url = (bt_cfg.get("support_url") or "").strip()
+    is_show_store = (bt_cfg.get("bot_mode") == "show_store")
 
     if updates_url or support_url:
         r = []
@@ -1110,7 +1115,7 @@ def _get_premium_menu_markup(bt_cfg: dict, lang: str):
         if r:
             rows.append(r)
 
-    base = _get_main_menu(lang).inline_keyboard
+    base = _get_main_menu(lang, is_show_store=is_show_store).inline_keyboard
     # Insert URL row above Close
     if rows:
         base = base[:-1] + rows + base[-1:]
@@ -2221,31 +2226,45 @@ async def _show_story_profile(client, user_id, story, lang):
     actual_files = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None)
     files_line = f'<b><emoji id="5805550320985578625">📁</emoji> {files_lbl}:</b> <b>{actual_files}</b>\n' if actual_files else ""
 
-    header_txt = (
-        f'<b><emoji id="5465432711218863135">♨️</emoji> Story:</b> {to_mathbold(name)}\n'
-        f'<b><emoji id="6019118553326689234">🔰</emoji> {status_lbl}:</b> <b>{status}</b>\n'
-        f'<b><emoji id="6019455905827920171">🖥</emoji> {plat_lbl}:</b> <b>{platform}</b>\n'
-        f'<b><emoji id="6024065724291488135">🧩</emoji> {genre_lbl}:</b> <b>{genre}</b>\n'
-        f"{price_line}"
-        f'<b><emoji id="5937999673510858217">🎬</emoji> {ep_lbl}:</b> <b>{episodes}</b>\n'
-        f"{files_line}"
-        f'<b><emoji id="5776182936638329359">📥</emoji> {del_lbl}:</b> <i>{del_val}</i>\n\n'
-    )
-
-    if desc and desc.lower() != "none":
-        # Telegram photo caption hard limit: 1024 chars.
-        # Use a short preview in the blockquote title, full text inside (expandable hides overflow).
-        MAX_DESC = 700  # leave room for header_txt
-        desc_preview = desc[:120].rstrip() + ("…" if len(desc) > 120 else "")
-        desc_full = desc if len(desc) <= MAX_DESC else desc[:MAX_DESC].rstrip() + "…"
-        header_txt += (
-            f'<emoji id="6021620268697393273">📝</emoji> <b>{desc_lbl}</b>\n'
-            f"<blockquote expandable>"
-            f"{to_mathbold(desc_full)}"
-            f"</blockquote>\n"
+    if story.get('is_show') or story.get('duration'):
+        # ── Show Store OTT Format ──
+        dur = story.get('duration', 'Full Show')
+        p_val = story.get('price', 19)
+        txt = (
+            f'<emoji id="5937999673510858217">📽️</emoji> <b>Show :</b> {to_mathbold(name)}\n'
+            f'<emoji id="6026337676091726218">🖥</emoji> <b>Platform :</b> <b>{platform}</b>\n'
+            f'<emoji id="6024065724291488135">🧩</emoji> <b>Genre :</b> <b>{genre}</b>\n'
+            f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> <b>{dur}</b>\n'
+            f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> <b>₹{p_val}</b>\n\n'
+            f"<blockquote expandable>\n"
+            f"❏ Note: This is a paid show. Access will be available after purchase.\n"
+            f"❏ नोट: यह शो फ्री नहीं है, इसे देखने के लिए खरीदना होगा।\n"
+            f"</blockquote>"
+        )
+    else:
+        header_txt = (
+            f'<b><emoji id="5465432711218863135">♨️</emoji> Story:</b> {to_mathbold(name)}\n'
+            f'<b><emoji id="6019118553326689234">🔰</emoji> {status_lbl}:</b> <b>{status}</b>\n'
+            f'<b><emoji id="6019455905827920171">🖥</emoji> {plat_lbl}:</b> <b>{platform}</b>\n'
+            f'<b><emoji id="6024065724291488135">🧩</emoji> {genre_lbl}:</b> <b>{genre}</b>\n'
+            f"{price_line}"
+            f'<b><emoji id="5937999673510858217">🎬</emoji> {ep_lbl}:</b> <b>{episodes}</b>\n'
+            f"{files_line}"
+            f'<b><emoji id="5776182936638329359">📥</emoji> {del_lbl}:</b> <i>{del_val}</i>\n\n'
         )
 
-    txt = header_txt
+        if desc and desc.lower() != "none":
+            MAX_DESC = 700
+            desc_preview = desc[:120].rstrip() + ("…" if len(desc) > 120 else "")
+            desc_full = desc if len(desc) <= MAX_DESC else desc[:MAX_DESC].rstrip() + "…"
+            header_txt += (
+                f'<emoji id="6021620268697393273">📝</emoji> <b>{desc_lbl}</b>\n'
+                f"<blockquote expandable>"
+                f"{to_mathbold(desc_full)}"
+                f"</blockquote>\n"
+            )
+
+        txt = header_txt
 
     # Safety: if total text still exceeds 1020 chars, strip from description end
     MAX_CAPTION = 1020
@@ -2745,7 +2764,8 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     story_methods = story.get("payment_methods", ["upi", "razorpay"])
     show_upi = "upi" in story_methods
     oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
-    show_crypto = bool(oxapay_key)
+    is_show_store_mode = story.get("is_show") or (bt_cfg.get("bot_mode") == "show_store")
+    show_crypto = bool(oxapay_key) and not is_show_store_mode
 
     cf_block = f"<blockquote expandable=\"true\">{cf_title}\n{cf_desc}</blockquote>" if show_cashfree else ""
     crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>" if show_crypto else ""
