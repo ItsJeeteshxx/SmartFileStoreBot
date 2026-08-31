@@ -4757,13 +4757,19 @@ async def _process_pass_callback(client, query):
 
         if is_hi:
             inv_text = (
-                f'<emoji id="5920332557466997677">⚡</emoji> <b>पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n\n'
+                f'<emoji id="5920332557466997677">⚡</emoji> <b>पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n'
+                f"──────────────────────\n"
                 f"<b>नाम:</b> {user_name}\n"
                 f"<b>यूजर आईडी:</b> <code>{user_id}</code>\n"
                 f"<b>प्लान:</b> {dur_verbose.title()} अनलिमिटेड डिलीवरी पास\n"
                 f"<b>राशि:</b> ₹{amount:.2f}\n"
                 f"<b>ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
-                f"<blockquote>UPI ( Paytm GPay, PhonePe ), Cards ( Visa Rupay and MasterCard ) या NetBanking से पेमेंट पूरा करने के लिए नीचे दिए गए <b>Pay Now</b> बटन पर टैप करें। पेमेंट करने के बाद, एक्टिवेट करने के लिए <b>Verify Payment</b> पर टैप करें!</blockquote>"
+                f'<emoji id="5807800879553715710">🔗</emoji> <b>डायरेक्ट पेमेंट लिंक (कॉपी करें):</b>\n'
+                f"<code>{checkout_pay_link}</code>\n\n"
+                f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>महत्वपूर्ण निर्देश / Browser Tip:</b>\n"
+                f"• नीचे दिए गए <b>Pay Now</b> बटन पर टैप करके UPI, Cards या NetBanking से पेमेंट पूरा करें।\n"
+                f"• <b>सुझाव:</b> यदि Telegram In-App Browser में UPI ऐप्स (GPay, PhonePe, Paytm) या कार्ड/QR काम न करें, तो ऊपर दिए गए <b>Payment Link</b> को कॉपी करके अपने <b>Chrome / Safari / Default Browser</b> में खोलें और आसानी से भुगतान करें।\n"
+                f"• भुगतान करने के बाद तुरंत एक्टिवेट करने के लिए <b>Verify Payment</b> पर टैप करें।</blockquote>"
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
@@ -4771,13 +4777,19 @@ async def _process_pass_callback(client, query):
             btn_back_lbl = "← Back"
         else:
             inv_text = (
-                f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n\n'
+                f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n'
+                f"──────────────────────\n"
                 f"<b>Name:</b> {user_name}\n"
                 f"<b>User ID:</b> <code>{user_id}</code>\n"
                 f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass\n"
                 f"<b>Amount:</b> ₹{amount:.2f}\n"
                 f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
-                f"<blockquote>Tap the button <b>Pay Now</b> below to complete payment via UPI ( Paytm GPay, PhonePe ), Cards ( Visa Rupay and MasterCard ) , or NetBanking. After payment, tap <b>Verify Payment</b> to activate!</blockquote>"
+                f'<emoji id="5807800879553715710">🔗</emoji> <b>Direct Payment Link (Copy):</b>\n'
+                f"<code>{checkout_pay_link}</code>\n\n"
+                f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Important Instructions / Browser Tip:</b>\n"
+                f"• Tap <b>Pay Now</b> below to complete payment via UPI, Cards, or NetBanking.\n"
+                f"• <b>Tip:</b> If UPI apps (GPay, PhonePe, Paytm) do not trigger or you encounter scanning/card issues inside Telegram's built-in browser, copy the <b>Payment Link</b> above and open it in <b>Chrome / Safari / Default Browser</b> to complete the payment smoothly.\n"
+                f"• After payment, tap <b>Verify Payment</b> to activate immediately!</blockquote>"
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
