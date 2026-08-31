@@ -1239,11 +1239,16 @@ async def settings_query(bot, query):
     v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
     v2_gw_str = "⚡ Cashfree" if v2_gw == 'cashfree' else "💳 Pay Via UPI"
 
-    btn_v1 = "✅ 💎 V1 (Multi-Gateway Flow)" if uiver == 'v1' else "💎 V1 (Multi-Gateway Flow)"
-    btn_v2 = f"✅ ⚡ V2 (Single Gateway: {v2_gw_str})" if uiver == 'v2' else f"⚡ V2 (Single Gateway: {v2_gw_str})"
+    v1_selected = (uiver == 'v1')
+    v2_selected = (uiver == 'v2')
+    v2_cf_sel = (v2_gw == 'cashfree')
+    v2_upi_sel = (v2_gw == 'upi')
 
-    btn_v2_cf = "✅ ⚡ Cashfree" if v2_gw == 'cashfree' else "⚡ Cashfree"
-    btn_v2_upi = "✅ 💳 Pay Via UPI" if v2_gw == 'upi' else "💳 Pay Via UPI"
+    btn_v1 = "✅ V1 (Multi-Gateway Flow)" if v1_selected else "V1 (Multi-Gateway Flow)"
+    btn_v2 = f"✅ V2 (Single Gateway: {v2_gw_str})" if v2_selected else f"V2 (Single Gateway: {v2_gw_str})"
+
+    btn_v2_cf = "✅ Cashfree" if v2_cf_sel else "Cashfree"
+    btn_v2_upi = "✅ Pay Via UPI" if v2_upi_sel else "Pay Via UPI"
 
     uiver_buttons = [
         [InlineKeyboardButton(btn_v1, callback_data="settings#sb_rl_set_v1")],
@@ -1256,12 +1261,12 @@ async def settings_query(bot, query):
         [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")]
     ]
     uiver_api_buttons = [
-        [{"text": btn_v1, "callback_data": "settings#sb_rl_set_v1"}],
-        [{"text": btn_v2, "callback_data": "settings#sb_rl_set_v2"}],
-        [{"text": "⚙️ Select V2 Default Gateway:", "callback_data": "settings#sb_rl_uiver_menu"}],
+        [{"text": "V1 (Multi-Gateway Flow)", "callback_data": "settings#sb_rl_set_v1", "icon_custom_emoji_id": "6120635817674149717" if v1_selected else "5766975922620076409"}],
+        [{"text": f"V2 (Single Gateway: {v2_gw_str})", "callback_data": "settings#sb_rl_set_v2", "icon_custom_emoji_id": "6120635817674149717" if v2_selected else "5264895611517300926"}],
+        [{"text": "Select V2 Default Gateway:", "callback_data": "settings#sb_rl_uiver_menu"}],
         [
-            {"text": btn_v2_cf, "callback_data": "settings#sb_rl_set_v2_cf"},
-            {"text": btn_v2_upi, "callback_data": "settings#sb_rl_set_v2_upi"}
+            {"text": "Cashfree", "callback_data": "settings#sb_rl_set_v2_cf", "icon_custom_emoji_id": "6120635817674149717" if v2_cf_sel else "5283232570660634549"},
+            {"text": "Pay Via UPI", "callback_data": "settings#sb_rl_set_v2_upi", "icon_custom_emoji_id": "6120635817674149717" if v2_upi_sel else "6019110229680068974"}
         ],
         [{"text": "Back", "callback_data": "settings#sb_ratelimit"}]
     ]
@@ -1621,15 +1626,15 @@ async def settings_query(bot, query):
     oxa_status = '<emoji id="6120635817674149717">✅</emoji> Active' if oxa_val else '<emoji id="5970055887774028039">🔴</emoji> Not Set'
 
     pay_buttons = [
-        [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
-        [InlineKeyboardButton("⚡ Cashfree Config", callback_data="settings#sb_rl_cf_menu")],
-        [InlineKeyboardButton("🌐 Crypto Config", callback_data="settings#sb_rl_oxa_menu")],
+        [InlineKeyboardButton("💳 UPI & Gmail", callback_data="settings#sb_rl_upi_menu")],
+        [InlineKeyboardButton("⚡ Cashfree", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton("🌐 Crypto", callback_data="settings#sb_rl_oxa_menu")],
         [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
     ]
     pay_api_buttons = [
-        [{"text": "UPI & Gmail Config", "callback_data": "settings#sb_rl_upi_menu", "icon_custom_emoji_id": "6019110229680068974"}],
-        [{"text": "Cashfree Config", "callback_data": "settings#sb_rl_cf_menu", "icon_custom_emoji_id": "5283232570660634549"}],
-        [{"text": "Crypto Config", "callback_data": "settings#sb_rl_oxa_menu", "icon_custom_emoji_id": "5800720664620961831"}],
+        [{"text": "UPI & Gmail", "callback_data": "settings#sb_rl_upi_menu", "icon_custom_emoji_id": "6019110229680068974"}],
+        [{"text": "Cashfree", "callback_data": "settings#sb_rl_cf_menu", "icon_custom_emoji_id": "5283232570660634549"}],
+        [{"text": "Crypto", "callback_data": "settings#sb_rl_oxa_menu", "icon_custom_emoji_id": "5800720664620961831"}],
         [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
     ]
     pay_text = (
@@ -1660,8 +1665,8 @@ async def settings_query(bot, query):
     secret = creds.get('secret_key', '')
     env_str = "Sandbox (Test)" if creds.get('is_sandbox') else "Production (Live)"
     
-    app_id_masked = f"{app_id[:6]}...{app_id[-4:]}" if len(app_id) > 10 else (app_id or "Not Configured ❌")
-    secret_masked = f"{secret[:4]}...{secret[-4:]}" if len(secret) > 8 else ("Set ✅" if secret else "Not Configured ❌")
+    app_id_masked = f"{app_id[:6]}...{app_id[-4:]}" if len(app_id) > 10 else (app_id or '<emoji id="5970055887774028039">🔴</emoji> Not Configured')
+    secret_masked = f"{secret[:4]}...{secret[-4:]}" if len(secret) > 8 else ('Set <emoji id="6120635817674149717">✅</emoji>' if secret else '<emoji id="5970055887774028039">🔴</emoji> Not Configured')
 
     buttons = [
         [InlineKeyboardButton("📝 Set App ID / Client ID", callback_data="settings#sb_rl_cf_appid")],
@@ -1760,30 +1765,34 @@ async def settings_query(bot, query):
     gmail_user = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
     gmail_pass = str(rl_cfg.get('gmail_app_password') or getattr(Config, 'GMAIL_APP_PASSWORD', '') or os.environ.get('GMAIL_APP_PASSWORD', '') or '').strip()
 
-    upi_disp = upi_id if upi_id else "Not Configured ❌"
-    gmail_disp = gmail_user if gmail_user else "Not Configured ❌"
-    pass_disp = "Set ✅" if gmail_pass else "Not Configured ❌"
+    upi_disp = upi_id if upi_id else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
+    gmail_disp = gmail_user if gmail_user else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
+    pass_disp = 'Set <emoji id="6120635817674149717">✅</emoji>' if gmail_pass else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
 
     upi_enabled = rl_cfg.get('upi_enabled', True)
     upi_status_icon = '<emoji id="5809949600152296075">🟢</emoji>' if upi_enabled else '<emoji id="5970055887774028039">🔴</emoji>'
-    upi_toggle_lbl = f"{'🟢' if upi_enabled else '🔴'} UPI Gateway: {'ENABLED' if upi_enabled else 'DISABLED'}"
-    upi_toggle_api = f"UPI Gateway: {'ENABLED' if upi_enabled else 'DISABLED'}"
+    upi_toggle_lbl = f"{'🟢' if upi_enabled else '🔴'} ( {'Enabled' if upi_enabled else 'Disabled'} )"
+    upi_toggle_api = "( Enabled )" if upi_enabled else "( Disabled )"
     toggle_icon = "5809949600152296075" if upi_enabled else "5970055887774028039"
 
     buttons = [
         [InlineKeyboardButton(upi_toggle_lbl, callback_data="settings#sb_rl_upi_toggle")],
-        [InlineKeyboardButton("📱 Set UPI ID", callback_data="settings#sb_rl_upi_id")],
-        [InlineKeyboardButton("👤 Set Payee Name", callback_data="settings#sb_rl_upi_name")],
-        [InlineKeyboardButton("📧 Set Gmail Address", callback_data="settings#sb_rl_gmail_user")],
-        [InlineKeyboardButton("🔑 Set Gmail App Password", callback_data="settings#sb_rl_gmail_pass")],
+        [
+            InlineKeyboardButton("💳 UPI ID", callback_data="settings#sb_rl_upi_id"),
+            InlineKeyboardButton("👤 Payee Name", callback_data="settings#sb_rl_upi_name")
+        ],
+        [InlineKeyboardButton("📧 Gmail Address", callback_data="settings#sb_rl_gmail_user")],
+        [InlineKeyboardButton("🔑 Password", callback_data="settings#sb_rl_gmail_pass")],
         [InlineKeyboardButton('Back', callback_data="settings#sb_rl_payment_menu")],
     ]
     api_buttons = [
         [{"text": upi_toggle_api, "callback_data": "settings#sb_rl_upi_toggle", "icon_custom_emoji_id": toggle_icon}],
-        [{"text": "📱 Set UPI ID", "callback_data": "settings#sb_rl_upi_id"}],
-        [{"text": "👤 Set Payee Name", "callback_data": "settings#sb_rl_upi_name"}],
-        [{"text": "📧 Set Gmail Address", "callback_data": "settings#sb_rl_gmail_user"}],
-        [{"text": "🔑 Set Gmail App Password", "callback_data": "settings#sb_rl_gmail_pass"}],
+        [
+            {"text": "UPI ID", "callback_data": "settings#sb_rl_upi_id", "icon_custom_emoji_id": "5766975922620076409"},
+            {"text": "Payee Name", "callback_data": "settings#sb_rl_upi_name", "icon_custom_emoji_id": "6023838795399436901"}
+        ],
+        [{"text": "Gmail Address", "callback_data": "settings#sb_rl_gmail_user", "icon_custom_emoji_id": "6019110229680068974"}],
+        [{"text": "Password", "callback_data": "settings#sb_rl_gmail_pass", "icon_custom_emoji_id": "6019290828759898301"}],
         [{"text": "Back", "callback_data": "settings#sb_rl_payment_menu"}],
     ]
     upi_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
@@ -1913,7 +1922,7 @@ async def settings_query(bot, query):
     oxa_key = str(rl_cfg.get('oxapay_key') or getattr(Config, 'OXAPAY_KEY', '') or os.environ.get('OXAPAY_KEY', '') or '').strip()
     oxa_env = str(rl_cfg.get('oxapay_env') or getattr(Config, 'OXAPAY_ENV', 'production') or os.environ.get('OXAPAY_ENV', 'production') or 'production').strip()
     env_str = "Sandbox (Test)" if oxa_env.lower() == "sandbox" else "Production (Live)"
-    key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ("Set ✅" if oxa_key else "Not Configured ❌")
+    key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ('Set <emoji id="6120635817674149717">✅</emoji>' if oxa_key else '<emoji id="5970055887774028039">🔴</emoji> Not Configured')
 
     oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
     oxa_toggle_lbl = f"{'🟢' if oxapay_enabled else '🔴'} ( {'Enabled' if oxapay_enabled else 'Disabled'} )"
