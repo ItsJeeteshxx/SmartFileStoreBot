@@ -56,6 +56,19 @@ class Bot(Client):
         text = "**๏[-ิ_•ิ]๏ bot restarted !**"
         logging.info(text)
 
+        # ── Register main bot token in share_bot token cache ────────────────
+        try:
+            from plugins.share_bot import register_bot_token
+            if Config.BOT_TOKEN:
+                register_bot_token(str(self.id), Config.BOT_TOKEN)
+                register_bot_token("main", Config.BOT_TOKEN)
+            if hasattr(self, "bot_token") and self.bot_token:
+                register_bot_token(str(self.id), self.bot_token)
+                register_bot_token("main", self.bot_token)
+            logging.info(f"[Startup] Registered main bot token for ID {self.id} (@{self.username})")
+        except Exception as _t_err:
+            logging.warning(f"[Startup] register_bot_token failed: {_t_err}")
+
         # ── Register this bot instance with arya_logger ──────────────────────
         # This must happen immediately after start() so all 6 log channels work.
         # Without this, arya_logger had no bot reference and all logs silently failed.

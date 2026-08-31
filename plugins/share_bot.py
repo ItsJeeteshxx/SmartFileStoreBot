@@ -1,10 +1,30 @@
 _share_bot_token_cache = {}
 _shared_bot_api_session = None
 
+def register_bot_token(bot_id: str, token: str):
+    """Register a bot token in the shared cache for Bot API custom emoji rendering."""
+    global _share_bot_token_cache
+    if bot_id and token:
+        tk_clean = str(token).strip()
+        _share_bot_token_cache[str(bot_id)] = tk_clean
+        if str(bot_id).isdigit():
+            _share_bot_token_cache[int(bot_id)] = tk_clean
+
 def _get_shared_bot_api_session():
     global _shared_bot_api_session
     import aiohttp
-    if _shared_bot_api_session is None or _shared_bot_api_session.closed:
+    import asyncio
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if _shared_bot_api_session is None or _shared_bot_api_session.closed or (hasattr(_shared_bot_api_session, "_loop") and current_loop and _shared_bot_api_session._loop != current_loop):
+        if _shared_bot_api_session and not _shared_bot_api_session.closed:
+            try:
+                asyncio.create_task(_shared_bot_api_session.close())
+            except Exception:
+                pass
         connector = aiohttp.TCPConnector(
             limit=100,
             ttl_dns_cache=300,
@@ -3372,11 +3392,16 @@ async def send_or_edit_with_custom_icons(
 
     bot_token = getattr(client, "bot_token", None)
     if not bot_token and client and hasattr(client, "me") and client.me:
-        bot_token = _share_bot_token_cache.get(str(client.me.id))
+        bot_token = _share_bot_token_cache.get(str(client.me.id)) or _share_bot_token_cache.get(client.me.id)
+    if not bot_token and client and hasattr(client, "id") and client.id:
+        bot_token = _share_bot_token_cache.get(str(client.id)) or _share_bot_token_cache.get(client.id)
+    if not bot_token:
+        bot_token = _share_bot_token_cache.get("main")
     if not bot_token:
         bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", "") or os.environ.get("MGMT_BOT_TOKEN", "")
 
     if not bot_token:
+        logger.warning(f"[CustomEmojiAPI] ❌ No bot token resolved for client {getattr(getattr(client, 'me', None), 'username', getattr(client, 'name', 'bot'))} (client.id={getattr(getattr(client, 'me', None), 'id', getattr(client, 'id', None))}). Falling back to MTProto.")
         return False
 
     try:
@@ -3402,6 +3427,7 @@ async def send_or_edit_with_custom_icons(
             async with session.post(url + "sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
                 data = await resp.json()
                 if data.get("ok"):
+                    logger.info(f"[CustomEmojiAPI] ✅ Photo sent successfully via Bot API to {c_id}")
                     return data.get("result", True)
                 
                 # Retry with stripped button icons if custom emojis failed
@@ -3417,10 +3443,11 @@ async def send_or_edit_with_custom_icons(
                     async with session.post(url + "sendPhoto", data=form_retry, timeout=aiohttp.ClientTimeout(total=5.0)) as resp_r:
                         data_r = await resp_r.json()
                         if data_r.get("ok"):
+                            logger.info(f"[CustomEmojiAPI] ✅ Photo sent (retry stripped icons) via Bot API to {c_id}")
                             return data_r.get("result", True)
-                logger.debug(f"Bot API sendPhoto bytes returned: {data}")
+                logger.info(f"[CustomEmojiAPI] Bot API sendPhoto bytes returned: {data}")
         except Exception as e:
-            logger.debug(f"Bot API sendPhoto bytes exception: {e}")
+            logger.info(f"[CustomEmojiAPI] Bot API sendPhoto bytes exception: {e}")
         return False
 
     def _build_payload(kb):
@@ -3461,6 +3488,7 @@ async def send_or_edit_with_custom_icons(
         async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
             data = await resp.json()
             if data.get("ok"):
+                logger.info(f"[CustomEmojiAPI] ✅ {method} succeeded via Bot API to {c_id}")
                 return True
 
             err_desc = str(data.get("description", ""))
@@ -3468,7 +3496,7 @@ async def send_or_edit_with_custom_icons(
 
             # Ignore expected user block errors quietly
             if err_code in (400, 403) and ("chat not found" in err_desc.lower() or "can't initiate conversation" in err_desc.lower() or "blocked" in err_desc.lower()):
-                logger.debug(f"Bot API {method} user unavailable: {err_desc}")
+                logger.debug(f"[CustomEmojiAPI] Bot API {method} user unavailable: {err_desc}")
                 return False
 
             # If button icons failed (not premium / not authorized bot), retry without button icons via Bot API so text <tg-emoji> works!
@@ -3478,12 +3506,13 @@ async def send_or_edit_with_custom_icons(
                 async with session.post(url + method_r, json=payload_r, timeout=aiohttp.ClientTimeout(total=5.0)) as resp_r:
                     data_r = await resp_r.json()
                     if data_r.get("ok"):
+                        logger.info(f"[CustomEmojiAPI] ✅ {method_r} (retry stripped icons) succeeded via Bot API to {c_id}")
                         return True
-                    logger.debug(f"Bot API retry {method_r} returned: {data_r}")
+                    logger.info(f"[CustomEmojiAPI] Bot API retry {method_r} returned: {data_r}")
 
-            logger.debug(f"Bot API {method} returned: {data}")
+            logger.info(f"[CustomEmojiAPI] Bot API {method} returned: {data}")
     except Exception as e:
-        logger.debug(f"Bot API {method if 'method' in locals() else 'call'} exception: {e}")
+        logger.info(f"[CustomEmojiAPI] Bot API {method if 'method' in locals() else 'call'} exception: {e}")
 
     return False
 
