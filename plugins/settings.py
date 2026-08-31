@@ -2837,58 +2837,104 @@ async def settings_query(bot, query):
       bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
       if not bt: return await query.answer("Bot not found!")
 
-      buttons = [
-          [InlineKeyboardButton('👋 Welcome & About', callback_data=f"settings#sb_wa_{b_id}")],
-          [
-              InlineKeyboardButton('🗑 Delete MSG', callback_data=f"settings#sb_set_delete_{b_id}"),
-              InlineKeyboardButton('✅ Success MSG', callback_data=f"settings#sb_set_success_{b_id}"),
-          ],
-          [InlineKeyboardButton('📣 Post Delivery Mode', callback_data=f"settings#sb_post_deliv_{b_id}")],
-          [
-              InlineKeyboardButton('🎁 Donation MSG', callback_data=f"settings#sb_donation_{b_id}"),
-              InlineKeyboardButton('⭐ Premium Ad MSG', callback_data=f"settings#sb_premium_ad_{b_id}"),
-          ],
-          [InlineKeyboardButton('📝 Custom Caption', callback_data=f"settings#sb_caption_menu_{b_id}")],
-          [InlineKeyboardButton('🔗 Custom Buttons', callback_data=f"settings#sb_buttons_menu_{b_id}")],
-          [
-              InlineKeyboardButton('⏳ Auto Delete', callback_data=f"settings#sb_autodel_menu_{b_id}"),
-              InlineKeyboardButton('📢 Force Subscribe', callback_data=f"settings#sb_fsub_{b_id}")
-          ],
-          [InlineKeyboardButton('🎞 Fetching Media', callback_data=f"settings#sb_fetch_media_{b_id}")],
-          [
-              InlineKeyboardButton('📊 Stats', callback_data=f"settings#sb_stats_{b_id}"),
-              InlineKeyboardButton('📢 Broadcast', callback_data=f"settings#sb_broadcast_{b_id}")
-          ],
-          [InlineKeyboardButton('🧹 Purge DM Files', callback_data=f"settings#sb_purge_{b_id}")],
-          [InlineKeyboardButton('❌ Remove Bot', callback_data=f"settings#sb_remove_{b_id}")],
-          [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
-      ]
-      api_buttons = [
-          [{"text": "Welcome & About", "callback_data": f"settings#sb_wa_{b_id}", "icon_custom_emoji_id": "5219901967916084166"}],
-          [
-              {"text": "Delete MSG", "callback_data": f"settings#sb_set_delete_{b_id}", "icon_custom_emoji_id": "6021413766669801212"},
-              {"text": "Success MSG", "callback_data": f"settings#sb_set_success_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
-          ],
-          [{"text": "Post Delivery Mode", "callback_data": f"settings#sb_post_deliv_{b_id}", "icon_custom_emoji_id": "5803175856905917502"}],
-          [
-              {"text": "Donation MSG", "callback_data": f"settings#sb_donation_{b_id}", "icon_custom_emoji_id": "6024112397701093503"},
-              {"text": "Premium Ad MSG", "callback_data": f"settings#sb_premium_ad_{b_id}", "icon_custom_emoji_id": "6021789619257874157"}
-          ],
-          [{"text": "Costom Caption", "callback_data": f"settings#sb_caption_menu_{b_id}", "icon_custom_emoji_id": "6023843687367190257"}],
-          [{"text": "Custom Bottons", "callback_data": f"settings#sb_buttons_menu_{b_id}", "icon_custom_emoji_id": "5807622114424924272"}],
-          [
-              {"text": "Auto Delete", "callback_data": f"settings#sb_autodel_menu_{b_id}", "icon_custom_emoji_id": "6035276353438227060"},
-              {"text": "Force Subscribe", "callback_data": f"settings#sb_fsub_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
-          ],
-          [{"text": "Fetching Media", "callback_data": f"settings#sb_fetch_media_{b_id}", "icon_custom_emoji_id": "5944753741512052670"}],
-          [
-              {"text": "Stats", "callback_data": f"settings#sb_stats_{b_id}", "icon_custom_emoji_id": "5938539885907415367"},
-              {"text": "Broadcast", "callback_data": f"settings#sb_broadcast_{b_id}", "icon_custom_emoji_id": "6019151667524539757"}
-          ],
-          [{"text": "Purge DM Files", "callback_data": f"settings#sb_purge_{b_id}", "icon_custom_emoji_id": "6021375494216226506"}],
-          [{"text": "Remove Bot", "callback_data": f"settings#sb_remove_{b_id}", "icon_custom_emoji_id": "6030400221232501136"}],
-          [{"text": "Back", "callback_data": "settings#sharebot"}],
-      ]
+      is_store_mode = await db.is_store_bot_mode(b_id)
+      mode_str = "🛍️ Pay-Per-Show Store" if is_store_mode else "⚡ Normal Delivery"
+      mode_icon = "6104800784354909891" if is_store_mode else "5803175856905917502"
+
+      if is_store_mode:
+          buttons = [
+              [InlineKeyboardButton(f"🛍️ Bot Mode: {mode_str}", callback_data=f"settings#sb_toggle_mode_{b_id}")],
+              [InlineKeyboardButton('👋 Welcome & About', callback_data=f"settings#sb_wa_{b_id}")],
+              [
+                  InlineKeyboardButton('🗑 Delete MSG', callback_data=f"settings#sb_set_delete_{b_id}"),
+                  InlineKeyboardButton('✅ Success MSG', callback_data=f"settings#sb_set_success_{b_id}"),
+              ],
+              [InlineKeyboardButton('📝 Custom Caption', callback_data=f"settings#sb_caption_menu_{b_id}")],
+              [InlineKeyboardButton('🔗 Custom Buttons', callback_data=f"settings#sb_buttons_menu_{b_id}")],
+              [InlineKeyboardButton('⏳ Auto Delete (15m)', callback_data=f"settings#sb_autodel_menu_{b_id}")],
+              [InlineKeyboardButton('💰 Store Show Settings', callback_data=f"settings#sb_store_settings_{b_id}")],
+              [
+                  InlineKeyboardButton('📊 Stats', callback_data=f"settings#sb_stats_{b_id}"),
+                  InlineKeyboardButton('📢 Broadcast', callback_data=f"settings#sb_broadcast_{b_id}")
+              ],
+              [InlineKeyboardButton('🧹 Purge DM Files', callback_data=f"settings#sb_purge_{b_id}")],
+              [InlineKeyboardButton('❌ Remove Bot', callback_data=f"settings#sb_remove_{b_id}")],
+              [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
+          ]
+          api_buttons = [
+              [{"text": f"Bot Mode: {mode_str}", "callback_data": f"settings#sb_toggle_mode_{b_id}", "icon_custom_emoji_id": mode_icon}],
+              [{"text": "Welcome & About", "callback_data": f"settings#sb_wa_{b_id}", "icon_custom_emoji_id": "5219901967916084166"}],
+              [
+                  {"text": "Delete MSG", "callback_data": f"settings#sb_set_delete_{b_id}", "icon_custom_emoji_id": "6021413766669801212"},
+                  {"text": "Success MSG", "callback_data": f"settings#sb_set_success_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
+              ],
+              [{"text": "Costom Caption", "callback_data": f"settings#sb_caption_menu_{b_id}", "icon_custom_emoji_id": "6023843687367190257"}],
+              [{"text": "Custom Bottons", "callback_data": f"settings#sb_buttons_menu_{b_id}", "icon_custom_emoji_id": "5807622114424924272"}],
+              [{"text": "Auto Delete (15m)", "callback_data": f"settings#sb_autodel_menu_{b_id}", "icon_custom_emoji_id": "6035276353438227060"}],
+              [{"text": "Store Show Settings", "callback_data": f"settings#sb_store_settings_{b_id}", "icon_custom_emoji_id": "5904359114531675993"}],
+              [
+                  {"text": "Stats", "callback_data": f"settings#sb_stats_{b_id}", "icon_custom_emoji_id": "5938539885907415367"},
+                  {"text": "Broadcast", "callback_data": f"settings#sb_broadcast_{b_id}", "icon_custom_emoji_id": "6019151667524539757"}
+              ],
+              [{"text": "Purge DM Files", "callback_data": f"settings#sb_purge_{b_id}", "icon_custom_emoji_id": "6021375494216226506"}],
+              [{"text": "Remove Bot", "callback_data": f"settings#sb_remove_{b_id}", "icon_custom_emoji_id": "6030400221232501136"}],
+              [{"text": "Back", "callback_data": "settings#sharebot"}],
+          ]
+      else:
+          buttons = [
+              [InlineKeyboardButton(f"🛍️ Bot Mode: {mode_str}", callback_data=f"settings#sb_toggle_mode_{b_id}")],
+              [InlineKeyboardButton('👋 Welcome & About', callback_data=f"settings#sb_wa_{b_id}")],
+              [
+                  InlineKeyboardButton('🗑 Delete MSG', callback_data=f"settings#sb_set_delete_{b_id}"),
+                  InlineKeyboardButton('✅ Success MSG', callback_data=f"settings#sb_set_success_{b_id}"),
+              ],
+              [InlineKeyboardButton('📣 Post Delivery Mode', callback_data=f"settings#sb_post_deliv_{b_id}")],
+              [
+                  InlineKeyboardButton('🎁 Donation MSG', callback_data=f"settings#sb_donation_{b_id}"),
+                  InlineKeyboardButton('⭐ Premium Ad MSG', callback_data=f"settings#sb_premium_ad_{b_id}"),
+              ],
+              [InlineKeyboardButton('📝 Custom Caption', callback_data=f"settings#sb_caption_menu_{b_id}")],
+              [InlineKeyboardButton('🔗 Custom Buttons', callback_data=f"settings#sb_buttons_menu_{b_id}")],
+              [
+                  InlineKeyboardButton('⏳ Auto Delete', callback_data=f"settings#sb_autodel_menu_{b_id}"),
+                  InlineKeyboardButton('📢 Force Subscribe', callback_data=f"settings#sb_fsub_{b_id}")
+              ],
+              [InlineKeyboardButton('🎞 Fetching Media', callback_data=f"settings#sb_fetch_media_{b_id}")],
+              [
+                  InlineKeyboardButton('📊 Stats', callback_data=f"settings#sb_stats_{b_id}"),
+                  InlineKeyboardButton('📢 Broadcast', callback_data=f"settings#sb_broadcast_{b_id}")
+              ],
+              [InlineKeyboardButton('🧹 Purge DM Files', callback_data=f"settings#sb_purge_{b_id}")],
+              [InlineKeyboardButton('❌ Remove Bot', callback_data=f"settings#sb_remove_{b_id}")],
+              [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
+          ]
+          api_buttons = [
+              [{"text": f"Bot Mode: {mode_str}", "callback_data": f"settings#sb_toggle_mode_{b_id}", "icon_custom_emoji_id": mode_icon}],
+              [{"text": "Welcome & About", "callback_data": f"settings#sb_wa_{b_id}", "icon_custom_emoji_id": "5219901967916084166"}],
+              [
+                  {"text": "Delete MSG", "callback_data": f"settings#sb_set_delete_{b_id}", "icon_custom_emoji_id": "6021413766669801212"},
+                  {"text": "Success MSG", "callback_data": f"settings#sb_set_success_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
+              ],
+              [{"text": "Post Delivery Mode", "callback_data": f"settings#sb_post_deliv_{b_id}", "icon_custom_emoji_id": "5803175856905917502"}],
+              [
+                  {"text": "Donation MSG", "callback_data": f"settings#sb_donation_{b_id}", "icon_custom_emoji_id": "6024112397701093503"},
+                  {"text": "Premium Ad MSG", "callback_data": f"settings#sb_premium_ad_{b_id}", "icon_custom_emoji_id": "6021789619257874157"}
+              ],
+              [{"text": "Costom Caption", "callback_data": f"settings#sb_caption_menu_{b_id}", "icon_custom_emoji_id": "6023843687367190257"}],
+              [{"text": "Custom Bottons", "callback_data": f"settings#sb_buttons_menu_{b_id}", "icon_custom_emoji_id": "5807622114424924272"}],
+              [
+                  {"text": "Auto Delete", "callback_data": f"settings#sb_autodel_menu_{b_id}", "icon_custom_emoji_id": "6035276353438227060"},
+                  {"text": "Force Subscribe", "callback_data": f"settings#sb_fsub_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
+              ],
+              [{"text": "Fetching Media", "callback_data": f"settings#sb_fetch_media_{b_id}", "icon_custom_emoji_id": "5944753741512052670"}],
+              [
+                  {"text": "Stats", "callback_data": f"settings#sb_stats_{b_id}", "icon_custom_emoji_id": "5938539885907415367"},
+                  {"text": "Broadcast", "callback_data": f"settings#sb_broadcast_{b_id}", "icon_custom_emoji_id": "6019151667524539757"}
+              ],
+              [{"text": "Purge DM Files", "callback_data": f"settings#sb_purge_{b_id}", "icon_custom_emoji_id": "6021375494216226506"}],
+              [{"text": "Remove Bot", "callback_data": f"settings#sb_remove_{b_id}", "icon_custom_emoji_id": "6030400221232501136"}],
+              [{"text": "Back", "callback_data": "settings#sharebot"}],
+          ]
 
       b_name = bt.get('name', '')
       b_user = bt.get('username', '')
@@ -2900,6 +2946,7 @@ async def settings_query(bot, query):
           f'<emoji id="6030400221232501136">👤</emoji> <b>Name:-</b> {b_name}\n'
           f'<emoji id="6021683099773966917">🌐</emoji> <b>Username:-</b> @{b_user}\n'
           f'<emoji id="5332423642850536254">🆔</emoji> <b>ID:-</b> <code>{b_uid}</code>\n'
+          f'<emoji id="{mode_icon}">🛍️</emoji> <b>Mode:-</b> <code>{mode_str}</code>\n'
           f"────────────────────\n"
           f"<u>All settings below are specific to this bot.</u>"
       )
@@ -2917,6 +2964,154 @@ async def settings_query(bot, query):
               await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
           except Exception:
               pass
+
+  elif type.startswith("sb_toggle_mode_"):
+      b_id = type.split("sb_toggle_mode_")[1]
+      cur = await db.is_store_bot_mode(b_id)
+      new_state = not cur
+      await db.set_store_bot_mode(b_id, new_state)
+      mode_name = "🛍️ Pay-Per-Show Store Bot" if new_state else "⚡ Normal Delivery Bot"
+      await query.answer(f"Bot Mode switched to: {mode_name}!", show_alert=True)
+      query.data = f"settings#sb_view_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_store_settings_"):
+      b_id = type.split("sb_store_settings_")[1]
+      store_cfg = await db.get_store_bot_config(b_id)
+      chk_v = store_cfg.get('checkout_version', 'v2')
+      def_price = store_cfg.get('default_price', 19)
+      total_shows = await db.count_store_shows()
+      total_cust = await db.get_store_customers(b_id)
+
+      buttons = [
+          [InlineKeyboardButton(f"💳 Checkout Version: {chk_v.upper()}", callback_data=f"settings#sb_store_v_{b_id}")],
+          [InlineKeyboardButton(f"💰 Default Price: ₹{def_price}", callback_data=f"settings#sb_store_price_{b_id}")],
+          [
+              InlineKeyboardButton(f"📋 Purchase Logs", callback_data=f"settings#sb_store_logs_{b_id}"),
+              InlineKeyboardButton(f"👥 Customers ({total_cust})", callback_data=f"settings#sb_store_cust_{b_id}")
+          ],
+          [InlineKeyboardButton(f"💳 Payment Gateways (Cashfree & UPI)", callback_data=f"settings#sb_store_pay_{b_id}")],
+          [InlineKeyboardButton('Back', callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      api_buttons = [
+          [{"text": f"Checkout Version: {chk_v.upper()}", "callback_data": f"settings#sb_store_v_{b_id}", "icon_custom_emoji_id": "5904359114531675993"}],
+          [{"text": f"Default Price: ₹{def_price}", "callback_data": f"settings#sb_store_price_{b_id}", "icon_custom_emoji_id": "5233326571099534068"}],
+          [
+              {"text": "Purchase Logs", "callback_data": f"settings#sb_store_logs_{b_id}", "icon_custom_emoji_id": "5920046907782074235"},
+              {"text": f"Customers ({total_cust})", "callback_data": f"settings#sb_store_cust_{b_id}", "icon_custom_emoji_id": "6030400221232501136"}
+          ],
+          [{"text": "Payment Gateways (Cashfree & UPI)", "callback_data": f"settings#sb_store_pay_{b_id}", "icon_custom_emoji_id": "5904359114531675993"}],
+          [{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}]
+      ]
+
+      text = (
+          f'<emoji id="6104800784354909891">🛍️</emoji> <b>Store Show Settings (Isolated)</b>\n'
+          f"────────────────────\n"
+          f"<b>• Mode:-</b> <code>Pay-Per-Show Store</code>\n"
+          f"<b>• Total Catalog Shows:-</b> <code>{total_shows}</code>\n"
+          f"<b>• Total Customers:-</b> <code>{total_cust}</code>\n"
+          f"<b>• Default Show Price:-</b> <code>₹{def_price}</code>\n"
+          f"<b>• Checkout Version:-</b> <code>{chk_v.upper()}</code>\n"
+          f"<b>• Active Gateways:-</b> <code>Cashfree (Cards/NetBanking) & UPI QR</code>\n"
+          f"<b>• Crypto:-</b> <code>Disabled (Low ticket show orders)</code>\n"
+          f"────────────────────\n"
+          f"<i>All settings here are 100% isolated and do not affect Delivery Bot Unlimited Pass configs.</i>"
+      )
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_buttons,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try: await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+          except Exception: pass
+
+  elif type.startswith("sb_store_v_"):
+      b_id = type.split("sb_store_v_")[1]
+      cfg = await db.get_store_bot_config(b_id)
+      cur_v = cfg.get('checkout_version', 'v2')
+      new_v = 'v1' if cur_v == 'v2' else 'v2'
+      await db.set_store_bot_config(b_id, checkout_version=new_v)
+      await query.answer(f"Store Checkout set to: {new_v.upper()}!", show_alert=True)
+      query.data = f"settings#sb_store_settings_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_store_price_"):
+      b_id = type.split("sb_store_price_")[1]
+      await query.message.delete()
+      ask = await bot.send_message(
+          user_id,
+          "<b>💰 Set Default Show Price (₹)</b>\n\n"
+          "Enter the default price for new indexed shows (in INR):\n"
+          "<b>Example:</b> <code>19</code> or <code>29</code>\n\n"
+          "Send /cancel to abort."
+      )
+      try:
+          resp = await _ask(bot, user_id, timeout=60)
+          if getattr(resp, 'text', None) and '/cancel' in resp.text:
+              await resp.delete()
+              return await ask.edit_text(
+                  "<i>Cancelled.</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_settings_{b_id}")]])
+              )
+          price_val = int((resp.text or '').strip())
+          if price_val < 1: raise ValueError('Invalid price')
+          await db.set_store_bot_config(b_id, default_price=price_val)
+          await resp.delete()
+          await ask.edit_text(
+              f"✅ Default Show Price set to <b>₹{price_val}</b>.",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_settings_{b_id}")]])
+          )
+      except Exception as e:
+          await ask.edit_text(
+              f"❌ Error: {e}",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"settings#sb_store_price_{b_id}")]])
+          )
+
+  elif type.startswith("sb_store_logs_"):
+      b_id = type.split("sb_store_logs_")[1]
+      orders = await db.get_all_store_orders(limit=10)
+      lines = []
+      for o in orders:
+          t_str = time.strftime('%d/%m %H:%M', time.localtime(o.get('created_at', time.time())))
+          st = o.get('status', 'PENDING')
+          st_emoji = '✅' if st == 'SUCCESS' else ('⏳' if st == 'PENDING' else '❌')
+          lines.append(f"{st_emoji} <code>{o.get('order_id', '')[:8]}</code> • ₹{o.get('amount', 0)} • {o.get('show_title', '')[:20]} ({t_str})")
+      
+      log_text = "\n".join(lines) if lines else "<i>No store orders recorded yet.</i>"
+      text = (
+          f"<b>📋 Store Purchase Logs (Recent 10)</b>\n\n"
+          f"{log_text}"
+      )
+      buttons = [[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_settings_{b_id}")]]
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+  elif type.startswith("sb_store_cust_"):
+      b_id = type.split("sb_store_cust_")[1]
+      total_cust = await db.get_store_customers(b_id)
+      text = (
+          f"<b>👥 Store Customers & Orders</b>\n\n"
+          f"• <b>Total Unique Buyers:</b> <code>{total_cust}</code>\n"
+          f"• <b>Platform:</b> Pay-Per-Show OTT Store\n\n"
+          f"<i>Customers receive lifetime re-delivery access via <b>📹 My Shows</b> in the bot.</i>"
+      )
+      buttons = [[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_settings_{b_id}")]]
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+  elif type.startswith("sb_store_pay_"):
+      b_id = type.split("sb_store_pay_")[1]
+      text = (
+          f"<b>💳 Store Bot Payment Gateways</b>\n\n"
+          f"• <b>Active:</b> <code>Cashfree (Cards, NetBanking, UPI)</code>\n"
+          f"• <b>Active:</b> <code>Direct UPI (Dynamic QR)</code>\n"
+          f"• <b>Crypto:</b> <code>Disabled (Low ticket order value)</code>\n\n"
+          f"<i>Cashfree & UPI credentials are automatically shared with zero manual setup needed.</i>"
+      )
+      buttons = [[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_settings_{b_id}")]]
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
   elif type.startswith("sb_lblive_"):
       b_id = type.split("sb_lblive_")[1]

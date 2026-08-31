@@ -25,9 +25,9 @@ import asyncio
 import time
 import random
 from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, InlineQuery
 from pyrogram.errors import UserNotParticipant
-from pyrogram.handlers import MessageHandler, CallbackQueryHandler, ChatJoinRequestHandler
+from pyrogram.handlers import MessageHandler, CallbackQueryHandler, ChatJoinRequestHandler, InlineQueryHandler
 from database import db
 from config import Config
 
@@ -575,10 +575,61 @@ async def _process_start(client, message):
                 await db.unban_user(user_id)
             else:
                 return
+        if bot_id and await db.is_store_bot_mode(bot_id):
+            from plugins.store_bot import send_store_main_menu
+            await send_store_main_menu(client, user_id, bot_id, message.from_user.first_name if message.from_user else "")
+            return
         await _send_welcome(client, message, bot_id)
         return
 
     uuid_str = args[1].strip()
+
+    # Store Bot Deep Link: /start buy_{show_id}
+    if uuid_str.startswith("buy_"):
+        show_id = uuid_str[4:]
+        show = await db.get_store_show(show_id)
+        if not show:
+            await message.reply_text("<b>Error:</b> Show not found in catalog.")
+            return
+        if await db.has_user_purchased_show(user_id, show_id):
+            from plugins.store_bot import deliver_purchased_show
+            await deliver_purchased_show(client, user_id, show_id, bot_id or "")
+            return
+        from plugins.store_bot import build_store_show_card
+        card_text, card_kb = build_store_show_card(show)
+        await message.reply_text(card_text, reply_markup=card_kb, parse_mode=PM)
+        return
+
+    # Store Bot Order Return URL: /start chkorder_{order_id}
+    if uuid_str.startswith("chkorder_"):
+        order_id = uuid_str[9:]
+        from plugins.store_bot import verify_store_cashfree_order, deliver_purchased_show
+        v_res = await verify_store_cashfree_order(order_id)
+        if v_res.get('is_paid'):
+            order = await db.get_store_order(order_id)
+            if order:
+                await deliver_purchased_show(client, user_id, order['show_id'], bot_id or "", order_id=order_id)
+                return
+        else:
+            await message.reply_text("<b>Payment Pending or Failed.</b>\nIf money was deducted, please wait 2 minutes or contact support.")
+            return
+
+    # Store Bot Navigation: /start myshows
+    if uuid_str == "myshows":
+        p_shows = await db.get_user_purchased_shows(user_id)
+        if not p_shows:
+            await message.reply_text("<b>📹 My Shows:</b>\nAapne abhi tak koi show purchase nahi kiya hai.")
+            return
+        lines = ["<b>📹 Your Purchased Shows:</b>\n"]
+        buttons = []
+        for ps in p_shows:
+            sh = await db.get_store_show(ps['show_id'])
+            if sh:
+                lines.append(f"• <b>{sh['title']}</b> ({sh.get('duration', 'Full Show')})")
+                buttons.append([InlineKeyboardButton(f"📥 Re-Deliver: {sh['title'][:25]}", callback_data=f"store_redeliver_{ps['show_id']}")])
+        buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="store_browse")])
+        await message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=PM)
+        return
 
     # Help command via deep-link (start=help)
     if uuid_str == "help":
@@ -5132,6 +5183,219 @@ async def _process_share_broadcast(client, message):
     await sts.edit(f"Delivery Bot Broadcast Completed in {time_taken}.\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
 
 
+async def _process_store_callback(client: Client, query: CallbackQuery):
+    """Handles all store_ interactive callbacks on Store Bots."""
+    data = query.data
+    user_id = query.from_user.id if query.from_user else 0
+    bot_id = str(client.me.id) if getattr(client, 'me', None) else ""
+    bot_uname = client.me.username if getattr(client, 'me', None) else "StoreBot"
+
+    if data.startswith("store_view_"):
+        show_id = data.split("store_view_")[1]
+        show = await db.get_store_show(show_id)
+        if not show:
+            return await query.answer("Show not found!", show_alert=True)
+        from plugins.store_bot import build_store_show_card
+        text, kb = build_store_show_card(show)
+        await query.message.edit_text(text, reply_markup=kb, parse_mode=PM)
+
+    elif data.startswith("store_demo_"):
+        show_id = data.split("store_demo_")[1]
+        from plugins.store_bot import DEFAULT_DEMO_TEXT
+        back_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Show Details", callback_data=f"store_view_{show_id}")]
+        ])
+        await query.message.edit_text(DEFAULT_DEMO_TEXT, reply_markup=back_kb, parse_mode=PM)
+
+    elif data.startswith("store_buy_"):
+        show_id = data.split("store_buy_")[1]
+        show = await db.get_store_show(show_id)
+        if not show:
+            return await query.answer("Show not found!", show_alert=True)
+        from plugins.store_bot import build_store_payment_methods
+        text, kb = build_store_payment_methods(show_id, show["title"], show.get("price", 19))
+        await query.message.edit_text(text, reply_markup=kb, parse_mode=PM)
+
+    elif data.startswith("store_pay_cf_"):
+        show_id = data.split("store_pay_cf_")[1]
+        show = await db.get_store_show(show_id)
+        if not show:
+            return await query.answer("Show not found!", show_alert=True)
+        from plugins.store_bot import create_store_cashfree_order
+        u_name = query.from_user.first_name if query.from_user else ""
+        res = await create_store_cashfree_order(
+            user_id=user_id,
+            user_name=u_name,
+            show_id=show_id,
+            show_title=show["title"],
+            amount=show.get("price", 19),
+            bot_id=bot_id,
+            bot_username=bot_uname
+        )
+        if not res.get("success"):
+            return await query.answer(f"⚠️ Error: {res.get('error')}", show_alert=True)
+
+        pay_url = res["payment_link"]
+        order_id = res["order_id"]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("6107442434055086407 Pay Now (Cards, NetBanking, UPI)", url=pay_url)],
+            [InlineKeyboardButton("🔄 Check Payment Status", callback_data=f"store_chk_{order_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data=f"store_buy_{show_id}")]
+        ])
+        await query.message.edit_text(
+            f"<b>💳 Cashfree Order Created</b>\n\n"
+            f"• <b>Show:</b> {show['title']}\n"
+            f"• <b>Amount:</b> ₹{show.get('price', 19)}\n"
+            f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+            f"<i>Niche 'Pay Now' button par click karke payment complete karein. Payment hote hi video instant deliver ho jayegi.</i>",
+            reply_markup=kb,
+            parse_mode=PM
+        )
+
+    elif data.startswith("store_chk_"):
+        order_id = data.split("store_chk_")[1]
+        from plugins.store_bot import verify_store_cashfree_order, deliver_purchased_show
+        v_res = await verify_store_cashfree_order(order_id)
+        if v_res.get('is_paid'):
+            order = await db.get_store_order(order_id)
+            if order:
+                await query.answer("✅ Payment Verified! Delivering show...", show_alert=True)
+                await deliver_purchased_show(client, user_id, order['show_id'], bot_id, order_id=order_id)
+                try: await query.message.delete()
+                except Exception: pass
+                return
+        else:
+            await query.answer("⏳ Payment is still pending. If already paid, please wait 30 seconds and retry.", show_alert=True)
+
+    elif data.startswith("store_pay_upi_"):
+        show_id = data.split("store_pay_upi_")[1]
+        show = await db.get_store_show(show_id)
+        if not show:
+            return await query.answer("Show not found!", show_alert=True)
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        upi_id = rl_cfg.get("upi_id", "aryabot@upi")
+        cost = show.get("price", 19)
+        order_id = f"SHOW_UPI_{uuid.uuid4().hex[:8]}"
+        
+        await db.create_store_order({
+            "order_id": order_id,
+            "user_id": user_id,
+            "bot_id": bot_id,
+            "show_id": show_id,
+            "show_title": show["title"],
+            "amount": cost,
+            "gateway": "upi",
+            "status": "PENDING",
+            "created_at": time.time()
+        })
+
+        upi_link = f"upi://pay?pa={upi_id}&pn=StoryTVStore&am={cost}&tn={order_id}"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("6030410254276106984 Pay Via UPI App", url=upi_link)],
+            [InlineKeyboardButton("🔙 Back", callback_data=f"store_buy_{show_id}")]
+        ])
+        await query.message.edit_text(
+            f"<b>💳 Pay Via UPI (Direct)</b>\n\n"
+            f"• <b>Show:</b> {show['title']}\n"
+            f"• <b>Amount:</b> ₹{cost}\n"
+            f"• <b>UPI ID:</b> <code>{upi_id}</code>\n"
+            f"• <b>Reference / Note:</b> <code>{order_id}</code>\n\n"
+            f"<i>UPI App par pay karne ke baad agar koi issue ho to support se contact karein.</i>",
+            reply_markup=kb,
+            parse_mode=PM
+        )
+
+    elif data == "store_myshows":
+        p_shows = await db.get_user_purchased_shows(user_id)
+        if not p_shows:
+            return await query.answer("Aapne abhi tak koi show purchase nahi kiya hai.", show_alert=True)
+        lines = ["<b>📹 Your Purchased Shows:</b>\n"]
+        buttons = []
+        for ps in p_shows:
+            sh = await db.get_store_show(ps['show_id'])
+            if sh:
+                lines.append(f"• <b>{sh['title']}</b> ({sh.get('duration', 'Full Show')})")
+                buttons.append([InlineKeyboardButton(f"📥 Re-Deliver: {sh['title'][:25]}", callback_data=f"store_redeliver_{ps['show_id']}")])
+        buttons.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="store_browse")])
+        await query.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=PM)
+
+    elif data.startswith("store_redeliver_"):
+        show_id = data.split("store_redeliver_")[1]
+        from plugins.store_bot import deliver_purchased_show
+        await query.answer("🚀 Re-delivering show files...", show_alert=False)
+        await deliver_purchased_show(client, user_id, show_id, bot_id)
+
+    elif data == "store_myorders":
+        orders = await db.get_user_store_orders(user_id)
+        if not orders:
+            return await query.answer("No purchase orders found.", show_alert=True)
+        lines = ["<b>📦 Your Store Orders:</b>\n"]
+        for o in orders[:8]:
+            t_str = time.strftime('%d/%m/%Y', time.localtime(o.get('created_at', time.time())))
+            st = o.get('status', 'PENDING')
+            st_icon = '✅' if st == 'SUCCESS' else '⏳'
+            lines.append(f"{st_icon} <b>{o.get('show_title', 'Show')}</b> — ₹{o.get('amount', 0)} ({t_str})")
+        lines.append("\n<i>All purchased shows are available for re-delivery in <b>📹 My Shows</b>.</i>")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="store_browse")]])
+        await query.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode=PM)
+
+    elif data == "store_browse":
+        from plugins.store_bot import send_store_main_menu
+        await query.message.delete()
+        await send_store_main_menu(client, user_id, bot_id, query.from_user.first_name if query.from_user else "")
+
+    elif data == "store_help":
+        help_text = (
+            "📖 <b>Store Bot Guide & FAQ</b>\n\n"
+            "• <b>How to Buy a Show:</b>\n"
+            "Channel me show poster par <code>[ 🛍️ Buy Now ]</code> par click karein aur payment complete karein. Video file instant deliver ho jayegi.\n\n"
+            "• <b>Auto-Delete Notice:</b>\n"
+            "Delivered video 15 minute me delete ho jati hai, kripya ise Saved Messages me forward kar lein.\n\n"
+            "• <b>Re-download Anytime:</b>\n"
+            "Aap kabhi bhi <b>📹 My Shows</b> button se apni kharidi hui videos dobara mangwa sakte hain!"
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="store_browse")]])
+        await query.message.edit_text(help_text, reply_markup=kb, parse_mode=PM)
+
+
+async def _process_store_inline_query(client: Client, inline_query: InlineQuery):
+    """Allows searching 800+ shows inline from any chat via @StoreBot query."""
+    from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+    query = inline_query.query.strip()
+    bot_uname = client.me.username if getattr(client, 'me', None) else "StoreBot"
+    shows = await db.search_store_shows(query, limit=15)
+    results = []
+
+    for sh in shows:
+        show_id = sh["show_id"]
+        title = sh["title"]
+        price = sh.get("price", 19)
+        duration = sh.get("duration", "Full Show")
+        desc = f"₹{price} • {duration} • {sh.get('platform', 'Story TV')}"
+        
+        buy_url = f"https://t.me/{bot_uname}?start=buy_{show_id}"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🛍️ Buy Now (₹{price})", url=buy_url)]])
+        
+        caption_text = (
+            f"📽️ <b>Show :</b> {title}\n"
+            f"🎬 <b>Duration :</b> {duration}\n"
+            f"💰 <b>Price :</b> ₹{price}\n\n"
+            f"<i>Tap below to buy and watch full combined show!</i>"
+        )
+
+        results.append(
+            InlineQueryResultArticle(
+                id=show_id,
+                title=title,
+                description=desc,
+                input_message_content=InputTextMessageContent(caption_text, parse_mode=PM),
+                reply_markup=kb
+            )
+        )
+
+    await inline_query.answer(results, cache_time=10, is_personal=True)
+
+
 def register_share_handlers(app: Client):
     """Register all handlers on a started Client instance."""
     from plugins.banned import ban_interceptor
@@ -5199,6 +5463,12 @@ def register_share_handlers(app: Client):
         _process_fsub_check,
         filters.regex(r'^fsub_chk_')
     ))
+    app.add_handler(CallbackQueryHandler(
+        _process_store_callback,
+        filters.regex(r'^store_')
+    ))
+    app.add_handler(InlineQueryHandler(_process_store_inline_query))
+
     async def safe_process_pass(client, query):
         try:
             await _process_pass_callback(client, query)

@@ -192,12 +192,17 @@ class Database:
         self.unlimited_passes = self.db.unlimited_passes
         self.pass_orders = self.db.delivery_pass_orders
         self.used_utrs = self.db.used_utrs
+        self.store_shows = self.db.store_shows
+        self.store_orders = self.db.store_orders
+        self.store_user_shows = self.db.store_user_shows
+        self.store_config = self.db.store_config
         
         self._ban_status_cache = {}  # {user_id: (ban_status_dict, expiry)}
         self._bot_cfg_cache = {}     # {bot_id: (cfg_dict, expiry)}
         self._share_cfg_cache = None  # (cfg_dict, expiry)
         self._user_cache = {}        # {user_id: (user_doc, expiry)}
         self._rl_cfg_cache = None    # (cfg_dict, expiry)
+        self._store_cfg_cache = {}   # {bot_id: (cfg_dict, expiry)}
 
         
     async def set_share_bot_token(self, token: str):
@@ -2361,5 +2366,152 @@ class Database:
         except Exception as _m_err:
             import logging
             logging.getLogger(__name__).error(f"[Migration] Exception in user migration: {_m_err}")
+
+    # ── Store / Pay-Per-Show Catalog & Orders ─────────────────────────────────
+    async def save_store_show(self, show_data: dict):
+        """Save or update an indexed show in store_shows collection."""
+        show_id = show_data.get('show_id')
+        if not show_id:
+            import uuid
+            show_id = str(uuid.uuid4())[:8]
+            show_data['show_id'] = show_id
+        await self.store_shows.update_one(
+            {'$or': [{'show_id': show_id}, {'clean_title': show_data.get('clean_title', '')}]},
+            {'$set': show_data},
+            upsert=True
+        )
+        return show_id
+
+    async def get_store_show(self, show_id: str) -> dict | None:
+        """Fetch a single show by its show_id."""
+        return await self.store_shows.find_one({'show_id': str(show_id)})
+
+    async def get_store_show_by_title(self, clean_title: str) -> dict | None:
+        """Fetch a show by clean title (deduplication check)."""
+        return await self.store_shows.find_one({'clean_title': clean_title})
+
+    async def get_all_store_shows(self, limit: int = 50, offset: int = 0) -> list:
+        """Returns paginated list of all shows."""
+        cursor = self.store_shows.find().sort('created_at', -1).skip(offset).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def count_store_shows(self) -> int:
+        """Returns total count of indexed shows."""
+        return await self.store_shows.count_documents({})
+
+    async def search_store_shows(self, query: str, limit: int = 20) -> list:
+        """Fuzzy searches shows by title/genre/platform."""
+        if not query:
+            return await self.get_all_store_shows(limit=limit)
+        cursor = self.store_shows.find({
+            '$or': [
+                {'title': {'$regex': query, '$options': 'i'}},
+                {'clean_title': {'$regex': query, '$options': 'i'}},
+                {'platform': {'$regex': query, '$options': 'i'}},
+                {'genre': {'$regex': query, '$options': 'i'}}
+            ]
+        }).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def delete_store_show(self, show_id: str):
+        """Delete a show from store catalog."""
+        await self.store_shows.delete_one({'show_id': str(show_id)})
+
+    # ── Store Orders ──────────────────────────────────────────────────────────
+    async def create_store_order(self, order_dict: dict):
+        """Creates a store purchase order."""
+        import time as _t
+        if 'created_at' not in order_dict:
+            order_dict['created_at'] = _t.time()
+        order_dict.setdefault('status', 'PENDING')
+        await self.store_orders.update_one({'order_id': order_dict['order_id']}, {'$set': order_dict}, upsert=True)
+
+    async def get_store_order(self, order_id: str) -> dict | None:
+        """Fetch a store order by order_id."""
+        return await self.store_orders.find_one({'order_id': str(order_id)})
+
+    async def update_store_order(self, order_id: str, update_dict: dict):
+        """Updates store order details (e.g. status='SUCCESS', payment_id, etc.)."""
+        await self.store_orders.update_one({'order_id': str(order_id)}, {'$set': update_dict})
+
+    async def get_user_store_orders(self, user_id: int, limit: int = 20) -> list:
+        """Returns recent purchase orders for a user."""
+        cursor = self.store_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def get_all_store_orders(self, limit: int = 50, offset: int = 0) -> list:
+        """Returns all store orders for admin log/stats."""
+        cursor = self.store_orders.find().sort('created_at', -1).skip(offset).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    # ── User Purchased Shows ──────────────────────────────────────────────────
+    async def add_user_purchased_show(self, user_id: int, bot_id: str, show_id: str, order_id: str = ""):
+        """Records permanent ownership of a show for a user."""
+        import time as _t
+        doc = {
+            'user_id': int(user_id),
+            'bot_id': str(bot_id),
+            'show_id': str(show_id),
+            'order_id': str(order_id),
+            'purchased_at': _t.time(),
+            'last_downloaded': _t.time(),
+            'download_count': 1
+        }
+        await self.store_user_shows.update_one(
+            {'user_id': int(user_id), 'show_id': str(show_id)},
+            {'$set': doc, '$inc': {'download_count': 1}},
+            upsert=True
+        )
+
+    async def has_user_purchased_show(self, user_id: int, show_id: str) -> bool:
+        """Checks if user has already purchased the show."""
+        doc = await self.store_user_shows.find_one({'user_id': int(user_id), 'show_id': str(show_id)})
+        return bool(doc)
+
+    async def get_user_purchased_shows(self, user_id: int, limit: int = 50) -> list:
+        """Returns list of show_ids purchased by the user."""
+        cursor = self.store_user_shows.find({'user_id': int(user_id)}).sort('purchased_at', -1).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def get_store_customers(self, bot_id: str = "") -> int:
+        """Counts total unique customers who bought shows."""
+        pipeline = []
+        if bot_id:
+            pipeline.append({'$match': {'bot_id': str(bot_id)}})
+        pipeline.append({'$group': {'_id': '$user_id'}})
+        pipeline.append({'$count': 'total'})
+        res = await self.store_user_shows.aggregate(pipeline).to_list(1)
+        return res[0]['total'] if res else 0
+
+    # ── Store Bot Mode & Configurations ───────────────────────────────────────
+    async def get_store_bot_config(self, bot_id: str) -> dict:
+        """Fetches isolated configuration for a Store Bot."""
+        import time as _t
+        now = _t.time()
+        b_str = str(bot_id)
+        if b_str in self._store_cfg_cache:
+            val, expiry = self._store_cfg_cache[b_str]
+            if now < expiry:
+                return val
+        doc = await self.store_config.find_one({'_id': f"store_bot_{b_str}"})
+        res = doc or {}
+        self._store_cfg_cache[b_str] = (res, now + 30)
+        return res
+
+    async def set_store_bot_config(self, bot_id: str, **kwargs):
+        """Updates isolated configuration for a Store Bot."""
+        b_str = str(bot_id)
+        await self.store_config.update_one({'_id': f"store_bot_{b_str}"}, {'$set': kwargs}, upsert=True)
+        if b_str in self._store_cfg_cache:
+            del self._store_cfg_cache[b_str]
+
+    async def is_store_bot_mode(self, bot_id: str) -> bool:
+        """Checks if a bot is running in Store Bot Mode."""
+        cfg = await self.get_store_bot_config(bot_id)
+        return cfg.get('is_store_mode', False)
+
+    async def set_store_bot_mode(self, bot_id: str, is_store: bool):
+        """Sets bot mode to Store Bot or Normal Delivery."""
+        await self.set_store_bot_config(bot_id, is_store_mode=is_store)
 
 db = Database(Config.DATABASE_URI, Config.DATABASE_NAME)
