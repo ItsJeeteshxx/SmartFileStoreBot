@@ -3783,9 +3783,9 @@ async def settings_query(bot, query):
           f"<code>{cur_val if cur_val else 'None (Using Original Caption)'}</code>\n"
           f"────────────────────\n"
           f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Available Placeholders:</b>\n"
-          f"• <code>{file_name}</code> : File Name\n"
-          f"• <code>{file_size}</code> : File Size\n"
-          f"• <code>{caption}</code> : Original Caption</blockquote>"
+          f"• <code>{{file_name}}</code> : File Name\n"
+          f"• <code>{{file_size}}</code> : File Size\n"
+          f"• <code>{{caption}}</code> : Original Caption</blockquote>"
       )
       btns = [
           [
