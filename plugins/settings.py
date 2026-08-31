@@ -1186,9 +1186,7 @@ async def settings_query(bot, query):
         ],
         [InlineKeyboardButton("👥 Costumers & Subscriptions", callback_data="settings#sb_rl_cust_0")],
         [InlineKeyboardButton("💰 Pricing & Plans", callback_data="settings#sb_rl_pricing")],
-        [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
-        [InlineKeyboardButton("⚡ Cashfree Config", callback_data="settings#sb_rl_cf_menu")],
-        [InlineKeyboardButton("🌐 Crypto Config", callback_data="settings#sb_rl_oxa_menu")],
+        [InlineKeyboardButton("💳 Payment Config", callback_data="settings#sb_rl_payment_menu")],
         [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
     ]
     api_buttons = [
@@ -1204,9 +1202,7 @@ async def settings_query(bot, query):
         ],
         [{"text": "Costumers & Subscriptions", "callback_data": "settings#sb_rl_cust_0", "icon_custom_emoji_id": "6032594876506312598"}],
         [{"text": "Pricing & Plans", "callback_data": "settings#sb_rl_pricing", "icon_custom_emoji_id": "5904462880941545555"}],
-        [{"text": "UPI & Gmail Config", "callback_data": "settings#sb_rl_upi_menu", "icon_custom_emoji_id": "6019110229680068974"}],
-        [{"text": "Cashfree Config", "callback_data": "settings#sb_rl_cf_menu", "icon_custom_emoji_id": "5283232570660634549"}],
-        [{"text": "Crypto Config", "callback_data": "settings#sb_rl_oxa_menu", "icon_custom_emoji_id": "5800720664620961831"}],
+        [{"text": "Payment Config", "callback_data": "settings#sb_rl_payment_menu", "icon_custom_emoji_id": "5904359114531675993"}],
         [{"text": "Back", "callback_data": "settings#sharebot"}],
     ]
 
@@ -1612,6 +1608,51 @@ async def settings_query(bot, query):
             ]])
         )
 
+  elif type == "sb_rl_payment_menu":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    upi_val = str(rl_cfg.get('upi_id') or getattr(Config, 'UPI_ID', '') or os.environ.get('UPI_ID', '') or '').strip()
+    gmail_val = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
+    from plugins.cashfree_helper import get_cashfree_credentials
+    cf_creds = await get_cashfree_credentials()
+    oxa_val = str(rl_cfg.get('oxapay_key') or getattr(Config, 'OXAPAY_KEY', '') or os.environ.get('OXAPAY_KEY', '') or '').strip()
+
+    upi_status = '<emoji id="6120635817674149717">✅</emoji> Active' if (upi_val and gmail_val) else ('⚠️ UPI only' if upi_val else '<emoji id="5970055887774028039">🔴</emoji> Not Set')
+    cf_status = '<emoji id="6120635817674149717">✅</emoji> Active' if (cf_creds.get('app_id') and cf_creds.get('secret_key')) else '<emoji id="5970055887774028039">🔴</emoji> Not Set'
+    oxa_status = '<emoji id="6120635817674149717">✅</emoji> Active' if oxa_val else '<emoji id="5970055887774028039">🔴</emoji> Not Set'
+
+    pay_buttons = [
+        [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
+        [InlineKeyboardButton("⚡ Cashfree Config", callback_data="settings#sb_rl_cf_menu")],
+        [InlineKeyboardButton("🌐 Crypto Config", callback_data="settings#sb_rl_oxa_menu")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
+    ]
+    pay_api_buttons = [
+        [{"text": "UPI & Gmail Config", "callback_data": "settings#sb_rl_upi_menu", "icon_custom_emoji_id": "6019110229680068974"}],
+        [{"text": "Cashfree Config", "callback_data": "settings#sb_rl_cf_menu", "icon_custom_emoji_id": "5283232570660634549"}],
+        [{"text": "Crypto Config", "callback_data": "settings#sb_rl_oxa_menu", "icon_custom_emoji_id": "5800720664620961831"}],
+        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+    ]
+    pay_text = (
+        f'<emoji id="5904359114531675993">💳</emoji> <b>Payment Config</b>\n'
+        f"────────────────────\n"
+        f'<emoji id="6019110229680068974">💳</emoji> <b>UPI & Gmail:-</b> {upi_status}\n'
+        f'<emoji id="5283232570660634549">⚡</emoji> <b>Cashfree:-</b> {cf_status}\n'
+        f'<emoji id="5800720664620961831">🌐</emoji> <b>Crypto:-</b> {oxa_status}'
+    )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=pay_text,
+        inline_keyboard=pay_api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(pay_text, reply_markup=InlineKeyboardMarkup(pay_buttons))
+        except Exception:
+            pass
+
   elif type == "sb_rl_cf_menu":
     from plugins.cashfree_helper import get_cashfree_credentials
     creds = await get_cashfree_credentials()
@@ -1626,13 +1667,13 @@ async def settings_query(bot, query):
         [InlineKeyboardButton("📝 Set App ID / Client ID", callback_data="settings#sb_rl_cf_appid")],
         [InlineKeyboardButton("🔐 Set Secret Key", callback_data="settings#sb_rl_cf_secret")],
         [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_cf_env")],
-        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_rl_payment_menu")],
     ]
     api_buttons = [
         [{"text": "📝 Set App ID / Client ID", "callback_data": "settings#sb_rl_cf_appid"}],
         [{"text": "🔐 Set Secret Key", "callback_data": "settings#sb_rl_cf_secret"}],
         [{"text": f"🌐 Environment: {env_str}", "callback_data": "settings#sb_rl_cf_env"}],
-        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+        [{"text": "Back", "callback_data": "settings#sb_rl_payment_menu"}],
     ]
     cf_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Active' if creds.get('configured') else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
     cf_text = (
@@ -1735,7 +1776,7 @@ async def settings_query(bot, query):
         [InlineKeyboardButton("👤 Set Payee Name", callback_data="settings#sb_rl_upi_name")],
         [InlineKeyboardButton("📧 Set Gmail Address", callback_data="settings#sb_rl_gmail_user")],
         [InlineKeyboardButton("🔑 Set Gmail App Password", callback_data="settings#sb_rl_gmail_pass")],
-        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_rl_payment_menu")],
     ]
     api_buttons = [
         [{"text": upi_toggle_api, "callback_data": "settings#sb_rl_upi_toggle", "icon_custom_emoji_id": toggle_icon}],
@@ -1743,7 +1784,7 @@ async def settings_query(bot, query):
         [{"text": "👤 Set Payee Name", "callback_data": "settings#sb_rl_upi_name"}],
         [{"text": "📧 Set Gmail Address", "callback_data": "settings#sb_rl_gmail_user"}],
         [{"text": "🔑 Set Gmail App Password", "callback_data": "settings#sb_rl_gmail_pass"}],
-        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+        [{"text": "Back", "callback_data": "settings#sb_rl_payment_menu"}],
     ]
     upi_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
     upi_text = (
@@ -1883,13 +1924,13 @@ async def settings_query(bot, query):
         [InlineKeyboardButton(oxa_toggle_lbl, callback_data="settings#sb_rl_oxa_toggle")],
         [InlineKeyboardButton("🔑 Set Key", callback_data="settings#sb_rl_oxa_key")],
         [InlineKeyboardButton(f"🌐 {env_str}", callback_data="settings#sb_rl_oxa_env")],
-        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_rl_payment_menu")],
     ]
     api_buttons = [
         [{"text": oxa_toggle_api, "callback_data": "settings#sb_rl_oxa_toggle", "icon_custom_emoji_id": toggle_icon}],
         [{"text": "Set Key", "callback_data": "settings#sb_rl_oxa_key", "icon_custom_emoji_id": "6019290828759898301"}],
         [{"text": f"{env_str}", "callback_data": "settings#sb_rl_oxa_env", "icon_custom_emoji_id": "5776233299424843260"}],
-        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+        [{"text": "Back", "callback_data": "settings#sb_rl_payment_menu"}],
     ]
     oxa_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Active' if oxa_key else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
     oxa_text = (
