@@ -79,15 +79,20 @@ def _format_video_duration(seconds: int) -> str:
 
 def build_showcase_caption(title: str, platform: str = "Story TV", genre: str = "Drama / Romance", duration: str = "Full Show", price: int = 19) -> str:
     """
-    Constructs the exact requested public showcase channel caption.
+    Constructs the exact requested public showcase channel caption with custom emoji IDs:
+    - 5937999673510858217 for Show / Video
+    - 6026337676091726218 for Platform
+    - 6024065724291488135 for Genre
+    - 5807622114424924272 for Duration
+    - 5904462880941545555 for Price
     """
     clean_title = _clean_show_title(title)
     caption = (
-        f"📽️ <b>Show :</b> {clean_title}\n"
-        f"🖥 <b>Platform :</b> {platform}\n"
-        f"🧩 <b>Genre :</b> {genre}\n"
-        f"🎬 <b>Duration :</b> {duration}\n"
-        f"💰 <b>Price :</b> ₹{price}\n\n"
+        f'<emoji id="5937999673510858217">📽️</emoji> <b>Show :</b> {clean_title}\n'
+        f'<emoji id="6026337676091726218">🖥</emoji> <b>Platform :</b> {platform}\n'
+        f'<emoji id="6024065724291488135">🧩</emoji> <b>Genre :</b> {genre}\n'
+        f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> {duration}\n'
+        f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> ₹{price}\n\n'
         f"<blockquote expandable>\n"
         f"❏ Note: This is a paid show. Access will be available after purchase.\n"
         f"❏ नोट: यह शो फ्री नहीं है, इसे देखने के लिए खरीदना होगा।\n"
@@ -96,11 +101,11 @@ def build_showcase_caption(title: str, platform: str = "Story TV", genre: str = 
     return caption
 
 
-def build_showcase_buttons(show_id: str, store_bot_username: str, tutorial_url: str = "https://t.me/UseAryaBot") -> InlineKeyboardMarkup:
+def build_showcase_buttons(show_id: str, store_bot_username: str, tutorial_url: str = "https://t.me/UseAryaBot") -> tuple[InlineKeyboardMarkup, list]:
     """
-    Constructs the exact requested 2-row inline keyboard:
-    Row 1: [ 🛍️ Buy Now ]
-    Row 2: [ 🔎 Search ] [ 📹 Tutorial ]
+    Constructs the exact requested 2-row inline keyboard with custom emoji icons:
+    Row 1: [ 🛍️ Buy Now ] (6030664675253820292)
+    Row 2: [ 🔎 Search ] (6267186570034419608) [ 📹 Tutorial ] (6266794310671275367)
     """
     bot_uname = store_bot_username.strip().lstrip('@')
     buy_url = f"https://t.me/{bot_uname}?start=buy_{show_id}"
@@ -115,7 +120,15 @@ def build_showcase_buttons(show_id: str, store_bot_username: str, tutorial_url: 
             InlineKeyboardButton("📹 Tutorial", url=tutorial_url)
         ]
     ]
-    return InlineKeyboardMarkup(buttons)
+
+    api_buttons = [
+        [{"text": "Buy Now", "url": buy_url, "icon_custom_emoji_id": "6030664675253820292"}],
+        [
+            {"text": "Search", "url": search_url, "icon_custom_emoji_id": "6267186570034419608"},
+            {"text": "Tutorial", "url": tutorial_url, "icon_custom_emoji_id": "6266794310671275367"}
+        ]
+    ]
+    return InlineKeyboardMarkup(buttons), api_buttons
 
 
 # ── Database Channel Sequential Auto-Scanner ──────────────────────────────────
@@ -289,30 +302,28 @@ async def publish_show_to_showcase(
             price=show.get("price", 19)
         )
 
-        buttons = build_showcase_buttons(
+        buttons, api_buttons = build_showcase_buttons(
             show_id=show_id,
             store_bot_username=store_bot_username,
             tutorial_url=tutorial_link
         )
 
-        if processed_poster_path and os.path.exists(processed_poster_path):
-            await client.send_photo(
-                chat_id=target_channel_id,
-                photo=processed_poster_path,
-                caption=caption,
-                parse_mode=PM,
-                reply_markup=buttons
-            )
-        elif temp_poster_path and os.path.exists(temp_poster_path):
-            await client.send_photo(
-                chat_id=target_channel_id,
-                photo=temp_poster_path,
-                caption=caption,
-                parse_mode=PM,
-                reply_markup=buttons
-            )
+        poster_to_send = processed_poster_path if (processed_poster_path and os.path.exists(processed_poster_path)) else (temp_poster_path if (temp_poster_path and os.path.exists(temp_poster_path)) else None)
+
+        if poster_to_send:
+            try:
+                from plugins.share_bot import send_or_edit_with_custom_icons
+                await client.send_photo(
+                    chat_id=target_channel_id,
+                    photo=poster_to_send,
+                    caption=caption,
+                    parse_mode=PM,
+                    reply_markup=buttons
+                )
+            except Exception as e:
+                logger.warning(f"[Publisher] send_photo fallback: {e}")
+                await client.send_message(chat_id=target_channel_id, text=caption, parse_mode=PM, reply_markup=buttons)
         else:
-            # Fallback to styled message if no image available
             await client.send_message(
                 chat_id=target_channel_id,
                 text=caption,
@@ -330,3 +341,115 @@ async def publish_show_to_showcase(
             if p and os.path.exists(p) and "raw_" in p:
                 try: os.remove(p)
                 except Exception: pass
+
+
+# ── Live Auto-Poster for Database Channel Arrivals ───────────────────────────
+_pending_live_posters = {} # { channel_id: { "msg_id": msg_id, "title": title, "time": timestamp } }
+
+@Client.on_message(filters.channel)
+async def auto_index_live_channel_listener(client: Client, message: Message):
+    """
+    Listens live to any configured database channels.
+    When a new show (poster + video) arrives:
+    1. Indexes it into MongoDB.
+    2. Generates 600x720 enhanced poster.
+    3. Automatically publishes to the configured showcase channel!
+    """
+    if not message or not message.chat:
+        return
+    ch_id = message.chat.id
+
+    # Check if this channel is a configured db_channel for any store bot
+    bots = await db.get_share_bots()
+    matching_bot = None
+    target_showcase = None
+    b_uname = None
+
+    for b in bots:
+        b_id_str = str(b.get("id"))
+        cfg = await db.get_store_bot_config(b_id_str)
+        if cfg.get("is_store_mode") and cfg.get("db_channel_id") == ch_id:
+            matching_bot = b_id_str
+            target_showcase = cfg.get("showcase_channel_id")
+            b_uname = b.get("username", "StoreBot")
+            break
+
+    if not matching_bot or not target_showcase:
+        return
+
+    # 1. Poster Photo arrived
+    if message.photo:
+        raw_cap = message.caption or ""
+        t = _clean_show_title(raw_cap)
+        if t:
+            _pending_live_posters[ch_id] = {
+                "msg_id": message.id,
+                "title": t,
+                "time": time.time()
+            }
+            logger.info(f"[LiveStoreWatcher] Cached pending poster for '{t}' (Msg: {message.id}) in DB {ch_id}")
+        return
+
+    # 2. Video arrived
+    elif message.video or (message.document and message.document.mime_type and "video" in message.document.mime_type):
+        raw_cap = message.caption or getattr(message.document or message.video, 'file_name', '') or ""
+        vid_title = _clean_show_title(raw_cap)
+        
+        pending = _pending_live_posters.get(ch_id)
+        # Check if pending poster was within last 10 minutes
+        poster_id = message.id
+        show_title = vid_title or f"Show #{message.id}"
+        if pending and (time.time() - pending.get("time", 0)) < 600:
+            poster_id = pending["msg_id"]
+            show_title = pending["title"] or show_title
+            del _pending_live_posters[ch_id]
+
+        clean_t = _clean_show_title(show_title)
+        norm_key = _normalize_title(clean_t)
+
+        # Deduplication check
+        existing = await db.get_store_show_by_title(norm_key)
+        if existing:
+            logger.warning(f"[LiveStoreWatcher] Duplicate show skipped: {clean_t}")
+            return
+
+        duration_sec = 0
+        if message.video:
+            duration_sec = getattr(message.video, 'duration', 0) or 0
+        duration_str = _format_video_duration(duration_sec)
+
+        show_id = str(uuid.uuid4())[:8]
+        cfg = await db.get_store_bot_config(matching_bot)
+        def_price = cfg.get("default_price", 19)
+
+        show_doc = {
+            "show_id": show_id,
+            "title": clean_t,
+            "clean_title": norm_key,
+            "platform": "Story TV",
+            "genre": "Drama / Romance",
+            "duration": duration_str,
+            "duration_seconds": duration_sec,
+            "price": def_price,
+            "channel_id": ch_id,
+            "poster_msg_id": poster_id,
+            "video_msg_ids": [message.id],
+            "video_msg_id": message.id,
+            "created_at": time.time()
+        }
+
+        await db.save_store_show(show_doc)
+        logger.info(f"[LiveStoreWatcher] Auto-indexed new live show '{clean_t}' (ID: {show_id})")
+
+        # Auto-publish to showcase channel
+        try:
+            await publish_show_to_showcase(
+                client=client,
+                target_channel_id=target_showcase,
+                show_id=show_id,
+                store_bot_username=b_uname,
+                tutorial_link=cfg.get("tutorial_url", "https://t.me/UseAryaBot")
+            )
+            logger.info(f"[LiveStoreWatcher] Auto-published '{clean_t}' to Showcase Channel {target_showcase}")
+        except Exception as e:
+            logger.error(f"[LiveStoreWatcher] Auto-publish failed: {e}")
