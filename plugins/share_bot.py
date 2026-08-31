@@ -3618,10 +3618,9 @@ async def _process_pass_callback(client, query):
                 methods_buttons.append([InlineKeyboardButton("💳 Pay Via UPI ( QR )" if not is_hi else "💳 UPI ( QR ) द्वारा भुगतान करें", callback_data="pass#method_upi")])
                 methods_api_kb.append([{"text": "Pay Via UPI ( QR )" if not is_hi else "UPI ( QR ) द्वारा भुगतान करें", "callback_data": "pass#method_upi", "icon_custom_emoji_id": "5766975922620076409"}])
 
-            cf_lbl_en = "Pay Via Cashfree"
-            cf_lbl_hi = "Cashfree द्वारा भुगतान करें"
-            methods_buttons.append([InlineKeyboardButton("⚡ Pay Via Cashfree" if not is_hi else "⚡ Cashfree द्वारा भुगतान करें", callback_data="pass#method_cashfree")])
-            methods_api_kb.append([{"text": cf_lbl_hi if is_hi else cf_lbl_en, "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "6271408183583969564"}])
+            cf_lbl = "Pay Via Cards , NetBanking ( Cashfree )"
+            methods_buttons.append([InlineKeyboardButton("💳 Pay Via Cards , NetBanking ( Cashfree )", callback_data="pass#method_cashfree")])
+            methods_api_kb.append([{"text": cf_lbl, "callback_data": "pass#method_cashfree", "icon_custom_emoji_id": "6107442434055086407"}])
 
             if oxapay_enabled:
                 methods_buttons.append([InlineKeyboardButton("🌐 Pay Via Crypto (Oxapay)" if not is_hi else "🌐 Crypto द्वारा भुगतान करें", callback_data="pass#method_crypto")])
@@ -3687,16 +3686,16 @@ async def _process_pass_callback(client, query):
 
         if is_hi:
             text = (
-                '<emoji id="5920332557466997677">⚡</emoji> <b>Cashfree द्वारा भुगतान करें</b>\n'
+                '<emoji id="6107442434055086407">💳</emoji> <b>Cards , NetBanking ( Cashfree ) द्वारा भुगतान करें</b>\n'
                 "──────────────────────\n\n"
-                "UPI, Cards, NetBanking से तुरंत भुगतान।\n\n"
+                "Cards, NetBanking, UPI से तुरंत भुगतान।\n\n"
                 "अपना पसंदीदा पास प्लान चुनें:"
             )
         else:
             text = (
-                '<emoji id="5920332557466997677">⚡</emoji> <b>Pay with Cashfree</b>\n'
+                '<emoji id="6107442434055086407">💳</emoji> <b>Pay Via Cards , NetBanking ( Cashfree )</b>\n'
                 "──────────────────────\n\n"
-                "Instant payment with UPI, Cards, NetBanking.\n\n"
+                "Instant payment with Cards, NetBanking, UPI.\n\n"
                 "Select your desired Pass plan:"
             )
         if getattr(query.message, "photo", None):
