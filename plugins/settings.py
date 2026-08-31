@@ -2379,7 +2379,7 @@ async def settings_query(bot, query):
         t_items = []
         for idx, txn in enumerate(txns[:10], 1):
             t_time = txn.get('time', 0)
-            t_str = format_dt(t_time, show_ist=True)
+            t_str = format_dt(t_time, show_ist=False)
             
             p_name = str(txn.get('plan') or 'Pass')
             dur_verb = p_name
@@ -2392,10 +2392,20 @@ async def settings_query(bot, query):
             try: amt = f"₹{float(txn.get('amount', 0)):.2f}"
             except Exception: amt = "₹0.00"
 
-            gw = txn.get('gateway', 'Pay Via UPI (INR)')
+            raw_gw = str(txn.get('gateway') or '').strip()
+            raw_gw_lower = raw_gw.lower()
+            if 'crypto' in raw_gw_lower or 'oxapay' in raw_gw_lower or 'oxa' in raw_gw_lower:
+                gw = "Crypto ( Oxapay )"
+            elif 'cashfree' in raw_gw_lower or 'online gateway' in raw_gw_lower or 'cf' in raw_gw_lower:
+                gw = "Cashfree"
+            elif 'upi' in raw_gw_lower:
+                gw = "Manual UPI"
+            else:
+                gw = raw_gw or "Cashfree"
+
             oid = txn.get('id', 'N/A')
             t_items.append(
-                f"<b>{idx}.</b> <emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
+                f"<b>{idx}.</b> <emoji id=\"6021683099773966917\">🆔</emoji> <code>{oid}</code>\n"
                 f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                 f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
                 f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"

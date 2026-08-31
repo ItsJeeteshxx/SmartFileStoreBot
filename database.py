@@ -1815,13 +1815,13 @@ class Database:
             oid = str(o.get('order_id', ''))
             gw_raw = str(o.get('gateway') or '').lower()
             if 'oxa' in oid.lower() or 'crypto' in gw_raw or 'oxapay' in gw_raw:
-                gw_display = "Pay Via Crypto (Oxapay)"
-            elif 'cf' in oid.lower() or 'order_' in oid or 'cashfree' in gw_raw:
-                gw_display = "Pay Via Cashfree"
+                gw_display = "Crypto ( Oxapay )"
             elif 'upi' in oid.lower() or 'upi' in gw_raw:
-                gw_display = "Pay Via UPI (INR)"
+                gw_display = "Manual UPI"
+            elif 'cf' in oid.lower() or 'order_' in oid or 'cashfree' in gw_raw or 'gateway' in gw_raw:
+                gw_display = "Cashfree"
             else:
-                gw_display = "Pay Via Cashfree" if 'order_' in oid else "Online Gateway"
+                gw_display = "Cashfree"
 
             results.append({
                 'id': oid,
@@ -1840,7 +1840,7 @@ class Database:
                 'plan': u.get('plan', ''),
                 'status': 'PAID',
                 'time': u.get('used_at', 0),
-                'gateway': "Pay Via UPI (INR)"
+                'gateway': "Manual UPI"
             })
         results.sort(key=lambda x: x.get('time', 0), reverse=True)
         return results[:limit]
