@@ -3413,22 +3413,22 @@ async def _process_pass_callback(client, query):
 
         if is_hi:
             guide_text = (
-                '<emoji id="6019130940012370273">📖</emoji> <b>अनलिमिटेड पास — सम्पूर्ण हेल्प और पेमेंट गाइड</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+                '<emoji id="6019130940012370273">📖</emoji> <b>आर्या सब्सक्रिप्शन गाइड और सपोर्ट</b> <emoji id="6041919344995209164">❤️</emoji>\n'
                 "──────────────────────\n\n"
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>अनलिमिटेड एक्सेस पास क्या है?</b>\n'
                 'अनलिमिटेड पास लेने पर आपको सभी ऑडियो कहानियां, बैच फाइल्स और एपिसोड्स <b>बिना किसी कूलडाउन इंतज़ार</b> और <b>बिना किसी डोनेशन मैसेज</b> के 100% तुरंत प्राप्त होते हैं।\n\n'
                 "──────────────────────\n"
                 '<emoji id="6019224342666157570">💳</emoji> <b>पेमेंट करने की स्टेप-बाय-स्टेप गाइड:</b>\n\n'
-                '<b>1️⃣ Cashfree गेटवे (तुरंत ऑटो-वेरिफिकेशन):</b>\n'
+                '<emoji id="6084733528916893740">1️⃣</emoji> <b>Cashfree गेटवे (तुरंत ऑटो-वेरिफिकेशन):</b>\n'
                 '• <b>Cashfree द्वारा भुगतान करें</b> पर टैप करके अपना पसंदीदा प्लान चुनें।\n'
                 '• <b>UPI (GPay / PhonePe / Paytm / CRED)</b>, <b>डेबिट/क्रेडिट कार्ड</b>, या <b>नेट बैंकिंग</b> से भुगतान करें।\n'
                 '• भुगतान पूरा होते ही बॉट पर वापस आएं — पास <b>3 से 5 सेकंड में ऑटोमैटिकली एक्टिव</b> हो जाएगा!\n\n'
-                '<b>2️⃣ UPI (QR कोड / डायनामिक UTR):</b>\n'
+                '<emoji id="6089198632752389882">2️⃣</emoji> <b>UPI (QR कोड / डायनामिक UTR):</b>\n'
                 '• <b>UPI (QR) द्वारा भुगतान करें</b> पर टैप करके प्लान चुनें।\n'
                 '• दिए गए QR कोड को स्कैन करके ठीक वही राशि पे करें।\n'
                 '• अपने UPI ऐप (PhonePe/Paytm/GPay) की रसीद से <b>12-अंकों का UTR / Transaction No.</b> कॉपी करें।\n'
                 '• बॉट में 12-अंकों का UTR भेजें — हमारा सिस्टम तुरंत वेरिफाई करके पास एक्टिव कर देगा!\n\n'
-                '<b>3️⃣ Crypto (Oxapay गेटवे):</b>\n'
+                '<emoji id="6086945664707600755">3️⃣</emoji> <b>Crypto (Oxapay गेटवे):</b>\n'
                 '• <b>Crypto द्वारा भुगतान करें</b> चुनें और अपनी पसंदीदा करेंसी (<b>USDT, BTC, LTC, TRX</b>) चुनें।\n'
                 '• इनवॉइस में दिए गए एड्रेस पर सटीक क्रिप्टो राशि ट्रांसफर करें।\n'
                 '• ब्लॉकचेन कन्फर्मेशन मिलते ही पास अपने आप एक्टिव हो जाएगा!\n\n'
@@ -3436,28 +3436,28 @@ async def _process_pass_callback(client, query):
                 '<emoji id="5456140674028019486">⚡️</emoji> <b>सहायता और सपोर्ट समय:</b>\n'
                 '• <b>सपोर्ट समय:</b> सुबह 8:00 AM से शाम 7:00 PM IST\n'
                 '• <b>जवाब मिलने का समय:</b> 30 मिनट से 2 घंटे तक का समय लग सकता है\n'
-                '• यदि आपको कोई समस्या आ रही है या पेमेंट वेरिफाई नहीं हुआ, तो नीचे दिए गए <b>सहायता</b> बटन पर टैप करके सपोर्ट टीम से संपर्क करें!'
+                '• यदि आपको कोई समस्या आ रही है या पेमेंट वेरिफाई नहीं हुआ, तो नीचे दिए गए <b>हेल्प और सहायता</b> बटन पर टैप करके सपोर्ट टीम से संपर्क करें!'
             )
-            lbl_support = "सहायता"
+            lbl_support = "हेल्प और सहायता"
             lbl_back = "← वापस"
         else:
             guide_text = (
-                '<emoji id="6019130940012370273">📖</emoji> <b>Unlimited Pass — Complete Help & Payment Guide</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+                '<emoji id="6019130940012370273">📖</emoji> <b>Arya Subscription Guide & Support</b> <emoji id="6041919344995209164">❤️</emoji>\n'
                 "──────────────────────\n\n"
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>What is Unlimited Access Pass?</b>\n'
                 'Unlimited Pass gives you instant, 100% restriction-free access to all audios, batch files, and stories with <b>ZERO cooldown waiting time</b> and <b>NO donation messages</b>.\n\n'
                 "──────────────────────\n"
                 '<emoji id="6019224342666157570">💳</emoji> <b>Step-by-Step Payment Guide:</b>\n\n'
-                '<b>1️⃣ Cashfree Gateway (Instant Auto-Verify):</b>\n'
+                '<emoji id="6084733528916893740">1️⃣</emoji> <b>Cashfree Gateway (Instant Auto-Verify):</b>\n'
                 '• Tap on <b>Pay Via Cashfree</b> & select your plan.\n'
                 '• Pay securely using <b>UPI (GPay / PhonePe / Paytm / CRED)</b>, <b>Debit / Credit Card</b>, or <b>Net Banking</b>.\n'
                 '• After payment, return to the bot — your pass activates <b>instantly (in 3–5 seconds)</b>!\n\n'
-                '<b>2️⃣ Pay Via UPI (QR Code / Dynamic UTR):</b>\n'
+                '<emoji id="6089198632752389882">2️⃣</emoji> <b>Pay Via UPI (QR Code / Dynamic UTR):</b>\n'
                 '• Tap on <b>Pay Via UPI (QR)</b> & choose your duration.\n'
                 '• Scan the dynamic QR code or pay the exact displayed amount.\n'
                 '• Copy the <b>12-digit UTR / Transaction Reference ID</b> from your UPI app receipt.\n'
                 '• Send the 12-digit UTR in chat or tap verify — our auto-system activates your pass immediately!\n\n'
-                '<b>3️⃣ Crypto (Oxapay Gateway):</b>\n'
+                '<emoji id="6086945664707600755">3️⃣</emoji> <b>Crypto (Oxapay Gateway):</b>\n'
                 '• Tap on <b>Pay Via Crypto</b> & select your currency (<b>USDT, BTC, LTC, TRX, etc.</b>).\n'
                 '• Transfer the exact crypto amount to the generated invoice address.\n'
                 '• Once the blockchain confirms (1 network confirmation), the pass activates automatically!\n\n'
@@ -3465,9 +3465,9 @@ async def _process_pass_callback(client, query):
                 '<emoji id="5456140674028019486">⚡️</emoji> <b>Support & Assistance:</b>\n'
                 '• <b>Support Hours:</b> 8:00 AM to 7:00 PM IST\n'
                 '• <b>Expected Response Time:</b> 30 minutes to 2 hours\n'
-                '• If your payment is delayed or you need any help, tap the <b>Support</b> button below to message our support desk!'
+                '• If your payment is delayed or you need any help, tap the <b>Help & Support</b> button below to message our support desk!'
             )
-            lbl_support = "Support"
+            lbl_support = "Help & Support"
             lbl_back = "← Back"
 
         guide_buttons = [
@@ -3518,7 +3518,7 @@ async def _process_pass_callback(client, query):
             )
             lbl_txns = "मेरे ट्रांसक्शन्स"
             lbl_help = "हेल्प"
-            lbl_close = "✖️ बंद करें"
+            lbl_close = "बंद करें"
         else:
             title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
             title_header_v2 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans V2</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
@@ -3529,7 +3529,7 @@ async def _process_pass_callback(client, query):
             )
             lbl_txns = "My Transactions"
             lbl_help = "Help"
-            lbl_close = "✖️ Close"
+            lbl_close = "Close"
 
         if uiver == 'v2':
             # V2 (Single Gateway Flow - Cashfree or UPI based on settings):
@@ -3564,7 +3564,7 @@ async def _process_pass_callback(client, query):
             methods_api_kb.append([
                 {"text": lbl_help, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
                 {"text": " ", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"},
-                {"text": lbl_close, "callback_data": "pass#close"}
+                {"text": lbl_close, "callback_data": "pass#close", "icon_custom_emoji_id": "5807651380332076999"}
             ])
 
         else:
@@ -3638,7 +3638,7 @@ async def _process_pass_callback(client, query):
             methods_api_kb.append([
                 {"text": lbl_help, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
                 {"text": " ", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"},
-                {"text": lbl_close, "callback_data": "pass#close"}
+                {"text": lbl_close, "callback_data": "pass#close", "icon_custom_emoji_id": "5807651380332076999"}
             ])
 
         methods_kb = InlineKeyboardMarkup(methods_buttons)
