@@ -1875,20 +1875,20 @@ async def settings_query(bot, query):
     key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ("Set ✅" if oxa_key else "Not Configured ❌")
 
     oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
-    oxa_toggle_lbl = f"{'🟢' if oxapay_enabled else '🔴'} OxaPay Gateway: {'ENABLED' if oxapay_enabled else 'DISABLED'}"
-    oxa_toggle_api = f"OxaPay Gateway: {'ENABLED' if oxapay_enabled else 'DISABLED'}"
+    oxa_toggle_lbl = f"{'🟢' if oxapay_enabled else '🔴'} ( {'Enabled' if oxapay_enabled else 'Disabled'} )"
+    oxa_toggle_api = "( Enabled )" if oxapay_enabled else "( Disabled )"
     toggle_icon = "5809949600152296075" if oxapay_enabled else "5970055887774028039"
 
     buttons = [
         [InlineKeyboardButton(oxa_toggle_lbl, callback_data="settings#sb_rl_oxa_toggle")],
-        [InlineKeyboardButton("🔑 Set OxaPay Merchant Key", callback_data="settings#sb_rl_oxa_key")],
-        [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_oxa_env")],
+        [InlineKeyboardButton("🔑 Set Key", callback_data="settings#sb_rl_oxa_key")],
+        [InlineKeyboardButton(f"🌐 {env_str}", callback_data="settings#sb_rl_oxa_env")],
         [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
     ]
     api_buttons = [
         [{"text": oxa_toggle_api, "callback_data": "settings#sb_rl_oxa_toggle", "icon_custom_emoji_id": toggle_icon}],
-        [{"text": "🔑 Set OxaPay Merchant Key", "callback_data": "settings#sb_rl_oxa_key"}],
-        [{"text": f"🌐 Environment: {env_str}", "callback_data": "settings#sb_rl_oxa_env"}],
+        [{"text": "Set Key", "callback_data": "settings#sb_rl_oxa_key", "icon_custom_emoji_id": "6019290828759898301"}],
+        [{"text": f"{env_str}", "callback_data": "settings#sb_rl_oxa_env", "icon_custom_emoji_id": "5776233299424843260"}],
         [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
     ]
     oxa_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Active' if oxa_key else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
@@ -1897,12 +1897,7 @@ async def settings_query(bot, query):
         f"────────────────────\n"
         f"<b>Merchant Key:</b> <code>{key_disp}</code>\n"
         f"<b>Environment:</b> <code>{env_str}</code>\n"
-        f"<b>Status:</b> {oxa_status_str}\n"
-        f"────────────────────\n"
-        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How to get OxaPay Merchant Key:</b>\n"
-        f"1. Login to your OxaPay dashboard at https://oxapay.com\n"
-        f"2. Go to <b>Merchant → API Keys</b>\n"
-        f"3. Copy your <b>Merchant API Key</b> and set it here or in <code>.env</code>.</blockquote>"
+        f"<b>Status:</b> {oxa_status_str}"
     )
     from plugins.share_bot import send_or_edit_with_custom_icons
     sent_ok = await send_or_edit_with_custom_icons(
