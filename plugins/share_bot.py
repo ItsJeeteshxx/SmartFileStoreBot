@@ -3302,6 +3302,49 @@ async def start_pass_cashfree_auto_verifier(
         except Exception as e:
             logger.debug(f"[PASS-AUTO-VERIFY] Exception while polling order {order_id}: {e}")
 
+def _normalize_api_keyboard(inline_keyboard):
+    if not inline_keyboard:
+        return []
+    if hasattr(inline_keyboard, "inline_keyboard"):
+        inline_keyboard = inline_keyboard.inline_keyboard
+    res = []
+    for row in inline_keyboard:
+        r = []
+        for btn in row:
+            if isinstance(btn, dict):
+                b = dict(btn)
+                if not b.get("text"):
+                    b["text"] = " "
+            else:
+                b = {"text": getattr(btn, "text", "") or " "}
+                if getattr(btn, "callback_data", None) is not None:
+                    b["callback_data"] = btn.callback_data
+                if getattr(btn, "url", None) is not None:
+                    b["url"] = btn.url
+                if getattr(btn, "switch_inline_query_current_chat", None) is not None:
+                    b["switch_inline_query_current_chat"] = btn.switch_inline_query_current_chat
+                elif getattr(btn, "switch_inline_query", None) is not None:
+                    b["switch_inline_query"] = btn.switch_inline_query
+                if getattr(btn, "web_app", None) is not None:
+                    b["web_app"] = {"url": getattr(btn.web_app, "url", "")}
+                if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
+                    b["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
+            r.append(b)
+        res.append(r)
+    return res
+
+
+def _strip_api_keyboard_icons(inline_keyboard):
+    res = []
+    for row in inline_keyboard:
+        r = []
+        for btn in row:
+            b = {k: v for k, v in btn.items() if k != "icon_custom_emoji_id"}
+            r.append(b)
+        res.append(r)
+    return res
+
+
 async def send_or_edit_with_custom_icons(
     client,
     chat_id: int,
@@ -3318,17 +3361,20 @@ async def send_or_edit_with_custom_icons(
     Sends or edits a message using Telegram Bot API HTTP endpoint.
     This enables `icon_custom_emoji_id` on inline keyboard buttons and
     custom animated emojis (<tg-emoji>) in text and captions across Photos/Animations/Videos.
+    If the bot is not authorized to send button icons (Telegram 400 BUTTON_CUSTOM_EMOJI_INVALID),
+    it automatically retries via Bot API with icons stripped so text custom emojis (<tg-emoji>) ALWAYS succeed.
     """
     import aiohttp
     import json
     import re
+    import os
     from config import Config
 
     bot_token = getattr(client, "bot_token", None)
     if not bot_token and client and hasattr(client, "me") and client.me:
         bot_token = _share_bot_token_cache.get(str(client.me.id))
     if not bot_token:
-        bot_token = getattr(Config, "BOT_TOKEN", "")
+        bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "") or getattr(Config, "MGMT_BOT_TOKEN", "") or os.environ.get("MGMT_BOT_TOKEN", "")
 
     if not bot_token:
         return False
@@ -3340,8 +3386,9 @@ async def send_or_edit_with_custom_icons(
         return False
 
     # Convert Pyrogram <emoji id="..."> tags to Bot API <tg-emoji emoji-id="..."> tags
-    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text or "")
     url = f"https://api.telegram.org/bot{bot_token}/"
+    norm_kb = _normalize_api_keyboard(inline_keyboard)
 
     if photo_bytes:
         try:
@@ -3349,59 +3396,94 @@ async def send_or_edit_with_custom_icons(
             form.add_field("chat_id", str(c_id))
             form.add_field("caption", api_text)
             form.add_field("parse_mode", parse_mode)
-            form.add_field("reply_markup", json.dumps({"inline_keyboard": inline_keyboard}))
+            form.add_field("reply_markup", json.dumps({"inline_keyboard": norm_kb}))
             form.add_field("photo", photo_bytes, filename="qr.png", content_type="image/png")
             session = _get_shared_bot_api_session()
-            async with session.post(url + "sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            async with session.post(url + "sendPhoto", data=form, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
                 data = await resp.json()
                 if data.get("ok"):
                     return data.get("result", True)
-                logger.warning(f"Bot API sendPhoto bytes returned error: {data}")
+                
+                # Retry with stripped button icons if custom emojis failed
+                err_desc = str(data.get("description", ""))
+                if "BUTTON_CUSTOM_EMOJI" in err_desc or "CUSTOM_EMOJI" in err_desc or data.get("error_code") == 400:
+                    stripped_kb = _strip_api_keyboard_icons(norm_kb)
+                    form_retry = aiohttp.FormData()
+                    form_retry.add_field("chat_id", str(c_id))
+                    form_retry.add_field("caption", api_text)
+                    form_retry.add_field("parse_mode", parse_mode)
+                    form_retry.add_field("reply_markup", json.dumps({"inline_keyboard": stripped_kb}))
+                    form_retry.add_field("photo", photo_bytes, filename="qr.png", content_type="image/png")
+                    async with session.post(url + "sendPhoto", data=form_retry, timeout=aiohttp.ClientTimeout(total=5.0)) as resp_r:
+                        data_r = await resp_r.json()
+                        if data_r.get("ok"):
+                            return data_r.get("result", True)
+                logger.debug(f"Bot API sendPhoto bytes returned: {data}")
         except Exception as e:
-            logger.warning(f"Bot API sendPhoto bytes exception: {e}")
+            logger.debug(f"Bot API sendPhoto bytes exception: {e}")
         return False
 
-    payload = {
-        "chat_id": c_id,
-        "parse_mode": parse_mode,
-        "reply_markup": {
-            "inline_keyboard": inline_keyboard
+    def _build_payload(kb):
+        p = {
+            "chat_id": c_id,
+            "parse_mode": parse_mode,
+            "reply_markup": {
+                "inline_keyboard": kb
+            }
         }
-    }
-
-    url = f"https://api.telegram.org/bot{bot_token}/"
-    if media_id and not is_media_edit:
-        payload["caption"] = api_text
-        if media_type == "animation":
-            method = "sendAnimation"
-            payload["animation"] = media_id
-        elif media_type == "video":
-            method = "sendVideo"
-            payload["video"] = media_id
+        if media_id and not is_media_edit:
+            p["caption"] = api_text
+            if media_type == "animation":
+                mth = "sendAnimation"
+                p["animation"] = media_id
+            elif media_type == "video":
+                mth = "sendVideo"
+                p["video"] = media_id
+            else:
+                mth = "sendPhoto"
+                p["photo"] = media_id
+        elif is_media_edit and m_id:
+            mth = "editMessageCaption"
+            p["message_id"] = m_id
+            p["caption"] = api_text
+        elif m_id:
+            mth = "editMessageText"
+            p["message_id"] = m_id
+            p["text"] = api_text
         else:
-            method = "sendPhoto"
-            payload["photo"] = media_id
-    elif is_media_edit and m_id:
-        method = "editMessageCaption"
-        payload["message_id"] = m_id
-        payload["caption"] = api_text
-    elif m_id:
-        method = "editMessageText"
-        payload["message_id"] = m_id
-        payload["text"] = api_text
-    else:
-        method = "sendMessage"
-        payload["text"] = api_text
+            mth = "sendMessage"
+            p["text"] = api_text
+        return mth, p
 
     try:
         session = _get_shared_bot_api_session()
-        async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+        method, payload = _build_payload(norm_kb)
+        async with session.post(url + method, json=payload, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
             data = await resp.json()
             if data.get("ok"):
                 return True
-            logger.warning(f"Bot API {method} returned error: {data}")
+
+            err_desc = str(data.get("description", ""))
+            err_code = data.get("error_code")
+
+            # Ignore expected user block errors quietly
+            if err_code in (400, 403) and ("chat not found" in err_desc.lower() or "can't initiate conversation" in err_desc.lower() or "blocked" in err_desc.lower()):
+                logger.debug(f"Bot API {method} user unavailable: {err_desc}")
+                return False
+
+            # If button icons failed (not premium / not authorized bot), retry without button icons via Bot API so text <tg-emoji> works!
+            if "BUTTON_CUSTOM_EMOJI" in err_desc or "CUSTOM_EMOJI" in err_desc or err_code == 400:
+                stripped_kb = _strip_api_keyboard_icons(norm_kb)
+                method_r, payload_r = _build_payload(stripped_kb)
+                async with session.post(url + method_r, json=payload_r, timeout=aiohttp.ClientTimeout(total=5.0)) as resp_r:
+                    data_r = await resp_r.json()
+                    if data_r.get("ok"):
+                        return True
+                    logger.debug(f"Bot API retry {method_r} returned: {data_r}")
+
+            logger.debug(f"Bot API {method} returned: {data}")
     except Exception as e:
-        logger.warning(f"Bot API {method} exception: {e}")
+        logger.debug(f"Bot API {method if 'method' in locals() else 'call'} exception: {e}")
 
     return False
 
@@ -5867,13 +5949,14 @@ async def run_pass_expiry_monitor_loop():
                             text=rem_text,
                             reply_markup=InlineKeyboardMarkup(rem_buttons)
                         )
+                    logger.info(f"[PASS-EXPIRY-MONITOR] Sent 1-hour expiry reminder to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
+                except Exception as ex:
+                    logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send reminder to user {uid}: {ex}")
+                finally:
                     await db.unlimited_passes.update_one(
                         {'user_id': int(uid)},
                         {'$set': {'reminded_1h_expiry': exp_ts}}
                     )
-                    logger.info(f"[PASS-EXPIRY-MONITOR] Sent 1-hour expiry reminder to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
-                except Exception as ex:
-                    logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send reminder to user {uid}: {ex}")
 
             # ── 2. Pass Immediate Expired Notification Check ─────────────────
             # Check passes where expires_at <= now, active within last 7 days, and not yet notified
@@ -5941,13 +6024,14 @@ async def run_pass_expiry_monitor_loop():
                             text=exp_text,
                             reply_markup=InlineKeyboardMarkup(exp_buttons)
                         )
+                    logger.info(f"[PASS-EXPIRY-MONITOR] Sent INSTANT expiration alert to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
+                except Exception as ex:
+                    logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send instant expiry notice to user {uid}: {ex}")
+                finally:
                     await db.unlimited_passes.update_one(
                         {'user_id': int(uid)},
                         {'$set': {'notified_expired_ts': exp_ts}}
                     )
-                    logger.info(f"[PASS-EXPIRY-MONITOR] Sent INSTANT expiration alert to user {uid} via delivery bot @{target_client.me.username if target_client.me else 'bot'}")
-                except Exception as ex:
-                    logger.debug(f"[PASS-EXPIRY-MONITOR] Could not send instant expiry notice to user {uid}: {ex}")
 
         except asyncio.CancelledError:
             break
