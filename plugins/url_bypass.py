@@ -550,8 +550,9 @@ async def bypass_new_cb(bot, query):
 
 async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_id: int, msg_obj=None):
     """
-    Safely copy a message to target channel. If CHAT_FORWARDS_RESTRICTED error occurs
-    (channel has 'Restrict saving content' enabled), it downloads and re-uploads the media.
+    Safely copy/deliver a message to target channel without forward tags.
+    If direct copy_message fails (e.g. channel has 'Restrict saving content' / forwarding disabled,
+    or protected media), it downloads and re-uploads the media/text seamlessly.
     """
     if not hasattr(client, '_network_lock'):
         client._network_lock = asyncio.Lock()
@@ -562,19 +563,43 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
             return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 1)
-        async with client._network_lock:
-            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+        try:
+            async with client._network_lock:
+                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+        except Exception:
+            pass
     except Exception as e:
-        err_str = str(e).upper()
-        if "CHAT_FORWARDS_RESTRICTED" not in err_str and "RESTRICTED" not in err_str:
-            raise e
+        logger.debug(f"[Bypass] copy_message failed ({e}), falling back to restricted download & re-upload...")
 
     # Attempt 2: Restricted channel bypass (Download & Re-upload)
     if not msg_obj:
-        async with client._network_lock:
-            msg_obj = await client.get_messages(from_chat_id, msg_id)
-            
-    if not msg_obj:
+        try:
+            async with client._network_lock:
+                res = await client.get_messages(from_chat_id, msg_id)
+                if isinstance(res, list):
+                    msg_obj = res[0] if res else None
+                else:
+                    msg_obj = res
+        except FloodWait as fw:
+            await asyncio.sleep(fw.value + 1)
+            async with client._network_lock:
+                res = await client.get_messages(from_chat_id, msg_id)
+                msg_obj = res[0] if isinstance(res, list) and res else res
+        except Exception as ex:
+            logger.warning(f"[Bypass] get_messages({from_chat_id}, {msg_id}) error: {ex}")
+            msg_obj = None
+
+    if not msg_obj or getattr(msg_obj, "empty", False):
+        try:
+            async with client._network_lock:
+                async for m in client.get_chat_history(from_chat_id, limit=5, offset_id=msg_id + 1):
+                    if m.id == msg_id:
+                        msg_obj = m
+                        break
+        except Exception:
+            pass
+
+    if not msg_obj or getattr(msg_obj, "empty", False):
         raise Exception(f"Message {msg_id} could not be retrieved from {from_chat_id}")
 
     caption = msg_obj.caption
@@ -583,16 +608,27 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
 
     # If it's a text-only message
     if not (msg_obj.photo or msg_obj.video or msg_obj.document or msg_obj.audio or msg_obj.voice or msg_obj.animation or msg_obj.video_note or msg_obj.sticker):
-        async with client._network_lock:
-            return await client.send_message(
-                to_chat_id,
-                text=msg_obj.text or "",
-                entities=msg_obj.entities,
-                reply_markup=reply_markup
-            )
+        text_content = msg_obj.text or ""
+        if not text_content:
+            return None
+        for _t_att in range(3):
+            try:
+                async with client._network_lock:
+                    return await client.send_message(
+                        to_chat_id,
+                        text=text_content,
+                        entities=msg_obj.entities,
+                        reply_markup=reply_markup
+                    )
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 1)
+            except Exception as se:
+                logger.warning(f"[Bypass] send_message error (attempt {_t_att+1}): {se}")
+                await asyncio.sleep(2)
+        return None
 
-    # Determine proper file extension so Telegram doesn't reject with PHOTO_EXT_INVALID
-    ext = ".jpg"
+    # Determine proper file extension so Telegram doesn't reject
+    ext = ".bin"
     if msg_obj.photo: ext = ".jpg"
     elif msg_obj.video: ext = ".mp4"
     elif msg_obj.document:
@@ -606,35 +642,52 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
 
     # Download media to local file and send
     os.makedirs("downloads/bypass_temp", exist_ok=True)
-    temp_name = f"downloads/bypass_temp/{abs(msg_obj.chat.id)}_{msg_obj.id}{ext}"
+    temp_name = f"downloads/bypass_temp/{abs(getattr(msg_obj.chat, 'id', 0))}_{msg_obj.id}_{int(time.time()*1000)}{ext}"
     dl_path = None
     try:
-        async with client._network_lock:
-            dl_path = await client.download_media(msg_obj, file_name=temp_name)
-        if not dl_path or not os.path.exists(dl_path):
-            raise Exception("Failed to download restricted media")
+        for _dl_attempt in range(3):
+            try:
+                async with client._network_lock:
+                    dl_path = await client.download_media(msg_obj, file_name=temp_name)
+                if dl_path and os.path.exists(dl_path):
+                    break
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 1)
+            except Exception as _dle:
+                logger.warning(f"[Bypass] download_media attempt {_dl_attempt+1} error: {_dle}")
+                await asyncio.sleep(2)
 
-        async with client._network_lock:
-            if msg_obj.photo:
-                try:
-                    return await client.send_photo(to_chat_id, photo=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-                except Exception as pe:
-                    logger.warning(f"send_photo fallback to send_document: {pe}")
-                    return await client.send_document(to_chat_id, document=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-            elif msg_obj.video:
-                return await client.send_video(to_chat_id, video=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-            elif msg_obj.document:
-                return await client.send_document(to_chat_id, document=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-            elif msg_obj.audio:
-                return await client.send_audio(to_chat_id, audio=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-            elif msg_obj.animation:
-                return await client.send_animation(to_chat_id, animation=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-            elif msg_obj.voice:
-                return await client.send_voice(to_chat_id, voice=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
-            elif msg_obj.video_note:
-                return await client.send_video_note(to_chat_id, video_note=dl_path, reply_markup=reply_markup)
-            elif msg_obj.sticker:
-                return await client.send_sticker(to_chat_id, sticker=dl_path, reply_markup=reply_markup)
+        if not dl_path or not os.path.exists(dl_path):
+            raise Exception("Failed to download restricted media after retries")
+
+        for _send_att in range(3):
+            try:
+                async with client._network_lock:
+                    if msg_obj.photo:
+                        try:
+                            return await client.send_photo(to_chat_id, photo=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                        except Exception as pe:
+                            logger.warning(f"send_photo fallback to send_document: {pe}")
+                            return await client.send_document(to_chat_id, document=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                    elif msg_obj.video:
+                        return await client.send_video(to_chat_id, video=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                    elif msg_obj.document:
+                        return await client.send_document(to_chat_id, document=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                    elif msg_obj.audio:
+                        return await client.send_audio(to_chat_id, audio=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                    elif msg_obj.animation:
+                        return await client.send_animation(to_chat_id, animation=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                    elif msg_obj.voice:
+                        return await client.send_voice(to_chat_id, voice=dl_path, caption=caption, caption_entities=caption_entities, reply_markup=reply_markup)
+                    elif msg_obj.video_note:
+                        return await client.send_video_note(to_chat_id, video_note=dl_path, reply_markup=reply_markup)
+                    elif msg_obj.sticker:
+                        return await client.send_sticker(to_chat_id, sticker=dl_path, reply_markup=reply_markup)
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 1)
+            except Exception as se:
+                logger.warning(f"[Bypass] send media error (attempt {_send_att+1}): {se}")
+                await asyncio.sleep(2)
     finally:
         if dl_path and os.path.exists(dl_path):
             try:
@@ -744,6 +797,8 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
 
     target_channel_id = None
     target_channel_title = "None (DM Only)"
+    forward_source_post = True
+
     if "skip" not in r3_dest.text.lower():
         fwd_dest = getattr(r3_dest, 'forward_from_chat', None)
         target_channel_id, target_channel_title = _resolve_channel(r3_dest.text, fwd_dest)
@@ -754,10 +809,39 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
                 target_channel_id = t_ci.id
             except Exception: pass
 
-    # Step 4: Range
+            # Step 4: Delivery Mode
+            try:
+                r_mode = await _ask(bot, user_id,
+                    "<b>»  URL Bypass — Step 4/9 (Delivery Mode)</b>\n\n"
+                    "Choose how content should be delivered to the target channel:\n\n"
+                    "<blockquote expandable>"
+                    "• <b>📝 Forward Post + Video Files (Complete Story Mode)</b>\n"
+                    "  Pehle source channel se original post (Image + Caption) ko bina forward tag ke target channel me send karega (chahe channel me content saving / forwarding restricted ho, tab bhi userbot download & re-upload karke bhej dega), aur uske baad bypass hone par aane wali Video files ko deliver karega.\n\n"
+                    "• <b>🎬 Only Video Files (Normal / Files Only Mode)</b>\n"
+                    "  Source post ko forward nahi karega; sirf bypass hone par aane wali Video files ko target channel me deliver karega."
+                    "</blockquote>",
+                    reply_markup=ReplyKeyboardMarkup(
+                        [
+                            [KeyboardButton("📝 Forward Post + Video Files (Complete Mode)")],
+                            [KeyboardButton("🎬 Only Video Files (Normal Mode)")],
+                            [UNDO_BTN, CANCEL_BTN]
+                        ],
+                        resize_keyboard=True, one_time_keyboard=True
+                    )
+                )
+            except asyncio.TimeoutError:
+                return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+            if _is_cancel(r_mode.text):
+                return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+
+            forward_source_post = not ("only video files" in r_mode.text.lower() or "normal mode" in r_mode.text.lower())
+    else:
+        forward_source_post = False
+
+    # Step 5: Range
     try:
         r4 = await _ask(bot, user_id,
-            f"<b>»  URL Bypass — Step 4/8 (Range)</b>\n\n"
+            f"<b>»  URL Bypass — Step 5/9 (Range)</b>\n\n"
             f"Source Channel: <b>{channel_title}</b>\n\n"
             "Set <b>scan range</b>:\n\n"
             "<blockquote expandable>"
@@ -786,10 +870,10 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
             try: scan_start = int(rt)
             except Exception: pass
 
-    # Step 5: Buttons Selection
+    # Step 6: Buttons Selection
     try:
         r5 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 5/8 (Buttons)</b>\n\n"
+            "<b>»  URL Bypass — Step 6/9 (Buttons)</b>\n\n"
             "Which <b>buttons</b> should be clicked in each post?\n\n"
             "<blockquote expandable>"
             "• <b>ALL</b> — Process all buttons\n"
@@ -811,10 +895,10 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
             except Exception: pass
         if not allowed_buttons: allowed_buttons = None
 
-    # Step 6: Order
+    # Step 7: Order
     try:
         r6 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 6/8 (Order)</b>\n\n"
+            "<b>»  URL Bypass — Step 7/9 (Order)</b>\n\n"
             "Choose <b>processing order</b>:\n\n"
             "<blockquote>"
             "• <b>New → Old</b> — process latest posts first\n"
@@ -832,10 +916,10 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     order       = 'old_to_new' if 'Old → New' in r6.text else 'new_to_old'
     order_label = '🕐 Old → New' if order == 'old_to_new' else '🕑 New → Old'
 
-    # Step 7: Hourly Rate Limit Quota
+    # Step 8: Hourly Rate Limit Quota
     try:
         r7 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 7/8 (Hourly Rate Limit)</b>\n\n"
+            "<b>»  URL Bypass — Step 8/9 (Hourly Rate Limit)</b>\n\n"
             "Set the <b>Hourly Download Quota per Userbot</b>:\n\n"
             "<blockquote>"
             "• <b>⚡ 3 Files / Hour (Recommended)</b> — Safely avoids target bot bans. Each Userbot fetches 3 files, then automatically rotates to the next Userbot or sleeps until the 1-hour cooldown resets.\n"
@@ -858,10 +942,10 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     elif "unlimited" in r7.text.lower():
         hourly_quota = 0
 
-    # Step 8: Pacing Delay
+    # Step 9: Pacing Delay
     try:
         r8 = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 8/8 (Pacing Delay)</b>\n\n"
+            "<b>»  URL Bypass — Step 9/9 (Pacing Delay)</b>\n\n"
             "Set <b>Pacing Delay</b> between individual links:\n\n"
             "<blockquote>"
             "• <code>0</code> — No extra delay (Fastest)\n"
@@ -885,6 +969,7 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     range_label = f"<code>{scan_start}:{scan_end}</code>" if (scan_start or scan_end) else "ALL"
     btn_label = "ALL" if not allowed_buttons else ", ".join(map(str, allowed_buttons))
     quota_label = f"{hourly_quota} files/hr per Userbot" if hourly_quota > 0 else "Unlimited"
+    mode_label = "📝 Post + Video Files (Complete Mode)" if forward_source_post else "🎬 Only Video Files (Normal Mode)"
 
     try:
         r_conf = await _ask(bot, user_id,
@@ -892,6 +977,7 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
             f"<b>»  Userbots:</b> {ub_name}\n"
             f"<b>»  Source Channel:</b> {channel_title}\n"
             f"<b>»  Target Channel:</b> {target_channel_title}\n"
+            f"<b>»  Delivery Mode:</b> {mode_label}\n"
             f"<b>»  Scan Range:</b> {range_label}\n"
             f"<b>»  Buttons:</b> {btn_label}\n"
             f"<b>»  Order:</b> {order_label}\n"
@@ -915,10 +1001,11 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
         "ub_name": ub_name, "chat_id": chat_id,
         "channel_id": channel_id, "channel_title": channel_title,
         "target_channel_id": target_channel_id, "target_channel_title": target_channel_title,
+        "forward_source_post": forward_source_post,
         "order": order, "scan_start": scan_start, "scan_end": scan_end,
         "allowed_buttons": allowed_buttons, "hourly_quota": hourly_quota,
         "pacing_delay": pacing_delay, "bypass_bot": bypass_bot,
-        "done": 0, "failed": [], "queue": [], "created_at": time.time()
+        "done": 0, "failed": [], "queue": [], "seen_posts": [], "created_at": time.time()
     }
     await _save_bypass_job(job)
     _ub_paused[job_id] = asyncio.Event()
@@ -999,6 +1086,7 @@ async def _ub_run_job(job_id: str):
         total = len(queue)
         pacing = job.get("pacing_delay", 0)
         hourly_quota = job.get("hourly_quota", 3)
+        seen_posts = set(job.get("seen_posts") or [])
 
         # Quota Tracking: b_id -> list of successful processing timestamps in epoch seconds
         ub_history: dict[str, list[float]] = {b_id: [] for b_id in bot_id_list}
@@ -1089,11 +1177,14 @@ async def _ub_run_job(job_id: str):
             )
 
             # ── 1. Forward/Copy Original Source Post to Target Channel ──
-            if target_channel_id:
-                try:
-                    await _safe_forward_or_copy(curr_ub, target_channel_id, channel_id, post_id)
-                except Exception as e:
-                    logger.warning(f"[Bypass] Failed to copy post {post_id} to target channel: {e}")
+            if target_channel_id and job.get("forward_source_post", True):
+                if post_id not in seen_posts:
+                    try:
+                        await _safe_forward_or_copy(curr_ub, target_channel_id, channel_id, post_id)
+                        seen_posts.add(post_id)
+                        await _update_bypass_job(job_id, {"seen_posts": list(seen_posts)})
+                    except Exception as e:
+                        logger.warning(f"[Bypass] Failed to copy post {post_id} to target channel: {e}")
 
             # ── 2. Bypass / Resolve Bot Deep Link ──
             bypassed = None
