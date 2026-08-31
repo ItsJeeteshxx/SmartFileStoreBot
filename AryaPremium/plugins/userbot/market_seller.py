@@ -1056,11 +1056,12 @@ def _get_main_menu(lang='en', is_show_store=False):
     my_shows_lbl = ("• मेरे शोज़ •" if lang == 'hi' else f"• {_bs('MY SHOWS')} •") if is_show_store else ("• मेरी स्टोरीज •" if lang == 'hi' else f"• {_bs('MY STORIES')} •")
     search_lbl = ("शो खोजें" if lang == 'hi' else "Search Shows") if is_show_store else ("अपनी स्टोरी खोजें" if lang == 'hi' else f"{_sc('Search Your Story')}")
     search_icon = "6266794310671275367" if is_show_store else "5282843764451195532"
+    marketplace_lbl = ("• स्टोर •" if lang == 'hi' else f"• {_bs('STORE')} •") if is_show_store else ("• मार्केटप्लेस •" if lang == 'hi' else f"• {_bs('MARKETPLACE')} •")
 
     if lang == 'hi':
         kb = [
             _get_top_emoji_row(),
-            [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
+            [InlineKeyboardButton(marketplace_lbl, callback_data="mb#main_marketplace"),
              InlineKeyboardButton(my_shows_lbl, callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
              InlineKeyboardButton("सपोर्ट", callback_data="mb#main_help")],
@@ -1076,7 +1077,7 @@ def _get_main_menu(lang='en', is_show_store=False):
     else:
         kb = [
             _get_top_emoji_row(),
-            [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
+            [InlineKeyboardButton(marketplace_lbl, callback_data="mb#main_marketplace"),
              InlineKeyboardButton(my_shows_lbl, callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
              InlineKeyboardButton(f"{_sc('Support')}", callback_data="mb#main_help")],
@@ -5434,16 +5435,84 @@ async def _process_callback(client, query):
 
             await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": 0}})
 
+            # ── If only 1 platform, skip selection and jump directly ──
+            if len(platforms) == 1:
+                auto_plat = platforms[0]
+                await db.db.users.update_one(
+                    {"id": user_id},
+                    {"$set": {"_mkt_plat": auto_plat, "_mkt_page": 0}}
+                )
+                # Redirect: delete current home message and show stories list
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                # Build a fake message-like object to reuse the platform → story listing path
+                # We call the same code path that runs when a platform button is pressed
+                # by triggering a direct message_handler equivalent
+                q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+                q_plat = {"platform": {"$regex": f"^{re.escape(auto_plat)}$", "$options": "i"}}
+                q_find = {"$and": [q_bot, q_plat]}
+                PAGE_SIZE = 20
+                total_s = await db.db.premium_stories.count_documents(q_find)
+                total_pg = max(1, (total_s + PAGE_SIZE - 1) // PAGE_SIZE)
+                stories_page = await db.db.premium_stories.find(
+                    q_find, {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+                ).sort("_id", -1).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
+
+                bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+                bt_cfg_local = bt_rec.get("config", {}) or {}
+                is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
+                item_label = ("शो" if lang == 'hi' else "Show") if is_ss else ("कहानी" if lang == 'hi' else "Story")
+
+                kb = []
+                MNL = 22
+                for idx, s in enumerate(stories_page, start=1):
+                    sn = s.get(f'story_name_{lang}', s.get('story_name_en', item_label))
+                    if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+                    btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                    if idx <= 5:
+                        kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                    else:
+                        kb.append([_kb_btn(btn_txt)])
+
+                if total_pg > 1:
+                    nav_row = []
+                    if total_pg > 1:
+                        nav_row.append(_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭"))
+                    if nav_row:
+                        kb.append(nav_row)
+
+                view_all_btn = "📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें")
+                search_text = "SEARCH" if lang == 'en' else "खोजें"
+                kb.append([_kb_btn(view_all_btn)])
+                kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+                plat_title = to_mathbold(auto_plat)
+                pg_info = f"<i>{_sc('Page') if lang == 'en' else 'पेज'} 1/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{'Total:' if lang == 'en' else 'कुल:'} <b>{total_s}</b></i>"
+                msg_text = (
+                    f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {plat_title} ⟧</b>\n\n'
+                    f"<blockquote expandable>{pg_info}\n"
+                    f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
+                )
+                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                if not ok:
+                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                    await client.send_message(user_id, msg_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+                return
+
             t = T[lang]
             kb = []
             for i in range(0, len(platforms), 2):
                 row = platforms[i:i+2]
                 kb.append(row)
             kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang=='en' else "वापस मेनू")])
-            
+
             p_title = "🎧 Platform Selection" if lang == 'en' else "🎧 प्लेटफॉर्म चयन"
             p_desc = "Choose a platform from the keyboard below:" if lang == 'en' else "नीचे दिए गए कीबोर्ड से एक प्लेटफॉर्म चुनें:"
-            
+
             await query.message.delete()
             return await client.send_message(
                 user_id,
