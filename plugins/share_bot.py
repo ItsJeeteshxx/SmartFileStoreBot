@@ -3966,7 +3966,7 @@ async def _process_pass_callback(client, query):
                 if is_hi:
                     t_items.append(
                         f"{sep_line}\n\n"
-                        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>ऑर्डर आईडी:-</b> <code>{oid}</code>\n"
+                        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>ऑर्डर:-</b> <code>{oid}</code>\n"
                         f"<emoji id=\"6021435576513730578\">👑</emoji> <b>प्लान:-</b> {str(dur_verb).title()} ({amt})\n"
                         f"<emoji id=\"6030443364178992166\">💳</emoji> <b>पेमेंट मोड:-</b> {gw}\n"
                         f"<emoji id=\"5807800879553715710\">📊</emoji> <b>स्थिति:-</b> {st_str}\n"
@@ -3975,7 +3975,7 @@ async def _process_pass_callback(client, query):
                 else:
                     t_items.append(
                         f"{sep_line}\n\n"
-                        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
+                        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order:-</b> <code>{oid}</code>\n"
                         f"<emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                         f"<emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
                         f"<emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
