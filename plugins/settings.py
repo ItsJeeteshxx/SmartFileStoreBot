@@ -2984,6 +2984,7 @@ async def settings_query(bot, query):
       total_cust = await db.get_store_customers(b_id)
 
       buttons = [
+          [InlineKeyboardButton(f"🔄 Auto-Index & Publish (800+ Shows)", callback_data=f"settings#sb_store_idx_{b_id}")],
           [InlineKeyboardButton(f"💳 Checkout Version: {chk_v.upper()}", callback_data=f"settings#sb_store_v_{b_id}")],
           [InlineKeyboardButton(f"💰 Default Price: ₹{def_price}", callback_data=f"settings#sb_store_price_{b_id}")],
           [
@@ -2994,6 +2995,7 @@ async def settings_query(bot, query):
           [InlineKeyboardButton('Back', callback_data=f"settings#sb_view_{b_id}")]
       ]
       api_buttons = [
+          [{"text": "Auto-Index & Publish (800+ Shows)", "callback_data": f"settings#sb_store_idx_{b_id}", "icon_custom_emoji_id": "5803175856905917502"}],
           [{"text": f"Checkout Version: {chk_v.upper()}", "callback_data": f"settings#sb_store_v_{b_id}", "icon_custom_emoji_id": "5904359114531675993"}],
           [{"text": f"Default Price: ₹{def_price}", "callback_data": f"settings#sb_store_price_{b_id}", "icon_custom_emoji_id": "5233326571099534068"}],
           [
@@ -3028,6 +3030,192 @@ async def settings_query(bot, query):
       if not sent_ok:
           try: await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
           except Exception: pass
+
+  elif type.startswith("sb_store_idx_"):
+      sub_action = type.split("sb_store_idx_")[1]
+      
+      if sub_action.startswith("src_"):
+          b_id = sub_action.split("src_")[1]
+          await query.message.delete()
+          ask = await bot.send_message(
+              user_id,
+              "<b>📁 Set Source Database Channel</b>\n\n"
+              "Enter the Database Channel ID (e.g. <code>-1001234567890</code>) where your shows & videos are stored:\n\n"
+              "Send /cancel to abort."
+          )
+          try:
+              resp = await _ask(bot, user_id, timeout=60)
+              if getattr(resp, 'text', None) and '/cancel' in resp.text:
+                  await resp.delete()
+                  return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_idx_{b_id}")]]))
+              ch_id_val = int((resp.text or '').strip())
+              await db.set_store_bot_config(b_id, db_channel_id=ch_id_val)
+              await resp.delete()
+              await ask.edit_text(f"✅ Source Database Channel set to <code>{ch_id_val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_idx_{b_id}")]]))
+          except Exception as e:
+              await ask.edit_text(f"❌ Error: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"settings#sb_store_idx_src_{b_id}")]]))
+
+      elif sub_action.startswith("dst_"):
+          b_id = sub_action.split("dst_")[1]
+          await query.message.delete()
+          ask = await bot.send_message(
+              user_id,
+              "<b>📢 Set Public Showcase Destination Channel</b>\n\n"
+              "Enter the Public Channel ID (e.g. <code>-1009876543210</code>) where posters with [Buy Now] buttons will be posted:\n\n"
+              "Send /cancel to abort."
+          )
+          try:
+              resp = await _ask(bot, user_id, timeout=60)
+              if getattr(resp, 'text', None) and '/cancel' in resp.text:
+                  await resp.delete()
+                  return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_idx_{b_id}")]]))
+              ch_id_val = int((resp.text or '').strip())
+              await db.set_store_bot_config(b_id, showcase_channel_id=ch_id_val)
+              await resp.delete()
+              await ask.edit_text(f"✅ Public Showcase Channel set to <code>{ch_id_val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_idx_{b_id}")]]))
+          except Exception as e:
+              await ask.edit_text(f"❌ Error: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Retry", callback_data=f"settings#sb_store_idx_dst_{b_id}")]]))
+
+      elif sub_action.startswith("scan_"):
+          b_id = sub_action.split("scan_")[1]
+          cfg = await db.get_store_bot_config(b_id)
+          src_ch = cfg.get("db_channel_id")
+          if not src_ch:
+              return await query.answer("⚠️ Please set Source Database Channel first!", show_alert=True)
+          
+          await query.answer("🚀 Starting Auto-Scanner...", show_alert=False)
+          status_msg = await query.message.edit_text(
+              "<b>⏳ Scanning Database Channel...</b>\n\n"
+              "• <i>Reading messages sequentially...</i>\n"
+              "• <i>Pairing posters & video files...</i>\n"
+              "• <i>Deduplicating titles...</i>"
+          )
+          
+          from plugins.store_indexer import scan_and_index_channel
+          
+          async def _prog_cb(indexed, dups):
+              try:
+                  await status_msg.edit_text(
+                      f"<b>⏳ Scanning in Progress...</b>\n\n"
+                      f"• <b>Indexed Shows:</b> <code>{indexed}</code>\n"
+                      f"• <b>Duplicates Skipped:</b> <code>{dups}</code>"
+                  )
+              except Exception: pass
+
+          res = await scan_and_index_channel(
+              client=bot,
+              channel_id=src_ch,
+              default_price=cfg.get("default_price", 19),
+              progress_callback=_prog_cb
+          )
+          
+          await status_msg.edit_text(
+              f"<b>✅ Scan & Indexing Completed!</b>\n\n"
+              f"• <b>Total Newly Indexed:</b> <code>{res['indexed']}</code>\n"
+              f"• <b>Duplicates Skipped:</b> <code>{res['duplicates']}</code>\n"
+              f"• <b>Database Channel:</b> <code>{src_ch}</code>\n\n"
+              f"<i>Ab aap 'Publish to Showcase Channel' button se in sabhi shows ko public channel me post kar sakte hain!</i>",
+              reply_markup=InlineKeyboardMarkup([
+                  [InlineKeyboardButton("📤 Publish to Showcase Channel", callback_data=f"settings#sb_store_idx_pub_{b_id}")],
+                  [InlineKeyboardButton("Back", callback_data=f"settings#sb_store_idx_{b_id}")]
+              ])
+          )
+
+      elif sub_action.startswith("pub_"):
+          b_id = sub_action.split("pub_")[1]
+          cfg = await db.get_store_bot_config(b_id)
+          dst_ch = cfg.get("showcase_channel_id")
+          if not dst_ch:
+              return await query.answer("⚠️ Please set Public Showcase Channel first!", show_alert=True)
+
+          bots = await db.get_share_bots()
+          bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
+          b_uname = bt.get("username", "StoreBot") if bt else "StoreBot"
+
+          await query.answer("📤 Publishing shows to Showcase Channel...", show_alert=False)
+          status_msg = await query.message.edit_text("<b>⏳ Publishing 600×720 Showcase Posters...</b>\n\n<i>Processing shows...</i>")
+          
+          from plugins.store_indexer import publish_show_to_showcase
+          shows = await db.get_all_store_shows(limit=800)
+          pub_count = 0
+          
+          for sh in shows:
+              try:
+                  ok = await publish_show_to_showcase(
+                      client=bot,
+                      show=sh,
+                      showcase_channel_id=dst_ch,
+                      store_bot_username=b_uname
+                  )
+                  if ok: pub_count += 1
+                  if pub_count % 10 == 0:
+                      try: await status_msg.edit_text(f"<b>⏳ Publishing in Progress...</b>\n\n• <b>Published:</b> <code>{pub_count} / {len(shows)}</code>")
+                      except Exception: pass
+                  await asyncio.sleep(1.5) # Flood protection
+              except Exception as e:
+                  logger.error(f"Failed publishing show {sh.get('title')}: {e}")
+
+          await status_msg.edit_text(
+              f"<b>🎉 Publishing Complete!</b>\n\n"
+              f"• <b>Total Shows Published:</b> <code>{pub_count}</code>\n"
+              f"• <b>Destination Channel:</b> <code>{dst_ch}</code>\n"
+              f"• <b>Deep-Link Bot:</b> @{b_uname}\n\n"
+              f"<i>Har post me 600×720 enhanced poster, bilingual expandable note, aur [🛍️ Buy Now] deep link buttons add ho chuke hain!</i>",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_store_idx_{b_id}")]])
+          )
+
+      else:
+          # Main Indexer Control Panel View
+          b_id = sub_action
+          cfg = await db.get_store_bot_config(b_id)
+          src_ch = cfg.get("db_channel_id", "Not Configured")
+          dst_ch = cfg.get("showcase_channel_id", "Not Configured")
+          total_shows = await db.count_store_shows()
+          
+          bots = await db.get_share_bots()
+          bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
+          b_uname = bt.get("username", "StoreBot") if bt else "StoreBot"
+
+          buttons = [
+              [
+                  InlineKeyboardButton(f"📁 Source DB: {src_ch}", callback_data=f"settings#sb_store_idx_src_{b_id}"),
+                  InlineKeyboardButton(f"📢 Showcase: {dst_ch}", callback_data=f"settings#sb_store_idx_dst_{b_id}")
+              ],
+              [InlineKeyboardButton(f"🚀 Scan & Index Database Channel", callback_data=f"settings#sb_store_idx_scan_{b_id}")],
+              [InlineKeyboardButton(f"📤 Publish Shows to Public Channel", callback_data=f"settings#sb_store_idx_pub_{b_id}")],
+              [InlineKeyboardButton('Back', callback_data=f"settings#sb_store_settings_{b_id}")]
+          ]
+          api_buttons = [
+              [
+                  {"text": f"Source DB: {src_ch}", "callback_data": f"settings#sb_store_idx_src_{b_id}", "icon_custom_emoji_id": "5803175856905917502"},
+                  {"text": f"Showcase: {dst_ch}", "callback_data": f"settings#sb_store_idx_dst_{b_id}", "icon_custom_emoji_id": "6019151667524539757"}
+              ],
+              [{"text": "Scan & Index Database Channel", "callback_data": f"settings#sb_store_idx_scan_{b_id}", "icon_custom_emoji_id": "5282843764451195532"}],
+              [{"text": "Publish Shows to Public Channel", "callback_data": f"settings#sb_store_idx_pub_{b_id}", "icon_custom_emoji_id": "6107442434055086407"}],
+              [{"text": "Back", "callback_data": f"settings#sb_store_settings_{b_id}"}]
+          ]
+
+          text = (
+              f'<emoji id="5803175856905917502">🔄</emoji> <b>Auto-Indexer & Showcase Publisher</b>\n'
+              f"────────────────────\n"
+              f"• <b>Store Bot:</b> @{b_uname}\n"
+              f"• <b>Total Catalog Shows:</b> <code>{total_shows}</code>\n"
+              f"• <b>Source DB Channel:</b> <code>{src_ch}</code>\n"
+              f"• <b>Showcase Channel:</b> <code>{dst_ch}</code>\n"
+              f"────────────────────\n"
+              f"<i>Auto-scanner database channel ke poster aur video files ko pair karke 800+ shows ka catalog create karta hai aur public channel me 600×720 enhanced posters publish karta hai.</i>"
+          )
+          from plugins.share_bot import send_or_edit_with_custom_icons
+          sent_ok = await send_or_edit_with_custom_icons(
+              client=bot,
+              chat_id=query.message.chat.id,
+              text=text,
+              inline_keyboard=api_buttons,
+              message_id=query.message.id
+          )
+          if not sent_ok:
+              try: await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+              except Exception: pass
 
   elif type.startswith("sb_store_v_"):
       b_id = type.split("sb_store_v_")[1]

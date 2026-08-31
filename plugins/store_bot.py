@@ -262,11 +262,11 @@ def build_store_show_card(show: dict, price: int = 19) -> tuple[str, InlineKeybo
     cost = show.get("price", price)
 
     text = (
-        f"📽️ <b>Show :</b> {title}\n"
-        f"🖥 <b>Platform :</b> {platform}\n"
-        f"🧩 <b>Genre :</b> {genre}\n"
-        f"🎬 <b>Duration :</b> {duration}\n"
-        f"💰 <b>Price :</b> ₹{cost}\n\n"
+        f"<emoji id=\"6026337676091726218\">📽️</emoji> <b>Show :</b> {title}\n"
+        f"<emoji id=\"6021683099773966917\">🖥</emoji> <b>Platform :</b> {platform}\n"
+        f"<emoji id=\"5945256248390721326\">🧩</emoji> <b>Genre :</b> {genre}\n"
+        f"<emoji id=\"5386367538735104399\">🎬</emoji> <b>Duration :</b> {duration}\n"
+        f"<emoji id=\"5233326571099534068\">💰</emoji> <b>Price :</b> ₹{cost}\n\n"
         f"┄┄┄┄┄┄┄┄┄┄┄ ➌ ┄┄┄┄┄┄┄┄┄┄\n"
         f"<i>Is show ke sabhi episodes ek single combined high-quality video me include hain. Niche confirm karke payment complete karein.</i>"
     )
@@ -283,15 +283,15 @@ def build_store_payment_methods(show_id: str, show_title: str, amount: int) -> t
     """Generates Payment Method Selection (Cashfree Cards/NetBanking & UPI)."""
     text = (
         f"<emoji id=\"5904359114531675993\">💳</emoji> <b>Choose Payment Method</b>\n\n"
-        f"📽️ <b>Show :</b> {show_title}\n"
-        f"💰 <b>Total Amount :</b> ₹{amount}\n\n"
+        f"<emoji id=\"6026337676091726218\">📽️</emoji> <b>Show :</b> {show_title}\n"
+        f"<emoji id=\"5233326571099534068\">💰</emoji> <b>Total Amount :</b> ₹{amount}\n\n"
         f"┄┄┄┄┄┄┄┄┄┄┄ ➌ ┄┄┄┄┄┄┄┄┄┄\n"
         f"Select your preferred instant payment method:"
     )
 
     buttons = [
-        [InlineKeyboardButton("6107442434055086407 Pay Via Cards, NetBanking (Cashfree)", callback_data=f"store_pay_cf_{show_id}")],
-        [InlineKeyboardButton("6030410254276106984 Pay Via UPI (Direct QR / App)", callback_data=f"store_pay_upi_{show_id}")],
+        [InlineKeyboardButton("💳 Pay Via Cards, NetBanking (Cashfree)", callback_data=f"store_pay_cf_{show_id}")],
+        [InlineKeyboardButton("📱 Pay Via UPI (Direct QR / App)", callback_data=f"store_pay_upi_{show_id}")],
         [InlineKeyboardButton("🔙 Back", callback_data=f"store_view_{show_id}")]
     ]
     return text, InlineKeyboardMarkup(buttons)
@@ -299,12 +299,12 @@ def build_store_payment_methods(show_id: str, show_title: str, amount: int) -> t
 
 # ── Store Bot Main Menu ───────────────────────────────────────────────────────
 async def send_store_main_menu(client: Client, user_id: int, bot_id: str, name: str = ""):
-    """Displays the clean, uncluttered Store Bot home menu."""
+    """Displays the clean, uncluttered Store Bot home menu with custom emojis."""
     user_name = name or f"User_{user_id}"
     total_shows = await db.count_store_shows()
     
     text = (
-        f"🎬 <b>Welcome to Pay-Per-Show OTT Store!</b>\n\n"
+        f"<emoji id=\"6104800784354909891\">🎬</emoji> <b>Welcome to Pay-Per-Show OTT Store!</b>\n\n"
         f"Hey <b>{user_name}</b>, aap yaha <b>{total_shows}+</b> premium shows & stories direct buy karke instant full video access pa sakte hain.\n\n"
         f"┄┄┄┄┄┄┄┄┄┄┄ ➌ ┄┄┄┄┄┄┄┄┄┄\n"
         f"• <b>No Subscription Required</b> — Pay only for what you watch!\n"
@@ -327,4 +327,27 @@ async def send_store_main_menu(client: Client, user_id: int, bot_id: str, name: 
         ]
     ]
 
-    await client.send_message(user_id, text, parse_mode=PM, reply_markup=InlineKeyboardMarkup(buttons))
+    api_buttons = [
+        [
+            {"text": "My Shows", "callback_data": "store_myshows", "icon_custom_emoji_id": "6026337676091726218"},
+            {"text": "My Orders", "callback_data": "store_myorders", "icon_custom_emoji_id": "5920046907782074235"}
+        ],
+        [
+            {"text": "Search Shows", "switch_inline_query_current_chat": "", "icon_custom_emoji_id": "5282843764451195532"},
+            {"text": "Language", "callback_data": "store_lang", "icon_custom_emoji_id": "6021683099773966917"}
+        ],
+        [
+            {"text": "Help & Tutorial", "callback_data": "store_help", "icon_custom_emoji_id": "5945256248390721326"}
+        ]
+    ]
+
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=client,
+        chat_id=user_id,
+        text=text,
+        inline_keyboard=api_buttons
+    )
+    if not sent_ok:
+        try: await client.send_message(user_id, text, parse_mode=PM, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception: pass
