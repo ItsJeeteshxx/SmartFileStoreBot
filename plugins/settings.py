@@ -1257,21 +1257,43 @@ async def settings_query(bot, query):
             InlineKeyboardButton(btn_v2_cf, callback_data="settings#sb_rl_set_v2_cf"),
             InlineKeyboardButton(btn_v2_upi, callback_data="settings#sb_rl_set_v2_upi")
         ],
-        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")]
+        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")]
     ]
-    await query.message.edit_text(
-        f"<b>💎 PASS UI VERSION & FLOW SETTINGS</b>\n"
+    uiver_api_buttons = [
+        [{"text": btn_v1, "callback_data": "settings#sb_rl_set_v1"}],
+        [{"text": btn_v2, "callback_data": "settings#sb_rl_set_v2"}],
+        [{"text": "⚙️ Select V2 Default Gateway:", "callback_data": "settings#sb_rl_uiver_menu"}],
+        [
+            {"text": btn_v2_cf, "callback_data": "settings#sb_rl_set_v2_cf"},
+            {"text": btn_v2_upi, "callback_data": "settings#sb_rl_set_v2_upi"}
+        ],
+        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}]
+    ]
+    uiver_text = (
+        f'<emoji id="6007983438294949171">💎</emoji> <b>Cheakout Version</b>\n'
         f"────────────────────\n"
         f"<b>Active Pass UI:</b> <code>{'V1 (Multi-Gateway Flow)' if uiver == 'v1' else f'V2 (Single Gateway Direct Flow)'}</code>\n"
         f"<b>V2 Default Gateway:</b> <code>{v2_gw_str}</code>\n"
         f"────────────────────\n"
-        f"<blockquote expandable>ℹ️ <b>How each version works:</b>\n\n"
-        f"• <b>💎 Version 1 (Multi-Gateway Flow):</b>\n"
+        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How each version works:</b>\n\n"
+        f"• <b>Version 1 (Multi-Gateway Flow):</b>\n"
         f"  User sees all payment methods (UPI Dynamic QR, Cashfree Checkout & Crypto). User chooses their gateway first, then views and selects the plan.\n\n"
-        f"• <b>⚡ Version 2 (Single Gateway Direct Flow):</b>\n"
-        f"  Direct 1-screen experience without any payment method selection page. Plan buttons immediately launch the chosen default gateway ({v2_gw_str}).</blockquote>",
-        reply_markup=InlineKeyboardMarkup(uiver_buttons)
+        f"• <b>Version 2 (Single Gateway Direct Flow):</b>\n"
+        f"  Direct 1-screen experience without any payment method selection page. Plan buttons immediately launch the chosen default gateway ({v2_gw_str}).</blockquote>"
     )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=uiver_text,
+        inline_keyboard=uiver_api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(uiver_text, reply_markup=InlineKeyboardMarkup(uiver_buttons))
+        except Exception:
+            pass
 
   elif type == "sb_rl_set_v1":
     await db.set_delivery_rate_limit_config(pass_ui_version='v1')
@@ -1350,7 +1372,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>🔢 Set Free Delivery Limit</b>\n\n"
+        '<emoji id="6034973034257848185">🔢</emoji> <b>Access Limit</b>\n\n'
         "Enter maximum number of links a free user can access within the cooldown window.\n\n"
         "<b>Default:</b> <code>5</code>\n"
         "<b>Range:</b> 1 – 100 links\n\n"
@@ -1362,7 +1384,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         val = int((resp.text or '').strip())
         if not (1 <= val <= 100):
@@ -1371,27 +1393,27 @@ async def settings_query(bot, query):
         await resp.delete()
         await ask.edit_text(
             f"✅ Free limit set to <code>{val} links</code>.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
     except ValueError:
         await ask.edit_text(
             "❌ Invalid value. Must be a number between 1 and 100.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_limit"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_rl_limit"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")
             ]])
         )
     except Exception:
         await ask.edit_text(
             "Timeout or error.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
 
   elif type == "sb_rl_window":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>⏱ Set Rate Limit Cooldown Window</b>\n\n"
+        '<emoji id="6034898821517940846">⏱</emoji> <b>Window</b>\n\n'
         "Enter cooldown window duration in <b>minutes (1–60m)</b>, <b>hours (1–72h)</b>, or <b>days (1–30d)</b>.\n\n"
         "<b>Examples:</b>\n"
         "• <code>10m</code> or <code>10</code> — 10 Minutes\n"
@@ -1409,7 +1431,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         txt = (resp.text or '').strip()
         if txt.isdigit():
@@ -1428,28 +1450,28 @@ async def settings_query(bot, query):
         win_friendly = format_duration_friendly(win_seconds)
         await ask.edit_text(
             f"✅ Cooldown window set to <b>{win_verbose}</b> (<code>{win_friendly}</code>).",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
     except ValueError:
         await ask.edit_text(
             "❌ Invalid value. Please enter a valid duration like <code>10m</code>, <code>30m</code>, <code>1h</code>, <code>12h</code>, or <code>1d</code>.\n"
             "Range: 1 minute – 30 days.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_window"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_rl_window"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")
             ]])
         )
     except Exception:
         await ask.edit_text(
             "Timeout or error.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
 
   elif type == "sb_rl_log_ch":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>📋 Set Pass Purchase Log Channel</b>\n\n"
+        '<emoji id="6021435576513730578">📋</emoji> <b>Purchase Logs</b>\n\n'
         "Send the <b>Channel ID</b> (e.g. <code>-1001234567890</code>) or <b>@username</b> where "
         "Quoteblock pass purchase logs will be sent.\n\n"
         "• Send <code>0</code> or <code>clear</code> to reset to default.\n"
@@ -1461,7 +1483,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         txt = (resp.text or '').strip()
         if txt.lower() in ('0', 'clear', 'none'):
@@ -1469,7 +1491,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "✅ Pass Log Channel cleared (using global logs).",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         target_ch_id = None
         if txt.lstrip('-').isdigit():
@@ -1485,14 +1507,14 @@ async def settings_query(bot, query):
         await resp.delete()
         await ask.edit_text(
             f"✅ Pass Purchase Log Channel set to <code>{target_ch_id}</code>.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
     except Exception as e:
         await ask.edit_text(
             f"❌ Failed to set channel: {e}",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_log_ch"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_rl_log_ch"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")
             ]])
         )
 
@@ -1500,7 +1522,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>⚠️ Set Rate Limit Hit Log Channel</b>\n\n"
+        '<emoji id="6019102674832595118">⚠️</emoji> <b>Rate Limit Logs</b>\n\n'
         "Send the <b>Channel ID</b> (e.g. <code>-1001234567890</code>) or <b>@username</b> where "
         "Quoteblock logs will be sent when a user reaches their free delivery limit.\n\n"
         "• Send <code>0</code> or <code>clear</code> to disable / reset.\n"
@@ -1512,7 +1534,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         txt = (resp.text or '').strip()
         if txt.lower() in ('0', 'clear', 'none'):
@@ -1520,7 +1542,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "✅ Rate Limit Hit Log Channel cleared.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         target_ch_id = None
         if txt.lstrip('-').isdigit():
@@ -1536,14 +1558,14 @@ async def settings_query(bot, query):
         await resp.delete()
         await ask.edit_text(
             f"✅ Rate Limit Hit Log Channel set to <code>{target_ch_id}</code>.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
     except Exception as e:
         await ask.edit_text(
             f"❌ Failed to set channel: {e}",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_hit_log_ch"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_rl_hit_log_ch"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")
             ]])
         )
 
@@ -1555,7 +1577,7 @@ async def settings_query(bot, query):
     cur_summary = format_pricing_summary(cur_prices)
     ask = await bot.send_message(
         user_id,
-        "<b>💰 Set Unlimited Pass Pricing & Plans</b>\n\n"
+        '<emoji id="5904462880941545555">💰</emoji> <b>Pricing & Plans</b>\n\n'
         f"<b>Current Plans:</b> <code>{cur_summary}</code>\n\n"
         "You can configure custom pass plans in <b>minutes, hours, or days</b> with prices!\n\n"
         "<b>Examples:</b>\n"
@@ -1570,7 +1592,7 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
             )
         txt = (resp.text or '').strip()
         new_prices = parse_pricing_input(txt)
@@ -1579,14 +1601,14 @@ async def settings_query(bot, query):
         new_summary = format_pricing_summary(new_prices)
         await ask.edit_text(
             f"✅ <b>Pricing updated successfully!</b>\n\n<b>New Plans:</b> <code>{new_summary}</code>",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
         )
     except Exception as e:
         await ask.edit_text(
             f"❌ Invalid format: {e}\n\nPlease send plans like: <code>30m:10 1d:15 3d:30 7d:50</code> or <code>15 30 50</code>",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Rᴇᴛʀʏ", callback_data="settings#sb_rl_pricing"),
-                InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_ratelimit")
+                InlineKeyboardButton("Retry", callback_data="settings#sb_rl_pricing"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")
             ]])
         )
 
@@ -1604,28 +1626,47 @@ async def settings_query(bot, query):
         [InlineKeyboardButton("📝 Set App ID / Client ID", callback_data="settings#sb_rl_cf_appid")],
         [InlineKeyboardButton("🔐 Set Secret Key", callback_data="settings#sb_rl_cf_secret")],
         [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_cf_env")],
-        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
     ]
-    await query.message.edit_text(
-        f"<b>🔑 CASHFREE PAYMENT GATEWAY CONFIGURATION</b>\n"
+    api_buttons = [
+        [{"text": "📝 Set App ID / Client ID", "callback_data": "settings#sb_rl_cf_appid"}],
+        [{"text": "🔐 Set Secret Key", "callback_data": "settings#sb_rl_cf_secret"}],
+        [{"text": f"🌐 Environment: {env_str}", "callback_data": "settings#sb_rl_cf_env"}],
+        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+    ]
+    cf_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Active' if creds.get('configured') else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
+    cf_text = (
+        f'<emoji id="5283232570660634549">⚡</emoji> <b>Cashfree Config</b>\n'
         f"────────────────────\n"
         f"<b>App ID / Client ID:</b> <code>{app_id_masked}</code>\n"
         f"<b>Secret Key:</b> <code>{secret_masked}</code>\n"
         f"<b>Environment:</b> <code>{env_str}</code>\n"
-        f"<b>Status:</b> {'🟢 Ready & Active' if creds.get('configured') else '🔴 Incomplete'}\n"
+        f"<b>Status:</b> {cf_status_str}\n"
         f"────────────────────\n"
-        f"<blockquote expandable>ℹ️ <b>How to get Cashfree Credentials:</b>\n"
+        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How to get Cashfree Credentials:</b>\n"
         f"1. Login to your Cashfree Merchant Dashboard at https://merchant.cashfree.com\n"
         f"2. Go to <b>Payment Gateway → Developers → API Keys</b>\n"
-        f"3. Copy your <b>App ID</b> and <b>Secret Key</b> and set them here or in <code>.env</code>.</blockquote>",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        f"3. Copy your <b>App ID</b> and <b>Secret Key</b> and set them here or in <code>.env</code>.</blockquote>"
     )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=cf_text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(cf_text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
 
   elif type == "sb_rl_cf_appid":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>📝 Set Cashfree App ID / Client ID</b>\n\n"
+        '<emoji id="5283232570660634549">⚡</emoji> <b>Set Cashfree App ID / Client ID</b>\n\n'
         "Send your Cashfree <b>App ID</b> (e.g. <code>TEST102938...</code> or <code>102938...</code>).\n\n"
         "Send /cancel to abort."
     )
@@ -1633,19 +1674,19 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cf_menu")]]))
         val = (resp.text or '').strip()
         await db.set_delivery_rate_limit_config(cashfree_app_id=val)
         await resp.delete()
-        await ask.edit_text(f"✅ Cashfree App ID set to <code>{val[:6]}...{val[-4:] if len(val)>10 else val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+        await ask.edit_text(f"✅ Cashfree App ID set to <code>{val[:6]}...{val[-4:] if len(val)>10 else val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cf_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cf_menu")]]))
 
   elif type == "sb_rl_cf_secret":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>🔐 Set Cashfree Secret Key</b>\n\n"
+        '<emoji id="5283232570660634549">⚡</emoji> <b>Set Cashfree Secret Key</b>\n\n'
         "Send your Cashfree <b>Secret Key</b> (e.g. <code>cfsk_ma_prod_...</code>).\n\n"
         "Send /cancel to abort."
     )
@@ -1653,13 +1694,13 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cf_menu")]]))
         val = (resp.text or '').strip()
         await db.set_delivery_rate_limit_config(cashfree_secret_key=val)
         await resp.delete()
-        await ask.edit_text("✅ Cashfree Secret Key updated securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+        await ask.edit_text("✅ Cashfree Secret Key updated securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cf_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_cf_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_cf_menu")]]))
 
   elif type == "sb_rl_cf_env":
     from plugins.cashfree_helper import get_cashfree_credentials
@@ -1683,31 +1724,56 @@ async def settings_query(bot, query):
     pass_disp = "Set ✅" if gmail_pass else "Not Configured ❌"
 
     upi_enabled = rl_cfg.get('upi_enabled', True)
-    upi_toggle_lbl = "🟢 UPI Gateway: ENABLED" if upi_enabled else "🔴 UPI Gateway: DISABLED"
+    upi_status_icon = '<emoji id="5809949600152296075">🟢</emoji>' if upi_enabled else '<emoji id="5970055887774028039">🔴</emoji>'
+    upi_toggle_lbl = f"{'🟢' if upi_enabled else '🔴'} UPI Gateway: {'ENABLED' if upi_enabled else 'DISABLED'}"
+    upi_toggle_api = f"UPI Gateway: {'ENABLED' if upi_enabled else 'DISABLED'}"
+    toggle_icon = "5809949600152296075" if upi_enabled else "5970055887774028039"
+
     buttons = [
         [InlineKeyboardButton(upi_toggle_lbl, callback_data="settings#sb_rl_upi_toggle")],
         [InlineKeyboardButton("📱 Set UPI ID", callback_data="settings#sb_rl_upi_id")],
         [InlineKeyboardButton("👤 Set Payee Name", callback_data="settings#sb_rl_upi_name")],
         [InlineKeyboardButton("📧 Set Gmail Address", callback_data="settings#sb_rl_gmail_user")],
         [InlineKeyboardButton("🔑 Set Gmail App Password", callback_data="settings#sb_rl_gmail_pass")],
-        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
     ]
-    await query.message.edit_text(
-        f"<b>💳 UPI & GMAIL AUTO-VERIFICATION CONFIG</b>\n"
+    api_buttons = [
+        [{"text": upi_toggle_api, "callback_data": "settings#sb_rl_upi_toggle", "icon_custom_emoji_id": toggle_icon}],
+        [{"text": "📱 Set UPI ID", "callback_data": "settings#sb_rl_upi_id"}],
+        [{"text": "👤 Set Payee Name", "callback_data": "settings#sb_rl_upi_name"}],
+        [{"text": "📧 Set Gmail Address", "callback_data": "settings#sb_rl_gmail_user"}],
+        [{"text": "🔑 Set Gmail App Password", "callback_data": "settings#sb_rl_gmail_pass"}],
+        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+    ]
+    upi_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
+    upi_text = (
+        f'<emoji id="6019110229680068974">💳</emoji> <b>UPI & Gmail Config</b>\n'
         f"────────────────────\n"
         f"<b>UPI ID:</b> <code>{upi_disp}</code>\n"
         f"<b>Payee Name:</b> <code>{upi_name}</code>\n"
         f"<b>Gmail Account:</b> <code>{gmail_disp}</code>\n"
         f"<b>Gmail App Password:</b> <code>{pass_disp}</code>\n"
-        f"<b>Status:</b> {'🟢 Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '🟡 Incomplete'}\n"
+        f"<b>Status:</b> {upi_status_str}\n"
         f"────────────────────\n"
-        f"<blockquote expandable>ℹ️ <b>How Gmail Auto-Verification Works:</b>\n"
+        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How Gmail Auto-Verification Works:</b>\n"
         f"When users pay via UPI, they submit their 12-digit UTR.\n"
         f"The bot connects via IMAP SSL to your Gmail account, searches for the transaction email, "
         f"confirms the amount, and activates the pass within seconds!\n\n"
-        f"<b>Note:</b> For Gmail App Password, generate a 16-character App Password from Google Account → Security → 2-Step Verification → App Passwords.</blockquote>",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        f"<b>Note:</b> For Gmail App Password, generate a 16-character App Password from Google Account → Security → 2-Step Verification → App Passwords.</blockquote>"
     )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=upi_text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(upi_text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
 
   elif type == "sb_rl_upi_toggle":
     rl_cfg = await db.get_delivery_rate_limit_config()
@@ -1724,7 +1790,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>📱 Set UPI ID</b>\n\n"
+        '<emoji id="6019110229680068974">💳</emoji> <b>Set UPI ID</b>\n\n'
         "Enter your UPI ID (e.g. <code>username@okaxis</code>, <code>mobile@paytm</code>).\n\n"
         "Send /cancel to abort."
     )
@@ -1732,19 +1798,19 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
         val = (resp.text or '').strip()
         await db.set_delivery_rate_limit_config(upi_id=val)
         await resp.delete()
-        await ask.edit_text(f"✅ UPI ID set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text(f"✅ UPI ID set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
 
   elif type == "sb_rl_upi_name":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>👤 Set Payee Name</b>\n\n"
+        '<emoji id="6019110229680068974">💳</emoji> <b>Set Payee Name</b>\n\n'
         "Enter payee display name for UPI (e.g. <code>Arya Store</code>).\n\n"
         "Send /cancel to abort."
     )
@@ -1752,19 +1818,19 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
         val = (resp.text or '').strip()
         await db.set_delivery_rate_limit_config(upi_name=val)
         await resp.delete()
-        await ask.edit_text(f"✅ Payee name set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text(f"✅ Payee name set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
 
   elif type == "sb_rl_gmail_user":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>📧 Set Gmail Address</b>\n\n"
+        '<emoji id="6019110229680068974">💳</emoji> <b>Set Gmail Address</b>\n\n'
         "Enter the Gmail email address receiving your bank credit notifications (e.g. <code>yourname@gmail.com</code>).\n\n"
         "Send /cancel to abort."
     )
@@ -1772,19 +1838,19 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
         val = (resp.text or '').strip().lower()
         await db.set_delivery_rate_limit_config(gmail_user=val)
         await resp.delete()
-        await ask.edit_text(f"✅ Gmail address set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text(f"✅ Gmail address set to <code>{val}</code>.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
 
   elif type == "sb_rl_gmail_pass":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>🔑 Set Gmail App Password</b>\n\n"
+        '<emoji id="6019110229680068974">💳</emoji> <b>Set Gmail App Password</b>\n\n'
         "Enter your 16-character Google App Password (e.g. <code>abcd efgh ijkl mnop</code>).\n\n"
         "<i>This is securely saved to database.</i>\n\n"
         "Send /cancel to abort."
@@ -1793,13 +1859,13 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
         val = (resp.text or '').replace(" ", "").strip()
         await db.set_delivery_rate_limit_config(gmail_app_password=val)
         await resp.delete()
-        await ask.edit_text("✅ Gmail App Password saved securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text("✅ Gmail App Password saved securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_upi_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_upi_menu")]]))
 
   elif type == "sb_rl_oxa_menu":
     rl_cfg = await db.get_delivery_rate_limit_config()
@@ -1809,32 +1875,54 @@ async def settings_query(bot, query):
     key_disp = f"{oxa_key[:4]}...{oxa_key[-4:]}" if len(oxa_key) > 8 else ("Set ✅" if oxa_key else "Not Configured ❌")
 
     oxapay_enabled = rl_cfg.get('oxapay_enabled', True)
-    oxa_toggle_lbl = "🟢 OxaPay Gateway: ENABLED" if oxapay_enabled else "🔴 OxaPay Gateway: DISABLED"
+    oxa_toggle_lbl = f"{'🟢' if oxapay_enabled else '🔴'} OxaPay Gateway: {'ENABLED' if oxapay_enabled else 'DISABLED'}"
+    oxa_toggle_api = f"OxaPay Gateway: {'ENABLED' if oxapay_enabled else 'DISABLED'}"
+    toggle_icon = "5809949600152296075" if oxapay_enabled else "5970055887774028039"
+
     buttons = [
         [InlineKeyboardButton(oxa_toggle_lbl, callback_data="settings#sb_rl_oxa_toggle")],
         [InlineKeyboardButton("🔑 Set OxaPay Merchant Key", callback_data="settings#sb_rl_oxa_key")],
         [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_oxa_env")],
-        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sb_ratelimit")],
+        [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")],
     ]
-    await query.message.edit_text(
-        f"<b>🌐 OXAPAY CRYPTO GATEWAY CONFIG</b>\n"
+    api_buttons = [
+        [{"text": oxa_toggle_api, "callback_data": "settings#sb_rl_oxa_toggle", "icon_custom_emoji_id": toggle_icon}],
+        [{"text": "🔑 Set OxaPay Merchant Key", "callback_data": "settings#sb_rl_oxa_key"}],
+        [{"text": f"🌐 Environment: {env_str}", "callback_data": "settings#sb_rl_oxa_env"}],
+        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+    ]
+    oxa_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Active' if oxa_key else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
+    oxa_text = (
+        f'<emoji id="5800720664620961831">🌐</emoji> <b>Crypto Config</b>\n'
         f"────────────────────\n"
         f"<b>Merchant Key:</b> <code>{key_disp}</code>\n"
         f"<b>Environment:</b> <code>{env_str}</code>\n"
-        f"<b>Status:</b> {'🟢 Ready & Active' if oxa_key else '🔴 Not Configured'}\n"
+        f"<b>Status:</b> {oxa_status_str}\n"
         f"────────────────────\n"
-        f"<blockquote expandable>ℹ️ <b>How to get OxaPay Merchant Key:</b>\n"
+        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How to get OxaPay Merchant Key:</b>\n"
         f"1. Login to your OxaPay dashboard at https://oxapay.com\n"
         f"2. Go to <b>Merchant → API Keys</b>\n"
-        f"3. Copy your <b>Merchant API Key</b> and set it here or in <code>.env</code>.</blockquote>",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        f"3. Copy your <b>Merchant API Key</b> and set it here or in <code>.env</code>.</blockquote>"
     )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=oxa_text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(oxa_text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
 
   elif type == "sb_rl_oxa_key":
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        "<b>🔑 Set OxaPay Merchant Key</b>\n\n"
+        '<emoji id="5800720664620961831">🌐</emoji> <b>Set OxaPay Merchant Key</b>\n\n'
         "Send your OxaPay <b>Merchant API Key</b>.\n\n"
         "Send /cancel to abort."
     )
@@ -1842,13 +1930,13 @@ async def settings_query(bot, query):
         resp = await _ask(bot, user_id, timeout=120)
         if getattr(resp, 'text', None) and '/cancel' in resp.text:
             await resp.delete()
-            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_oxa_menu")]]))
+            return await ask.edit_text("<i>Cancelled.</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_oxa_menu")]]))
         val = (resp.text or '').strip()
         await db.set_delivery_rate_limit_config(oxapay_key=val)
         await resp.delete()
-        await ask.edit_text("✅ OxaPay Merchant Key updated securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_oxa_menu")]]))
+        await ask.edit_text("✅ OxaPay Merchant Key updated securely.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_oxa_menu")]]))
     except Exception:
-        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_rl_oxa_menu")]]))
+        await ask.edit_text("Timeout or error.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_oxa_menu")]]))
 
   elif type == "sb_rl_oxa_env":
     rl_cfg = await db.get_delivery_rate_limit_config()
