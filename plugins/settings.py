@@ -978,25 +978,67 @@ async def settings_query(bot, query):
      rl_lbl = f"»  ON ({rl_max} in {rl_win_str})" if rl_on else "‣  OFF"
 
      buttons = []
-     buttons.append([InlineKeyboardButton(f"Pʀᴏᴛᴇᴄᴛɪᴏɴ:{ptxt}", callback_data="settings#sharebotprotect")])
-     buttons.append([InlineKeyboardButton(f"📋 Lᴏɢs Cᴏɴꜰɪɢ: {logs_lbl}", callback_data="settings#sb_logs_channel")])
-     buttons.append([InlineKeyboardButton(f"🛡 Aɴᴛɪ-Aʙᴜsᴇ: {abuse_lbl}", callback_data="settings#sb_anti_abuse")])
-     buttons.append([InlineKeyboardButton(f"⏳ Rᴀᴛᴇ Lɪᴍɪᴛ & Pᴀss: {rl_lbl}", callback_data="settings#sb_ratelimit")])
-     buttons.append([InlineKeyboardButton("— DᴇʟɪᴠᴇʀY Bᴏᴛs —", callback_data="settings#noop")])
-     for b in bots:
-         buttons.append([InlineKeyboardButton(f"{b['name']}", callback_data=f"settings#sb_view_{b['id']}")])
+     buttons.append([InlineKeyboardButton(f"🛡 Protection - {'ON' if protect else 'OFF'}", callback_data="settings#sharebotprotect")])
+     buttons.append([InlineKeyboardButton("📋 Logs", callback_data="settings#sb_logs_channel")])
+     buttons.append([InlineKeyboardButton("🛡 Anti Abuse", callback_data="settings#sb_anti_abuse")])
+     buttons.append([InlineKeyboardButton("⏳ Rate Limit & Pass", callback_data="settings#sb_ratelimit")])
+     buttons.append([InlineKeyboardButton("──── Delivery Bots ────", callback_data="settings#noop")])
+
+     api_buttons = [
+         [{"text": f"Protection - {'ON' if protect else 'OFF'}", "callback_data": "settings#sharebotprotect", "icon_custom_emoji_id": "5778570255555105942"}],
+         [{"text": "Logs", "callback_data": "settings#sb_logs_channel", "icon_custom_emoji_id": "5920046907782074235"}],
+         [{"text": "Anti Abuse", "callback_data": "settings#sb_anti_abuse", "icon_custom_emoji_id": "5893192487324880883"}],
+         [{"text": "Rate Limit & Pass", "callback_data": "settings#sb_ratelimit", "icon_custom_emoji_id": "5258113901106580375"}],
+         [{"text": "──── Delivery Bots ────", "callback_data": "settings#noop"}],
+     ]
+
+     i = 0
+     while i < len(bots):
+         b1 = bots[i]
+         name1 = str(b1.get('name', 'Bot')).strip()
+         if i + 1 < len(bots):
+             b2 = bots[i + 1]
+             name2 = str(b2.get('name', 'Bot')).strip()
+             if len(name1) <= 7 and len(name2) <= 7:
+                 buttons.append([
+                     InlineKeyboardButton(name1, callback_data=f"settings#sb_view_{b1['id']}"),
+                     InlineKeyboardButton(name2, callback_data=f"settings#sb_view_{b2['id']}")
+                 ])
+                 api_buttons.append([
+                     {"text": name1, "callback_data": f"settings#sb_view_{b1['id']}"},
+                     {"text": name2, "callback_data": f"settings#sb_view_{b2['id']}"}
+                 ])
+                 i += 2
+                 continue
+         buttons.append([InlineKeyboardButton(name1, callback_data=f"settings#sb_view_{b1['id']}")])
+         api_buttons.append([{"text": name1, "callback_data": f"settings#sb_view_{b1['id']}"}])
+         i += 1
+
      if len(bots) < 10:
-         buttons.append([InlineKeyboardButton("— Aᴄᴛɪᴏɴs —", callback_data="settings#noop")])
-         buttons.append([InlineKeyboardButton('➕ Aᴅᴅ Sʜᴀʀᴇ Bᴏᴛ', callback_data="settings#sb_add")])
-     buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#main")])
+         buttons.append([InlineKeyboardButton("➕ Add Share Bot", callback_data="settings#sb_add")])
+         api_buttons.append([{"text": "Add Share Bot", "callback_data": "settings#sb_add", "icon_custom_emoji_id": "5807642902066634351"}])
+
+     buttons.append([InlineKeyboardButton('Back', callback_data="settings#main")])
+     api_buttons.append([{"text": "Back", "callback_data": "settings#main"}])
 
      text = (
-         "<b>❪ SHARE BOT CONFIGURATION ❫</b>\n\n"
-         f"<b>Allocated Bots:</b> {len(bots)}/10\n\n"
-         "<b>These bots handle exclusively the delivery payload of your Share Links.</b>\n\n"
-         "<i>Protection globally restricts saving and forwarding delivered files.</i>"
+         f'<emoji id="6037622221625626773">🤖</emoji> <b>Share Bot Config</b>\n'
+         f"────────────────────\n"
+         f"<b>Allocated Bots:</b> <code>{len(bots)}/10</code>"
      )
-     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+     from plugins.share_bot import send_or_edit_with_custom_icons
+     sent_ok = await send_or_edit_with_custom_icons(
+         client=bot,
+         chat_id=query.message.chat.id,
+         text=text,
+         inline_keyboard=api_buttons,
+         message_id=query.message.id
+     )
+     if not sent_ok:
+         try:
+             await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+         except Exception:
+             pass
 
   elif type == "sharebotprotect":
      protect = await db.get_share_protect_global()
@@ -2710,40 +2752,87 @@ async def settings_query(bot, query):
       if not bt: return await query.answer("Bot not found!")
 
       buttons = [
-          [InlineKeyboardButton('Wᴇʟᴄᴏᴍᴇ & Aʙᴏᴜᴛ', callback_data=f"settings#sb_wa_{b_id}")],
-          [InlineKeyboardButton('📡 Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ', callback_data=f"settings#sb_lblive_{b_id}")],
+          [InlineKeyboardButton('👋 Welcome & About', callback_data=f"settings#sb_wa_{b_id}")],
+          [InlineKeyboardButton('📡 Batch Links Live', callback_data=f"settings#sb_lblive_{b_id}")],
           [
-              InlineKeyboardButton('Dᴇʟᴇᴛᴇ Msɢ',      callback_data=f"settings#sb_set_delete_{b_id}"),
-              InlineKeyboardButton('Sᴜᴄᴄᴇss Msɢ',    callback_data=f"settings#sb_set_success_{b_id}"),
+              InlineKeyboardButton('🗑 Delete MSG', callback_data=f"settings#sb_set_delete_{b_id}"),
+              InlineKeyboardButton('✅ Success MSG', callback_data=f"settings#sb_set_success_{b_id}"),
           ],
+          [InlineKeyboardButton('📣 Post Delivery Mode', callback_data=f"settings#sb_post_deliv_{b_id}")],
           [
-              InlineKeyboardButton('📣 Pᴏsᴛ-Dᴇʟɪᴠᴇʀʏ Mᴏᴅᴇ', callback_data=f"settings#sb_post_deliv_{b_id}")
+              InlineKeyboardButton('🎁 Donation MSG', callback_data=f"settings#sb_donation_{b_id}"),
+              InlineKeyboardButton('⭐ Premium Ad MSG', callback_data=f"settings#sb_premium_ad_{b_id}"),
           ],
+          [InlineKeyboardButton('📝 Custom Caption', callback_data=f"settings#sb_caption_menu_{b_id}")],
+          [InlineKeyboardButton('🔗 Custom Buttons', callback_data=f"settings#sb_buttons_menu_{b_id}")],
           [
-              InlineKeyboardButton('Dᴏɴᴀᴛɪᴏɴ Msɢ', callback_data=f"settings#sb_donation_{b_id}"),
-              InlineKeyboardButton('Pʀᴇᴍɪᴜᴍ Aᴅ Msɢ', callback_data=f"settings#sb_premium_ad_{b_id}"),
+              InlineKeyboardButton('⏳ Auto Delete', callback_data=f"settings#sb_set_autodel_{b_id}"),
+              InlineKeyboardButton('📢 Force Subscribe', callback_data=f"settings#sb_fsub_{b_id}")
           ],
-          [InlineKeyboardButton('Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',    callback_data=f"settings#sb_caption_menu_{b_id}")],
-          [InlineKeyboardButton('🔗 Custom Buttons',    callback_data=f"settings#sb_buttons_menu_{b_id}")],
-          [InlineKeyboardButton('Aᴜᴛᴏ-Dᴇʟᴇᴛᴇ', callback_data=f"settings#sb_set_autodel_{b_id}"),
-           InlineKeyboardButton('Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',  callback_data=f"settings#sb_fsub_{b_id}")],
-          [InlineKeyboardButton('🎞 Fᴇᴛᴄʜɪɴɢ Mᴇᴅɪᴀ', callback_data=f"settings#sb_fetch_media_{b_id}")],
+          [InlineKeyboardButton('🎞 Fetching Media', callback_data=f"settings#sb_fetch_media_{b_id}")],
           [
-              InlineKeyboardButton('Sᴛᴀᴛs',           callback_data=f"settings#sb_stats_{b_id}"),
-              InlineKeyboardButton('Bʀᴏᴀᴅᴄᴀsᴛ',       callback_data=f"settings#sb_broadcast_{b_id}")
+              InlineKeyboardButton('📊 Stats', callback_data=f"settings#sb_stats_{b_id}"),
+              InlineKeyboardButton('📢 Broadcast', callback_data=f"settings#sb_broadcast_{b_id}")
           ],
-          [InlineKeyboardButton('🧹 Pᴜʀɢᴇ DM Fɪʟᴇs',      callback_data=f"settings#sb_purge_{b_id}")],
-          [InlineKeyboardButton('Rᴇᴍᴏᴠᴇ Bᴏᴛ',      callback_data=f"settings#sb_remove_{b_id}")],
-          [InlineKeyboardButton('❮ Bᴀᴄᴋ',               callback_data="settings#sharebot")],
+          [InlineKeyboardButton('🧹 Purge DM Files', callback_data=f"settings#sb_purge_{b_id}")],
+          [InlineKeyboardButton('❌ Remove Bot', callback_data=f"settings#sb_remove_{b_id}")],
+          [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
       ]
-      await query.message.edit_text(
-          f"<b>❪ SHARE BOT PROFILE ❫</b>\n\n"
-          f"<b>»  Name:</b> {bt['name']}\n"
-          f"<b>»  Username:</b> @{bt['username']}\n"
-          f"<b>🆔 ID:</b> <code>{bt['id']}</code>\n\n"
-          "<i>All settings below are specific to this bot.</i>",
-          reply_markup=InlineKeyboardMarkup(buttons)
+      api_buttons = [
+          [{"text": "Welcome & About", "callback_data": f"settings#sb_wa_{b_id}", "icon_custom_emoji_id": "5219901967916084166"}],
+          [{"text": "Batch Links Live", "callback_data": f"settings#sb_lblive_{b_id}", "icon_custom_emoji_id": "6021846918416571514"}],
+          [
+              {"text": "Delete MSG", "callback_data": f"settings#sb_set_delete_{b_id}", "icon_custom_emoji_id": "6021413766669801212"},
+              {"text": "Success MSG", "callback_data": f"settings#sb_set_success_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
+          ],
+          [{"text": "Post Delivery Mode", "callback_data": f"settings#sb_post_deliv_{b_id}", "icon_custom_emoji_id": "5803175856905917502"}],
+          [
+              {"text": "Donation MSG", "callback_data": f"settings#sb_donation_{b_id}", "icon_custom_emoji_id": "6024112397701093503"},
+              {"text": "Premium Ad MSG", "callback_data": f"settings#sb_premium_ad_{b_id}", "icon_custom_emoji_id": "6021789619257874157"}
+          ],
+          [{"text": "Costom Caption", "callback_data": f"settings#sb_caption_menu_{b_id}", "icon_custom_emoji_id": "6023843687367190257"}],
+          [{"text": "Custom Bottons", "callback_data": f"settings#sb_buttons_menu_{b_id}", "icon_custom_emoji_id": "5807622114424924272"}],
+          [
+              {"text": "Auto Delete", "callback_data": f"settings#sb_set_autodel_{b_id}", "icon_custom_emoji_id": "6035276353438227060"},
+              {"text": "Force Subscribe", "callback_data": f"settings#sb_fsub_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
+          ],
+          [{"text": "Fetching Media", "callback_data": f"settings#sb_fetch_media_{b_id}", "icon_custom_emoji_id": "5944753741512052670"}],
+          [
+              {"text": "Stats", "callback_data": f"settings#sb_stats_{b_id}", "icon_custom_emoji_id": "5938539885907415367"},
+              {"text": "Broadcast", "callback_data": f"settings#sb_broadcast_{b_id}", "icon_custom_emoji_id": "6019151667524539757"}
+          ],
+          [{"text": "Purge DM Files", "callback_data": f"settings#sb_purge_{b_id}", "icon_custom_emoji_id": "6021375494216226506"}],
+          [{"text": "Remove Bot", "callback_data": f"settings#sb_remove_{b_id}", "icon_custom_emoji_id": "6030400221232501136"}],
+          [{"text": "Back", "callback_data": "settings#sharebot"}],
+      ]
+
+      b_name = bt.get('name', '')
+      b_user = bt.get('username', '')
+      b_uid = bt.get('id', '')
+
+      text = (
+          f'<emoji id="6037622221625626773">🤖</emoji> <b>Share Bot Profile</b>\n'
+          f"────────────────────\n"
+          f'<emoji id="6030400221232501136">👤</emoji> <b>Name:-</b> {b_name}\n'
+          f'<emoji id="6021683099773966917">🌐</emoji> <b>Username:-</b> @{b_user}\n'
+          f'<emoji id="5332423642850536254">🆔</emoji> <b>ID:-</b> <code>{b_uid}</code>\n'
+          f"────────────────────\n"
+          f"<u>All settings below are specific to this bot.</u>"
       )
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_buttons,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+          except Exception:
+              pass
 
   elif type.startswith("sb_lblive_"):
       b_id = type.split("sb_lblive_")[1]
