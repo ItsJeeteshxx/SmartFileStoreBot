@@ -3941,25 +3941,25 @@ async def _process_pass_callback(client, query):
 
                 oid = txn.get('id', 'N/A')
                 c_badge = CIRCLE_DIGITS.get(idx, f"[{idx}]")
-                sep_line = f"┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄"
+                sep_line = f"┄┄┄┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄┄┄┄"
 
                 if is_hi:
                     t_items.append(
                         f"{sep_line}\n"
                         f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>ऑर्डर आईडी:-</b> <code>{oid}</code>\n"
-                        f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>प्लान:-</b> {str(dur_verb).title()} ({amt})\n"
-                        f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>पेमेंट मोड:-</b> {gw}\n"
-                        f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>स्थिति:-</b> {st_str}\n"
-                        f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>लेनदेन तारीख:-</b> <code>{t_str}</code>"
+                        f"<emoji id=\"6021435576513730578\">👑</emoji> <b>प्लान:-</b> {str(dur_verb).title()} ({amt})\n"
+                        f"<emoji id=\"6030443364178992166\">💳</emoji> <b>पेमेंट मोड:-</b> {gw}\n"
+                        f"<emoji id=\"5807800879553715710\">📊</emoji> <b>स्थिति:-</b> {st_str}\n"
+                        f"<emoji id=\"6023880246128810031\">📅</emoji> <b>लेनदेन तारीख:-</b> <code>{t_str}</code>"
                     )
                 else:
                     t_items.append(
                         f"{sep_line}\n"
                         f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
-                        f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
-                        f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
-                        f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
-                        f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
+                        f"<emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
+                        f"<emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
+                        f"<emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
+                        f"<emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
                     )
             txns_body = "\n".join(t_items)
         else:

@@ -1805,11 +1805,15 @@ class Database:
         """Record used UTR helper (alias for mark_utr_used)."""
         return await self.mark_utr_used(utr=utr, user_id=user_id, amount=amount, plan=plan, user_name=user_name, order_id=order_id)
 
-    async def get_user_pass_transactions(self, user_id: int, limit: int = 15) -> list:
-        """Fetch full pass orders (PAID, PENDING, FAILED) and verified UTRs for user (10-min timeout for pending)."""
+    async def get_user_pass_transactions(self, user_id: int, limit: int = 15, paid_only: bool = False) -> list:
+        """Fetch pass orders (PAID, PENDING, FAILED or PAID-only) and verified UTRs for user."""
         import time
         now = time.time()
-        orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit * 2).to_list(limit * 2)
+        if paid_only:
+            orders = await self.pass_orders.find({'user_id': int(user_id), 'status': 'PAID'}).sort('paid_at', -1).limit(limit).to_list(limit)
+        else:
+            orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit * 2).to_list(limit * 2)
+
         utrs = await self.used_utrs.find({'user_id': int(user_id)}).sort('used_at', -1).limit(limit).to_list(limit)
         results = []
         seen_order_ids = set()
@@ -1842,6 +1846,9 @@ class Database:
                     final_status = 'FAILED'
                 else:
                     final_status = 'PENDING'
+
+            if paid_only and final_status != 'PAID':
+                continue
 
             plan_val = o.get('duration_key') or o.get('plan') or o.get('duration') or '1d'
 
@@ -2221,7 +2228,7 @@ class Database:
         if not name:
             name = f"User {user_id}"
 
-        txns = await self.get_user_pass_transactions(user_id, limit=25)
+        txns = await self.get_user_pass_transactions(user_id, limit=25, paid_only=True)
 
         # First Buy Timestamp: earliest paid transaction
         first_buy_ts = None
