@@ -2474,8 +2474,7 @@ async def settings_query(bot, query):
         f"<emoji id=\"6021344879689341042\">🔗</emoji> <b>Profile Link:-</b> <a href=\"{profile_url}\">View User TG</a>\n"
         f"{sub_status}\n\n"
         f"────────────────────\n"
-        f'<emoji id="6021745995275048956">📜</emoji> <b>Transaction History:-</b>\n'
-        f"────────────────────\n"
+        f'<emoji id="6021745995275048956">📜</emoji> <b>Transaction History:-</b>\n\n'
         f"{txns_text}"
     )
 
@@ -2840,7 +2839,6 @@ async def settings_query(bot, query):
 
       buttons = [
           [InlineKeyboardButton('👋 Welcome & About', callback_data=f"settings#sb_wa_{b_id}")],
-          [InlineKeyboardButton('📡 Batch Links Live', callback_data=f"settings#sb_lblive_{b_id}")],
           [
               InlineKeyboardButton('🗑 Delete MSG', callback_data=f"settings#sb_set_delete_{b_id}"),
               InlineKeyboardButton('✅ Success MSG', callback_data=f"settings#sb_set_success_{b_id}"),
@@ -2853,7 +2851,7 @@ async def settings_query(bot, query):
           [InlineKeyboardButton('📝 Custom Caption', callback_data=f"settings#sb_caption_menu_{b_id}")],
           [InlineKeyboardButton('🔗 Custom Buttons', callback_data=f"settings#sb_buttons_menu_{b_id}")],
           [
-              InlineKeyboardButton('⏳ Auto Delete', callback_data=f"settings#sb_set_autodel_{b_id}"),
+              InlineKeyboardButton('⏳ Auto Delete', callback_data=f"settings#sb_autodel_menu_{b_id}"),
               InlineKeyboardButton('📢 Force Subscribe', callback_data=f"settings#sb_fsub_{b_id}")
           ],
           [InlineKeyboardButton('🎞 Fetching Media', callback_data=f"settings#sb_fetch_media_{b_id}")],
@@ -2867,7 +2865,6 @@ async def settings_query(bot, query):
       ]
       api_buttons = [
           [{"text": "Welcome & About", "callback_data": f"settings#sb_wa_{b_id}", "icon_custom_emoji_id": "5219901967916084166"}],
-          [{"text": "Batch Links Live", "callback_data": f"settings#sb_lblive_{b_id}", "icon_custom_emoji_id": "6021846918416571514"}],
           [
               {"text": "Delete MSG", "callback_data": f"settings#sb_set_delete_{b_id}", "icon_custom_emoji_id": "6021413766669801212"},
               {"text": "Success MSG", "callback_data": f"settings#sb_set_success_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
@@ -2880,7 +2877,7 @@ async def settings_query(bot, query):
           [{"text": "Costom Caption", "callback_data": f"settings#sb_caption_menu_{b_id}", "icon_custom_emoji_id": "6023843687367190257"}],
           [{"text": "Custom Bottons", "callback_data": f"settings#sb_buttons_menu_{b_id}", "icon_custom_emoji_id": "5807622114424924272"}],
           [
-              {"text": "Auto Delete", "callback_data": f"settings#sb_set_autodel_{b_id}", "icon_custom_emoji_id": "6035276353438227060"},
+              {"text": "Auto Delete", "callback_data": f"settings#sb_autodel_menu_{b_id}", "icon_custom_emoji_id": "6035276353438227060"},
               {"text": "Force Subscribe", "callback_data": f"settings#sb_fsub_{b_id}", "icon_custom_emoji_id": "6021738534916854774"}
           ],
           [{"text": "Fetching Media", "callback_data": f"settings#sb_fetch_media_{b_id}", "icon_custom_emoji_id": "5944753741512052670"}],
@@ -2958,17 +2955,36 @@ async def settings_query(bot, query):
 
   elif type.startswith("sb_purge_") and not type.startswith("sb_purge_confirm_"):
       b_id = type.split("sb_purge_")[1]
-      buttons = [
-          [InlineKeyboardButton("✅ Yᴇs, Pᴜʀɢᴇ Aʟʟ", callback_data=f"settings#sb_purge_confirm_{b_id}")],
-          [InlineKeyboardButton("❌ Cᴀɴᴄᴇʟ", callback_data=f"settings#sb_view_{b_id}")]
-      ]
-      await query.message.edit_text(
-          "<b>⚠️ WARNING: MASS PURGE</b>\n\n"
-          "This will delete <b>ALL files</b> that this Share Bot has ever delivered to any user's DM. "
-          "The deletion process will run in the background.\n\n"
-          "<b>Are you sure you want to proceed?</b>",
-          reply_markup=InlineKeyboardMarkup(buttons)
+      text = (
+          f'<emoji id="6021375494216226506">🧹</emoji> <b>Purge DM Files</b>\n'
+          f"────────────────────\n"
+          f'<emoji id="6019102674832595118">⚠️</emoji> <b>Warning: Mass DM Purge</b>\n\n'
+          f"This will delete <b>ALL files</b> that this Share Bot has ever delivered to any user's DM.\n"
+          f"The deletion process will run safely in the background.\n\n"
+          f"<b>Are you sure you want to proceed?</b>"
       )
+      buttons = [
+          [InlineKeyboardButton("Yes, Purge All", callback_data=f"settings#sb_purge_confirm_{b_id}")],
+          [InlineKeyboardButton("Cancel", callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      api_buttons = [
+          [{"text": "Yes, Purge All", "callback_data": f"settings#sb_purge_confirm_{b_id}", "icon_custom_emoji_id": "5809949600152296075"}],
+          [{"text": "Cancel", "callback_data": f"settings#sb_view_{b_id}", "icon_custom_emoji_id": "5970055887774028039"}]
+      ]
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_buttons,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+          except Exception:
+              pass
 
   elif type.startswith("sb_purge_confirm_"):
       b_id = type.split("sb_purge_confirm_")[1]
@@ -3054,22 +3070,54 @@ async def settings_query(bot, query):
       
       def _mark_pdm(val): return "✅ " if cur_mode == val else ""
       
-      buttons = [
-          [InlineKeyboardButton(f"{_mark_pdm('ad_only')}📢 Arya Premium Ad Only", callback_data=f"settings#sb_set_pdm_{b_id}_ad_only")],
-          [InlineKeyboardButton(f"{_mark_pdm('donation_only')}💖 Support / Donation Only", callback_data=f"settings#sb_set_pdm_{b_id}_donation_only")],
-          [InlineKeyboardButton(f"{_mark_pdm('random')}🎲 Random (Ad or Donation)", callback_data=f"settings#sb_set_pdm_{b_id}_random")],
-          [InlineKeyboardButton(f"{_mark_pdm('off')}🚫 Turn OFF (No Extra Msg)", callback_data=f"settings#sb_set_pdm_{b_id}_off")],
-          [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_view_{b_id}")]
-      ]
-      await query.message.edit_text(
-          "<b>📣 Pᴏsᴛ-DᴇʟɪᴠᴇʀY Mᴇssᴀɢᴇ Sᴇᴛᴛɪɴɢs</b>\n\n"
-          "Choose which message is sent immediately after story files are delivered:\n\n"
-          "• <b>Arya Premium Ad Only:</b> Always show store ad banner.\n"
-          "• <b>Support / Donation Only:</b> Always show donation request message.\n"
-          "• <b>Random:</b> Alternate randomly between Ad and Donation.\n"
-          "• <b>Turn OFF:</b> Disable post-delivery extra message completely.",
-          reply_markup=InlineKeyboardMarkup(buttons)
+      mode_titles = {
+          'ad_only': "Arya Premium Ad Only",
+          'donation_only': "Support / Donation Only",
+          'random': "Random (Ad or Donation)",
+          'off': "Turn OFF (No Extra Msg)"
+      }
+      cur_title = mode_titles.get(cur_mode, "Random")
+
+      text = (
+          f'<emoji id="5803175856905917502">📣</emoji> <b>Post Delivery Mode</b>\n'
+          f"────────────────────\n"
+          f"<b>Current Mode:-</b> <code>{cur_title}</code>\n"
+          f"────────────────────\n"
+          f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Mode Info:</b>\n"
+          f"• <b>Premium Ad:</b> Always show store ad banner.\n"
+          f"• <b>Support / Donation:</b> Always show donation request.\n"
+          f"• <b>Random:</b> Alternate randomly between Ad and Donation.\n"
+          f"• <b>Turn OFF:</b> Disable extra messages completely.</blockquote>"
       )
+
+      buttons = [
+          [InlineKeyboardButton(f"{_mark_pdm('ad_only')}Arya Premium Ad Only", callback_data=f"settings#sb_set_pdm_{b_id}_ad_only")],
+          [InlineKeyboardButton(f"{_mark_pdm('donation_only')}Support / Donation Only", callback_data=f"settings#sb_set_pdm_{b_id}_donation_only")],
+          [InlineKeyboardButton(f"{_mark_pdm('random')}Random (Ad or Donation)", callback_data=f"settings#sb_set_pdm_{b_id}_random")],
+          [InlineKeyboardButton(f"{_mark_pdm('off')}Turn OFF", callback_data=f"settings#sb_set_pdm_{b_id}_off")],
+          [InlineKeyboardButton('Back', callback_data=f"settings#sb_view_{b_id}")]
+      ]
+      api_buttons = [
+          [{"text": f"{_mark_pdm('ad_only')}Arya Premium Ad Only", "callback_data": f"settings#sb_set_pdm_{b_id}_ad_only", "icon_custom_emoji_id": "6021789619257874157"}],
+          [{"text": f"{_mark_pdm('donation_only')}Support / Donation Only", "callback_data": f"settings#sb_set_pdm_{b_id}_donation_only", "icon_custom_emoji_id": "6024112397701093503"}],
+          [{"text": f"{_mark_pdm('random')}Random (Ad or Donation)", "callback_data": f"settings#sb_set_pdm_{b_id}_random", "icon_custom_emoji_id": "6021391505854306270"}],
+          [{"text": f"{_mark_pdm('off')}Turn OFF", "callback_data": f"settings#sb_set_pdm_{b_id}_off", "icon_custom_emoji_id": "6030400221232501136"}],
+          [{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}]
+      ]
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_buttons,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+          except Exception:
+              pass
 
   elif type.startswith("sb_set_pdm_"):
       parts = type.split("_")
@@ -3729,24 +3777,46 @@ async def settings_query(bot, query):
       b_id = type.split("sb_caption_menu_")[1]
       cur_val = await db.get_share_bot_text(b_id, "custom_caption", "")
       txt = (
-          "<b><u>📝 Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ</u></b>\n\n"
-          "You can add a custom caption template to your media messages instead of their original caption.\n\n"
-          "<b>Placeholders available:</b>\n"
-          "• <code>{file_name}</code> : File Name\n"
-          "• <code>{file_size}</code> : File Size\n"
-          "• <code>{caption}</code> : Original Caption\n\n"
-          f"<b>Current Caption:</b>\n"
-          f"<code>{cur_val if cur_val else 'None (Using Original Caption)'}</code>"
+          f'<emoji id="6023843687367190257">📝</emoji> <b>Custom Caption</b>\n'
+          f"────────────────────\n"
+          f"<b>Current Caption:-</b>\n"
+          f"<code>{cur_val if cur_val else 'None (Using Original Caption)'}</code>\n"
+          f"────────────────────\n"
+          f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Available Placeholders:</b>\n"
+          f"• <code>{file_name}</code> : File Name\n"
+          f"• <code>{file_size}</code> : File Size\n"
+          f"• <code>{caption}</code> : Original Caption</blockquote>"
       )
-      kb = [
+      btns = [
           [
               InlineKeyboardButton("✍️ Edit", callback_data=f"settings#sb_caption_edit_{b_id}"),
               InlineKeyboardButton("👁 See", callback_data=f"settings#sb_caption_see_{b_id}")
           ],
           [InlineKeyboardButton("🗑 Delete", callback_data=f"settings#sb_caption_del_{b_id}")],
-          [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]
+          [InlineKeyboardButton("Back", callback_data=f"settings#sb_view_{b_id}")]
       ]
-      await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+      api_btns = [
+          [
+              {"text": "Edit", "callback_data": f"settings#sb_caption_edit_{b_id}", "icon_custom_emoji_id": "5766915217552315762"},
+              {"text": "See", "callback_data": f"settings#sb_caption_see_{b_id}", "icon_custom_emoji_id": "5807492110059838726"}
+          ],
+          [{"text": "Delete", "callback_data": f"settings#sb_caption_del_{b_id}", "icon_custom_emoji_id": "6030400221232501136"}],
+          [{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}]
+      ]
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=txt,
+          inline_keyboard=api_btns,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(btns))
+          except Exception:
+              pass
 
   elif type.startswith("sb_caption_edit_"):
       b_id = type.split("sb_caption_edit_")[1]
@@ -3765,12 +3835,28 @@ async def settings_query(bot, query):
           await query.answer("No custom caption set! Using original caption.", show_alert=True)
           return
       preview = cur_val.replace("{file_name}", "Sample_Audio_File.mp3").replace("{file_size}", "45.2 MB").replace("{caption}", "Original file caption text here...")
-      await query.message.edit_text(
-          f"<b>👁 Custom Caption Preview:</b>\n\n"
-          f"{preview}\n\n"
-          f"<i>This is how it will look when delivered to users.</i>",
-          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_caption_menu_{b_id}")]])
+      txt = (
+          f'<emoji id="5807492110059838726">👁</emoji> <b>Custom Caption Preview</b>\n'
+          f"────────────────────\n"
+          f"{preview}\n"
+          f"────────────────────\n"
+          f"<i>This is how it will look when delivered to users.</i>"
       )
+      btns = [[InlineKeyboardButton("Back", callback_data=f"settings#sb_caption_menu_{b_id}")]]
+      api_btns = [[{"text": "Back", "callback_data": f"settings#sb_caption_menu_{b_id}"}]]
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=txt,
+          inline_keyboard=api_btns,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(btns))
+          except Exception:
+              pass
 
   elif type.startswith("sb_caption_del_"):
       b_id = type.split("sb_caption_del_")[1]
@@ -3781,29 +3867,48 @@ async def settings_query(bot, query):
 
   elif type.startswith("sb_buttons_menu_"):
       b_id = type.split("sb_buttons_menu_")[1]
-      btns = await db.get_share_bot_buttons(b_id)
+      btns_list = await db.get_share_bot_buttons(b_id)
       txt = (
-          "<b><u>🔗 Cᴜsᴛᴏᴍ Bᴜᴛᴛᴏɴs</u></b>\n\n"
-          "You can add custom inline buttons to your delivered messages.\n"
-          "• <b>Limit:</b> Maximum 2 buttons (in a single row).\n\n"
-          "<b>Current Buttons:</b>\n"
+          f'<emoji id="5807622114424924272">🔗</emoji> <b>Custom Buttons</b>\n'
+          f"────────────────────\n"
+          f"<b>Max Limit:</b> <code>2 buttons</code> (in single row)\n"
+          f"────────────────────\n"
       )
-      if btns:
-          for idx, btn in enumerate(btns):
-              txt += f"  {idx+1}. <b>{btn['text']}</b> → <code>{btn['url']}</code>\n"
+      if btns_list:
+          for idx, b in enumerate(btns_list):
+              txt += f'<emoji id="5807800879553715710">📌</emoji> <b>Button {idx+1}:-</b> <code>{b["text"]}</code> → <code>{b["url"]}</code>\n'
       else:
-          txt += "<i>No custom buttons configured.</i>"
+          txt += "<i>No custom buttons configured.</i>\n"
           
       kb = []
-      if len(btns) < 2:
+      api_kb = []
+      if len(btns_list) < 2:
           kb.append([InlineKeyboardButton("➕ Add Button", callback_data=f"settings#sb_btn_add_{b_id}")])
-      if btns:
-          row = []
-          for idx in range(len(btns)):
-              row.append(InlineKeyboardButton(f"🗑 Delete Button {idx+1}", callback_data=f"settings#sb_btn_del_{b_id}_{idx}"))
-          kb.append(row)
-      kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")])
-      await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+          api_kb.append([{"text": "Add Button", "callback_data": f"settings#sb_btn_add_{b_id}", "icon_custom_emoji_id": "5807642902066634351"}])
+      if btns_list:
+          del_row = []
+          api_del_row = []
+          for idx in range(len(btns_list)):
+              del_row.append(InlineKeyboardButton(f"🗑 Delete #{idx+1}", callback_data=f"settings#sb_btn_del_{b_id}_{idx}"))
+              api_del_row.append({"text": f"Delete #{idx+1}", "callback_data": f"settings#sb_btn_del_{b_id}_{idx}", "icon_custom_emoji_id": "6030400221232501136"})
+          kb.append(del_row)
+          api_kb.append(api_del_row)
+      kb.append([InlineKeyboardButton("Back", callback_data=f"settings#sb_view_{b_id}")])
+      api_kb.append([{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}])
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=txt,
+          inline_keyboard=api_kb,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+          except Exception:
+              pass
 
   elif type.startswith("sb_btn_add_"):
       b_id = type.split("sb_btn_add_")[1]
@@ -3880,39 +3985,118 @@ async def settings_query(bot, query):
       query.data = f"settings#sb_buttons_menu_{b_id}"
       return await settings_query(bot, query)
 
+  # Auto Delete dedicated modern menu
+  elif type.startswith("sb_autodel_menu_"):
+      b_id = type.split("sb_autodel_menu_")[1]
+      about = await db.get_share_bot_about(b_id)
+      cur_val = about.get('auto_delete', 0)
+      
+      opts = [
+          (0, "OFF"), (5, "5m"), (10, "10m"),
+          (30, "30m"), (60, "1h"), (120, "2h"),
+          (180, "3h"), (360, "6h"), (720, "12h"),
+          (1080, "18h"), (1440, "24h"), (7200, "5d")
+      ]
+      
+      cur_label = next((lbl for val, lbl in opts if val == cur_val), f"{cur_val}m")
+
+      text = (
+          f'<emoji id="6035276353438227060">⏳</emoji> <b>Auto Delete Settings</b>\n'
+          f"────────────────────\n"
+          f"<b>Current Duration:-</b> <code>{cur_label}</code>\n"
+          f"────────────────────\n"
+          f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Auto-Delete Info:</b>\n"
+          f"Messages delivered by this Share Bot will automatically delete after the selected timer.</blockquote>"
+      )
+
+      kb = []
+      api_kb = []
+      row = []
+      api_row = []
+      for val, lbl in opts:
+          is_active = (val == cur_val)
+          btn_text = f"✅ {lbl}" if is_active else lbl
+          icon_id = "6019175208240289774" if is_active else "6035276353438227060"
+          row.append(InlineKeyboardButton(btn_text, callback_data=f"settings#sb_autodel_set_{b_id}_{val}"))
+          api_row.append({"text": btn_text, "callback_data": f"settings#sb_autodel_set_{b_id}_{val}", "icon_custom_emoji_id": icon_id})
+          if len(row) == 3:
+              kb.append(row)
+              api_kb.append(api_row)
+              row = []
+              api_row = []
+      if row:
+          kb.append(row)
+          api_kb.append(api_row)
+
+      kb.append([InlineKeyboardButton("Back", callback_data=f"settings#sb_view_{b_id}")])
+      api_kb.append([{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}])
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_kb,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+          except Exception:
+              pass
+
+  elif type.startswith("sb_autodel_set_"):
+      rest = type.split("sb_autodel_set_")[1]
+      b_id, _, val_str = rest.partition("_")
+      val = int(val_str)
+      about = await db.get_share_bot_about(b_id)
+      about['auto_delete'] = val
+      await db.set_share_bot_about(b_id, about)
+      await query.answer(f"Auto Delete set to: {val}m" if val else "Auto Delete turned OFF!")
+      query.data = f"settings#sb_autodel_menu_{b_id}"
+      return await settings_query(bot, query)
+
   elif type.startswith("sb_set_autodel_"):
       b_id = type.split("sb_set_autodel_")[1]
-      opts   = [0, 5, 10, 30, 60, 120, 180, 360, 720, 1080, 1440, 7200]
-      labels = ["OFF", "5m", "10m", "30m", "1h", "2h", "3h", "6h", "12h", "18h", "24h", "5d"]
-      about = await db.get_share_bot_about(b_id)
-      cur = about.get('auto_delete', 0)
-      try:    cur_idx = opts.index(cur)
-      except: cur_idx = 0
-      nxt_idx = (cur_idx + 1) % len(opts)
-      about['auto_delete'] = opts[nxt_idx]
-      await db.set_share_bot_about(b_id, about)
-      await query.answer(f"Auto-Delete: {labels[nxt_idx]}")
-      query.data = f"settings#sb_view_{b_id}"
+      query.data = f"settings#sb_autodel_menu_{b_id}"
       return await settings_query(bot, query)
 
   #  Stats & Broadcast 
   elif type.startswith("sb_stats_"):
       b_id = type.split("sb_stats_")[1]
       stats = await db.get_share_bot_users_stats(b_id)
+      text = (
+          f'<emoji id="5938539885907415367">📊</emoji> <b>Share Bot Stats</b>\n'
+          f"────────────────────\n"
+          f'<emoji id="5809949600152296075">🟢</emoji> <b>Active Users:-</b> <code>{stats["active"]}</code>\n'
+          f'<emoji id="5970055887774028039">🚫</emoji> <b>Blocked Users:-</b> <code>{stats["blocked"]}</code>\n'
+          f'<emoji id="6030400221232501136">❌</emoji> <b>Deleted Accounts:-</b> <code>{stats["deactivated"]}</code>\n'
+          f'<emoji id="6037622221625626773">👥</emoji> <b>Total Registered:-</b> <code>{stats["total"]}</code>\n'
+          f"────────────────────\n"
+          f"<i>Active users exclude those who blocked the bot or deleted their accounts.</i>\n"
+          f"<i>You can export active users data into a JSON file for analysis.</i>"
+      )
       kb = [
           [InlineKeyboardButton("📤 Export Active Users", callback_data=f"settings#sb_export_{b_id}")],
-          [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]
+          [InlineKeyboardButton("Back", callback_data=f"settings#sb_view_{b_id}")]
       ]
-      await query.message.edit_text(
-          f"<b>»  SHARE BOT STATS</b>\n\n"
-          f"🟢 <b>Active Users:</b> <code>{stats['active']}</code>\n"
-          f"🚫 <b>Blocked Users:</b> <code>{stats['blocked']}</code>\n"
-          f"❌ <b>Deleted Accounts:</b> <code>{stats['deactivated']}</code>\n"
-          f"📊 <b>Total Registered:</b> <code>{stats['total']}</code>\n\n"
-          "<i>Active users exclude those who blocked the bot or deleted their accounts.</i>\n"
-          "<i>You can export active users data into a JSON file for analysis.</i>",
-          reply_markup=InlineKeyboardMarkup(kb)
+      api_kb = [
+          [{"text": "Export Active Users", "callback_data": f"settings#sb_export_{b_id}", "icon_custom_emoji_id": "5882207227997066107"}],
+          [{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}]
+      ]
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_kb,
+          message_id=query.message.id
       )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+          except Exception:
+              pass
 
   elif type.startswith("sb_export_"):
       b_id = type.split("sb_export_")[1]
@@ -4232,7 +4416,7 @@ async def settings_query(bot, query):
       return await settings_query(bot, query)
 
   #  Per-bot Force-Subscribe 
-  elif type.startswith("sb_fsub_") and not any(type.startswith(f"sb_fsub_{p}_") for p in ['add', 'jr', 'del']):
+  elif type.startswith("sb_fsub_") and not any(type.startswith(f"sb_fsub_{p}_") for p in ['add', 'jr', 'del', 'msg']):
       b_id = type.split("sb_fsub_")[1]
       fsub_chs = await db.get_bot_fsub_channels(b_id)
       
@@ -4252,25 +4436,53 @@ async def settings_query(bot, query):
 
       lines = []
       btns  = []
+      api_btns = []
       for i, ch in enumerate(fsub_chs):
           jr_lbl = " [JR]" if ch.get('join_request') else ""
           err_lbl = errs[i]
-          lines.append(f"{i+1}. {ch.get('title','?')}{jr_lbl}{err_lbl}")
+          lines.append(f'<emoji id="5807800879553715710">📌</emoji> <b>Channel {i+1}:-</b> <code>{ch.get("title","?")}</code>{jr_lbl}{err_lbl}')
           btns.append([
-              InlineKeyboardButton(f"Jʀ #{i+1}",  callback_data=f"settings#sb_fsub_jr_{b_id}_{i}"),
-              InlineKeyboardButton(f"Dᴇʟ #{i+1}", callback_data=f"settings#sb_fsub_del_{b_id}_{i}"),
+              InlineKeyboardButton(f"JR #{i+1}",  callback_data=f"settings#sb_fsub_jr_{b_id}_{i}"),
+              InlineKeyboardButton(f"Delete #{i+1}", callback_data=f"settings#sb_fsub_del_{b_id}_{i}"),
           ])
-      ch_list = "\n".join(lines) if lines else "None configured."
+          api_btns.append([
+              {"text": f"JR #{i+1}", "callback_data": f"settings#sb_fsub_jr_{b_id}_{i}", "icon_custom_emoji_id": "5766975922620076409"},
+              {"text": f"Delete #{i+1}", "callback_data": f"settings#sb_fsub_del_{b_id}_{i}", "icon_custom_emoji_id": "6030400221232501136"},
+          ])
+      ch_list = "\n".join(lines) if lines else "<i>None configured.</i>"
+      
       if len(fsub_chs) < 6:
-          btns.append([InlineKeyboardButton("Aᴅᴅ Cʜᴀɴɴᴇʟ", callback_data=f"settings#sb_fsub_add_{b_id}")])
-      btns.append([InlineKeyboardButton("Sᴇᴛ Fsᴜʙ Msɢ", callback_data=f"settings#sb_fsub_msg_{b_id}")])
-      btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")])
-      await query.message.edit_text(
-          f"<b>»  Force-Subscribe — Bot Specific</b>\n\n"
+          btns.append([InlineKeyboardButton("➕ Add Channel", callback_data=f"settings#sb_fsub_add_{b_id}")])
+          api_btns.append([{"text": "Add Channel", "callback_data": f"settings#sb_fsub_add_{b_id}", "icon_custom_emoji_id": "5807642902066634351"}])
+      btns.append([InlineKeyboardButton("✍️ Set Fsub Msg", callback_data=f"settings#sb_fsub_msg_{b_id}")])
+      api_btns.append([{"text": "Set Fsub Msg", "callback_data": f"settings#sb_fsub_msg_{b_id}", "icon_custom_emoji_id": "5766915217552315762"}])
+      btns.append([InlineKeyboardButton("Back", callback_data=f"settings#sb_view_{b_id}")])
+      api_btns.append([{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}])
+
+      text = (
+          f'<emoji id="6021738534916854774">📢</emoji> <b>Force Subscribe</b>\n'
+          f"────────────────────\n"
+          f"<b>Connected Channels:</b>\n"
+          f"{ch_list}\n"
+          f"────────────────────\n"
+          f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Info:</b>\n"
           f"Users must join ALL listed channels to receive files from this bot.\n"
-          f"[JR] = join-request mode.\n\n{ch_list}",
-          reply_markup=InlineKeyboardMarkup(btns)
+          f"[JR] = Join Request mode enabled.</blockquote>"
       )
+
+      from plugins.share_bot import send_or_edit_with_custom_icons
+      sent_ok = await send_or_edit_with_custom_icons(
+          client=bot,
+          chat_id=query.message.chat.id,
+          text=text,
+          inline_keyboard=api_btns,
+          message_id=query.message.id
+      )
+      if not sent_ok:
+          try:
+              await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+          except Exception:
+              pass
   elif type.startswith("sb_fsub_jr_"):
       rest = type[len("sb_fsub_jr_"):]
       # rest = "{b_id}_{idx}"
@@ -4316,13 +4528,13 @@ async def settings_query(bot, query):
       logs_cfg = await db.get_logs_config()
 
       CH_DEFS = [
-          ('ch_bans',      "Bans & Warnings", "6019102674832595118"),
-          ('ch_new_users', "New Users",       "6030400221232501136"),
-          ('ch_batch',     "Batch Links",     "6021846918416571514"),
+          ('ch_new_users', "New Users",       "6032594876506312598"),
+          ('ch_share',     "Share Logs",      "6037622221625626773"),
+          ('ch_batch',     "Batch Links",     "6021344879689341042"),
           ('ch_live',      "Live Jobs",       "6129805465476929485"),
           ('ch_cleaner',   "Cleaner Jobs",    "6021375494216226506"),
-          ('ch_errors',    "Error Alerts",    "5970055887774028039"),
-          ('ch_share',     "Share Logs",      "6037622221625626773"),
+          ('ch_errors',    "Error Alerts",    "6021595332117272254"),
+          ('ch_bans',      "Bans & Warnings", "6019102674832595118"),
       ]
 
       text = (
@@ -4330,24 +4542,48 @@ async def settings_query(bot, query):
           f"────────────────────\n"
       )
 
-      btns = []
-      api_buttons = []
-      
-      for i in range(0, len(CH_DEFS), 2):
-          row_btns = []
-          row_api = []
-          for key, label, emoji_id in CH_DEFS[i:i+2]:
-              val = logs_cfg.get(key, 0)
-              val_str = f"<code>{val}</code>" if val else '<emoji id="5970055887774028039">🔴</emoji> <i>Not Set</i>'
-              text += f'<emoji id="{emoji_id}">📁</emoji> <b>{label}:-</b> {val_str}\n'
-              
-              row_btns.append(InlineKeyboardButton(f"{label}", callback_data=f"settings#sb_logs_manage_{key}"))
-              row_api.append({"text": label, "callback_data": f"settings#sb_logs_manage_{key}", "icon_custom_emoji_id": emoji_id})
-          btns.append(row_btns)
-          api_buttons.append(row_api)
+      for key, label, emoji_id in CH_DEFS:
+          val = logs_cfg.get(key, 0)
+          val_str = f"<code>{val}</code>" if val else '<emoji id="5970055887774028039">🔴</emoji> <i>Not Set</i>'
+          text += f'<emoji id="{emoji_id}">📁</emoji> <b>{label}:-</b> {val_str}\n'
 
-      btns.append([InlineKeyboardButton("Back", callback_data="settings#sharebot")])
-      api_buttons.append([{"text": "Back", "callback_data": "settings#sharebot"}])
+      # Layout: [New Users, Share Logs], [Batch Links, Live Jobs], [Cleaner Jobs, Error Alerts], [Bans & Warnings], [Back]
+      btns = [
+          [
+              InlineKeyboardButton("New Users", callback_data="settings#sb_logs_manage_ch_new_users"),
+              InlineKeyboardButton("Share Logs", callback_data="settings#sb_logs_manage_ch_share"),
+          ],
+          [
+              InlineKeyboardButton("Batch Links", callback_data="settings#sb_logs_manage_ch_batch"),
+              InlineKeyboardButton("Live Jobs", callback_data="settings#sb_logs_manage_ch_live"),
+          ],
+          [
+              InlineKeyboardButton("Cleaner Jobs", callback_data="settings#sb_logs_manage_ch_cleaner"),
+              InlineKeyboardButton("Error Alerts", callback_data="settings#sb_logs_manage_ch_errors"),
+          ],
+          [
+              InlineKeyboardButton("Bans & Warnings", callback_data="settings#sb_logs_manage_ch_bans"),
+          ],
+          [InlineKeyboardButton("Back", callback_data="settings#sharebot")]
+      ]
+      api_buttons = [
+          [
+              {"text": "New Users", "callback_data": "settings#sb_logs_manage_ch_new_users", "icon_custom_emoji_id": "6032594876506312598"},
+              {"text": "Share Logs", "callback_data": "settings#sb_logs_manage_ch_share", "icon_custom_emoji_id": "6037622221625626773"},
+          ],
+          [
+              {"text": "Batch Links", "callback_data": "settings#sb_logs_manage_ch_batch", "icon_custom_emoji_id": "6021344879689341042"},
+              {"text": "Live Jobs", "callback_data": "settings#sb_logs_manage_ch_live", "icon_custom_emoji_id": "6129805465476929485"},
+          ],
+          [
+              {"text": "Cleaner Jobs", "callback_data": "settings#sb_logs_manage_ch_cleaner", "icon_custom_emoji_id": "6021375494216226506"},
+              {"text": "Error Alerts", "callback_data": "settings#sb_logs_manage_ch_errors", "icon_custom_emoji_id": "6021595332117272254"},
+          ],
+          [
+              {"text": "Bans & Warnings", "callback_data": "settings#sb_logs_manage_ch_bans", "icon_custom_emoji_id": "6019102674832595118"},
+          ],
+          [{"text": "Back", "callback_data": "settings#sharebot"}]
+      ]
 
       from plugins.share_bot import send_or_edit_with_custom_icons
       sent_ok = await send_or_edit_with_custom_icons(
@@ -4367,11 +4603,11 @@ async def settings_query(bot, query):
       ch_key = type.split("sb_logs_manage_")[1]
       CH_MAP = {
           'ch_bans':      ("Bans & Warnings", "6019102674832595118"),
-          'ch_new_users': ("New Users",       "6030400221232501136"),
-          'ch_batch':     ("Batch Links",     "6021846918416571514"),
+          'ch_new_users': ("New Users",       "6032594876506312598"),
+          'ch_batch':     ("Batch Links",     "6021344879689341042"),
           'ch_live':      ("Live Jobs",       "6129805465476929485"),
           'ch_cleaner':   ("Cleaner Jobs",    "6021375494216226506"),
-          'ch_errors':    ("Error Alerts",    "5970055887774028039"),
+          'ch_errors':    ("Error Alerts",    "6021595332117272254"),
           'ch_share':     ("Share Logs",      "6037622221625626773"),
       }
       label, icon_id = CH_MAP.get(ch_key, (ch_key, "5920046907782074235"))
@@ -4419,11 +4655,11 @@ async def settings_query(bot, query):
       ch_key = type.split("sb_logs_set_")[1]
       CH_MAP = {
           'ch_bans':      ("Bans & Warnings", "6019102674832595118"),
-          'ch_new_users': ("New Users",       "6030400221232501136"),
-          'ch_batch':     ("Batch Links",     "6021846918416571514"),
+          'ch_new_users': ("New Users",       "6032594876506312598"),
+          'ch_batch':     ("Batch Links",     "6021344879689341042"),
           'ch_live':      ("Live Jobs",       "6129805465476929485"),
           'ch_cleaner':   ("Cleaner Jobs",    "6021375494216226506"),
-          'ch_errors':    ("Error Alerts",    "5970055887774028039"),
+          'ch_errors':    ("Error Alerts",    "6021595332117272254"),
           'ch_share':     ("Share Logs",      "6037622221625626773"),
       }
       label, icon_id = CH_MAP.get(ch_key, (ch_key, "5920046907782074235"))
