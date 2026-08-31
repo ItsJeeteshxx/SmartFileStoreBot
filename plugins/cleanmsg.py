@@ -64,6 +64,35 @@ def _type_matches(msg, wanted: str) -> bool:
     return check(msg) if check else False
 
 
+def _is_protected_msg(msg) -> bool:
+    """
+    Never delete:
+    1. Live Job active / monitoring progress messages:
+       "Live Job Active — monitoring for new messages…"
+       "This message updates every 60s"
+       "Processed Files:"
+    2. Arya progress / status messages
+    3. Messages sent by main admin / bot owner
+    """
+    if not msg or msg.empty:
+        return True
+    
+    text = msg.text or msg.caption or ""
+    if "Live Job Active" in text or "monitoring for new messages" in text or "This message updates every 60s" in text:
+        return True
+    if "Processed Files:" in text and ("Arya Bot" in text or "Live Job" in text):
+        return True
+    if "ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴀʀʏᴀ" in text.lower() and "ꜰᴏʀᴡᴀʀᴅ" in text.lower():
+        return True
+
+    # Check if message is from main admin/owner
+    from config import Config
+    if msg.from_user and msg.from_user.id in Config.OWNER_IDS:
+        return True
+        
+    return False
+
+
 async def _safe_delete(client, chat_id: int, ids: list) -> int:
     if not ids:
         return 0
@@ -104,6 +133,9 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
                 pass
 
     async def _process_msg(msg):
+        if _is_protected_msg(msg):
+            return
+
         if wanted == "link":
             text = msg.text or msg.caption
             if text:
