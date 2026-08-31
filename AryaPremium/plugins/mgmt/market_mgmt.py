@@ -1570,21 +1570,45 @@ async def market_callback(client, query):
                 [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data="mk#accounts")],
             ])
 
+            # Mode emoji: green for show_store/full, red for miniapp/off
+            if bot_mode == "show_store":
+                mode_emoji = f'<emoji id="5413643931139219521">🟢</emoji>'
+            elif bot_mode == "full":
+                mode_emoji = f'<emoji id="5413643931139219521">🟢</emoji>'
+            else:
+                mode_emoji = f'<emoji id="5413424119007978384">🔴</emoji>'
+
+            # Header: new emoji style shown in show_store, classic for others
+            if bot_mode == "show_store":
+                header = (
+                    f'<emoji id="5296790785981718487">🔧</emoji> <b>Store Bot Profile & Stats</b>\n'
+                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                )
+            else:
+                header = (
+                    f'<emoji id="5296790785981718487">🔧</emoji> <b>Store Bot Profile & Stats</b>\n'
+                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                )
+
+            # Mini App Deep Links line — only show in non show_store mode
+            ma_links_line = f'<emoji id="5312536423156654273">📱</emoji> <b>Mini App Deep Links:</b> <code>{ma_links_state}</code>\n' if bot_mode != "show_store" else ""
+
             await query.message.edit_text(
-                f"<b>❪ PREMIUM BOT PROFILE & STATS ❫</b>\n\n"
-                f"<b>» Name:</b> {bt.get('name')}\n"
-                f"<b>» Username:</b> @{bt.get('username')}\n"
-                f"<b>» ID:</b> <code>{bt.get('id')}</code>\n"
-                f"<b>» Mode:</b> {mode_desc}\n"
-                f"<b>» Assigned Stories:</b> <code>{story_count}</code>\n\n"
-                f"<b>📈 BOT USER METRICS:</b>\n"
-                f"• <b>🟢 Live Users (Last 24h):</b> <code>{live_bot_users_24h}</code>\n"
-                f"• <b>👥 Total Users Used:</b> <code>{total_bot_users}</code>\n"
-                f"• <b>📱 Mini App Deep Links:</b> <code>{ma_links_state}</code>\n"
-                f"• <b>📋 Event Log Channel:</b> <code>{log_ch_str}</code>\n\n"
-                "<i>Configure bot settings, switch Store ON/OFF, or view live analytics below:</i>",
+                header
+                + f'<emoji id="6030400221232501136">✏️</emoji> <b>Name:</b> {bt.get("name")}\n'
+                + f'<emoji id="6021683099773966917">👤</emoji> <b>Username:-</b> @{bt.get("username")}\n'
+                + f'<emoji id="5296786460949654303">🆔</emoji> <b>ID:-</b> <code>{bt.get("id")}</code>\n'
+                + f'<emoji id="5235588635885054955">⚙️</emoji> <b>Mode:-</b> {mode_emoji} {mode_desc}\n'
+                + f'<emoji id="6021745995275048956">📚</emoji> <b>Assigned Stories:-</b> <code>{story_count}</code>\n\n'
+                + f'<emoji id="5936143551854285132">📊</emoji> <b>Bot User Metrics:</b>\n'
+                + f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                + f'<emoji id="5809949600152296075">🟢</emoji> <b>Live Users ( 24H ) :-</b> <code>{live_bot_users_24h}</code>\n'
+                + f'<emoji id="6021690418398239007">👥</emoji> <b>Total Users:-</b> <code>{total_bot_users}</code>\n'
+                + ma_links_line
+                + f'<emoji id="6021435576513730578">📋</emoji> <b>Event Log Channel:</b> <code>{log_ch_str}</code>',
                 reply_markup=InlineKeyboardMarkup(kb)
             )
+
 
         elif cmd.startswith("bot_stats_"):
             b_id = cmd.split("_")[2]
