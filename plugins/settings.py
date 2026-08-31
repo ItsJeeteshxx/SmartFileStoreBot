@@ -1151,8 +1151,8 @@ async def settings_query(bot, query):
 
     pass_log_str = str(pass_log_ch) if pass_log_ch else "None (Not Set)"
     hit_log_str  = str(hit_log_ch) if hit_log_ch else "None (Not Set)"
-    toggle_lbl   = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
-    status_icon  = "🟢" if enabled else "🔴"
+    status_str = '<emoji id="5809949600152296075">🟢</emoji> Enabled' if enabled else '<emoji id="5970055887774028039">🔴</emoji> Disabled'
+    toggle_lbl = "🟢 ON — Tap to Disable" if enabled else "🔴 OFF — Tap to Enable"
 
     all_custs    = await db.get_all_pass_customers()
     total_cust   = len(all_custs)
@@ -1164,13 +1164,12 @@ async def settings_query(bot, query):
     cf_creds = await get_cashfree_credentials()
     oxa_val = str(rl_cfg.get('oxapay_key') or getattr(Config, 'OXAPAY_KEY', '') or os.environ.get('OXAPAY_KEY', '') or '').strip()
 
-    upi_status = '✅ Active' if (upi_val and gmail_val) else ('⚠️ UPI only' if upi_val else '❌ Not Set')
-    cf_status = '✅ Active' if (cf_creds.get('app_id') and cf_creds.get('secret_key')) else '❌ Not Set'
-    oxa_status = '✅ Active' if oxa_val else '❌ Not Set'
+    upi_status = '<emoji id="6120635817674149717">✅</emoji> Active' if (upi_val and gmail_val) else ('⚠️ UPI only' if upi_val else '<emoji id="5970055887774028039">🔴</emoji> Not Set')
+    cf_status = '<emoji id="6120635817674149717">✅</emoji> Active' if (cf_creds.get('app_id') and cf_creds.get('secret_key')) else '<emoji id="5970055887774028039">🔴</emoji> Not Set'
+    oxa_status = '<emoji id="6120635817674149717">✅</emoji> Active' if oxa_val else '<emoji id="5970055887774028039">🔴</emoji> Not Set'
 
     uiver = rl_cfg.get('pass_ui_version', 'v1')
-    v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
-    v2_gw_str = "⚡ Cashfree" if v2_gw == 'cashfree' else "💳 Pay Via UPI"
+    uiver_str = '<emoji id="5766975922620076409">💳</emoji> V1' if uiver == 'v1' else '<emoji id="5264895611517300926">⚡</emoji> V2'
 
     buttons = [
         [InlineKeyboardButton(toggle_lbl, callback_data="settings#sb_rl_toggle")],
@@ -1188,29 +1187,53 @@ async def settings_query(bot, query):
         [InlineKeyboardButton("💳 UPI & Gmail Config", callback_data="settings#sb_rl_upi_menu")],
         [InlineKeyboardButton("⚡ Cashfree Gateway", callback_data="settings#sb_rl_cf_menu")],
         [InlineKeyboardButton("🌐 OxaPay Crypto", callback_data="settings#sb_rl_oxa_menu")],
-        [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#sharebot")],
+        [InlineKeyboardButton('Back', callback_data="settings#sharebot")],
     ]
-    await query.message.edit_text(
-        f"<b>⏳ DELIVERY RATE LIMIT & PASS CONFIG</b>\n"
+    api_buttons = [
+        [{"text": toggle_lbl, "callback_data": "settings#sb_rl_toggle"}],
+        [{"text": "💎 Pass UI Version & Flow", "callback_data": "settings#sb_rl_uiver_menu"}],
+        [
+            {"text": "🔢 Download Limit", "callback_data": "settings#sb_rl_limit"},
+            {"text": "⏱ Cooldown Window", "callback_data": "settings#sb_rl_window"},
+        ],
+        [
+            {"text": "📋 Pass Purchase Logs", "callback_data": "settings#sb_rl_log_ch"},
+            {"text": "⚠️ Rate Limit Hit Logs", "callback_data": "settings#sb_rl_hit_log_ch"},
+        ],
+        [{"text": "👥 Customers & Subscriptions", "callback_data": "settings#sb_rl_cust_0"}],
+        [{"text": "💰 Pass Pricing & Plans", "callback_data": "settings#sb_rl_pricing"}],
+        [{"text": "💳 UPI & Gmail Config", "callback_data": "settings#sb_rl_upi_menu"}],
+        [{"text": "⚡ Cashfree Gateway", "callback_data": "settings#sb_rl_cf_menu"}],
+        [{"text": "🌐 OxaPay Crypto", "callback_data": "settings#sb_rl_oxa_menu"}],
+        [{"text": "Back", "callback_data": "settings#sharebot"}],
+    ]
+
+    body_text = (
+        f'<emoji id="5258113901106580375">⏳</emoji> <b>Rate Limit & Pass Config</b>\n'
         f"────────────────────\n"
-        f"<b>Status:</b> {status_icon} {'Enabled' if enabled else 'Disabled'}\n"
-        f"<b>Pass UI Version:</b> <code>{'V1 (Multi-Gateway)' if uiver == 'v1' else f'V2 (Direct {v2_gw_str})'}</code>\n"
-        f"<b>V2 Single Gateway:</b> <code>{v2_gw_str}</code>\n"
-        f"<b>Free User Limit:</b> <code>{max_limit} links</code> per <code>{win_verbose}</code>\n"
-        f"<b>Pass Purchase Logs:</b> <code>{pass_log_str}</code>\n"
-        f"<b>Rate Limit Hit Logs:</b> <code>{hit_log_str}</code>\n"
-        f"<b>Pass Plans:</b> {pricing_str}\n"
+        f'<emoji id="5807800879553715710">📊</emoji> <b>Status:-</b> {status_str}\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Pass UI Version:-</b> {uiver_str}\n'
+        f'<emoji id="6021789619257874157">🔢</emoji> <b>Free User Limit:-</b> <code>{max_limit} links | {win_verbose}</code>\n'
+        f'<emoji id="6023843687367190257">📋</emoji> <b>Purchase Logs:-</b> <code>{pass_log_str}</code>\n'
+        f'<emoji id="6023985764885338464">⚠️</emoji> <b>Rate Limit Hit Logs:-</b> <code>{hit_log_str}</code>\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Pass Plans:-</b> {pricing_str}\n'
         f"────────────────────\n"
-        f"<b>Gateways:</b> UPI: <code>{upi_status}</code> | Cashfree: <code>{cf_status}</code> | OxaPay: <code>{oxa_status}</code>\n"
-        f"────────────────────\n"
-        f"<blockquote expandable>ℹ️ <b>How it works:</b>\n"
-        f"When a free user accesses more than <b>{max_limit} links in {win_verbose}</b>, they get a "
-        f"cooldown message showing their live remaining time and an <b>'🔒 Unlock Access Via Payment'</b> button.\n\n"
-        f"• <b>V1 (Multi-Gateway):</b> UPI QR Auto-Verification, Cashfree Checkout & OxaPay Crypto.\n"
-        f"• <b>V2 (Single Gateway):</b> Simplified single-screen plan selection via {v2_gw_str}.\n\n"
-        f"Pass purchases and rate limit hits are automatically logged to your dedicated channels in Quoteblock format.</blockquote>",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        f'<emoji id="5904359114531675993">💳</emoji> <b>Gateways:-</b> UPI: {upi_status} | Cashfree: {cf_status} | OxaPay: {oxa_status}'
     )
+
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=body_text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(body_text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
 
   elif type == "sb_rl_uiver_menu":
     rl_cfg = await db.get_delivery_rate_limit_config()
