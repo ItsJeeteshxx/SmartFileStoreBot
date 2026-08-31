@@ -1464,10 +1464,11 @@ async def market_callback(client, query):
             asyncio.create_task(_add_store_bot_flow(client, user_id))
 
         elif cmd.startswith("bot_view_"):
-            b_id = data[2] if len(data) > 2 else cmd.split("_")[2]
+            b_id = cmd.replace("bot_view_", "", 1) if cmd.startswith("bot_view_") else (data[2] if len(data) > 2 else cmd.split("_")[-1])
             bt = await _find_premium_bot(b_id)
             if not bt:
-                return await _safe_answer(query, "Bot not found!")
+                logger.warning(f"[MGMT] bot_view failed: bot not found for b_id={b_id}")
+                return await _safe_answer(query, "Bot not found!", show_alert=True)
 
             cfg = bt.get("config", {}) or {}
             ad_val = cfg.get("autodel", 0)
