@@ -678,6 +678,11 @@ async def _process_start(client, message):
 
                     user_lang = await db.get_language(user_id)
                     is_hi = bool(user_lang == 'hi')
+                    story_buy_url = "https://t.me/UseAryaBot/apminibyarya"
+                    if link_data and (link_data.get('story_id') or link_data.get('story_code')):
+                        s_id = link_data.get('story_id') or link_data.get('story_code')
+                        story_buy_url = f"https://t.me/UseAryaBot/apminibyarya?startapp={s_id}"
+
                     if is_hi:
                         limit_text = (
                             f'<emoji id="6215133834149629990">⏳</emoji> <b>रेट लिमिट पूरी हो गई है</b>\n\n'
@@ -693,11 +698,19 @@ async def _process_start(client, message):
                                     "callback_data": "pass#unlock_menu",
                                     "icon_custom_emoji_id": "6030443364178992166"
                                 }
+                            ],
+                            [
+                                {
+                                    "text": "Buy This Story Only",
+                                    "url": story_buy_url,
+                                    "icon_custom_emoji_id": "6104800784354909891"
+                                }
                             ]
                         ]
-                        unlock_kb = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")
-                        ]])
+                        unlock_kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")],
+                            [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
+                        ])
                     else:
                         limit_text = (
                             f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
@@ -713,11 +726,19 @@ async def _process_start(client, message):
                                     "callback_data": "pass#unlock_menu",
                                     "icon_custom_emoji_id": "6030443364178992166"
                                 }
+                            ],
+                            [
+                                {
+                                    "text": "Buy This Story Only",
+                                    "url": story_buy_url,
+                                    "icon_custom_emoji_id": "6104800784354909891"
+                                }
                             ]
                         ]
-                        unlock_kb = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔓 Unlock Unlimited Access", callback_data="pass#unlock_menu")
-                        ]])
+                        unlock_kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔓 Unlock Unlimited Access", callback_data="pass#unlock_menu")],
+                            [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
+                        ])
                     sent_ok = await send_or_edit_with_custom_icons(
                         client=client,
                         chat_id=message.chat.id,
@@ -4974,6 +4995,7 @@ async def _process_pass_callback(client, query):
                 f'<emoji id="6217487596486922033">⏰</emoji> <b>कूलडाउन रीसेट होने में समय:</b> <code>{rem_time_str}</code>\n\n'
                 f'कृपया बाद में प्रयास करें या नीचे से अनलिमिटेड एक्सेस अनलॉक करें! <emoji id="6023566962624306038">👇</emoji>'
             )
+            story_buy_url = "https://t.me/UseAryaBot/apminibyarya"
             limit_api_kb = [
                 [
                     {
@@ -4981,11 +5003,19 @@ async def _process_pass_callback(client, query):
                         "callback_data": "pass#unlock_menu",
                         "icon_custom_emoji_id": "6030443364178992166"
                     }
+                ],
+                [
+                    {
+                        "text": "Buy This Story Only",
+                        "url": story_buy_url,
+                        "icon_custom_emoji_id": "6104800784354909891"
+                    }
                 ]
             ]
-            unlock_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")
-            ]])
+            unlock_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")],
+                [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
+            ])
         else:
             limit_text = (
                 f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
@@ -4994,6 +5024,7 @@ async def _process_pass_callback(client, query):
                 f'<emoji id="6217487596486922033">⏳</emoji> <b>Cooldown resets in:</b> <code>{rem_time_str}</code>\n\n'
                 f'Please try again later or unlock unlimited access below! <emoji id="6023566962624306038">👇</emoji>'
             )
+            story_buy_url = "https://t.me/UseAryaBot/apminibyarya"
             limit_api_kb = [
                 [
                     {
@@ -5001,11 +5032,19 @@ async def _process_pass_callback(client, query):
                         "callback_data": "pass#unlock_menu",
                         "icon_custom_emoji_id": "6030443364178992166"
                     }
+                ],
+                [
+                    {
+                        "text": "Buy This Story Only",
+                        "url": story_buy_url,
+                        "icon_custom_emoji_id": "6104800784354909891"
+                    }
                 ]
             ]
-            unlock_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔓 Unlock Unlimited Access", callback_data="pass#unlock_menu")
-            ]])
+            unlock_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔓 Unlock Unlimited Access", callback_data="pass#unlock_menu")],
+                [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
+            ])
         sent_ok = await send_or_edit_with_custom_icons(
             client=client,
             chat_id=query.message.chat.id,
