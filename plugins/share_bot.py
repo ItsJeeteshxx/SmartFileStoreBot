@@ -3413,7 +3413,7 @@ async def _process_pass_callback(client, query):
 
         if is_hi:
             guide_text = (
-                '<emoji id="6019130940012370273">📖</emoji> <b>अनलिमिटेड पास — सम्पूर्ण यूजर गाइड</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+                '<emoji id="6019130940012370273">📖</emoji> <b>अनलिमिटेड पास — सम्पूर्ण हेल्प और पेमेंट गाइड</b> <emoji id="6041919344995209164">❤️</emoji>\n'
                 "──────────────────────\n\n"
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>अनलिमिटेड एक्सेस पास क्या है?</b>\n'
                 'अनलिमिटेड पास लेने पर आपको सभी ऑडियो कहानियां, बैच फाइल्स और एपिसोड्स <b>बिना किसी कूलडाउन इंतज़ार</b> और <b>बिना किसी डोनेशन मैसेज</b> के 100% तुरंत प्राप्त होते हैं।\n\n'
@@ -3433,16 +3433,16 @@ async def _process_pass_callback(client, query):
                 '• इनवॉइस में दिए गए एड्रेस पर सटीक क्रिप्टो राशि ट्रांसफर करें।\n'
                 '• ब्लॉकचेन कन्फर्मेशन मिलते ही पास अपने आप एक्टिव हो जाएगा!\n\n'
                 "──────────────────────\n"
-                '<emoji id="5456140674028019486">⚡️</emoji> <b>ज़रूरी बातें व टिप्स:</b>\n'
-                '• <b>मल्टी-डिवाइस सपोर्ट:</b> पास आपकी टेलीग्राम आईडी से लिंक होता है, यह मोबाइल और लैपटॉप दोनों पर चलेगा।\n'
-                '• <b>ऑटोमैटिक एक्टिवेशन:</b> सभी पेमेंट गेटवे 100% ऑटोमेटेड हैं।\n'
-                '• <b>सहायता की आवश्यकता है?</b> यदि पेमेंट में कोई दिक्कत आए, तो नीचे दिए गए <b>सहायता</b> बटन पर टैप करके 24/7 सपोर्ट टीम से संपर्क करें!'
+                '<emoji id="5456140674028019486">⚡️</emoji> <b>सहायता और सपोर्ट समय:</b>\n'
+                '• <b>सपोर्ट समय:</b> सुबह 8:00 AM से शाम 7:00 PM IST\n'
+                '• <b>जवाब मिलने का समय:</b> 30 मिनट से 2 घंटे तक का समय लग सकता है\n'
+                '• यदि आपको कोई समस्या आ रही है या पेमेंट वेरिफाई नहीं हुआ, तो नीचे दिए गए <b>सहायता</b> बटन पर टैप करके सपोर्ट टीम से संपर्क करें!'
             )
             lbl_support = "सहायता"
             lbl_back = "← वापस"
         else:
             guide_text = (
-                '<emoji id="6019130940012370273">📖</emoji> <b>Unlimited Pass — Complete User Guide</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+                '<emoji id="6019130940012370273">📖</emoji> <b>Unlimited Pass — Complete Help & Payment Guide</b> <emoji id="6041919344995209164">❤️</emoji>\n'
                 "──────────────────────\n\n"
                 '<emoji id="5881806211195605908">⭐️</emoji> <b>What is Unlimited Access Pass?</b>\n'
                 'Unlimited Pass gives you instant, 100% restriction-free access to all audios, batch files, and stories with <b>ZERO cooldown waiting time</b> and <b>NO donation messages</b>.\n\n'
@@ -3462,10 +3462,10 @@ async def _process_pass_callback(client, query):
                 '• Transfer the exact crypto amount to the generated invoice address.\n'
                 '• Once the blockchain confirms (1 network confirmation), the pass activates automatically!\n\n'
                 "──────────────────────\n"
-                '<emoji id="5456140674028019486">⚡️</emoji> <b>Important Notes & Tips:</b>\n'
-                '• <b>Multi-Device Support:</b> Pass is linked to your Telegram ID; it works across phone, PC, and web.\n'
-                '• <b>Instant Activation:</b> All gateways are 100% automated with zero manual waiting time.\n'
-                '• <b>Need Assistance?</b> If you ever face payment issues, tap the <b>Support</b> button below to chat with our 24/7 helpdesk!'
+                '<emoji id="5456140674028019486">⚡️</emoji> <b>Support & Assistance:</b>\n'
+                '• <b>Support Hours:</b> 8:00 AM to 7:00 PM IST\n'
+                '• <b>Expected Response Time:</b> 30 minutes to 2 hours\n'
+                '• If your payment is delayed or you need any help, tap the <b>Support</b> button below to message our support desk!'
             )
             lbl_support = "Support"
             lbl_back = "← Back"
@@ -3517,7 +3517,7 @@ async def _process_pass_callback(client, query):
                 '• <emoji id="5805331990618053402">⚡️</emoji> <b>कोई एक्सेस लिमिट नहीं:</b> बिना किसी कूलडाउन के सभी ऑडियो कहानियां लगातार सुनें।\n\n'
             )
             lbl_txns = "मेरे ट्रांसक्शन्स"
-            lbl_guide = "गाइड"
+            lbl_help = "हेल्प"
             lbl_close = "✖️ बंद करें"
         else:
             title_header_v1 = '<emoji id="5773677501825945508">👑</emoji> <b>Pass Subscription Plans</b> <emoji id="6041919344995209164">❤️</emoji>\n──────────────────────\n\n'
@@ -3528,7 +3528,7 @@ async def _process_pass_callback(client, query):
                 '• <emoji id="5805331990618053402">⚡️</emoji> <b>No Access Limits:</b> Unlimited story listening access without cooldown.\n\n'
             )
             lbl_txns = "My Transactions"
-            lbl_guide = "Guide"
+            lbl_help = "Help"
             lbl_close = "✖️ Close"
 
         if uiver == 'v2':
@@ -3554,7 +3554,7 @@ async def _process_pass_callback(client, query):
             methods_buttons = list(plan_buttons)
             methods_buttons.append([InlineKeyboardButton(f"📜 {lbl_txns}", callback_data="pass#my_transactions")])
             methods_buttons.append([
-                InlineKeyboardButton(f"📖 {lbl_guide}", callback_data="pass#guide_menu"),
+                InlineKeyboardButton(f"📖 {lbl_help}", callback_data="pass#guide_menu"),
                 InlineKeyboardButton(" ", callback_data="pass#lang_menu"),
                 InlineKeyboardButton(lbl_close, callback_data="pass#close")
             ])
@@ -3562,7 +3562,7 @@ async def _process_pass_callback(client, query):
             methods_api_kb = list(plan_api_kb)
             methods_api_kb.append([{"text": lbl_txns, "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6035297458907519073"}])
             methods_api_kb.append([
-                {"text": lbl_guide, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
+                {"text": lbl_help, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
                 {"text": " ", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"},
                 {"text": lbl_close, "callback_data": "pass#close"}
             ])
@@ -3629,14 +3629,14 @@ async def _process_pass_callback(client, query):
 
             methods_buttons.append([InlineKeyboardButton(f"📜 {lbl_txns}", callback_data="pass#my_transactions")])
             methods_buttons.append([
-                InlineKeyboardButton(f"📖 {lbl_guide}", callback_data="pass#guide_menu"),
+                InlineKeyboardButton(f"📖 {lbl_help}", callback_data="pass#guide_menu"),
                 InlineKeyboardButton(" ", callback_data="pass#lang_menu"),
                 InlineKeyboardButton(lbl_close, callback_data="pass#close")
             ])
 
             methods_api_kb.append([{"text": lbl_txns, "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6035297458907519073"}])
             methods_api_kb.append([
-                {"text": lbl_guide, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
+                {"text": lbl_help, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
                 {"text": " ", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"},
                 {"text": lbl_close, "callback_data": "pass#close"}
             ])
