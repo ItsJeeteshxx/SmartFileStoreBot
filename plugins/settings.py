@@ -2376,6 +2376,12 @@ async def settings_query(bot, query):
         else:
             txns_text = "<i>No paid transactions found.</i>\n"
     else:
+        CIRCLE_DIGITS = {
+            1: "➊", 2: "➋", 3: "➌", 4: "➍", 5: "➎",
+            6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓",
+            11: "⓫", 12: "⓬", 13: "⓭", 14: "⓮", 15: "⓯",
+            16: "⓰", 17: "⓱", 18: "⓲", 19: "⓳", 20: "⓴"
+        }
         t_items = []
         for idx, txn in enumerate(txns[:10], 1):
             t_time = txn.get('time', 0)
@@ -2404,14 +2410,17 @@ async def settings_query(bot, query):
                 gw = raw_gw or "Cashfree"
 
             oid = txn.get('id', 'N/A')
+            c_badge = CIRCLE_DIGITS.get(idx, f"[{idx}]")
+            sep_line = f"┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄"
             t_items.append(
-                f"<b>{idx}.</b> <emoji id=\"6021683099773966917\">🆔</emoji> <code>{oid}</code>\n"
+                f"{sep_line}\n"
+                f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
                 f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                 f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
                 f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
                 f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
             )
-        txns_text = "\n┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n".join(t_items)
+        txns_text = "\n".join(t_items)
 
     body = (
         f'<emoji id="5778145208411624388">👤</emoji> <b>Costumer Overview</b>\n'

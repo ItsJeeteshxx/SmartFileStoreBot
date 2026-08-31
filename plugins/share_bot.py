@@ -3918,7 +3918,7 @@ async def _process_pass_callback(client, query):
                 gw = t.get('gateway', 'Pay Via UPI (INR)')
                 st = ("सक्रिय" if is_hi else "Paid & Active") if pass_info.get('active') else ("पूर्ण" if is_hi else "Completed")
                 txn_lines.append(
-                    f"<b>{'ऑर्डर' if is_hi else 'Order'} :-</b> <code>{oid}</code>\n"
+                    f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>{'ऑर्डर आईडी' if is_hi else 'Order ID'}:-</b> <code>{oid}</code>\n"
                     f"<b>{'प्लान' if is_hi else 'Plan'}:</b> {dur_verbose.title()} , ({gw}) | <b>{'स्थिति' if is_hi else 'Status'} -</b> {st} , <code>{t_str}</code>"
                 )
             txns_body = "\n\n".join(txn_lines)
