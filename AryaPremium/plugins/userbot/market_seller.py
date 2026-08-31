@@ -2227,7 +2227,7 @@ async def _show_story_profile(client, user_id, story, lang):
     files_line = f'<b><emoji id="5805550320985578625">📁</emoji> {files_lbl}:</b> <b>{actual_files}</b>\n' if actual_files else ""
 
     if story.get('is_show') or story.get('duration'):
-        # ── Show Store OTT Format ──
+        # ── Show Store OTT Format (No paid note in bot preview) ──
         dur = story.get('duration', 'Full Show')
         p_val = story.get('price', 19)
         txt = (
@@ -2235,11 +2235,7 @@ async def _show_story_profile(client, user_id, story, lang):
             f'<emoji id="6026337676091726218">🖥</emoji> <b>Platform :</b> <b>{platform}</b>\n'
             f'<emoji id="6024065724291488135">🧩</emoji> <b>Genre :</b> <b>{genre}</b>\n'
             f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> <b>{dur}</b>\n'
-            f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> <b>₹{p_val}</b>\n\n'
-            f"<blockquote expandable>\n"
-            f"❏ Note: This is a paid show. Access will be available after purchase.\n"
-            f"❏ नोट: यह शो फ्री नहीं है, इसे देखने के लिए खरीदना होगा।\n"
-            f"</blockquote>"
+            f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> <b>₹{p_val}</b>\n'
         )
     else:
         header_txt = (
@@ -8792,29 +8788,54 @@ async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, messag
 
 
 async def _send_demo_files(client, user_id, story, lang):
-
     import asyncio
 
+    # ── Show Store OTT Mode: Send Universal Demo Sample with Explanatory Notice ──
+    if story.get("is_show") or story.get("duration"):
+        msg_ids = []
+        try:
+            demo_notice = (
+                f'<emoji id="5305388752162539722">👁️</emoji> <b>Demo Preview File</b>\n'
+                f"────────────────────\n"
+                f"ℹ️ <i>This is a demo sample file provided for previewing video quality, audio clarity, and format.</i>\n\n"
+                f"📌 <b>Important Note:</b>\n"
+                f"<i>When you purchase this show, you will receive the complete full-length story with all episodes seamlessly combined into a single high-quality video file, exactly formatted like this sample.</i>\n"
+                f"────────────────────\n"
+                f"⏳ <i>This preview file will be automatically deleted after 5 minutes.</i>"
+            )
+            m_notice = await client.send_message(user_id, demo_notice, protect_content=True, parse_mode=enums.ParseMode.HTML)
+            msg_ids.append(m_notice.id)
+
+            parts = story.get("parts", [])
+            ch_id = story.get("channel_id")
+            if parts and ch_id:
+                mid = parts[0].get("msg_id")
+                if mid:
+                    try:
+                        sent = await _safe_copy_from_source(client, chat_id=user_id, from_chat_id=int(ch_id), message_id=int(mid), protect_content=True)
+                        msg_ids.append(sent.id)
+                    except Exception as e:
+                        logger.warning(f"Failed copying show demo file: {e}")
+
+            # Auto-delete demo files after 5 minutes (300 seconds)
+            await asyncio.sleep(300)
+            for dmid in msg_ids:
+                try: await client.delete_messages(user_id, dmid)
+                except Exception: pass
+        except Exception as e:
+            logger.error(f"Error in show _send_demo_files: {e}")
+        return
+
     start = story.get("start_id")
-
     end = story.get("end_id")
-
     src = story.get("source")
 
     if not start or not end or not src:
-
         await client.send_message(user_id, "❌ Demo not available for this story.")
-
         return
 
-        
-
     start, end, src = int(start), int(end), int(src)
-
     total = (end - start) + 1
-
-    
-
     msg_ids = []
 
     
