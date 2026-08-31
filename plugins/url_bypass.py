@@ -637,6 +637,71 @@ def _clean_video_caption(raw_text: str) -> str:
     return title_line.strip()
 
 
+def _should_forward_filtered(msg_obj, user_filters: list, user_configs: dict) -> bool:
+    """
+    Checks if msg_obj is allowed by user's /settings filters when in Normal Filtered Forward mode.
+    """
+    if not user_filters:
+        user_filters = []
+    if not user_configs:
+        user_configs = {}
+
+    # 1. Media Type filters
+    if msg_obj.audio and 'audio' in user_filters:
+        return False
+    if msg_obj.voice and ('voice' in user_filters or 'audio' in user_filters):
+        return False
+    if msg_obj.video and 'video' in user_filters:
+        return False
+    if msg_obj.animation and ('animation' in user_filters or 'video' in user_filters):
+        return False
+    if msg_obj.video_note and 'video' in user_filters:
+        return False
+    if msg_obj.document:
+        mime = getattr(msg_obj.document, 'mime_type', '') or ''
+        if 'video' in mime and 'video' in user_filters:
+            return False
+        if 'audio' in mime and 'audio' in user_filters:
+            return False
+        if 'image' in mime and 'photo' in user_filters:
+            return False
+        if 'document' in user_filters:
+            return False
+    if msg_obj.photo and 'photo' in user_filters:
+        return False
+    if (msg_obj.text and not msg_obj.media) and 'text' in user_filters:
+        return False
+    if msg_obj.sticker and 'sticker' in user_filters:
+        return False
+    if msg_obj.poll and 'poll' in user_filters:
+        return False
+
+    # 2. Extension filter
+    ext_list = user_configs.get('extension') or []
+    if ext_list:
+        file_name = ''
+        if msg_obj.document: file_name = getattr(msg_obj.document, 'file_name', '') or ''
+        elif msg_obj.video: file_name = getattr(msg_obj.video, 'file_name', '') or ''
+        elif msg_obj.audio: file_name = getattr(msg_obj.audio, 'file_name', '') or ''
+        if file_name:
+            file_ext = os.path.splitext(file_name)[1].lower().lstrip('.')
+            if file_ext and file_ext not in [e.lower().lstrip('.') for e in ext_list]:
+                return False
+
+    # 3. Keyword filter
+    keywords = user_configs.get('keywords') or []
+    if keywords:
+        text_to_check = (msg_obj.caption or msg_obj.text or '')
+        if msg_obj.document: text_to_check += ' ' + (getattr(msg_obj.document, 'file_name', '') or '')
+        if msg_obj.video: text_to_check += ' ' + (getattr(msg_obj.video, 'file_name', '') or '')
+        if msg_obj.audio: text_to_check += ' ' + (getattr(msg_obj.audio, 'file_name', '') or '')
+        text_lower = text_to_check.lower()
+        if not any(k.lower() in text_lower for k in keywords):
+            return False
+
+    return True
+
+
 def process_poster_image(input_path: str, target_size: tuple[int, int] = (600, 720)) -> str:
     """
     Resizes and naturally enhances poster images to exactly 600x720:
@@ -1006,65 +1071,97 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     except Exception:
         pass
 
-    # Step 3: Target / Destination Channel
+    # Step 3: Target / Destination Channel Selection (Search & Button Picker)
     try:
-        r3_dest = await _ask(bot, user_id,
-            "<b>»  URL Bypass — Step 3/8 (Destination Forwarding)</b>\n\n"
-            "Send the <b>Target / Destination Channel</b> where the original story post (Image + Caption) and downloaded video files should be forwarded:\n\n"
-            "<blockquote expandable>"
-            "• <code>https://t.me/targetchannel</code>\n"
-            "• <code>-1001234567890</code>\n"
-            "• Forward any message from the target channel\n\n"
-            "<i>Tap <b>⏩ SKIP</b> if you only want Userbot to receive files in private DM without forwarding to a channel.</i>"
-            "</blockquote>",
-            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⏩ SKIP (Userbot DM Only)")], [UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
+        from plugins.utils import ask_channel_picker
+        user_channels = await db.get_user_channels(user_id)
+        if user_channels:
+            picked = await ask_channel_picker(
+                bot, user_id,
+                "» URL Bypass — Step 3/9 (Destination Channel)",
+                extra_options=["⏩ SKIP (Userbot DM Only)"]
+            )
+            if not picked:
+                return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+        else:
+            # Fallback if user has no channels registered in /settings yet
+            r3_dest = await _ask(bot, user_id,
+                "<b>»  URL Bypass — Step 3/9 (Destination Channel)</b>\n\n"
+                "Send the <b>Target / Destination Channel</b> link, username, or ID:\n\n"
+                "<blockquote expandable>"
+                "• <code>https://t.me/targetchannel</code>\n"
+                "• <code>-1001234567890</code>\n"
+                "• Forward any message from the target channel\n\n"
+                "<i>(💡 Tip: Add channels to <b>/settings → Channels</b> to get the instant one-tap search picker!)</i>"
+                "</blockquote>",
+                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⏩ SKIP (Userbot DM Only)")], [UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
+            if _is_cancel(r3_dest.text):
+                return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+            picked = r3_dest.text
     except asyncio.TimeoutError:
         return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-    if _is_cancel(r3_dest.text):
+    except Exception as e:
+        logger.warning(f"Error picking channel: {e}")
         return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
     target_channel_id = None
     target_channel_title = "None (DM Only)"
-    forward_source_post = True
+    delivery_mode = "story_mode"
 
-    if "skip" not in r3_dest.text.lower():
-        fwd_dest = getattr(r3_dest, 'forward_from_chat', None)
-        target_channel_id, target_channel_title = _resolve_channel(r3_dest.text, fwd_dest)
-        if target_channel_id:
-            try:
-                t_ci = await bot.get_chat(target_channel_id)
-                target_channel_title = t_ci.title or target_channel_title
-                target_channel_id = t_ci.id
-            except Exception: pass
+    if isinstance(picked, dict) and "chat_id" in picked:
+        target_channel_id = int(picked["chat_id"])
+        target_channel_title = picked.get("title") or str(target_channel_id)
+    elif isinstance(picked, str):
+        if "skip" in picked.lower():
+            target_channel_id = None
+            target_channel_title = "None (DM Only)"
+            delivery_mode = "video_only"
+        else:
+            target_channel_id, target_channel_title = _resolve_channel(picked, None)
+            if target_channel_id:
+                try:
+                    t_ci = await bot.get_chat(target_channel_id)
+                    target_channel_title = t_ci.title or target_channel_title
+                    target_channel_id = t_ci.id
+                except Exception: pass
 
-            # Step 4: Delivery Mode
-            try:
-                r_mode = await _ask(bot, user_id,
-                    "<b>»  URL Bypass — Step 4/9 (Delivery Mode)</b>\n\n"
-                    "Choose how content should be delivered to the target channel:\n\n"
-                    "<blockquote expandable>"
-                    "• <b>📝 Forward Post + Video Files (Complete Story Mode)</b>\n"
-                    "  Pehle source channel se original post (Image + Caption) ko bina forward tag ke target channel me send karega (chahe channel me content saving / forwarding restricted ho, tab bhi userbot download & re-upload karke bhej dega), aur uske baad bypass hone par aane wali Video files ko deliver karega.\n\n"
-                    "• <b>🎬 Only Video Files (Normal / Files Only Mode)</b>\n"
-                    "  Source post ko forward nahi karega; sirf bypass hone par aane wali Video files ko target channel me deliver karega."
-                    "</blockquote>",
-                    reply_markup=ReplyKeyboardMarkup(
-                        [
-                            [KeyboardButton("📝 Forward Post + Video Files (Complete Mode)")],
-                            [KeyboardButton("🎬 Only Video Files (Normal Mode)")],
-                            [UNDO_BTN, CANCEL_BTN]
-                        ],
-                        resize_keyboard=True, one_time_keyboard=True
-                    )
+    # Step 4: Delivery Mode
+    if target_channel_id:
+        try:
+            r_mode = await _ask(bot, user_id,
+                "<b>»  URL Bypass — Step 4/9 (Delivery Mode)</b>\n\n"
+                "Choose how content should be delivered to the target channel:\n\n"
+                "<blockquote expandable>"
+                "• <b>📝 Forward Post + Video Files (Complete Story Mode)</b>\n"
+                "  Pehle source channel se original post (600x720 Enhanced Image + Title) bina forward tag ke target channel me send karega, aur uske baad aane wali Video files ko deliver karega. (Is mode me global filter settings bypass ho jati hain taaki story video aur post perfectly deliver hon bina kisi setting se block hue).\n\n"
+                "• <b>🎬 Only Video Files (Files Only Mode)</b>\n"
+                "  Source post image ko forward nahi karega; sirf aane wali Video files ko clean title ke saath target channel me deliver karega.\n\n"
+                "• <b>⚡ Normal Forward Mode (With /settings Filters)</b>\n"
+                "  User ki Settings me set kiye gaye saare filters (Audio, Video, Document, Extension, Keywords etc.) ko strictly follow karega. Agar user ne sab kuch off karke sirf Audio on rakha hai to sirf Audio forward hogi. Forwarding restricted hone par bhi userbot safe flood limit ke sath deliver karega."
+                "</blockquote>",
+                reply_markup=ReplyKeyboardMarkup(
+                    [
+                        [KeyboardButton("📝 Forward Post + Video Files (Complete Mode)")],
+                        [KeyboardButton("🎬 Only Video Files (Files Only Mode)")],
+                        [KeyboardButton("⚡ Normal Forward Mode (With Filters)")],
+                        [UNDO_BTN, CANCEL_BTN]
+                    ],
+                    resize_keyboard=True, one_time_keyboard=True
                 )
-            except asyncio.TimeoutError:
-                return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
-            if _is_cancel(r_mode.text):
-                return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+            )
+        except asyncio.TimeoutError:
+            return await bot.send_message(chat_id, "<i>Timed out.</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
+        if _is_cancel(r_mode.text):
+            return await bot.send_message(chat_id, "<i>Cancelled!</i>", parse_mode=PM, reply_markup=ReplyKeyboardRemove())
 
-            forward_source_post = not ("only video files" in r_mode.text.lower() or "normal mode" in r_mode.text.lower())
+        if "normal forward" in r_mode.text.lower() or "with filters" in r_mode.text.lower():
+            delivery_mode = "filtered_mode"
+        elif "only video" in r_mode.text.lower() or "files only" in r_mode.text.lower():
+            delivery_mode = "video_only"
+        else:
+            delivery_mode = "story_mode"
     else:
-        forward_source_post = False
+        delivery_mode = "video_only"
 
     # Step 5: Range
     try:
@@ -1197,7 +1294,13 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
     range_label = f"<code>{scan_start}:{scan_end}</code>" if (scan_start or scan_end) else "ALL"
     btn_label = "ALL" if not allowed_buttons else ", ".join(map(str, allowed_buttons))
     quota_label = f"{hourly_quota} files/hr per Userbot" if hourly_quota > 0 else "Unlimited"
-    mode_label = "📝 Post + Video Files (Complete Mode)" if forward_source_post else "🎬 Only Video Files (Normal Mode)"
+
+    if delivery_mode == "story_mode":
+        mode_label = "📝 Post + Video Delivery (Complete Mode)"
+    elif delivery_mode == "video_only":
+        mode_label = "🎬 Only Video Files (Files Only Mode)"
+    else:
+        mode_label = "⚡ Normal Forward Mode (With Filters)"
 
     try:
         r_conf = await _ask(bot, user_id,
@@ -1229,7 +1332,8 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
         "ub_name": ub_name, "chat_id": chat_id,
         "channel_id": channel_id, "channel_title": channel_title,
         "target_channel_id": target_channel_id, "target_channel_title": target_channel_title,
-        "forward_source_post": forward_source_post,
+        "delivery_mode": delivery_mode,
+        "forward_source_post": (delivery_mode == "story_mode"),
         "order": order, "scan_start": scan_start, "scan_end": scan_end,
         "allowed_buttons": allowed_buttons, "hourly_quota": hourly_quota,
         "pacing_delay": pacing_delay, "bypass_bot": bypass_bot,
@@ -1627,7 +1731,19 @@ async def _ub_run_job(job_id: str):
             # ── 5. Forward Captured Video/Media to Target Channel ──
             if target_channel_id and received_media_msgs:
                 received_media_msgs.sort(key=lambda m: m.id)
+
+                user_filters = []
+                user_configs = {}
+                if job.get("delivery_mode") == "filtered_mode":
+                    user_filters = await db.get_filters(user_id)
+                    user_configs = await db.get_configs(user_id)
+
                 for m_msg in received_media_msgs:
+                    if job.get("delivery_mode") == "filtered_mode":
+                        if not _should_forward_filtered(m_msg, user_filters, user_configs):
+                            logger.info(f"[Bypass] Message {m_msg.id} filtered out by user /settings filters")
+                            continue
+
                     try:
                         await _safe_forward_or_copy(curr_ub, target_channel_id, m_msg.chat.id, m_msg.id, msg_obj=m_msg)
                     except Exception as e:
