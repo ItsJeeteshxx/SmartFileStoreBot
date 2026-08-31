@@ -1134,15 +1134,12 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
                 "<blockquote expandable>"
                 "• <b>📝 Forward Post + Video Files (Complete Story Mode)</b>\n"
                 "  Pehle source channel se original post (600x720 Enhanced Image + Title) bina forward tag ke target channel me send karega, aur uske baad aane wali Video files ko deliver karega. (Is mode me global filter settings bypass ho jati hain taaki story video aur post perfectly deliver hon bina kisi setting se block hue).\n\n"
-                "• <b>🎬 Only Video Files (Files Only Mode)</b>\n"
-                "  Source post image ko forward nahi karega; sirf aane wali Video files ko clean title ke saath target channel me deliver karega.\n\n"
                 "• <b>⚡ Normal Forward Mode (With /settings Filters)</b>\n"
                 "  User ki Settings me set kiye gaye saare filters (Audio, Video, Document, Extension, Keywords etc.) ko strictly follow karega. Agar user ne sab kuch off karke sirf Audio on rakha hai to sirf Audio forward hogi. Forwarding restricted hone par bhi userbot safe flood limit ke sath deliver karega."
                 "</blockquote>",
                 reply_markup=ReplyKeyboardMarkup(
                     [
                         [KeyboardButton("📝 Forward Post + Video Files (Complete Mode)")],
-                        [KeyboardButton("🎬 Only Video Files (Files Only Mode)")],
                         [KeyboardButton("⚡ Normal Forward Mode (With Filters)")],
                         [UNDO_BTN, CANCEL_BTN]
                     ],
@@ -1156,12 +1153,10 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
 
         if "normal forward" in r_mode.text.lower() or "with filters" in r_mode.text.lower():
             delivery_mode = "filtered_mode"
-        elif "only video" in r_mode.text.lower() or "files only" in r_mode.text.lower():
-            delivery_mode = "video_only"
         else:
             delivery_mode = "story_mode"
     else:
-        delivery_mode = "video_only"
+        delivery_mode = "story_mode"
 
     # Step 5: Range
     try:
@@ -1297,8 +1292,6 @@ async def _bypass_flow(bot, user_id: int, chat_id: int):
 
     if delivery_mode == "story_mode":
         mode_label = "📝 Post + Video Delivery (Complete Mode)"
-    elif delivery_mode == "video_only":
-        mode_label = "🎬 Only Video Files (Files Only Mode)"
     else:
         mode_label = "⚡ Normal Forward Mode (With Filters)"
 
