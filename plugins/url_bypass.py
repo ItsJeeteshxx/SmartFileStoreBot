@@ -589,50 +589,86 @@ def _clean_source_post_caption(raw_text: str) -> str:
     return title_line
 
 
+def process_poster_image(input_path: str, target_size: tuple[int, int] = (600, 720)) -> str:
+    """
+    Resizes and naturally enhances poster images to exactly 600x720:
+    - Preserves 100% of the image content (no cropping/cuts).
+    - If aspect ratio differs, fits centered onto a subtle matched aesthetic background.
+    - Applies subtle, natural clarity and balanced contrast (no over-whitening or highlight blowout).
+    """
+    from PIL import Image, ImageEnhance, ImageFilter
+    
+    try:
+        with Image.open(input_path) as img:
+            # Convert RGBA/Palette/Grayscale to RGB
+            if img.mode in ("RGBA", "LA", "P"):
+                rgb_img = Image.new("RGB", img.size, (18, 18, 20))
+                if img.mode == "RGBA":
+                    rgb_img.paste(img, mask=img.split()[3])
+                else:
+                    rgb_img.paste(img.convert("RGB"))
+                img = rgb_img
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            target_w, target_h = target_size
+            orig_w, orig_h = img.size
+
+            # Scale to fit completely inside 600x720 without any cropping
+            scale = min(target_w / orig_w, target_h / orig_h)
+            new_w = max(1, int(orig_w * scale))
+            new_h = max(1, int(orig_h * scale))
+
+            resized_content = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+            if (new_w, new_h) != (target_w, target_h):
+                # Create a 600x720 canvas
+                canvas = Image.new("RGB", (target_w, target_h), (16, 16, 18))
+                
+                # Create a subtle blurred background from original to look ultra professional
+                try:
+                    bg_img = img.resize((target_w, target_h), Image.Resampling.BILINEAR)
+                    bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=20))
+                    bg_img = ImageEnhance.Brightness(bg_img).enhance(0.40)
+                    canvas.paste(bg_img, (0, 0))
+                except Exception:
+                    pass
+
+                # Center foreground image without any cuts
+                pos_x = (target_w - new_w) // 2
+                pos_y = (target_h - new_h) // 2
+                canvas.paste(resized_content, (pos_x, pos_y))
+                final_img = canvas
+            else:
+                final_img = resized_content
+
+            # ── Balanced AI-Grade Natural Enhancements (Natural & Crisp, No Over-Whitening) ──
+            # 1. Subtle Sharpness boost (clean text & outlines)
+            final_img = ImageEnhance.Sharpness(final_img).enhance(1.15)
+            # 2. Balanced natural contrast (no highlight clipping)
+            final_img = ImageEnhance.Contrast(final_img).enhance(1.04)
+            # 3. Rich natural color vibrancy
+            final_img = ImageEnhance.Color(final_img).enhance(1.05)
+
+            # Save back with high quality JPEG
+            final_img.save(input_path, format="JPEG", quality=95, optimize=True, subsampling=0)
+            return input_path
+    except Exception as e:
+        logger.warning(f"[Bypass] Poster enhance error: {e}")
+        return input_path
+
+
 async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_id: int, msg_obj=None, is_source_post: bool = False):
     """
     Safely copy/deliver a message to target channel without forward tags.
-    If direct copy_message fails (e.g. channel has 'Restrict saving content' / forwarding disabled,
-    or protected media), it downloads and re-uploads the media/text seamlessly.
+    If is_source_post is True, it resizes the poster to 600x720, enhances quality naturally,
+    and posts with only the clean title caption.
+    If direct copy_message fails (restricted content), it downloads and re-uploads media seamlessly.
     """
     if not hasattr(client, '_network_lock'):
         client._network_lock = asyncio.Lock()
-        
-    # If is_source_post is True, retrieve message first to clean caption to only the title
-    clean_caption = None
-    if is_source_post:
-        if not msg_obj:
-            try:
-                async with client._network_lock:
-                    res = await client.get_messages(from_chat_id, msg_id)
-                    msg_obj = res[0] if isinstance(res, list) and res else res
-            except Exception:
-                pass
-        if msg_obj and not getattr(msg_obj, "empty", False):
-            raw_c = msg_obj.caption or msg_obj.text or ""
-            clean_caption = _clean_source_post_caption(raw_c)
 
-    # Attempt 1: Direct copy_message (fastest & 0 bandwidth)
-    try:
-        kwargs = {}
-        if is_source_post and clean_caption is not None:
-            kwargs["caption"] = clean_caption
-        async with client._network_lock:
-            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id, **kwargs)
-    except FloodWait as fw:
-        await asyncio.sleep(fw.value + 1)
-        try:
-            kwargs = {}
-            if is_source_post and clean_caption is not None:
-                kwargs["caption"] = clean_caption
-            async with client._network_lock:
-                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id, **kwargs)
-        except Exception:
-            pass
-    except Exception as e:
-        logger.debug(f"[Bypass] copy_message failed ({e}), falling back to restricted download & re-upload...")
-
-    # Attempt 2: Restricted channel bypass (Download & Re-upload)
+    # Retrieve message object if needed
     if not msg_obj:
         try:
             async with client._network_lock:
@@ -663,13 +699,86 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
     if not msg_obj or getattr(msg_obj, "empty", False):
         raise Exception(f"Message {msg_id} could not be retrieved from {from_chat_id}")
 
-    caption = clean_caption if (is_source_post and clean_caption is not None) else msg_obj.caption
-    caption_entities = None if (is_source_post and clean_caption is not None) else msg_obj.caption_entities
-    reply_markup = None if is_source_post else msg_obj.reply_markup
+    # Process Source Story Post (Poster Image + Title)
+    if is_source_post:
+        raw_c = msg_obj.caption or msg_obj.text or ""
+        clean_caption = _clean_source_post_caption(raw_c)
+
+        # If it's a photo or document image: Download -> 600x720 Resize & Natural Enhance -> Upload
+        if msg_obj.photo or (msg_obj.document and getattr(msg_obj.document, 'mime_type', '').startswith('image/')):
+            os.makedirs("downloads/bypass_temp", exist_ok=True)
+            temp_name = f"downloads/bypass_temp/{abs(getattr(msg_obj.chat, 'id', 0))}_{msg_obj.id}_{int(time.time()*1000)}.jpg"
+            dl_path = None
+            try:
+                for _dl_attempt in range(3):
+                    try:
+                        async with client._network_lock:
+                            dl_path = await client.download_media(msg_obj, file_name=temp_name)
+                        if dl_path and os.path.exists(dl_path):
+                            break
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 1)
+                    except Exception as _dle:
+                        logger.warning(f"[Bypass] source post download attempt {_dl_attempt+1} error: {_dle}")
+                        await asyncio.sleep(2)
+
+                if dl_path and os.path.exists(dl_path):
+                    # Resize to 600x720 & Apply Natural AI-Grade Enhancement
+                    process_poster_image(dl_path, target_size=(600, 720))
+
+                    for _send_att in range(3):
+                        try:
+                            async with client._network_lock:
+                                return await client.send_photo(to_chat_id, photo=dl_path, caption=clean_caption)
+                        except FloodWait as fw:
+                            await asyncio.sleep(fw.value + 1)
+                        except Exception as se:
+                            logger.warning(f"[Bypass] send enhanced poster error (attempt {_send_att+1}): {se}")
+                            await asyncio.sleep(2)
+            finally:
+                if dl_path and os.path.exists(dl_path):
+                    try:
+                        os.remove(dl_path)
+                    except Exception:
+                        pass
+
+        # If it's a text-only source post
+        if not (msg_obj.photo or msg_obj.video or msg_obj.document or msg_obj.audio or msg_obj.voice or msg_obj.animation or msg_obj.video_note or msg_obj.sticker):
+            if clean_caption:
+                for _t_att in range(3):
+                    try:
+                        async with client._network_lock:
+                            return await client.send_message(to_chat_id, text=clean_caption)
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 1)
+                    except Exception as se:
+                        logger.warning(f"[Bypass] send_message error (attempt {_t_att+1}): {se}")
+                        await asyncio.sleep(2)
+            return None
+
+    # Normal Media / Video Files Delivery (is_source_post=False)
+    # Attempt 1: Direct copy_message (fastest & 0 bandwidth)
+    try:
+        async with client._network_lock:
+            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+    except FloodWait as fw:
+        await asyncio.sleep(fw.value + 1)
+        try:
+            async with client._network_lock:
+                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"[Bypass] copy_message failed ({e}), falling back to restricted download & re-upload...")
+
+    # Attempt 2: Download & Re-upload fallback
+    caption = msg_obj.caption
+    caption_entities = msg_obj.caption_entities
+    reply_markup = msg_obj.reply_markup
 
     # If it's a text-only message
     if not (msg_obj.photo or msg_obj.video or msg_obj.document or msg_obj.audio or msg_obj.voice or msg_obj.animation or msg_obj.video_note or msg_obj.sticker):
-        text_content = clean_caption if (is_source_post and clean_caption is not None) else (msg_obj.text or "")
+        text_content = msg_obj.text or ""
         if not text_content:
             return None
         for _t_att in range(3):
@@ -688,7 +797,7 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
                 await asyncio.sleep(2)
         return None
 
-    # Determine proper file extension so Telegram doesn't reject
+    # Determine proper file extension
     ext = ".bin"
     if msg_obj.photo: ext = ".jpg"
     elif msg_obj.video: ext = ".mp4"
