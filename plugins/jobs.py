@@ -2184,9 +2184,8 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             short = jid[-6:]
             job_name = j.get("name", f"Job {short}")
             icon_id = "5413643931139219521" if st == "running" else ("5413424119007978384" if st == "error" else "5807622114424924272")
-            icon_fb = "🟢" if st == "running" else ("🔴" if st == "error" else "⏸")
-            btns_list.append([InlineKeyboardButton(f"{icon_fb} {job_name}", callback_data=f"job#info#{jid}")])
-            api_btns_list.append([{"text": f"{icon_fb} {job_name}", "callback_data": f"job#info#{jid}", "icon_custom_emoji_id": icon_id}])
+            btns_list.append([InlineKeyboardButton(job_name, callback_data=f"job#info#{jid}")])
+            api_btns_list.append([{"text": job_name, "callback_data": f"job#info#{jid}", "icon_custom_emoji_id": icon_id}])
 
         # Pagination controls row
         nav_row = []
@@ -2204,15 +2203,15 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             api_btns_list.append(api_nav_row)
 
         btns_list.append([
-            InlineKeyboardButton("➕ Create New Job", callback_data="job#new"),
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"job#list#{page}")
+            InlineKeyboardButton("Create New Job", callback_data="job#new"),
+            InlineKeyboardButton("Refresh", callback_data=f"job#list#{page}")
         ])
         api_btns_list.append([
-            {"text": "➕ Create New Job", "callback_data": "job#new", "icon_custom_emoji_id": "5807642902066634351"},
-            {"text": "🔄 Refresh", "callback_data": f"job#list#{page}", "icon_custom_emoji_id": "5893192487324880883"}
+            {"text": "Create New Job", "callback_data": "job#new", "icon_custom_emoji_id": "5807642902066634351"},
+            {"text": "Refresh", "callback_data": f"job#list#{page}", "icon_custom_emoji_id": "5893192487324880883"}
         ])
-        btns_list.append([InlineKeyboardButton("« Back", callback_data="back")])
-        api_btns_list.append([{"text": "« Back", "callback_data": "back"}])
+        btns_list.append([InlineKeyboardButton("Back", callback_data="back")])
+        api_btns_list.append([{"text": "Back", "callback_data": "back"}])
         btns = btns_list
         api_btns = api_btns_list
 
@@ -2421,20 +2420,20 @@ async def job_settings_cb(bot, query):
     smart_icon = "6123181698193559460" if smart_on else "5413424119007978384"
     
     btns = [
-        [InlineKeyboardButton("✍️ Edit Name", callback_data=f"job#rename#{job_id}")],
-        [InlineKeyboardButton("🔄 Source Change Wizard", callback_data=f"job#src#{job_id}")],
-        [InlineKeyboardButton("📏 Size / Duration Limits", callback_data=f"job#limits#{job_id}")],
-        [InlineKeyboardButton(f"📄 Skip Duplicates: {skip_lbl}", callback_data=f"job#togglededupl#{job_id}")],
-        [InlineKeyboardButton(f"🧠 Smart Order: {smart_lbl}", callback_data=f"job#togglesmart#{job_id}")],
-        [InlineKeyboardButton("« Back", callback_data="job#list")]
+        [InlineKeyboardButton("Edit Name", callback_data=f"job#rename#{job_id}")],
+        [InlineKeyboardButton("Source Change Wizard", callback_data=f"job#src#{job_id}")],
+        [InlineKeyboardButton("Size / Duration Limits", callback_data=f"job#limits#{job_id}")],
+        [InlineKeyboardButton(f"Skip Duplicates: {skip_lbl}", callback_data=f"job#togglededupl#{job_id}")],
+        [InlineKeyboardButton(f"Smart Order: {smart_lbl}", callback_data=f"job#togglesmart#{job_id}")],
+        [InlineKeyboardButton("Back", callback_data="job#list")]
     ]
     api_btns = [
-        [{"text": "✍️ Edit Name", "callback_data": f"job#rename#{job_id}", "icon_custom_emoji_id": "6024110353296660793"}],
-        [{"text": "🔄 Source Change Wizard", "callback_data": f"job#src#{job_id}", "icon_custom_emoji_id": "5893192487324880883"}],
-        [{"text": "📏 Size / Duration Limits", "callback_data": f"job#limits#{job_id}", "icon_custom_emoji_id": "6034898821517940846"}],
-        [{"text": f"📄 Skip Duplicates: {skip_lbl}", "callback_data": f"job#togglededupl#{job_id}", "icon_custom_emoji_id": skip_icon}],
-        [{"text": f"🧠 Smart Order: {smart_lbl}", "callback_data": f"job#togglesmart#{job_id}", "icon_custom_emoji_id": smart_icon}],
-        [{"text": "« Back", "callback_data": "job#list"}]
+        [{"text": "Edit Name", "callback_data": f"job#rename#{job_id}", "icon_custom_emoji_id": "6024110353296660793"}],
+        [{"text": "Source Change Wizard", "callback_data": f"job#src#{job_id}", "icon_custom_emoji_id": "5893192487324880883"}],
+        [{"text": "Size / Duration Limits", "callback_data": f"job#limits#{job_id}", "icon_custom_emoji_id": "6034898821517940846"}],
+        [{"text": f"Skip Duplicates: {skip_lbl}", "callback_data": f"job#togglededupl#{job_id}", "icon_custom_emoji_id": skip_icon}],
+        [{"text": f"Smart Order: {smart_lbl}", "callback_data": f"job#togglesmart#{job_id}", "icon_custom_emoji_id": smart_icon}],
+        [{"text": "Back", "callback_data": "job#list"}]
     ]
 
     from plugins.share_bot import send_or_edit_with_custom_icons
