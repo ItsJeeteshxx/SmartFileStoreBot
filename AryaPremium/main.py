@@ -180,11 +180,18 @@ async def main():
 
 
         bots = await db.db.premium_bots.find().to_list(length=None)
-        
+        seen_tokens = set()
+        if Config.MGMT_BOT_TOKEN:
+            seen_tokens.add(Config.MGMT_BOT_TOKEN.strip())
+
         for b in bots:
-            tok = b.get('token')
-            if not tok: continue
-            
+            tok = (b.get('token') or "").strip()
+            if not tok or tok in seen_tokens:
+                if tok in seen_tokens:
+                    logger.warning(f"Skipping duplicate/mgmt bot token for @{b.get('username')}")
+                continue
+            seen_tokens.add(tok)
+
             logger.info(f"Loading Market Bot: {b.get('username')}")
             cli = Client(
                 name=f"market_{b['id']}", 

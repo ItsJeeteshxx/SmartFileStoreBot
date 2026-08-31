@@ -272,19 +272,12 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
         ]
         markup = InlineKeyboardMarkup(kb)
 
-        # Try Bot API for rendering custom emojis
-        try:
-            msg_id = edit_message.id if edit_message else None
-            ok = await _send_or_edit_mgmt_bot_api(client, chat_id, txt, markup, message_id=msg_id)
-            if ok:
-                return
-        except Exception as e:
-            logger.debug(f"Mgmt Bot API render exception: {e}")
-
-        # Fallback to Pyrogram
         clean_kb = _clean_markup_for_pyrogram(markup)
         if edit_message:
-            return await edit_message.edit_text(txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+            try:
+                return await edit_message.edit_text(txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
         return await client.send_message(chat_id, txt, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
     except Exception as e:
         logger.error(f"Critical error in _render_home: {e}", exc_info=True)
