@@ -589,6 +589,54 @@ def _clean_source_post_caption(raw_text: str) -> str:
     return title_line
 
 
+def _clean_video_caption(raw_text: str) -> str:
+    """
+    Cleans video caption:
+    - Extracts ONLY the title line.
+    - Removes leading '🎬', '🎥', '📺', '🍿', '📹' and similar video emojis.
+    - Removes notice/auto-delete warnings, divider lines, and promotional footers.
+    """
+    if not raw_text:
+        return ""
+
+    lines = [line.strip() for line in raw_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    promo_triggers = [
+        "important notice", "notice", "auto-deleted", "auto deleted", "deleted in",
+        "forward or save", "save it before", "powered by", "story tv", "watch now",
+        "for free", "join channel", "click here", "subscribe", "t.me/", "http://", "https://", "@"
+    ]
+
+    title_line = ""
+    for line in lines:
+        l_str = line.strip()
+        if not l_str:
+            continue
+        # Divider line
+        if all(c in '━─═-—_~*• ' for c in l_str) and len(l_str) >= 3:
+            continue
+        l_lower = l_str.lower()
+        if any(trig in l_lower for trig in promo_triggers):
+            continue
+        if any(w in l_str for w in ["𝗪𝗮𝘁𝗰𝗵", "𝗙𝗿𝗲𝗲", "𝗣𝗼𝘄𝗲𝗿𝗲𝗱", "𝗦𝘁𝗼𝗿𝘆", "𝗕𝗼𝘁", "𝗡𝗼𝘁𝗶𝗰𝗲", "𝗜𝗺𝗽𝗼𝗿𝘁𝗮𝗻𝘁", "𝗗𝗲𝗹𝗲𝘁𝗲𝗱"]):
+            continue
+        title_line = l_str
+        break
+
+    if not title_line and lines:
+        title_line = lines[0]
+
+    # Strip leading emojis like 🎬, 🎥, 📺, 🍿, 📹, etc.
+    strip_emojis = ["🎬", "🎥", "📺", "🍿", "📹", "🔹", "🔸", "▫️", "▪️", "▶️", "👉", "✨", "🔥"]
+    for emo in strip_emojis:
+        if title_line.startswith(emo):
+            title_line = title_line[len(emo):].strip()
+
+    return title_line.strip()
+
+
 def process_poster_image(input_path: str, target_size: tuple[int, int] = (600, 720)) -> str:
     """
     Resizes and naturally enhances poster images to exactly 600x720:
@@ -757,28 +805,38 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
             return None
 
     # Normal Media / Video Files Delivery (is_source_post=False)
+    # Clean video caption: remove 🎬 emoji and warning/promo footer lines
+    raw_video_caption = msg_obj.caption or msg_obj.text or ""
+    clean_video_cap = _clean_video_caption(raw_video_caption)
+
     # Attempt 1: Direct copy_message (fastest & 0 bandwidth)
     try:
+        kwargs = {}
+        if clean_video_cap is not None:
+            kwargs["caption"] = clean_video_cap
         async with client._network_lock:
-            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id, **kwargs)
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 1)
         try:
+            kwargs = {}
+            if clean_video_cap is not None:
+                kwargs["caption"] = clean_video_cap
             async with client._network_lock:
-                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id, **kwargs)
         except Exception:
             pass
     except Exception as e:
         logger.debug(f"[Bypass] copy_message failed ({e}), falling back to restricted download & re-upload...")
 
     # Attempt 2: Download & Re-upload fallback
-    caption = msg_obj.caption
-    caption_entities = msg_obj.caption_entities
-    reply_markup = msg_obj.reply_markup
+    caption = clean_video_cap if clean_video_cap is not None else msg_obj.caption
+    caption_entities = None
+    reply_markup = None
 
     # If it's a text-only message
     if not (msg_obj.photo or msg_obj.video or msg_obj.document or msg_obj.audio or msg_obj.voice or msg_obj.animation or msg_obj.video_note or msg_obj.sticker):
-        text_content = msg_obj.text or ""
+        text_content = clean_video_cap if clean_video_cap is not None else (msg_obj.text or "")
         if not text_content:
             return None
         for _t_att in range(3):
