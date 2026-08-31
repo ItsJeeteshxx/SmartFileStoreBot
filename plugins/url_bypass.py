@@ -548,7 +548,48 @@ async def bypass_new_cb(bot, query):
     await _bypass_flow(bot, user_id, chat_id)
 
 
-async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_id: int, msg_obj=None):
+def _clean_source_post_caption(raw_text: str) -> str:
+    """
+    Keep ONLY the top title line (e.g. '🎬 Sach ya Kalesh - Ganesh & Meghna').
+    Strips promotional lines like 'Watch Now For Free', divider bars, 'Powered by', links, etc.
+    """
+    if not raw_text:
+        return ""
+    lines = [line.strip() for line in raw_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+    
+    # Common divider characters and promo trigger words
+    promo_triggers = [
+        "watch now", "watch for free", "for free", "powered by",
+        "story tv bot", "join channel", "click here", "subscribe",
+        "t.me/", "http://", "https://", "@"
+    ]
+    
+    # Find first non-promo line (which is the main title)
+    title_line = ""
+    for line in lines:
+        l_str = line.strip()
+        if not l_str:
+            continue
+        # Divider line
+        if all(c in '━─═-—_~*• ' for c in l_str) and len(l_str) >= 3:
+            continue
+        l_lower = l_str.lower()
+        if any(trig in l_lower for trig in promo_triggers):
+            continue
+        if any(w in l_str for w in ["𝗪𝗮𝘁𝗰𝗵", "𝗙𝗿𝗲𝗲", "𝗣𝗼𝘄𝗲𝗿𝗲𝗱", "𝗦𝘁𝗼𝗿𝘆", "𝗕𝗼𝘁"]):
+            continue
+        title_line = l_str
+        break
+        
+    if not title_line and lines:
+        title_line = lines[0]
+        
+    return title_line
+
+
+async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_id: int, msg_obj=None, is_source_post: bool = False):
     """
     Safely copy/deliver a message to target channel without forward tags.
     If direct copy_message fails (e.g. channel has 'Restrict saving content' / forwarding disabled,
@@ -557,15 +598,35 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
     if not hasattr(client, '_network_lock'):
         client._network_lock = asyncio.Lock()
         
+    # If is_source_post is True, retrieve message first to clean caption to only the title
+    clean_caption = None
+    if is_source_post:
+        if not msg_obj:
+            try:
+                async with client._network_lock:
+                    res = await client.get_messages(from_chat_id, msg_id)
+                    msg_obj = res[0] if isinstance(res, list) and res else res
+            except Exception:
+                pass
+        if msg_obj and not getattr(msg_obj, "empty", False):
+            raw_c = msg_obj.caption or msg_obj.text or ""
+            clean_caption = _clean_source_post_caption(raw_c)
+
     # Attempt 1: Direct copy_message (fastest & 0 bandwidth)
     try:
+        kwargs = {}
+        if is_source_post and clean_caption is not None:
+            kwargs["caption"] = clean_caption
         async with client._network_lock:
-            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+            return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id, **kwargs)
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 1)
         try:
+            kwargs = {}
+            if is_source_post and clean_caption is not None:
+                kwargs["caption"] = clean_caption
             async with client._network_lock:
-                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+                return await client.copy_message(chat_id=to_chat_id, from_chat_id=from_chat_id, message_id=msg_id, **kwargs)
         except Exception:
             pass
     except Exception as e:
@@ -602,13 +663,13 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
     if not msg_obj or getattr(msg_obj, "empty", False):
         raise Exception(f"Message {msg_id} could not be retrieved from {from_chat_id}")
 
-    caption = msg_obj.caption
-    caption_entities = msg_obj.caption_entities
-    reply_markup = msg_obj.reply_markup
+    caption = clean_caption if (is_source_post and clean_caption is not None) else msg_obj.caption
+    caption_entities = None if (is_source_post and clean_caption is not None) else msg_obj.caption_entities
+    reply_markup = None if is_source_post else msg_obj.reply_markup
 
     # If it's a text-only message
     if not (msg_obj.photo or msg_obj.video or msg_obj.document or msg_obj.audio or msg_obj.voice or msg_obj.animation or msg_obj.video_note or msg_obj.sticker):
-        text_content = msg_obj.text or ""
+        text_content = clean_caption if (is_source_post and clean_caption is not None) else (msg_obj.text or "")
         if not text_content:
             return None
         for _t_att in range(3):
@@ -617,7 +678,7 @@ async def _safe_forward_or_copy(client, to_chat_id: int, from_chat_id: int, msg_
                     return await client.send_message(
                         to_chat_id,
                         text=text_content,
-                        entities=msg_obj.entities,
+                        entities=caption_entities,
                         reply_markup=reply_markup
                     )
             except FloodWait as fw:
@@ -1180,7 +1241,7 @@ async def _ub_run_job(job_id: str):
             if target_channel_id and job.get("forward_source_post", True):
                 if post_id not in seen_posts:
                     try:
-                        await _safe_forward_or_copy(curr_ub, target_channel_id, channel_id, post_id)
+                        await _safe_forward_or_copy(curr_ub, target_channel_id, channel_id, post_id, is_source_post=True)
                         seen_posts.add(post_id)
                         await _update_bypass_job(job_id, {"seen_posts": list(seen_posts)})
                     except Exception as e:
