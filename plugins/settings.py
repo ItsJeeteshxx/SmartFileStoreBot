@@ -1237,49 +1237,49 @@ async def settings_query(bot, query):
     rl_cfg = await db.get_delivery_rate_limit_config()
     uiver = rl_cfg.get('pass_ui_version', 'v1')
     v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
-    v2_gw_str = "⚡ Cashfree" if v2_gw == 'cashfree' else "💳 Pay Via UPI"
+    v2_gw_str = '<emoji id="6129805465476929485">⚡</emoji> Cashfree' if v2_gw == 'cashfree' else '<emoji id="6030410254276106984">💳</emoji> Pay Via UPI'
 
     v1_selected = (uiver == 'v1')
     v2_selected = (uiver == 'v2')
     v2_cf_sel = (v2_gw == 'cashfree')
     v2_upi_sel = (v2_gw == 'upi')
 
-    btn_v1 = "✅ V1 (Multi-Gateway Flow)" if v1_selected else "V1 (Multi-Gateway Flow)"
-    btn_v2 = f"✅ V2 (Single Gateway: {v2_gw_str})" if v2_selected else f"V2 (Single Gateway: {v2_gw_str})"
+    btn_v1_fb = "✅ V1 (Multi Gateway)" if v1_selected else "V1 (Multi Gateway)"
+    btn_v2_fb = "✅ V2 - Available Selected Payment Method" if v2_selected else "V2 - Available Selected Payment Method"
 
-    btn_v2_cf = "✅ Cashfree" if v2_cf_sel else "Cashfree"
-    btn_v2_upi = "✅ Pay Via UPI" if v2_upi_sel else "Pay Via UPI"
+    btn_v2_cf_fb = "✅ Cashfree" if v2_cf_sel else "Cashfree"
+    btn_v2_upi_fb = "✅ Pay Via UPI" if v2_upi_sel else "Pay Via UPI"
 
     uiver_buttons = [
-        [InlineKeyboardButton(btn_v1, callback_data="settings#sb_rl_set_v1")],
-        [InlineKeyboardButton(btn_v2, callback_data="settings#sb_rl_set_v2")],
+        [InlineKeyboardButton(btn_v1_fb, callback_data="settings#sb_rl_set_v1")],
+        [InlineKeyboardButton(btn_v2_fb, callback_data="settings#sb_rl_set_v2")],
         [InlineKeyboardButton("⚙️ Select V2 Default Gateway:", callback_data="settings#sb_rl_uiver_menu")],
         [
-            InlineKeyboardButton(btn_v2_cf, callback_data="settings#sb_rl_set_v2_cf"),
-            InlineKeyboardButton(btn_v2_upi, callback_data="settings#sb_rl_set_v2_upi")
+            InlineKeyboardButton(btn_v2_cf_fb, callback_data="settings#sb_rl_set_v2_cf"),
+            InlineKeyboardButton(btn_v2_upi_fb, callback_data="settings#sb_rl_set_v2_upi")
         ],
         [InlineKeyboardButton('Back', callback_data="settings#sb_ratelimit")]
     ]
     uiver_api_buttons = [
-        [{"text": "V1 (Multi-Gateway Flow)", "callback_data": "settings#sb_rl_set_v1", "icon_custom_emoji_id": "6120635817674149717" if v1_selected else "5766975922620076409"}],
-        [{"text": f"V2 (Single Gateway: {v2_gw_str})", "callback_data": "settings#sb_rl_set_v2", "icon_custom_emoji_id": "6120635817674149717" if v2_selected else "5264895611517300926"}],
-        [{"text": "Select V2 Default Gateway:", "callback_data": "settings#sb_rl_uiver_menu"}],
+        [{"text": "V1 (Multi Gateway)", "callback_data": "settings#sb_rl_set_v1", "icon_custom_emoji_id": "6120635817674149717" if v1_selected else "5766975922620076409"}],
+        [{"text": "V2 - Available Selected Payment Method", "callback_data": "settings#sb_rl_set_v2", "icon_custom_emoji_id": "6120635817674149717" if v2_selected else "6129805465476929485"}],
+        [{"text": "Select V2 Default Gateway:", "callback_data": "settings#sb_rl_uiver_menu", "icon_custom_emoji_id": "6021582331251268218"}],
         [
-            {"text": "Cashfree", "callback_data": "settings#sb_rl_set_v2_cf", "icon_custom_emoji_id": "6120635817674149717" if v2_cf_sel else "5283232570660634549"},
-            {"text": "Pay Via UPI", "callback_data": "settings#sb_rl_set_v2_upi", "icon_custom_emoji_id": "6120635817674149717" if v2_upi_sel else "6019110229680068974"}
+            {"text": "Cashfree", "callback_data": "settings#sb_rl_set_v2_cf", "icon_custom_emoji_id": "6120635817674149717" if v2_cf_sel else "6129805465476929485"},
+            {"text": "Pay Via UPI", "callback_data": "settings#sb_rl_set_v2_upi", "icon_custom_emoji_id": "6120635817674149717" if v2_upi_sel else "6030410254276106984"}
         ],
         [{"text": "Back", "callback_data": "settings#sb_ratelimit"}]
     ]
     uiver_text = (
         f'<emoji id="6007983438294949171">💎</emoji> <b>Cheakout Version</b>\n'
         f"────────────────────\n"
-        f"<b>Active Pass UI:</b> <code>{'V1 (Multi-Gateway Flow)' if uiver == 'v1' else f'V2 (Single Gateway Direct Flow)'}</code>\n"
-        f"<b>V2 Default Gateway:</b> <code>{v2_gw_str}</code>\n"
+        f"<b>Active Pass UI:</b> <code>{'V1 (Multi Gateway)' if uiver == 'v1' else 'V2 - Available Selected Payment Method'}</code>\n"
+        f"<b>V2 Default Gateway:</b> {v2_gw_str}\n"
         f"────────────────────\n"
         f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How each version works:</b>\n\n"
-        f"• <b>Version 1 (Multi-Gateway Flow):</b>\n"
+        f"• <b>Version 1 (Multi Gateway):</b>\n"
         f"  User sees all payment methods (UPI Dynamic QR, Cashfree Checkout & Crypto). User chooses their gateway first, then views and selects the plan.\n\n"
-        f"• <b>Version 2 (Single Gateway Direct Flow):</b>\n"
+        f"• <b>Version 2 (Single Gateway):</b>\n"
         f"  Direct 1-screen experience without any payment method selection page. Plan buttons immediately launch the chosen default gateway ({v2_gw_str}).</blockquote>"
     )
     from plugins.share_bot import send_or_edit_with_custom_icons
@@ -1299,7 +1299,7 @@ async def settings_query(bot, query):
   elif type == "sb_rl_set_v1":
     await db.set_delivery_rate_limit_config(pass_ui_version='v1')
     try:
-        await query.answer("✅ Pass UI Version set to: V1 (Multi-Gateway Flow)!", show_alert=True)
+        await query.answer("✅ Pass UI Version set to: V1 (Multi Gateway)!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1308,7 +1308,7 @@ async def settings_query(bot, query):
   elif type == "sb_rl_set_v2":
     await db.set_delivery_rate_limit_config(pass_ui_version='v2')
     try:
-        await query.answer("✅ Pass UI Version set to: V2 (Single Gateway Flow)!", show_alert=True)
+        await query.answer("✅ Pass UI Version set to: V2 (Single Gateway)!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1317,7 +1317,7 @@ async def settings_query(bot, query):
   elif type == "sb_rl_set_v2_cf":
     await db.set_delivery_rate_limit_config(v2_gateway='cashfree')
     try:
-        await query.answer("✅ V2 Gateway set to: ⚡ Cashfree!", show_alert=True)
+        await query.answer("✅ V2 Gateway set to: Cashfree!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1326,7 +1326,7 @@ async def settings_query(bot, query):
   elif type == "sb_rl_set_v2_upi":
     await db.set_delivery_rate_limit_config(v2_gateway='upi')
     try:
-        await query.answer("✅ V2 Gateway set to: 💳 Pay Via UPI!", show_alert=True)
+        await query.answer("✅ V2 Gateway set to: Pay Via UPI!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1669,15 +1669,15 @@ async def settings_query(bot, query):
     secret_masked = f"{secret[:4]}...{secret[-4:]}" if len(secret) > 8 else ('Set <emoji id="6120635817674149717">✅</emoji>' if secret else '<emoji id="5970055887774028039">🔴</emoji> Not Configured')
 
     buttons = [
-        [InlineKeyboardButton("📝 Set App ID / Client ID", callback_data="settings#sb_rl_cf_appid")],
-        [InlineKeyboardButton("🔐 Set Secret Key", callback_data="settings#sb_rl_cf_secret")],
-        [InlineKeyboardButton(f"🌐 Environment: {env_str}", callback_data="settings#sb_rl_cf_env")],
+        [InlineKeyboardButton("📝 App / Cilent ID", callback_data="settings#sb_rl_cf_appid")],
+        [InlineKeyboardButton("🔐 Secret Key", callback_data="settings#sb_rl_cf_secret")],
+        [InlineKeyboardButton(f"🌐 {env_str}", callback_data="settings#sb_rl_cf_env")],
         [InlineKeyboardButton('Back', callback_data="settings#sb_rl_payment_menu")],
     ]
     api_buttons = [
-        [{"text": "📝 Set App ID / Client ID", "callback_data": "settings#sb_rl_cf_appid"}],
-        [{"text": "🔐 Set Secret Key", "callback_data": "settings#sb_rl_cf_secret"}],
-        [{"text": f"🌐 Environment: {env_str}", "callback_data": "settings#sb_rl_cf_env"}],
+        [{"text": "App / Cilent ID", "callback_data": "settings#sb_rl_cf_appid", "icon_custom_emoji_id": "5766915217552315762"}],
+        [{"text": "Secret Key", "callback_data": "settings#sb_rl_cf_secret", "icon_custom_emoji_id": "6037249452824072506"}],
+        [{"text": f"{env_str}", "callback_data": "settings#sb_rl_cf_env", "icon_custom_emoji_id": "5776233299424843260"}],
         [{"text": "Back", "callback_data": "settings#sb_rl_payment_menu"}],
     ]
     cf_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Active' if creds.get('configured') else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
@@ -1712,7 +1712,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        '<emoji id="5283232570660634549">⚡</emoji> <b>Set Cashfree App ID / Client ID</b>\n\n'
+        '<emoji id="5766915217552315762">📝</emoji> <b>Set App / Cilent ID</b>\n\n'
         "Send your Cashfree <b>App ID</b> (e.g. <code>TEST102938...</code> or <code>102938...</code>).\n\n"
         "Send /cancel to abort."
     )
@@ -1732,7 +1732,7 @@ async def settings_query(bot, query):
     await query.message.delete()
     ask = await bot.send_message(
         user_id,
-        '<emoji id="5283232570660634549">⚡</emoji> <b>Set Cashfree Secret Key</b>\n\n'
+        '<emoji id="6037249452824072506">🔐</emoji> <b>Set Secret Key</b>\n\n'
         "Send your Cashfree <b>Secret Key</b> (e.g. <code>cfsk_ma_prod_...</code>).\n\n"
         "Send /cancel to abort."
     )
