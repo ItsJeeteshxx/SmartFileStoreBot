@@ -1547,10 +1547,9 @@ async def market_callback(client, query):
                 [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
             ]
             if bot_mode == "show_store":
-                kb.append([InlineKeyboardButton("🔄 Auto-Index Catalog (800+ Shows)", callback_data=f"mk#bot_show_idx_{b_id}")])
+                kb.append([InlineKeyboardButton("🔄 Auto Index", callback_data=f"mk#bot_show_idx_{b_id}")])
 
             kb.extend([
-                [InlineKeyboardButton(f"📱 Mini App Deep Links: {ma_links_state}", callback_data=f"mk#bot_toggle_malinks_{b_id}")],
                 [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
                 [InlineKeyboardButton("📊 " + utils.to_smallcap('Detailed Live Stats'), callback_data=f"mk#bot_stats_{b_id}")],
                 [InlineKeyboardButton("🔄 Transfer Stories to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}")],
@@ -1562,9 +1561,15 @@ async def market_callback(client, query):
                 [InlineKeyboardButton(f"Auto-Delete: {ad_state}", callback_data=f"mk#p_autodel_{b_id}"),
                  InlineKeyboardButton(f"Protection: {prot_state}", callback_data=f"mk#p_protect_{b_id}")],
                 [InlineKeyboardButton(f"UPI: {upi_state}", callback_data=f"mk#p_upi_{b_id}")],
+            ])
+            # Mini App Deep Links toggle — only in full/normal mode, not in show_store
+            if bot_mode != "show_store":
+                kb.append([InlineKeyboardButton(f"📱 Mini App Deep Links: {ma_links_state}", callback_data=f"mk#bot_toggle_malinks_{b_id}")])
+            kb.extend([
                 [InlineKeyboardButton(utils.to_smallcap('Remove Bot'), callback_data=f"mk#bot_confirm_rm_{b_id}")],
                 [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data="mk#accounts")],
             ])
+
             await query.message.edit_text(
                 f"<b>❪ PREMIUM BOT PROFILE & STATS ❫</b>\n\n"
                 f"<b>» Name:</b> {bt.get('name')}\n"
