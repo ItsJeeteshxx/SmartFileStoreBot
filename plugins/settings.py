@@ -2412,12 +2412,21 @@ async def settings_query(bot, query):
             oid = txn.get('id', 'N/A')
             c_badge = CIRCLE_DIGITS.get(idx, f"[{idx}]")
             sep_line = f"┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄"
+
+            st = txn.get('status', 'PAID')
+            if st == 'PAID':
+                st_str = '<emoji id="6019175208240289774">✅</emoji> ( Paid )'
+            elif st == 'FAILED':
+                st_str = '<emoji id="5847933199996427721">❌</emoji> ( Failed )'
+            else:
+                st_str = '<emoji id="5258113901106580375">⏳</emoji> ( Pending )'
+
             t_items.append(
                 f"{sep_line}\n"
                 f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
                 f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                 f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
-                f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> <emoji id=\"6019175208240289774\">✅</emoji> ( Paid )\n"
+                f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
                 f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
             )
         txns_text = "\n".join(t_items)

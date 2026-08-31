@@ -3901,27 +3901,67 @@ async def _process_pass_callback(client, query):
 
         txns = await db.get_user_pass_transactions(user_id, limit=5)
         if txns:
-            txn_lines = []
-            for t in txns:
-                import datetime
+            CIRCLE_DIGITS = {
+                1: "➊", 2: "➋", 3: "➌", 4: "➍", 5: "➎",
+                6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓"
+            }
+            t_items = []
+            for idx, txn in enumerate(txns[:5], 1):
+                t_time = txn.get('time', 0)
                 try:
-                    import pytz
+                    import datetime, pytz
                     ist_tz = pytz.timezone('Asia/Kolkata')
-                    t_dt = datetime.datetime.fromtimestamp(t['time'], tz=ist_tz)
-                    t_str = t_dt.strftime('%d-%m-%Y %I:%M %p')
+                    t_dt = datetime.datetime.fromtimestamp(t_time, tz=ist_tz)
+                    t_str = t_dt.strftime('%d/%m/%Y | %I:%M %p')
                 except Exception:
-                    t_str = datetime.datetime.fromtimestamp(t['time']).strftime('%d-%m-%Y %I:%M %p') if t['time'] else "N/A"
-                
-                from database import parse_duration_to_seconds, format_duration_verbose
-                dur_verbose = format_duration_verbose(parse_duration_to_seconds(t['plan'], default_unit='d')) if t['plan'] else "Pass"
-                oid = t.get('id', 'N/A')
-                gw = t.get('gateway', 'Pay Via UPI (INR)')
-                st = ("सक्रिय" if is_hi else "Paid & Active") if pass_info.get('active') else ("पूर्ण" if is_hi else "Completed")
-                txn_lines.append(
-                    f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>{'ऑर्डर आईडी' if is_hi else 'Order ID'}:-</b> <code>{oid}</code>\n"
-                    f"<b>{'प्लान' if is_hi else 'Plan'}:</b> {dur_verbose.title()} , ({gw}) | <b>{'स्थिति' if is_hi else 'Status'} -</b> {st} , <code>{t_str}</code>"
-                )
-            txns_body = "\n\n".join(txn_lines)
+                    import datetime
+                    t_str = datetime.datetime.fromtimestamp(t_time).strftime('%d/%m/%Y | %I:%M %p') if t_time else "N/A"
+
+                p_name = str(txn.get('plan') or 'Pass')
+                dur_verb = p_name
+                try:
+                    from database import parse_duration_to_seconds, format_duration_verbose
+                    dur_verb = format_duration_verbose(parse_duration_to_seconds(p_name, default_unit='d'))
+                except Exception:
+                    dur_verb = p_name
+
+                try:
+                    amt = f"₹{float(txn.get('amount', 0)):.2f}"
+                except Exception:
+                    amt = "₹0.00"
+
+                gw = txn.get('gateway', 'Cashfree')
+                st = str(txn.get('status', 'PENDING')).upper()
+                if st == 'PAID':
+                    st_str = '<emoji id="6019175208240289774">✅</emoji> ( पेड )' if is_hi else '<emoji id="6019175208240289774">✅</emoji> ( Paid )'
+                elif st == 'FAILED':
+                    st_str = '<emoji id="5847933199996427721">❌</emoji> ( फेल्ड )' if is_hi else '<emoji id="5847933199996427721">❌</emoji> ( Failed )'
+                else:
+                    st_str = '<emoji id="5258113901106580375">⏳</emoji> ( पेंडिंग )' if is_hi else '<emoji id="5258113901106580375">⏳</emoji> ( Pending )'
+
+                oid = txn.get('id', 'N/A')
+                c_badge = CIRCLE_DIGITS.get(idx, f"[{idx}]")
+                sep_line = f"┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄"
+
+                if is_hi:
+                    t_items.append(
+                        f"{sep_line}\n"
+                        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>ऑर्डर आईडी:-</b> <code>{oid}</code>\n"
+                        f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>प्लान:-</b> {str(dur_verb).title()} ({amt})\n"
+                        f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>पेमेंट मोड:-</b> {gw}\n"
+                        f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>स्थिति:-</b> {st_str}\n"
+                        f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>लेनदेन तारीख:-</b> <code>{t_str}</code>"
+                    )
+                else:
+                    t_items.append(
+                        f"{sep_line}\n"
+                        f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
+                        f"   <emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
+                        f"   <emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
+                        f"   <emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
+                        f"   <emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
+                    )
+            txns_body = "\n".join(t_items)
         else:
             txns_body = "आपके खाते पर कोई पिछला लेनदेन नहीं मिला।" if is_hi else "No previous transactions found on your account."
 
@@ -3933,7 +3973,7 @@ async def _process_pass_callback(client, query):
                 f"<b>यूजर:</b> {user_name} (<code>{user_id}</code>)\n"
                 f"<b>पास स्थिति:</b> {status_line}\n"
                 "──────────────────────\n"
-                "<b>हाल की खरीदारी:</b>\n\n"
+                "<b>हाल के लेनदेन:</b>\n\n"
                 f"{txns_body}"
             )
         else:
@@ -3943,7 +3983,7 @@ async def _process_pass_callback(client, query):
                 f"<b>User:</b> {user_name} (<code>{user_id}</code>)\n"
                 f"<b>Pass Status:</b> {status_line}\n"
                 "──────────────────────\n"
-                "<b>Recent Purchases:</b>\n\n"
+                "<b>Recent Transactions:</b>\n\n"
                 f"{txns_body}"
             )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")]])
@@ -4063,7 +4103,7 @@ async def _process_pass_callback(client, query):
                 'gateway': 'Pay Via UPI (INR)',
                 'status': 'PENDING',
                 'created_at': time.time(),
-                'expires_at': time.time() + 300
+                'expires_at': time.time() + 600
             })
         except Exception:
             pass
@@ -4092,7 +4132,7 @@ async def _process_pass_callback(client, query):
                 "1. ऊपर दिए गए QR कोड को स्कैन करें या सीधे UPI ID पर पेमेंट करें।\n"
                 f"2. बिल्कुल सटीक <b>₹{dyn_amount:.2f}</b> का भुगतान करें (पैसे कम या ज्यादा न करें)।\n"
                 "3. <b>ऑटोमैटिक वेरिफिकेशन:</b> आपको UTR सबमिट करने की कोई आवश्यकता नहीं है! पेमेंट करने के 5-15 सेकंड में सिस्टम ऑटोमैटिकली पास एक्टिवेट कर देगा।\n\n"
-                '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (5 मिनट के लिए वैध)\n'
+                '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (10 मिनट के लिए वैध)\n'
                 "जैसे ही आपका पेमेंट प्राप्त होगा, आपका अनलिमिटेड पास तुरंत सक्रिय हो जाएगा!"
             )
             btn_status = "पेमेंट स्टेटस चेक करें"
@@ -4110,7 +4150,7 @@ async def _process_pass_callback(client, query):
                 "1. Scan the QR code above or pay directly to the UPI ID.\n"
                 f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
                 "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds.\n\n"
-                '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 5 Minutes)\n'
+                '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 10 Minutes)\n'
                 "Your unlimited access pass will activate automatically as soon as payment is detected!"
             )
             btn_status = "Check Payment Status"
@@ -4461,6 +4501,25 @@ async def _process_pass_callback(client, query):
         btn_cancel_lbl = "अपना ऑर्डर कैंसिल करें" if is_hi else "Cancel your order"
         btn_back_lbl = "← वापस" if is_hi else "← Back"
 
+        # Save order document to MongoDB
+        try:
+            await db.pass_orders.insert_one({
+                'order_id': order_id,
+                'track_id': str(track_id or order_id),
+                'user_id': user_id,
+                'user_name': user_name,
+                'plan': dur_key,
+                'duration_key': dur_key,
+                'amount': amount_inr,
+                'amount_usd': amount_usd,
+                'gateway': 'Crypto ( Oxapay )',
+                'status': 'PENDING',
+                'created_at': time.time(),
+                'expires_at': time.time() + 600
+            })
+        except Exception:
+            pass
+
         if is_hi:
             inv_text = (
                 f'<emoji id="5283232570660634549">🌐</emoji> <b>क्रिप्टो पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n\n'
@@ -4533,6 +4592,13 @@ async def _process_pass_callback(client, query):
 
         if v_res.get("paid"):
             _cancel_cooldown_reminders(user_id)
+            try:
+                await db.pass_orders.update_one(
+                    {"$or": [{"order_id": order_id}, {"track_id": track_id}]},
+                    {"$set": {"status": "PAID", "paid_at": time.time()}}
+                )
+            except Exception:
+                pass
             b_id = getattr(getattr(client, "me", None), "id", None)
             b_uname = getattr(getattr(client, "me", None), "username", "")
             new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key)

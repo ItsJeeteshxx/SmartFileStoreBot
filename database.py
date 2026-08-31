@@ -1806,42 +1806,68 @@ class Database:
         return await self.mark_utr_used(utr=utr, user_id=user_id, amount=amount, plan=plan, user_name=user_name, order_id=order_id)
 
     async def get_user_pass_transactions(self, user_id: int, limit: int = 15) -> list:
-        """Fetch only completed/paid pass orders and verified UTRs for user (no unpaid or pending orders)."""
-        # Strictly query PAID orders only
-        orders = await self.pass_orders.find({'user_id': int(user_id), 'status': 'PAID'}).sort('paid_at', -1).limit(limit).to_list(limit)
+        """Fetch full pass orders (PAID, PENDING, FAILED) and verified UTRs for user (10-min timeout for pending)."""
+        import time
+        now = time.time()
+        orders = await self.pass_orders.find({'user_id': int(user_id)}).sort('created_at', -1).limit(limit * 2).to_list(limit * 2)
         utrs = await self.used_utrs.find({'user_id': int(user_id)}).sort('used_at', -1).limit(limit).to_list(limit)
         results = []
+        seen_order_ids = set()
+
         for o in orders:
-            oid = str(o.get('order_id', ''))
+            oid = str(o.get('order_id', '')).strip()
+            if not oid:
+                continue
+            seen_order_ids.add(oid)
+
             gw_raw = str(o.get('gateway') or '').lower()
             if 'oxa' in oid.lower() or 'crypto' in gw_raw or 'oxapay' in gw_raw:
                 gw_display = "Crypto ( Oxapay )"
             elif 'upi' in oid.lower() or 'upi' in gw_raw:
                 gw_display = "Manual UPI"
-            elif 'cf' in oid.lower() or 'order_' in oid or 'cashfree' in gw_raw or 'gateway' in gw_raw:
-                gw_display = "Cashfree"
             else:
                 gw_display = "Cashfree"
 
+            raw_status = str(o.get('status') or 'PENDING').upper()
+            c_time = float(o.get('paid_at') or o.get('created_at') or o.get('time') or now)
+
+            if raw_status in ('PAID', 'SUCCESS', 'COMPLETED'):
+                final_status = 'PAID'
+            elif raw_status in ('FAILED', 'CANCELLED', 'EXPIRED'):
+                final_status = 'FAILED'
+            else:
+                # PENDING: check if older than 10 minutes (600 seconds)
+                exp_ts = float(o.get('expires_at') or (c_time + 600))
+                if (now - c_time > 600) or (now > exp_ts):
+                    final_status = 'FAILED'
+                else:
+                    final_status = 'PENDING'
+
+            plan_val = o.get('duration_key') or o.get('plan') or o.get('duration') or '1d'
+
             results.append({
                 'id': oid,
-                'amount': o.get('amount', 0.0),
-                'plan': o.get('duration_key', ''),
-                'status': 'PAID',
-                'time': o.get('paid_at') or o.get('created_at', 0),
+                'amount': float(o.get('amount', 0.0)),
+                'plan': str(plan_val),
+                'status': final_status,
+                'time': c_time,
                 'gateway': gw_display
             })
+
         for u in utrs:
             oid = u.get('order_id') or f"UPI_{user_id}_{int(u.get('used_at', 0))}"
-            results.append({
-                'id': oid,
-                'utr': u.get('utr', ''),
-                'amount': u.get('amount', 0.0),
-                'plan': u.get('plan', ''),
-                'status': 'PAID',
-                'time': u.get('used_at', 0),
-                'gateway': "Manual UPI"
-            })
+            if oid not in seen_order_ids:
+                seen_order_ids.add(oid)
+                results.append({
+                    'id': oid,
+                    'utr': u.get('utr', ''),
+                    'amount': float(u.get('amount', 0.0)),
+                    'plan': str(u.get('plan') or '1d'),
+                    'status': 'PAID',
+                    'time': float(u.get('used_at', 0)),
+                    'gateway': "Manual UPI"
+                })
+
         results.sort(key=lambda x: x.get('time', 0), reverse=True)
         return results[:limit]
 
