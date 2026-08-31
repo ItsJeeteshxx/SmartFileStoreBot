@@ -153,7 +153,17 @@ async def _is_owner_db(user_id: int) -> bool:
             return True
     except Exception:
         pass
-    return False
+async def _find_premium_bot(b_id):
+    if not b_id:
+        return None
+    try:
+        b_int = int(b_id)
+        bot = await db.db.premium_bots.find_one({"$or": [{"id": b_int}, {"id": str(b_id)}, {"_id": b_int}, {"_id": str(b_id)}]})
+        if bot:
+            return bot
+    except Exception:
+        pass
+    return await db.db.premium_bots.find_one({"$or": [{"id": str(b_id)}, {"username": str(b_id).lstrip('@')}]})
 
 
 async def _deny_if_not_owner(client, user_id: int):
@@ -1462,7 +1472,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("bot_view_"):
             b_id = data[2] if len(data) > 2 else cmd.split("_")[2]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             if not bt:
                 return await _safe_answer(query, "Bot not found!")
 
@@ -1580,7 +1590,7 @@ async def market_callback(client, query):
         elif cmd.startswith("bot_stats_"):
             b_id = cmd.split("_")[2]
             b_id_int = int(b_id)
-            bt = await db.db.premium_bots.find_one({"id": b_id_int})
+            bt = await _find_premium_bot(b_id_int)
             if not bt:
                 return await _safe_answer(query, "Bot not found!", show_alert=True)
 
@@ -1659,7 +1669,7 @@ async def market_callback(client, query):
         elif cmd.startswith("bot_toggle_malinks_"):
             b_id = cmd.split("_")[3]
             b_id_int = int(b_id)
-            bt = await db.db.premium_bots.find_one({"id": b_id_int})
+            bt = await _find_premium_bot(b_id_int)
             if not bt: return await _safe_answer(query, "Bot not found!", show_alert=True)
             cfg = bt.get("config", {}) or {}
             curr_val = cfg.get("mini_app_deep_links", True)
@@ -1677,7 +1687,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("bot_mode_menu_"):
             b_id = cmd.split("_")[3]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Bot not found!")
             cfg = bt.get("config", {}) or {}
             curr_mode = cfg.get("bot_mode", "full")
@@ -1713,7 +1723,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("bot_mode_confirm_off_") or cmd.startswith("bot_migrate_menu_"):
             b_id = cmd.split("_")[4] if cmd.startswith("bot_mode_confirm_off_") else cmd.split("_")[3]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Bot not found!")
             
             story_count = await db.db.premium_stories.count_documents({"bot_id": int(b_id)})
@@ -1741,8 +1751,8 @@ async def market_callback(client, query):
             from_b_id = int(parts[2])
             to_b_id = int(parts[3])
             
-            from_bt = await db.db.premium_bots.find_one({"id": from_b_id})
-            to_bt = await db.db.premium_bots.find_one({"id": to_b_id})
+            from_bt = await _find_premium_bot(from_b_id)
+            to_bt = await _find_premium_bot(to_b_id)
             
             res = await db.db.premium_stories.update_many({"bot_id": from_b_id}, {"$set": {"bot_id": to_b_id}})
             # Set source bot to miniapp mode and target bot to full mode
@@ -1763,7 +1773,7 @@ async def market_callback(client, query):
             if len(parts) > 5:
                 target_mode = f"{parts[4]}_{parts[5]}" # show_store
             
-            bt = await db.db.premium_bots.find_one({"id": b_id})
+            bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Bot not found!")
             
             await db.db.premium_bots.update_one({"id": b_id}, {"$set": {"config.bot_mode": target_mode}})
@@ -1779,7 +1789,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("bot_show_idx_"):
             b_id = cmd.split("bot_show_idx_")[1]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Bot not found!")
             cfg = bt.get("config", {}) or {}
             
@@ -1906,7 +1916,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("bot_show_scan_"):
             b_id = cmd.split("bot_show_scan_")[1]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             cfg = bt.get("config", {}) or {} if bt else {}
             src_ch = cfg.get("db_channel_id")
             if not src_ch:
@@ -1957,7 +1967,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("bot_show_pub_"):
             b_id = cmd.split("bot_show_pub_")[1]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             cfg = bt.get("config", {}) or {} if bt else {}
             dst_ch = cfg.get("showcase_channel_id")
             if not dst_ch:
@@ -2027,7 +2037,7 @@ async def market_callback(client, query):
             b_id = parts[2]
             
             if len(parts) == 3:
-                bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+                bt = await _find_premium_bot(b_id)
                 if not bt: return await _safe_answer(query, "Not found!")
                 cfg = bt.get("config", {}) or {}
                 ad_val = cfg.get("autodel", 0)
@@ -2064,7 +2074,7 @@ async def market_callback(client, query):
                 return
             else:
                 new_val = int(parts[3])
-                bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+                bt = await _find_premium_bot(b_id)
                 if not bt: return await _safe_answer(query, "Not found!")
                 cfg = bt.get("config", {}) or {}
                 cfg["autodel"] = new_val
@@ -2075,7 +2085,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("p_protect_"):
             b_id = cmd.split("_")[2]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Not found!")
             cfg = bt.get("config", {}) or {}
             curr = cfg.get("protect", False)
@@ -2087,7 +2097,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("p_upi_"):
             b_id = cmd.split("_")[2]
-            bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Not found!")
             cfg = bt.get("config", {}) or {}
             curr = cfg.get("upi_enabled", None)  # None=Auto, False=OFF, True=Force ON
@@ -2475,7 +2485,7 @@ async def market_callback(client, query):
             parts = cmd.split("_")
             b_id = parts[3]
             idx = int(parts[4])
-            bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bot = await _find_premium_bot(b_id)
             if not bot:
                 return await _safe_answer(query, "Bot not found!", show_alert=True)
             cfg = bot.get("config", {}) or {}
@@ -2490,7 +2500,7 @@ async def market_callback(client, query):
 
         elif cmd.startswith("menu_media_"):
             b_id = cmd.split("_")[2]
-            bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+            bot = await _find_premium_bot(b_id)
             if not bot:
                 return await _safe_answer(query, "Bot not found!", show_alert=True)
 
@@ -2935,7 +2945,7 @@ async def _settings_flow(client, user_id, cmd):
 
 async def _bot_set_logch_flow(client, user_id, b_id):
     from pyrogram.types import CallbackQuery as _CQ
-    bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+    bt = await _find_premium_bot(b_id)
     if not bt:
         return await client.send_message(user_id, "❌ Bot not found!")
     
@@ -4185,7 +4195,7 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
 
 
 async def _menu_media_add_flow(client, user_id: int, b_id: str):
-    bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+    bot = await _find_premium_bot(b_id)
     if not bot:
         return await client.send_message(user_id, "❌ Bot not found.", reply_markup=ReplyKeyboardRemove())
 
@@ -4264,7 +4274,7 @@ async def _menu_media_add_flow(client, user_id: int, b_id: str):
 
 
 async def _menu_media_preview_flow(client, user_id: int, b_id: str, idx: int):
-    bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+    bot = await _find_premium_bot(b_id)
     if not bot:
         return await client.send_message(user_id, "❌ Bot not found.", reply_markup=ReplyKeyboardRemove())
     cfg = bot.get("config", {}) or {}
@@ -4462,7 +4472,7 @@ async def _bulk_add_delivery_channels(client, user_id: int):
 
 
 async def _menu_media_bulk_add_flow(client, user_id: int, b_id: str):
-    bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+    bot = await _find_premium_bot(b_id)
     if not bot:
         return await client.send_message(user_id, "❌ Bot not found.", reply_markup=ReplyKeyboardRemove())
 
@@ -4518,7 +4528,7 @@ async def _menu_media_bulk_add_flow(client, user_id: int, b_id: str):
             continue
 
         # Re-fetch bot to check current count
-        bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+        bot = await _find_premium_bot(b_id)
         items = _cfg_list(bot.get("config", {}), "menu_media")
         if len([x for x in items if isinstance(x, dict)]) >= 30:
             await client.send_message(user_id, "⚠️ Limit of 30 media items reached. Stopping bulk upload.")
@@ -4568,7 +4578,7 @@ async def _bot_broadcast_flow(client, user_id: int, b_id: str):
     import time
     from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
     
-    bt = await db.db.premium_bots.find_one({"id": int(b_id)})
+    bt = await _find_premium_bot(b_id)
     if not bt:
         return await client.send_message(user_id, "❌ Bot not found in Database.")
     

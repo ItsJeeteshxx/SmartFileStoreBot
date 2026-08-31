@@ -604,12 +604,10 @@ def _make_qr_png_bytes(data: str, *, logo_png_bytes: bytes | None = None) -> byt
 
 
     out = io.BytesIO()
-
     out.name = "upi_qr.png"
-
     img.save(out, format="PNG", optimize=True)
-
-    return out.getvalue()
+    out.seek(0)
+    return out
 
 
 
@@ -6923,25 +6921,25 @@ async def _process_callback(client, query):
             await query.message.delete()
 
             try:
-
                 if qr_card:
-
-                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
-
+                    if isinstance(qr_card, (bytes, bytearray)):
+                        photo_obj = io.BytesIO(qr_card)
+                        photo_obj.name = "upi_qr.png"
+                        photo_obj.seek(0)
+                    else:
+                        photo_obj = qr_card
+                        if hasattr(photo_obj, 'seek'):
+                            photo_obj.seek(0)
+                        if not getattr(photo_obj, 'name', None):
+                            photo_obj.name = "upi_qr.png"
+                    await client.send_photo(user_id, photo=photo_obj, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
                 else:
-
                     import urllib.parse
-
                     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=1&data={urllib.parse.quote(upi_uri)}"
-
                     await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
-
             except Exception as e:
-
                 logger.warning(f"UPI payment screen send failed: {e}")
-
                 kb2 = [[InlineKeyboardButton(f"☑️ {'पेमेंट हो गया' if lang=='hi' else _sc('PAYMENT DONE')}", callback_data=f"mb#upi_done#{s_id}")]]
-
                 await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb2))
 
 
@@ -7297,8 +7295,17 @@ async def _process_callback(client, query):
             try:
                 if qr_card:
                     logger.info("[PAY2] Sending generated UPI QR Card photo...")
-                    # We remove parse_mode or check if it throws
-                    await client.send_photo(user_id, photo=qr_card, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+                    if isinstance(qr_card, (bytes, bytearray)):
+                        photo_obj = io.BytesIO(qr_card)
+                        photo_obj.name = "upi_qr.png"
+                        photo_obj.seek(0)
+                    else:
+                        photo_obj = qr_card
+                        if hasattr(photo_obj, 'seek'):
+                            photo_obj.seek(0)
+                        if not getattr(photo_obj, 'name', None):
+                            photo_obj.name = "upi_qr.png"
+                    await client.send_photo(user_id, photo=photo_obj, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
                     logger.info("[PAY2] Photo sent successfully.")
                 else:
                     import urllib.parse
