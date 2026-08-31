@@ -3436,9 +3436,9 @@ async def _process_pass_callback(client, query):
                 '<emoji id="5456140674028019486">⚡️</emoji> <b>सहायता और सपोर्ट समय:</b>\n'
                 '• <b>सपोर्ट समय:</b> सुबह 8:00 AM से शाम 7:00 PM IST\n'
                 '• <b>जवाब मिलने का समय:</b> 30 मिनट से 2 घंटे तक का समय लग सकता है\n'
-                '• यदि आपको कोई समस्या आ रही है या पेमेंट वेरिफाई नहीं हुआ, तो नीचे दिए गए <b>हेल्प और सहायता</b> बटन पर टैप करके सपोर्ट टीम से संपर्क करें!'
+                '• यदि आपको कोई समस्या आ रही है या पेमेंट वेरिफाई नहीं हुआ, तो नीचे दिए गए <b>सहायता</b> बटन पर टैप करके सपोर्ट टीम से संपर्क करें!'
             )
-            lbl_support = "हेल्प और सहायता"
+            lbl_support = "सहायता"
             lbl_back = "← वापस"
         else:
             guide_text = (
@@ -3465,9 +3465,9 @@ async def _process_pass_callback(client, query):
                 '<emoji id="5456140674028019486">⚡️</emoji> <b>Support & Assistance:</b>\n'
                 '• <b>Support Hours:</b> 8:00 AM to 7:00 PM IST\n'
                 '• <b>Expected Response Time:</b> 30 minutes to 2 hours\n'
-                '• If your payment is delayed or you need any help, tap the <b>Help & Support</b> button below to message our support desk!'
+                '• If your payment is delayed or you need any help, tap the <b>Support</b> button below to message our support desk!'
             )
-            lbl_support = "Help & Support"
+            lbl_support = "Support"
             lbl_back = "← Back"
 
         guide_buttons = [
