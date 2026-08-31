@@ -2370,20 +2370,33 @@ async def settings_query(bot, query):
 
     txns = details.get('transactions', [])
     txns_text = ""
+    txn_nav_row = []
+    api_txn_nav_row = []
+
+    def get_circle_digit(num: int) -> str:
+        circle_map = {
+            1: "➊", 2: "➋", 3: "➌", 4: "➍", 5: "➎",
+            6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓",
+            11: "⓫", 12: "⓬", 13: "⓭", 14: "⓮", 15: "⓯",
+            16: "⓰", 17: "⓱", 18: "⓲", 19: "⓳", 20: "⓴"
+        }
+        return circle_map.get(num, f"[{num}]")
+
     if not txns:
         if active:
             txns_text = "<i>No gateway transactions found. (Access granted manually by Bot Admin).</i>\n"
         else:
             txns_text = "<i>No paid transactions found.</i>\n"
     else:
-        CIRCLE_DIGITS = {
-            1: "➊", 2: "➋", 3: "➌", 4: "➍", 5: "➎",
-            6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓",
-            11: "⓫", 12: "⓬", 13: "⓭", 14: "⓮", 15: "⓯",
-            16: "⓰", 17: "⓱", 18: "⓲", 19: "⓳", 20: "⓴"
-        }
+        import math
+        per_page = 5
+        total_txn_pages = max(1, math.ceil(len(txns) / per_page))
+        txn_page = max(0, min(txn_page, total_txn_pages - 1))
+        current_txns = txns[txn_page * per_page : (txn_page + 1) * per_page]
+
         t_items = []
-        for idx, txn in enumerate(txns[:10], 1):
+        for i, txn in enumerate(current_txns, 1):
+            global_idx = (txn_page * per_page) + i
             t_time = txn.get('time', 0)
             t_str = format_dt(t_time, show_ist=False)
             
@@ -2410,8 +2423,8 @@ async def settings_query(bot, query):
                 gw = raw_gw or "Cashfree"
 
             oid = txn.get('id', 'N/A')
-            c_badge = CIRCLE_DIGITS.get(idx, f"[{idx}]")
-            sep_line = f"┄┄┄┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄┄┄┄"
+            c_badge = get_circle_digit(global_idx)
+            sep_line = f"┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄"
 
             st = txn.get('status', 'PAID')
             if st == 'PAID':
@@ -2422,14 +2435,32 @@ async def settings_query(bot, query):
                 st_str = '<emoji id="5258113901106580375">⏳</emoji> ( Pending )'
 
             t_items.append(
-                f"{sep_line}\n"
+                f"{sep_line}\n\n"
                 f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
                 f"<emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                 f"<emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
                 f"<emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
                 f"<emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
             )
-        txns_text = "\n".join(t_items)
+        txns_text = "\n\n\n".join(t_items)
+
+        if total_txn_pages > 1:
+            if txn_page > 0:
+                txn_nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page - 1}"))
+                api_txn_nav_row.append({"text": "◀️ Prev", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page - 1}"})
+            else:
+                txn_nav_row.append(InlineKeyboardButton("⏺", callback_data=f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page}"))
+                api_txn_nav_row.append({"text": "⏺", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page}"})
+
+            txn_nav_row.append(InlineKeyboardButton(f"{txn_page + 1}/{total_txn_pages}", callback_data=f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page}"))
+            api_txn_nav_row.append({"text": f"{txn_page + 1}/{total_txn_pages}", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page}"})
+
+            if txn_page < total_txn_pages - 1:
+                txn_nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page + 1}"))
+                api_txn_nav_row.append({"text": "Next ▶️", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page + 1}"})
+            else:
+                txn_nav_row.append(InlineKeyboardButton("⏺", callback_data=f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page}"))
+                api_txn_nav_row.append({"text": "⏺", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}_{txn_page}"})
 
     body = (
         f'<emoji id="5778145208411624388">👤</emoji> <b>Costumer Overview</b>\n'
@@ -2454,6 +2485,10 @@ async def settings_query(bot, query):
     
     buttons = []
     api_buttons = []
+    if txn_nav_row:
+        buttons.append(txn_nav_row)
+        api_buttons.append(api_txn_nav_row)
+
     plans_list = list(configured_prices.keys())[:3]
     
     # 1. Dynamic Grant rows (2 per row, max 3 starting plans + Custom with icon_custom_emoji_id="5882207227997066107")

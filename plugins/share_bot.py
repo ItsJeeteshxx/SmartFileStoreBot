@@ -3899,14 +3899,34 @@ async def _process_pass_callback(client, query):
         else:
             status_line = f'<emoji id="6264989883241076562">⚪</emoji> <b>{"कोई एक्टिव पास नहीं" if is_hi else "No Active Pass"}</b>' 
 
-        txns = await db.get_user_pass_transactions(user_id, limit=5)
-        if txns:
-            CIRCLE_DIGITS = {
+        parts = data.split("_")
+        t_page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+
+        all_txns = await db.get_user_pass_transactions(user_id, limit=100, paid_only=False)
+
+        per_page = 5
+        import math
+        total_pages = max(1, math.ceil(len(all_txns) / per_page)) if all_txns else 1
+        t_page = max(0, min(t_page, total_pages - 1))
+
+        txns = all_txns[t_page * per_page : (t_page + 1) * per_page] if all_txns else []
+
+        def get_circle_digit(num: int) -> str:
+            circle_map = {
                 1: "➊", 2: "➋", 3: "➌", 4: "➍", 5: "➎",
-                6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓"
+                6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓",
+                11: "⓫", 12: "⓬", 13: "⓭", 14: "⓮", 15: "⓯",
+                16: "⓰", 17: "⓱", 18: "⓲", 19: "⓳", 20: "⓴"
             }
+            return circle_map.get(num, f"[{num}]")
+
+        nav_buttons = []
+        api_nav_buttons = []
+
+        if txns:
             t_items = []
-            for idx, txn in enumerate(txns[:5], 1):
+            for i, txn in enumerate(txns, 1):
+                global_idx = (t_page * per_page) + i
                 t_time = txn.get('time', 0)
                 try:
                     import datetime, pytz
@@ -3940,12 +3960,12 @@ async def _process_pass_callback(client, query):
                     st_str = '<emoji id="5258113901106580375">⏳</emoji> ( पेंडिंग )' if is_hi else '<emoji id="5258113901106580375">⏳</emoji> ( Pending )'
 
                 oid = txn.get('id', 'N/A')
-                c_badge = CIRCLE_DIGITS.get(idx, f"[{idx}]")
-                sep_line = f"┄┄┄┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄┄┄┄"
+                c_badge = get_circle_digit(global_idx)
+                sep_line = f"┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄"
 
                 if is_hi:
                     t_items.append(
-                        f"{sep_line}\n"
+                        f"{sep_line}\n\n"
                         f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>ऑर्डर आईडी:-</b> <code>{oid}</code>\n"
                         f"<emoji id=\"6021435576513730578\">👑</emoji> <b>प्लान:-</b> {str(dur_verb).title()} ({amt})\n"
                         f"<emoji id=\"6030443364178992166\">💳</emoji> <b>पेमेंट मोड:-</b> {gw}\n"
@@ -3954,14 +3974,37 @@ async def _process_pass_callback(client, query):
                     )
                 else:
                     t_items.append(
-                        f"{sep_line}\n"
+                        f"{sep_line}\n\n"
                         f"<emoji id=\"6021683099773966917\">🆔</emoji> <b>Order ID:-</b> <code>{oid}</code>\n"
                         f"<emoji id=\"6021435576513730578\">👑</emoji> <b>Plan:-</b> {str(dur_verb).title()} ({amt})\n"
                         f"<emoji id=\"6030443364178992166\">💳</emoji> <b>Payment Mode:-</b> {gw}\n"
                         f"<emoji id=\"5807800879553715710\">📊</emoji> <b>Status:-</b> {st_str}\n"
                         f"<emoji id=\"6023880246128810031\">📅</emoji> <b>TXN Date:-</b> <code>{t_str}</code>"
                     )
-            txns_body = "\n".join(t_items)
+            txns_body = "\n\n\n".join(t_items)
+
+            if total_pages > 1:
+                p_row = []
+                p_api_row = []
+                if t_page > 0:
+                    p_row.append(InlineKeyboardButton("◀️ Prev" if not is_hi else "◀️ पिछला", callback_data=f"pass#my_transactions_{t_page - 1}"))
+                    p_api_row.append({"text": "◀️ Prev" if not is_hi else "◀️ पिछला", "callback_data": f"pass#my_transactions_{t_page - 1}"})
+                else:
+                    p_row.append(InlineKeyboardButton("⏺", callback_data=f"pass#my_transactions_{t_page}"))
+                    p_api_row.append({"text": "⏺", "callback_data": f"pass#my_transactions_{t_page}"})
+
+                p_row.append(InlineKeyboardButton(f"{t_page + 1}/{total_pages}", callback_data=f"pass#my_transactions_{t_page}"))
+                p_api_row.append({"text": f"{t_page + 1}/{total_pages}", "callback_data": f"pass#my_transactions_{t_page}"})
+
+                if t_page < total_pages - 1:
+                    p_row.append(InlineKeyboardButton("Next ▶️" if not is_hi else "अगला ▶️", callback_data=f"pass#my_transactions_{t_page + 1}"))
+                    p_api_row.append({"text": "Next ▶️" if not is_hi else "अगला ▶️", "callback_data": f"pass#my_transactions_{t_page + 1}"})
+                else:
+                    p_row.append(InlineKeyboardButton("⏺", callback_data=f"pass#my_transactions_{t_page}"))
+                    p_api_row.append({"text": "⏺", "callback_data": f"pass#my_transactions_{t_page}"})
+
+                nav_buttons.append(p_row)
+                api_nav_buttons.append(p_api_row)
         else:
             txns_body = "आपके खाते पर कोई पिछला लेनदेन नहीं मिला।" if is_hi else "No previous transactions found on your account."
 
@@ -3986,8 +4029,12 @@ async def _process_pass_callback(client, query):
                 "<b>Recent Transactions:</b>\n\n"
                 f"{txns_body}"
             )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")]])
-        api_kb = [[{"text": back_lbl, "callback_data": "pass#unlock_menu"}]]
+        kb_rows = list(nav_buttons)
+        kb_rows.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
+        api_kb_rows = list(api_nav_buttons)
+        api_kb_rows.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
+        kb = InlineKeyboardMarkup(kb_rows)
+        api_kb = api_kb_rows
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
             except Exception: pass
