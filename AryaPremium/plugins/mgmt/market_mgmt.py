@@ -1549,25 +1549,37 @@ async def market_callback(client, query):
             if bot_mode == "show_store":
                 kb.append([InlineKeyboardButton("🔄 Auto Index", callback_data=f"mk#bot_show_idx_{b_id}")])
 
+            ad_emoji = "5413643931139219521" if ad_val > 0 else "5413424119007978384"
+            prot_emoji = "5413643931139219521" if cfg.get("protect", False) else "5413424119007978384"
+
             kb.extend([
-                [InlineKeyboardButton(f"📋 Bot Log Channel: {log_ch_str}", callback_data=f"mk#bot_set_logch_{b_id}")],
-                [InlineKeyboardButton("📊 " + utils.to_smallcap('Detailed Live Stats'), callback_data=f"mk#bot_stats_{b_id}")],
-                [InlineKeyboardButton("🔄 Transfer Stories to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}")],
-                [InlineKeyboardButton("📢 " + utils.to_smallcap('Broadcast Message'), callback_data=f"mk#bot_broadcast_{b_id}")],
-                [InlineKeyboardButton(utils.to_smallcap('Welcome & About'), callback_data=f"mk#p_wa_{b_id}")],
-                [InlineKeyboardButton(utils.to_smallcap('Delivery Report Msg'), callback_data=f"mk#pset_{b_id}_delivery_report")],
-                [InlineKeyboardButton(utils.to_smallcap('Custom Caption'), callback_data=f"mk#pset_{b_id}_caption")],
-                [InlineKeyboardButton(utils.to_smallcap('Fetching Media (GIF/Img)'), callback_data=f"mk#pset_{b_id}_fetching_media")],
-                [InlineKeyboardButton(f"Auto-Delete: {ad_state}", callback_data=f"mk#p_autodel_{b_id}"),
-                 InlineKeyboardButton(f"Protection: {prot_state}", callback_data=f"mk#p_protect_{b_id}")],
-                [InlineKeyboardButton(f"UPI: {upi_state}", callback_data=f"mk#p_upi_{b_id}")],
+                [_ikb("Logs Channel", callback_data=f"mk#bot_set_logch_{b_id}", icon_custom_emoji_id="6021454607513819417")],
+                [_ikb("Detailed Live Stats", callback_data=f"mk#bot_stats_{b_id}", icon_custom_emoji_id="5936143551854285132")],
+                [_ikb("Transfer to Another Bot", callback_data=f"mk#bot_migrate_menu_{b_id}", icon_custom_emoji_id="5807492110059838726")],
+                [_ikb("Broadcast", callback_data=f"mk#bot_broadcast_{b_id}", icon_custom_emoji_id="6021418126061605425")],
+                [_ikb("Welcome & About", callback_data=f"mk#p_wa_{b_id}", icon_custom_emoji_id="6041921818896372382")],
+                [_ikb("Delivery Report MSG", callback_data=f"mk#pset_{b_id}_delivery_report", icon_custom_emoji_id="6023694913995020551")],
+                [_ikb("Custom Caption", callback_data=f"mk#pset_{b_id}_caption", icon_custom_emoji_id="6019155812167981039")],
             ])
+
+            if bot_mode != "show_store":
+                kb.append([_ikb("Fetching Media (GIF/Img)", callback_data=f"mk#pset_{b_id}_fetching_media")])
+
+            kb.extend([
+                [
+                    _ikb("Auto Delete", callback_data=f"mk#p_autodel_{b_id}", icon_custom_emoji_id=ad_emoji),
+                    _ikb("Protection", callback_data=f"mk#p_protect_{b_id}", icon_custom_emoji_id=prot_emoji)
+                ],
+                [_ikb("UPI Config", callback_data=f"mk#p_upi_menu_{b_id}", icon_custom_emoji_id="6021637109264160908")],
+            ])
+
             # Mini App Deep Links toggle — only in full/normal mode, not in show_store
             if bot_mode != "show_store":
                 kb.append([InlineKeyboardButton(f"📱 Mini App Deep Links: {ma_links_state}", callback_data=f"mk#bot_toggle_malinks_{b_id}")])
+
             kb.extend([
-                [InlineKeyboardButton(utils.to_smallcap('Remove Bot'), callback_data=f"mk#bot_confirm_rm_{b_id}")],
-                [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data="mk#accounts")],
+                [_ikb("Remove Bot", callback_data=f"mk#bot_confirm_rm_{b_id}", icon_custom_emoji_id="6030400221232501136")],
+                [InlineKeyboardButton("« Back", callback_data="mk#accounts")],
             ])
 
             # Mode emoji: green for show_store/full, red for miniapp/off
@@ -2086,11 +2098,12 @@ async def market_callback(client, query):
                     InlineKeyboardButton("21H", callback_data=f"mk#p_autodel_{b_id}_75600")],
                    [InlineKeyboardButton("24H", callback_data=f"mk#p_autodel_{b_id}_86400"),
                     InlineKeyboardButton("1D", callback_data=f"mk#p_autodel_{b_id}_86400")],
-                   [InlineKeyboardButton("« " + utils.to_smallcap("Back"), callback_data=f"mk#bot_view_{b_id}")]
+                   [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")]
                 ]
                 await query.message.edit_text(
-                    f"<b>⏳ Auto-Delete Configuration</b>\n\n"
-                    f"Current setting: <b>{curr_str}</b>\n\n"
+                    f'<emoji id="5413643931139219521">⏳</emoji> <b>Auto Delete Configuration</b>\n'
+                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                    f"<b>Current setting:</b> <code>{curr_str}</code>\n\n"
                     f"Select the time after which delivered files should be automatically deleted from the user's DM:",
                     reply_markup=InlineKeyboardMarkup(kb)
                 )
@@ -2118,28 +2131,73 @@ async def market_callback(client, query):
             query.data = f"mk#bot_view_{b_id}"
             return await market_callback(client, query)
 
-        elif cmd.startswith("p_upi_"):
-            b_id = cmd.split("_")[2]
+        elif cmd.startswith("p_upi_menu_"):
+            b_id = cmd.replace("p_upi_menu_", "", 1)
+            bt = await _find_premium_bot(b_id)
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            cfg = bt.get("config", {}) or {}
+            upi_val = cfg.get("upi_enabled", None)
+            if upi_val is True:
+                upi_state = "🟢 FORCE ON"
+                tgl_emoji = "5413643931139219521"
+            elif upi_val is False:
+                upi_state = "🔴 OFF"
+                tgl_emoji = "5413424119007978384"
+            else:
+                upi_state = "🟡 Auto (Schedule Active)"
+                tgl_emoji = "5413643931139219521"
+
+            upi_name = cfg.get("upi_name") or "Not Set (Default)"
+            upi_redirect = cfg.get("upi_redirect") or "Not Set (Default)"
+            logo_set = "✅ Custom Logo Configured" if cfg.get("logo") else "❌ Default Logo"
+
+            kb = [
+                [_ikb(f"UPI Status: {upi_state}", callback_data=f"mk#p_upi_toggle_{b_id}", icon_custom_emoji_id=tgl_emoji)],
+                [_ikb("UPI Payee Name", callback_data=f"mk#pset_{b_id}_upi_name", icon_custom_emoji_id="6030400221232501136"),
+                 _ikb("Open-App Link", callback_data=f"mk#pset_{b_id}_upi_redirect", icon_custom_emoji_id="5312536423156654273")],
+                [_ikb("Bot Logo (UPI QR)", callback_data=f"mk#pset_{b_id}_logo", icon_custom_emoji_id="6026089641730382702")],
+                [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")],
+            ]
+
+            await query.message.edit_text(
+                f'<emoji id="6021637109264160908">🪙</emoji> <b>UPI Configuration</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                f'<b>» Bot:</b> @{bt.get("username")}\n'
+                f'<b>» UPI Status:</b> <code>{upi_state}</code>\n'
+                f'<b>» Payee Name:</b> <code>{upi_name}</code>\n'
+                f'<b>» Open-App Link:</b> <code>{upi_redirect}</code>\n'
+                f'<b>» Bot Logo (QR):</b> <code>{logo_set}</code>\n\n'
+                f'<i>Manage direct UPI payment settings, payee details, and enable/disable UPI below:</i>',
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        elif cmd.startswith("p_upi_toggle_"):
+            b_id = cmd.replace("p_upi_toggle_", "", 1)
             bt = await _find_premium_bot(b_id)
             if not bt: return await _safe_answer(query, "Not found!")
             cfg = bt.get("config", {}) or {}
-            curr = cfg.get("upi_enabled", None)  # None=Auto, False=OFF, True=Force ON
-            
+            curr = cfg.get("upi_enabled", None)
+
             # Cycle: Auto -> OFF -> Force ON -> Auto
-            if curr is None:        # Auto -> OFF
+            if curr is None:
                 cfg["upi_enabled"] = False
-                new_label = "OFF (Manually Disabled)"
-            elif curr is False:     # OFF -> Force ON
+                new_label = "OFF (Disabled)"
+            elif curr is False:
                 cfg["upi_enabled"] = True
-                new_label = "FORCE ON (Schedule Override)"
-            else:                   # Force ON -> Auto
+                new_label = "FORCE ON"
+            else:
                 cfg.pop("upi_enabled", None)
                 cfg["upi_enabled"] = None
-                new_label = "Auto (9 PM - 6 AM off)"
-            
+                new_label = "Auto (Schedule Active)"
+
             await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config": cfg}})
             await _safe_answer(query, f"UPI set to: {new_label}", show_alert=True)
-            query.data = f"mk#bot_view_{b_id}"
+            query.data = f"mk#p_upi_menu_{b_id}"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("p_upi_"):
+            b_id = cmd.split("_")[2]
+            query.data = f"mk#p_upi_menu_{b_id}"
             return await market_callback(client, query)
 
         elif cmd.startswith("bot_rm_"):
@@ -2439,35 +2497,33 @@ async def market_callback(client, query):
         elif cmd.startswith("p_wa_"):
             b_id = cmd.split("_")[2]
             kb = [
-                [InlineKeyboardButton(utils.to_smallcap('Welcome Msg'), callback_data=f"mk#welcome_cfg_{b_id}")],
-                [InlineKeyboardButton(utils.to_smallcap('Menu Media (Photos/GIF/Video)'), callback_data=f"mk#menu_media_{b_id}")],
-                [InlineKeyboardButton(utils.to_smallcap('UPI Open-App Link'), callback_data=f"mk#pset_{b_id}_upi_redirect"),
-                 InlineKeyboardButton(utils.to_smallcap('UPI Payee Name'), callback_data=f"mk#pset_{b_id}_upi_name")],
-                [InlineKeyboardButton(utils.to_smallcap('Bot Logo (UPI QR)'), callback_data=f"mk#pset_{b_id}_logo")],
-                [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data=f"mk#bot_view_{b_id}")],
+                [_ikb("Welcome Msg", callback_data=f"mk#welcome_cfg_{b_id}", icon_custom_emoji_id="6041921818896372382")],
+                [_ikb("Menu Media", callback_data=f"mk#menu_media_{b_id}", icon_custom_emoji_id="6026089641730382702")],
+                [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")],
             ]
             await query.message.edit_text(
-                "<b>❪ WELCOME & MENU ❫</b>\n\n"
-                "Configure only what is used in delivery bot menu:\n"
-                "• Welcome Message\n"
-                "• Menu Media (up to 10, random)\n\n"
-                "<i>UPI options below are for payment button behavior.</i>",
+                f'<emoji id="6041921818896372382">📜</emoji> <b>Welcome & About</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                f"Configure welcome text and menu media for your delivery store bot:\n\n"
+                f"• <b>Welcome Msg:</b> Customize welcome text, about description, and quote\n"
+                f"• <b>Menu Media:</b> Add random photos/GIFs/videos shown on main menu",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
 
         elif cmd.startswith("welcome_cfg_"):
             b_id = cmd.split("_")[2]
             kb = [
-                [InlineKeyboardButton(utils.to_smallcap('Welcome Msg'), callback_data=f"mk#pset_{b_id}_welcome")],
-                [InlineKeyboardButton(utils.to_smallcap('About'), callback_data=f"mk#pset_{b_id}_about")],
-                [InlineKeyboardButton(utils.to_smallcap('Quote'), callback_data=f"mk#pset_{b_id}_quote"),
-                 InlineKeyboardButton(utils.to_smallcap('Quote Author'), callback_data=f"mk#pset_{b_id}_quote_author")],
-                [InlineKeyboardButton("🔄 " + utils.to_smallcap('Reset to Default'), callback_data=f"mk#welcome_reset_{b_id}")],
-                [InlineKeyboardButton(utils.to_smallcap('Back'), callback_data=f"mk#p_wa_{b_id}")],
+                [InlineKeyboardButton("Welcome Msg", callback_data=f"mk#pset_{b_id}_welcome")],
+                [InlineKeyboardButton("About", callback_data=f"mk#pset_{b_id}_about")],
+                [InlineKeyboardButton("Quote", callback_data=f"mk#pset_{b_id}_quote"),
+                 InlineKeyboardButton("Quote Author", callback_data=f"mk#pset_{b_id}_quote_author")],
+                [InlineKeyboardButton("🔄 Reset to Default", callback_data=f"mk#welcome_reset_{b_id}")],
+                [InlineKeyboardButton("« Back", callback_data=f"mk#p_wa_{b_id}")],
             ]
             await query.message.edit_text(
-                "<b>❪ WELCOME MESSAGE SETTINGS ❫</b>\n\n"
-                "Set each block shown in delivery main menu card, or reset all text to default.",
+                f'<emoji id="6041921818896372382">📜</emoji> <b>Welcome Message Settings</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                f"Set each block shown in delivery main menu card, or reset all text to default.",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
 
@@ -2533,8 +2589,12 @@ async def market_callback(client, query):
                 # Backward compatible: show legacy single image as item 1 (read-only hint)
                 items = [{"type": "photo", "file_id": cfg.get("menuimg"), "legacy": True}]
 
-            lines = [f"<b>🖼️ Menu Media</b>\n\n<b>Bot:</b> @{bot.get('username', '')}\n"]
-            lines.append("<i>Shown randomly to users on /start. Supports Photo, GIF, Video. Max 30 items.</i>\n")
+            lines = [
+                f'<emoji id="6026089641730382702">🖼️</emoji> <b>Menu Media</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                f"<b>» Bot:</b> @{bot.get('username', '')}\n"
+                f"<i>Shown randomly to users on /start. Supports Photo, GIF, Video. Max 30 items.</i>\n"
+            ]
             if items:
                 for i, it in enumerate(items, start=1):
                     t = (it or {}).get("type", "media")
@@ -4097,14 +4157,48 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
     # Keep this minimal: no reply-keyboard "selection menu" unless absolutely required.
     if key == "logo":
         note = "<i>Upload a Photo to be used as your Bot Logo.</i>"
+        header_emoji = "6026089641730382702"
+        pretty_title = "Bot Logo (UPI QR)"
     elif key == "delivery_report":
         note = "<b>Available Variables:</b>\n<code>{story_name}</code>\n<code>{sent}</code>\n<code>{failed}</code>\n<code>{time}</code>"
+        header_emoji = "6023694913995020551"
+        pretty_title = "Delivery Report MSG"
     elif key == "caption":
         note = "<b>Available Variables:</b>\n<code>{story}</code>, <code>{price}</code>, <code>{original_caption}</code>, <code>{file_name}</code>\n<i>Allows standard HTML (e.g. &lt;b&gt;bold&lt;/b&gt;)</i>"
+        header_emoji = "6019155812167981039"
+        pretty_title = "Custom Caption"
+    elif key == "welcome":
+        note = "<i>Allows standard HTML syntax formatting.</i>"
+        header_emoji = "6041921818896372382"
+        pretty_title = "Welcome Message"
+    elif key == "about":
+        note = "<i>Allows standard HTML syntax formatting.</i>"
+        header_emoji = "6041921818896372382"
+        pretty_title = "About Text"
+    elif key == "quote":
+        note = "<i>Allows standard HTML syntax formatting.</i>"
+        header_emoji = "6041921818896372382"
+        pretty_title = "Quote Text"
+    elif key == "quote_author":
+        note = "<i>Allows standard HTML syntax formatting.</i>"
+        header_emoji = "6041921818896372382"
+        pretty_title = "Quote Author"
+    elif key == "upi_name":
+        note = "<i>Send the Payee Name to display on UPI payments.</i>"
+        header_emoji = "6030400221232501136"
+        pretty_title = "UPI Payee Name"
+    elif key == "upi_redirect":
+        note = "<i>Send the HTTPS redirect base URL, e.g. <code>https://aryastoriesupi.vercel.app</code></i>"
+        header_emoji = "5312536423156654273"
+        pretty_title = "UPI Open-App Link"
+    elif key == "fetching_media":
+        note = "<i>Send a Photo, GIF, or Video to be shown while fetching files.</i>"
+        header_emoji = "6026089641730382702"
+        pretty_title = "Fetching Media (GIF/Img)"
     else:
         note = "<i>Allows standard HTML syntax formatting.</i>"
-
-    pretty_label = label.replace('_', ' ').title()
+        header_emoji = "6021637109264160908"
+        pretty_title = label.replace('_', ' ').title()
 
     extra_note = ""
     if key in ["welcome", "about", "quote", "quote_author"]:
@@ -4113,8 +4207,9 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
     msg = await native_ask(
         client,
         user_id,
-        f"<b>❪ SET: {utils.to_smallcap(pretty_label)} ❫</b>\n\n"
-        f"Send the new {pretty_label} for your Store Bot.\n"
+        f'<emoji id="{header_emoji}">✏️</emoji> <b>{pretty_title}</b>\n'
+        f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+        f"Send the new {pretty_title} for your Store Bot.\n"
         f"{extra_note}"
         f"Tap <b>🔄 Reset to Default</b> or send <code>/reset</code> to revert to default.\n\n"
         f"{note}",
@@ -4124,9 +4219,13 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
     txt = getattr(msg, 'text', "") or ""
     if "Cancel" in txt or "/cancel" in txt:
         back_target = f"mk#bot_view_{b_id}"
-        if key in ["welcome", "about", "quote", "quote_author", "upi_redirect", "upi_name", "logo", "menu_media"]:
+        if key in ["upi_redirect", "upi_name", "logo"]:
+            back_target = f"mk#p_upi_menu_{b_id}"
+        elif key in ["welcome", "about", "quote", "quote_author"]:
+            back_target = f"mk#welcome_cfg_{b_id}"
+        elif key in ["menu_media"]:
             back_target = f"mk#p_wa_{b_id}"
-        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton(utils.to_smallcap("Back"), callback_data=back_target)]])
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=back_target)]])
         return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=back_kb)
     
     if txt == "/reset" or "Reset" in txt or txt.strip().lower() in ("reset", "/reset"):
@@ -4134,10 +4233,14 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
         tmp_rm = await client.send_message(user_id, "...", reply_markup=ReplyKeyboardRemove())
         await tmp_rm.delete()
         back_target = f"mk#bot_view_{b_id}"
-        if key in ["welcome", "about", "quote", "quote_author", "upi_redirect", "upi_name", "logo", "menu_media"]:
+        if key in ["upi_redirect", "upi_name", "logo"]:
+            back_target = f"mk#p_upi_menu_{b_id}"
+        elif key in ["welcome", "about", "quote", "quote_author"]:
+            back_target = f"mk#welcome_cfg_{b_id}"
+        elif key in ["menu_media"]:
             back_target = f"mk#p_wa_{b_id}"
-        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton(utils.to_smallcap("Back"), callback_data=back_target)]])
-        return await client.send_message(user_id, f"<i>✅ {label} has been Reset to default.</i>", reply_markup=back_kb)
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=back_target)]])
+        return await client.send_message(user_id, f"<i>✅ {pretty_title} has been Reset to default.</i>", reply_markup=back_kb)
         
     val = msg.text or msg.caption or ""
     if key in ["logo", "fetching_media"]:
@@ -4147,7 +4250,7 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
         elif getattr(msg, "video", None): media_type = "video"
 
         if not media_type:
-            return await client.send_message(user_id, f"❌ Valid Photo/GIF/Video required for {pretty_label}.", reply_markup=ReplyKeyboardRemove())
+            return await client.send_message(user_id, f"❌ Valid Photo/GIF/Video required for {pretty_title}.", reply_markup=ReplyKeyboardRemove())
 
         # Re-upload via the target store bot (file_id is bot-specific).
         from plugins.userbot.market_seller import market_clients
@@ -4210,11 +4313,15 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
     await tmp_m.delete()
 
     back_target = f"mk#bot_view_{b_id}"
-    if key in ["welcome", "about", "quote", "quote_author", "upi_redirect", "upi_name", "logo", "menu_media"]:
+    if key in ["upi_redirect", "upi_name", "logo"]:
+        back_target = f"mk#p_upi_menu_{b_id}"
+    elif key in ["welcome", "about", "quote", "quote_author"]:
+        back_target = f"mk#welcome_cfg_{b_id}"
+    elif key in ["menu_media"]:
         back_target = f"mk#p_wa_{b_id}"
-    back_kb = InlineKeyboardMarkup([[InlineKeyboardButton(utils.to_smallcap("Back"), callback_data=back_target)]])
+    back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=back_target)]])
 
-    await client.send_message(user_id, f"<i>✅ {label} successfully updated!</i>", reply_markup=back_kb)
+    await client.send_message(user_id, f"<i>✅ {pretty_title} successfully updated!</i>", reply_markup=back_kb)
 
 
 async def _menu_media_add_flow(client, user_id: int, b_id: str):
