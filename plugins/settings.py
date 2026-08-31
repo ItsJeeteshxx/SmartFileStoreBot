@@ -2425,7 +2425,7 @@ async def settings_query(bot, query):
 
             oid = txn.get('id', 'N/A')
             c_badge = get_circle_digit(global_idx)
-            sep_line = f"┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄"
+            sep_line = f"┄┄┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄┄"
 
             st = txn.get('status', 'PAID')
             if st == 'PAID':

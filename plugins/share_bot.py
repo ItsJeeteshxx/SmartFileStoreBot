@@ -3961,7 +3961,7 @@ async def _process_pass_callback(client, query):
 
                 oid = txn.get('id', 'N/A')
                 c_badge = get_circle_digit(global_idx)
-                sep_line = f"┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄"
+                sep_line = f"┄┄┄┄┄┄┄┄┄┄┄ {c_badge} ┄┄┄┄┄┄┄┄┄┄"
 
                 if is_hi:
                     t_items.append(
