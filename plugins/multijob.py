@@ -1203,8 +1203,11 @@ async def resume_multi_jobs(user_id: int = None, bot=None, stagger_secs: float =
 
 def _mj_emoji(status: str) -> str:
     return {
-        "running": "🟢", "paused": "⏸",
-        "stopped": "🔴", "done": "✅", "error": "❌"
+        "running": '<emoji id="5413643931139219521">🟢</emoji>',
+        "paused": '<emoji id="5807622114424924272">⏸</emoji>',
+        "stopped": '<emoji id="5413424119007978384">🔴</emoji>',
+        "done": '<emoji id="6123181698193559460">✅</emoji>',
+        "error": '<emoji id="6030400221232501136">❌</emoji>'
     }.get(status, "⭘")
 
 
@@ -1214,26 +1217,33 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
 
     if not jobs:
         text = (
-            "<b>Multi Jobs</b>\n\n"
-            "<i>No jobs yet.\n\n"
-            "A <b>Multi Job</b> copies a specific range of messages from any "
-            "source channel/group to your target — fully in the background.\n\n"
-            "✅ All source types (public, private, DMs, topics)\n"
-            "✅ Dual destinations\n"
-            "✅ Multiple jobs run simultaneously\n"
-            "✅ Pause / Resume support\n"
-            "✅ Survives bot restarts\n\n"
-            "👇 Create your first Multi Job below!</i>"
+            f'<emoji id="6037622221625626773">📦</emoji> <b>Multi Jobs</b>\n'
+            f"────────────────────\n"
+            f"<i>No jobs yet.\n\n"
+            f"A <b>Multi Job</b> copies a specific range of messages from any "
+            f"source channel/group to your target — fully in the background.\n\n"
+            f'<emoji id="6123181698193559460">✅</emoji> All source types (public, private, DMs, topics)\n'
+            f'<emoji id="6123181698193559460">✅</emoji> Dual destinations\n'
+            f'<emoji id="6123181698193559460">✅</emoji> Multiple jobs run simultaneously\n'
+            f'<emoji id="6123181698193559460">✅</emoji> Pause / Resume support\n'
+            f'<emoji id="6123181698193559460">✅</emoji> Survives bot restarts\n\n'
+            f"👇 Create your first Multi Job below!</i>"
         )
-        btns = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Cʀᴇᴀᴛᴇ Mᴜʟᴛɪ Jᴏʙ", callback_data="mj#new")],
-            [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
-        ])
+        btns = [
+            [InlineKeyboardButton("➕ Create Multi Job", callback_data="mj#new")],
+            [InlineKeyboardButton("Back", callback_data="back")]
+        ]
+        api_btns = [
+            [{"text": "Create Multi Job", "callback_data": "mj#new", "icon_custom_emoji_id": "5807642902066634351"}],
+            [{"text": "Back", "callback_data": "back"}]
+        ]
     else:
         active_cnt = len([j for j in jobs if j.get("status") in ("running", "queued")])
         lines = [
-            "<b>Your Multi Jobs</b>\n"
-            f"🟢 <b>Active Tasks:</b> <code>{active_cnt}</code>\n"
+            f'<emoji id="6037622221625626773">📦</emoji> <b>Your Multi Jobs</b>\n'
+            f"────────────────────\n"
+            f'<emoji id="5413643931139219521">🟢</emoji> <b>Active Tasks:-</b> <code>{active_cnt}</code>\n'
+            f"────────────────────\n"
         ]
         for j in jobs:
             st   = _mj_emoji(j.get("status", "stopped"))
@@ -1249,18 +1259,20 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
             lines.append(
                 f"{st} <b>{name}</b>\n"
                 f"  └ <i>{j.get('from_title','?')} → {j.get('to_title','?')}{d2}</i>\n"
-                f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}  {fetched}  {cur}/{end}{err}\n"
+                f"  └ <code>[{j['job_id'][-6:]}]</code>  <emoji id=\"6123181698193559460\">✅</emoji>{fwd}  {fetched}  {cur}/{end}{err}\n"
             )
         import datetime
         now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
         text = "\n".join(lines) + f"\n\n<i>Last refreshed: {now_str}</i>"
 
         btns_list = []
+        api_btns_list = []
         for j in jobs:
             st   = j.get("status", "stopped")
             jid  = j["job_id"]
             short = jid[-6:]
             row = []
+            api_row = []
             is_queued = False
             if st == "running":
                 # MultiJob uses "running" even when waiting in AryaJobQueue
@@ -1271,34 +1283,68 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
                 except: pass
 
             if is_queued:
-                row.append(InlineKeyboardButton(f"⚡ Fᴏʀᴄᴇ [{short}]", callback_data=f"mj#force_ask#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Sᴛᴏᴘ [{short}]", callback_data=f"mj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⚡ Force [{short}]", callback_data=f"mj#force_ask#{jid}"))
+                api_row.append({"text": f"Force [{short}]", "callback_data": f"mj#force_ask#{jid}", "icon_custom_emoji_id": "5264895611517300926"})
+                row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"mj#stop#{jid}"))
+                api_row.append({"text": f"Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
             elif st == "running":
-                row.append(InlineKeyboardButton(f"⏸ Pᴀᴜsᴇ [{short}]", callback_data=f"mj#pause#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Sᴛᴏᴘ [{short}]", callback_data=f"mj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⏸ Pause [{short}]", callback_data=f"mj#pause#{jid}"))
+                api_row.append({"text": f"Pause [{short}]", "callback_data": f"mj#pause#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
+                row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"mj#stop#{jid}"))
+                api_row.append({"text": f"Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
             elif st == "paused":
-                row.append(InlineKeyboardButton(f"▶️ Rᴇsᴜᴍᴇ [{short}]", callback_data=f"mj#resume#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Sᴛᴏᴘ [{short}]", callback_data=f"mj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Resume [{short}]", callback_data=f"mj#resume#{jid}"))
+                api_row.append({"text": f"Resume [{short}]", "callback_data": f"mj#resume#{jid}", "icon_custom_emoji_id": "5413643931139219521"})
+                row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"mj#stop#{jid}"))
+                api_row.append({"text": f"Stop [{short}]", "callback_data": f"mj#stop#{jid}", "icon_custom_emoji_id": "5807622114424924272"})
             else:
-                row.append(InlineKeyboardButton(f"▶️ Sᴛᴀʀᴛ [{short}]", callback_data=f"mj#start#{jid}"))
-                row.append(InlineKeyboardButton(f"🔁 Rᴇsᴇᴛ [{short}]", callback_data=f"mj#reset#{jid}"))
-            row.append(InlineKeyboardButton(f"ℹ️ Iɴғᴏ [{short}]", callback_data=f"mj#info#{jid}"))
-            row.append(InlineKeyboardButton(f"✏️ Nᴀᴍᴇ [{short}]", callback_data=f"mj#rename#{jid}"))
-            row.append(InlineKeyboardButton(f"🗑 Dᴇʟᴇᴛᴇ [{short}]",  callback_data=f"mj#del#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Start [{short}]", callback_data=f"mj#start#{jid}"))
+                api_row.append({"text": f"Start [{short}]", "callback_data": f"mj#start#{jid}", "icon_custom_emoji_id": "5413643931139219521"})
+                row.append(InlineKeyboardButton(f"🔁 Reset [{short}]", callback_data=f"mj#reset#{jid}"))
+                api_row.append({"text": f"Reset [{short}]", "callback_data": f"mj#reset#{jid}", "icon_custom_emoji_id": "6030657343744644592"})
+            
+            row.append(InlineKeyboardButton(f"ℹ️ Info [{short}]", callback_data=f"mj#info#{jid}"))
+            api_row.append({"text": f"Info [{short}]", "callback_data": f"mj#info#{jid}", "icon_custom_emoji_id": "5807700854060357972"})
+            
+            row.append(InlineKeyboardButton(f"✏️ Name [{short}]", callback_data=f"mj#rename#{jid}"))
+            api_row.append({"text": f"Name [{short}]", "callback_data": f"mj#rename#{jid}", "icon_custom_emoji_id": "6024110353296660793"})
+            
+            row.append(InlineKeyboardButton(f"🗑 Delete [{short}]",  callback_data=f"mj#del#{jid}"))
+            api_row.append({"text": f"Delete [{short}]", "callback_data": f"mj#del#{jid}", "icon_custom_emoji_id": "6030400221232501136"})
+            
             btns_list.append(row)
+            api_btns_list.append(api_row)
 
-        btns_list.append([InlineKeyboardButton("➕ Cʀᴇᴀᴛᴇ Mᴜʟᴛɪ Jᴏʙ", callback_data="mj#new")])
-        btns_list.append([InlineKeyboardButton("🔄 Rᴇғʀᴇsʜ",           callback_data="mj#list")])
-        btns_list.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")])
-        btns = InlineKeyboardMarkup(btns_list)
+        btns_list.append([InlineKeyboardButton("➕ Create Multi Job", callback_data="mj#new")])
+        api_btns_list.append([{"text": "Create Multi Job", "callback_data": "mj#new", "icon_custom_emoji_id": "5807642902066634351"}])
+        
+        btns_list.append([InlineKeyboardButton("🔄 Refresh", callback_data="mj#list")])
+        api_btns_list.append([{"text": "Refresh", "callback_data": "mj#list", "icon_custom_emoji_id": "5893192487324880883"}])
+        
+        btns_list.append([InlineKeyboardButton("Back", callback_data="back")])
+        api_btns_list.append([{"text": "Back", "callback_data": "back"}])
+        
+        btns = btns_list
+        api_btns = api_btns_list
 
-    try:
-        if is_cb:
-            await msg_or_query.message.edit_text(text, reply_markup=btns)
-        else:
-            await msg_or_query.reply_text(text, reply_markup=btns)
-    except Exception:
-        pass
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    target_chat_id = msg_or_query.message.chat.id if is_cb else msg_or_query.chat.id
+    target_msg_id = msg_or_query.message.id if is_cb else None
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=target_chat_id,
+        text=text,
+        inline_keyboard=api_btns,
+        message_id=target_msg_id
+    )
+    if not sent_ok:
+        try:
+            if is_cb:
+                await msg_or_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+            else:
+                await msg_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1323,9 +1369,10 @@ async def mj_list_cb(bot, query):
     from plugins.owner_utils import is_feature_enabled, is_any_owner, FEATURE_LABELS
     uid = query.from_user.id
     if not await is_any_owner(uid) and not await is_feature_enabled("multi_job"):
-        return await query.answer(f"🖒 {FEATURE_LABELS['multi_job']} is disabled by admin.", show_alert=True)
+        return await query.answer(f"🔒 {FEATURE_LABELS['multi_job']} is disabled by admin.", show_alert=True)
     await query.answer()
     await _render_mj_list(bot, query.from_user.id, query)
+
 @Client.on_callback_query(filters.regex(r'^mj#rename#'))
 async def mj_rename_cb(bot, query):
     user_id = query.from_user.id
@@ -1333,11 +1380,11 @@ async def mj_rename_cb(bot, query):
     await query.message.delete()
     
     r = await _mj_ask(bot, user_id,
-        "<b>✏️ Edit Multi Job Name</b>\n\nSend a new name for this job:",
+        '<emoji id="6024110353296660793">✏️</emoji> <b>Edit Multi Job Name</b>\n\nSend a new name for this job:',
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]], resize_keyboard=True, one_time_keyboard=True))
     if "/cancel" not in r.text.lower():
         await db.db[COLL].update_one({"job_id": job_id}, {"$set": {"name": r.text.strip()[:100]}})
-        await bot.send_message(user_id, f"✅ Multi Job renamed to <b>{r.text.strip()[:100]}</b>", reply_markup=ReplyKeyboardRemove())
+        await bot.send_message(user_id, f'<emoji id="6123181698193559460">✅</emoji> Multi Job renamed to <b>{r.text.strip()[:100]}</b>', reply_markup=ReplyKeyboardRemove())
     await _render_mj_list(bot, user_id, r)
 
 
@@ -1359,7 +1406,7 @@ async def mj_info_cb(bot, query):
     created   = datetime.datetime.fromtimestamp(job.get("created", 0)).strftime("%d %b %Y %H:%M")
     st        = _mj_emoji(job.get("status", "stopped"))
     thread_id = job.get("to_thread_id")
-    topic_lbl = f"\n<b>Topic Thread:</b> <code>{thread_id}</code>" if thread_id else ""
+    topic_lbl = f"\n<emoji id=\"5807800879553715710\">📌</emoji> <b>Topic Thread:</b> <code>{thread_id}</code>" if thread_id else ""
     
     start_id = job.get("start_id", 1)
     cur = job.get("current_id", "?")
@@ -1369,10 +1416,11 @@ async def mj_info_cb(bot, query):
     if job.get("to_chat_2"):
         t2 = job.get("to_thread_id_2")
         tp2 = f" [Thread {t2}]" if t2 else ""
-        dest2_lbl = f"\n<b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
+        dest2_lbl = f"\n<emoji id=\"5807800879553715710\">📌</emoji> <b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
 
     smart_val = job.get("smart_order", True)
-    smart_lbl = "🧠 ON" if smart_val else "⚡ OFF (raw)"
+    smart_lbl = "ON" if smart_val else "OFF (raw)"
+    smart_icon = "6123181698193559460" if smart_val else "5413424119007978384"
 
     # Account info
     acc_lbl = "Default"
@@ -1385,28 +1433,45 @@ async def mj_info_cb(bot, query):
             acc_lbl = f"{kind}: @{name} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name} (<code>{acc['id']}</code>)"
 
     text = (
-        f"<b>Multi Job Info</b>\n\n"
-        f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
-        f"<b>Name:</b> {job.get('name', 'Default')}\n"
-        f"<b>Account:</b> {acc_lbl}\n"
-        f"<b>Status:</b> {st} {job.get('status','?')}\n"
-        f"<b>Source:</b> {job.get('from_title','?')}\n"
-        f"<b>Dest 1:</b> {job.get('to_title','?')}{topic_lbl}"
+        f'<emoji id="6037622221625626773">📦</emoji> <b>Multi Job Info</b>\n'
+        f"────────────────────\n"
+        f'<emoji id="5332423642850536254">🆔</emoji> <b>ID:-</b> <code>{job_id[-6:]}</code>\n'
+        f'<emoji id="6030400221232501136">👤</emoji> <b>Name:-</b> {job.get("name", "Default")}\n'
+        f'<emoji id="6037622221625626773">🤖</emoji> <b>Account:-</b> {acc_lbl}\n'
+        f'<emoji id="5807800879553715710">📊</emoji> <b>Status:-</b> {st} {job.get("status","?").capitalize()}\n'
+        f'<emoji id="5807800879553715710">📥</emoji> <b>Source:-</b> {job.get("from_title","?")}\n'
+        f'<emoji id="5807800879553715710">📤</emoji> <b>Dest 1:-</b> {job.get("to_title","?")}{topic_lbl}'
         f"{dest2_lbl}\n"
-        f"<b>Fetched messages:</b> {fetched}\n"
-        f"<b>Forwarded:</b> {job.get('forwarded', 0)}\n"
-        f"<b>Current ID progress:</b> {job.get('current_id', '?')} / {job.get('end_id', 0) or '∞'}\n"
-        f"<b>Smart Order:</b> {'Enabled' if smart_val else 'Disabled (raw chronological)'}\n"
-        f"<b>Created:</b> {created}\n"
+        f'<emoji id="5807800879553715710">📥</emoji> <b>Fetched messages:-</b> <code>{fetched}</code>\n'
+        f'<emoji id="6123181698193559460">✅</emoji> <b>Forwarded:-</b> <code>{job.get("forwarded", 0)}</code>\n'
+        f'<emoji id="6021683099773966917">🆔</emoji> <b>Current ID Progress:-</b> <code>{job.get("current_id", "?")} / {job.get("end_id", 0) or "∞"}</code>\n'
+        f'<emoji id="5807800879553715710">🧠</emoji> <b>Smart Order:-</b> {"Enabled" if smart_val else "Disabled (raw chronological)"}\n'
+        f'<emoji id="6023880246128810031">📅</emoji> <b>Created:-</b> <code>{created}</code>\n'
     )
     if job.get("error"):
         text += f"\n<b>Error:</b>\n<blockquote><code>{job['error']}</code></blockquote>"
 
     kb = [
-        [InlineKeyboardButton(f"🧠 Sᴍᴀʀᴛ Oʀᴅᴇʀ: {smart_lbl}", callback_data=f"mj#togglesmart#{job_id}")],
-        [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="mj#list")]
+        [InlineKeyboardButton(f"🧠 Smart Order: {smart_lbl}", callback_data=f"mj#togglesmart#{job_id}")],
+        [InlineKeyboardButton("Back", callback_data="mj#list")]
     ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    api_kb = [
+        [{"text": f"Smart Order: {smart_lbl}", "callback_data": f"mj#togglesmart#{job_id}", "icon_custom_emoji_id": smart_icon}],
+        [{"text": "Back", "callback_data": "mj#list"}]
+    ]
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_kb,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception:
+            pass
 
 
 @Client.on_callback_query(filters.regex(r'^mj#togglesmart#'))

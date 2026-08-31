@@ -2083,7 +2083,11 @@ async def resume_live_jobs(user_id: int = None, stagger_secs: float = 2.0):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _status_emoji(status: str) -> str:
-    return {"running": "🟢", "stopped": "🔴", "error": "❌"}.get(status, " ")
+    return {
+        "running": '<emoji id="5413643931139219521">🟢</emoji>',
+        "stopped": '<emoji id="5413424119007978384">🔴</emoji>',
+        "error": '<emoji id="6030400221232501136">❌</emoji>'
+    }.get(status, "⭘")
 
 
 def _batch_progress(job: dict) -> str:
@@ -2091,7 +2095,7 @@ def _batch_progress(job: dict) -> str:
     if not job.get("batch_mode"):
         return ""
     if job.get("batch_done"):
-        return "  ✅"
+        return '  <emoji id="6123181698193559460">✅</emoji>'
     cursor  = job.get("batch_cursor") or job.get("batch_start_id") or "?"
     end_id  = job.get("batch_end_id") or "?"
     return f"  {cursor}/{end_id}"
@@ -2113,18 +2117,23 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
 
     if not jobs:
         text = (
-            "<b>Live Jobs</b>\n\n"
-            "<i>No jobs yet. A Live Job continuously watches a source chat\n"
-            "and forwards new messages to your target — running in the background.\n\n"
-            "✅ Batch mode: copy old messages first, then watch live\n"
-            "✅ Dual destinations: send to 2 channels simultaneously\n"
-            "✅ Per-job size limit\n\n"
-            "👇 Create your first job below!</i>"
+            f'<emoji id="6129805465476929485">📡</emoji> <b>Live Jobs</b>\n'
+            f"────────────────────\n"
+            f"<i>No jobs yet. A Live Job continuously watches a source chat\n"
+            f"and forwards new messages to your target — running in the background.\n\n"
+            f'<emoji id="6123181698193559460">✅</emoji> Batch mode: copy old messages first, then watch live\n'
+            f'<emoji id="6123181698193559460">✅</emoji> Dual destinations: send to 2 channels simultaneously\n'
+            f'<emoji id="6123181698193559460">✅</emoji> Per-job size limit\n\n'
+            f"👇 Create your first job below!</i>"
         )
-        btns = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Cʀᴇᴀᴛᴇ Nᴇᴡ Jᴏʙ", callback_data="job#new")],
-            [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
-        ])
+        btns = [
+            [InlineKeyboardButton("➕ Create New Job", callback_data="job#new")],
+            [InlineKeyboardButton("Back", callback_data="back")]
+        ]
+        api_btns = [
+            [{"text": "Create New Job", "callback_data": "job#new", "icon_custom_emoji_id": "5807642902066634351"}],
+            [{"text": "Back", "callback_data": "back"}]
+        ]
     else:
         # Pagination constants
         PAGE_SIZE = 30
@@ -2138,8 +2147,10 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
 
         active_cnt = len([j for j in jobs if j.get("status") == "running"])
         lines = [
-            f"<b>Your Live Jobs (Page {page}/{total_pages})</b>\n"
-            f"🟢 <b>Active Tasks:</b> <code>{active_cnt}</code>\n"
+            f'<emoji id="6129805465476929485">📡</emoji> <b>Your Live Jobs (Page {page}/{total_pages})</b>\n'
+            f"────────────────────\n"
+            f'<emoji id="5413643931139219521">🟢</emoji> <b>Active Tasks:-</b> <code>{active_cnt}</code>\n'
+            f"────────────────────\n"
         ]
         for j in chunk:
             st  = _status_emoji(j.get("status", "stopped"))
@@ -2158,7 +2169,7 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             lines.append(
                 f"{st} <b>{job_name}</b>\n"
                 f"  └ <i>{j.get('from_title','?')} ➝ {j.get('to_title','?')}{dest2}</i>\n"
-                f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}   {fetched}{bp}{err}\n"
+                f"  └ <code>[{j['job_id'][-6:]}]</code>  <emoji id=\"6123181698193559460\">✅</emoji>{fwd}   {fetched}{bp}{err}\n"
             )
             
         import datetime
@@ -2166,38 +2177,63 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
         text = "\n".join(lines) + f"\n\n<i>Last refreshed: {now_str}</i>"
 
         btns_list = []
+        api_btns_list = []
         for j in chunk:
             st  = j.get("status", "stopped")
             jid = j["job_id"]
             short = jid[-6:]
             job_name = j.get("name", f"Job {short}")
-            icon = "🟢" if st == "running" else ("🔴" if st == "error" else "⏸")
-            # Only one button per job to prevent hitting the 100 button limit per message
-            btns_list.append([InlineKeyboardButton(f"{icon} {job_name}", callback_data=f"job#info#{jid}")])
+            icon_id = "5413643931139219521" if st == "running" else ("5413424119007978384" if st == "error" else "5807622114424924272")
+            icon_fb = "🟢" if st == "running" else ("🔴" if st == "error" else "⏸")
+            btns_list.append([InlineKeyboardButton(f"{icon_fb} {job_name}", callback_data=f"job#info#{jid}")])
+            api_btns_list.append([{"text": job_name, "callback_data": f"job#info#{jid}", "icon_custom_emoji_id": icon_id}])
 
         # Pagination controls row
         nav_row = []
+        api_nav_row = []
         if page > 1:
             nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"job#list#{page-1}"))
+            api_nav_row.append({"text": "⬅️ Prev", "callback_data": f"job#list#{page-1}"})
         nav_row.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
+        api_nav_row.append({"text": f"Page {page}/{total_pages}", "callback_data": "noop"})
         if page < total_pages:
             nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"job#list#{page+1}"))
-        btns_list.append(nav_row)
+            api_nav_row.append({"text": "Next ➡️", "callback_data": f"job#list#{page+1}"})
+        if nav_row:
+            btns_list.append(nav_row)
+            api_btns_list.append(api_nav_row)
 
         btns_list.append([
-            InlineKeyboardButton("➕ Cʀᴇᴀᴛᴇ Nᴇᴡ Jᴏʙ", callback_data="job#new"),
-            InlineKeyboardButton("Rᴇғʀᴇsʜ", callback_data=f"job#list#{page}")
+            InlineKeyboardButton("➕ Create New Job", callback_data="job#new"),
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"job#list#{page}")
         ])
-        btns_list.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")])
-        btns = InlineKeyboardMarkup(btns_list)
+        api_btns_list.append([
+            {"text": "Create New Job", "callback_data": "job#new", "icon_custom_emoji_id": "5807642902066634351"},
+            {"text": "Refresh", "callback_data": f"job#list#{page}", "icon_custom_emoji_id": "5893192487324880883"}
+        ])
+        btns_list.append([InlineKeyboardButton("Back", callback_data="back")])
+        api_btns_list.append([{"text": "Back", "callback_data": "back"}])
+        btns = btns_list
+        api_btns = api_btns_list
 
-    try:
-        if is_cb:
-            await message_or_query.message.edit_text(text, reply_markup=btns)
-        else:
-            await message_or_query.reply_text(text, reply_markup=btns)
-    except Exception:
-        pass
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    target_chat_id = message_or_query.message.chat.id if is_cb else message_or_query.chat.id
+    target_msg_id = message_or_query.message.id if is_cb else None
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=target_chat_id,
+        text=text,
+        inline_keyboard=api_btns,
+        message_id=target_msg_id
+    )
+    if not sent_ok:
+        try:
+            if is_cb:
+                await message_or_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+            else:
+                await message_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2234,11 +2270,11 @@ async def job_rename_cb(bot, query):
     await query.message.delete()
     
     r = await _ask(bot, user_id,
-        "<b>✏️ Edit Live Job Name</b>\n\nSend a new name for this job:",
+        '<emoji id="6024110353296660793">✏️</emoji> <b>Edit Live Job Name</b>\n\nSend a new name for this job:',
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]], resize_keyboard=True, one_time_keyboard=True))
     if "/cancel" not in r.text.lower():
         await db.db[COLL].update_one({"job_id": job_id}, {"$set": {"name": r.text.strip()[:100]}})
-        await bot.send_message(user_id, f"✅ Live Job renamed to <b>{r.text.strip()[:100]}</b>", reply_markup=ReplyKeyboardRemove())
+        await bot.send_message(user_id, f'<emoji id="6123181698193559460">✅</emoji> Live Job renamed to <b>{r.text.strip()[:100]}</b>', reply_markup=ReplyKeyboardRemove())
     await _render_jobs_list(bot, user_id, r)
 
 
@@ -2254,19 +2290,19 @@ async def job_info_cb(bot, query):
     created   = datetime.datetime.fromtimestamp(job.get("created", 0)).strftime("%d %b %Y %H:%M")
     st        = _status_emoji(job.get("status", "stopped"))
     thread_id = job.get("to_thread_id")
-    topic_lbl = f"\n<b>Topic Thread:</b> <code>{thread_id}</code>" if thread_id else ""
+    topic_lbl = f"\n<emoji id=\"5807800879553715710\">📌</emoji> <b>Topic Thread:</b> <code>{thread_id}</code>" if thread_id else ""
 
     dest2_lbl = ""
     if job.get("to_chat_2"):
         t2 = job.get("to_thread_id_2")
         tp2 = f" [Thread {t2}]" if t2 else ""
-        dest2_lbl = f"\n<b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
+        dest2_lbl = f"\n<emoji id=\"5807800879553715710\">📌</emoji> <b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
 
     # Batch info
     batch_lbl = ""
     if job.get("batch_mode"):
         if job.get("batch_done"):
-            batch_lbl = "\n<b>Batch:</b> ✅ Complete"
+            batch_lbl = '\n<emoji id=\"6123181698193559460\">✅</emoji> <b>Batch:</b> Complete'
         else:
             cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
             end = job.get("batch_end_id") or "calculating..."
@@ -2298,39 +2334,63 @@ async def job_info_cb(bot, query):
             acc_lbl = f"{kind}: @{name} (<code>{acc['id']}</code>)" if acc.get("username") else f"{kind}: {name} (<code>{acc['id']}</code>)"
 
     text = (
-        f"<b>Live Job Info</b>\n\n"
-        f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
-        f"<b>Name:</b> {job.get('name', 'Default')}\n"
-        f"<b>Account:</b> {acc_lbl}\n"
-        f"<b>Status:</b> {st} {job.get('status','?')}\n"
-        f"<b>Source:</b> {job.get('from_title','?')}\n"
-        f"<b>Dest 1:</b> {job.get('to_title','?')}{topic_lbl}"
+        f'<emoji id="6129805465476929485">📡</emoji> <b>Live Job Info</b>\n'
+        f"────────────────────\n"
+        f'<emoji id="5332423642850536254">🆔</emoji> <b>ID:-</b> <code>{job_id[-6:]}</code>\n'
+        f'<emoji id="6030400221232501136">👤</emoji> <b>Name:-</b> {job.get("name", "Default")}\n'
+        f'<emoji id="6037622221625626773">🤖</emoji> <b>Account:-</b> {acc_lbl}\n'
+        f'<emoji id="5807800879553715710">📊</emoji> <b>Status:-</b> {st} {job.get("status","?").capitalize()}\n'
+        f'<emoji id="5807800879553715710">📥</emoji> <b>Source:-</b> {job.get("from_title","?")}\n'
+        f'<emoji id="5807800879553715710">📤</emoji> <b>Dest 1:-</b> {job.get("to_title","?")}{topic_lbl}'
         f"{dest2_lbl}{batch_lbl}{size_lbl}\n"
-        f"<b>Forwarded:</b> {job.get('forwarded', 0)}\n"
-        f"<b>Last Msg ID:</b> {job.get('last_seen_id', 0)}\n"
-        f"<b>Created:</b> {created}\n"
+        f'<emoji id="6123181698193559460">✅</emoji> <b>Forwarded:-</b> <code>{job.get("forwarded", 0)}</code>\n'
+        f'<emoji id="6021683099773966917">🆔</emoji> <b>Last Msg ID:-</b> <code>{job.get("last_seen_id", 0)}</code>\n'
+        f'<emoji id="6023880246128810031">📅</emoji> <b>Created:-</b> <code>{created}</code>\n'
     )
     if job.get("error"):
         text += f"\n<b>Error:</b>\n<blockquote><code>{job['error']}</code></blockquote>"
 
     btns = []
-    st  = job.get("status", "stopped")
+    api_btns = []
+    st_val  = job.get("status", "stopped")
     
-    row1 = []
-    if st == "running":
-        row1.append(InlineKeyboardButton("⏹ Sᴛᴏᴘ Jᴏʙ", callback_data=f"job#stop#{job_id}"))
+    if st_val == "running":
+        btns.append([InlineKeyboardButton("⏹ Stop Job", callback_data=f"job#stop#{job_id}")])
+        api_btns.append([{"text": "Stop Job", "callback_data": f"job#stop#{job_id}", "icon_custom_emoji_id": "5807622114424924272"}])
     else:
-        row1.append(InlineKeyboardButton("▶️ Sᴛᴀʀᴛ Jᴏʙ", callback_data=f"job#start#{job_id}"))
-        row1.append(InlineKeyboardButton("🔁 Rᴇsᴇᴛ Jᴏʙ", callback_data=f"job#reset#{job_id}"))
-    btns.append(row1)
+        btns.append([
+            InlineKeyboardButton("▶️ Start Job", callback_data=f"job#start#{job_id}"),
+            InlineKeyboardButton("🔁 Reset Job", callback_data=f"job#reset#{job_id}")
+        ])
+        api_btns.append([
+            {"text": "Start Job", "callback_data": f"job#start#{job_id}", "icon_custom_emoji_id": "5413643931139219521"},
+            {"text": "Reset Job", "callback_data": f"job#reset#{job_id}", "icon_custom_emoji_id": "6030657343744644592"}
+        ])
     
     btns.append([
-        InlineKeyboardButton("⚙️ Sᴇᴛᴛɪɴɢs", callback_data=f"job#settings#{job_id}"),
-        InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ",  callback_data=f"job#del#{job_id}")
+        InlineKeyboardButton("⚙️ Settings", callback_data=f"job#settings#{job_id}"),
+        InlineKeyboardButton("🗑 Delete",  callback_data=f"job#del#{job_id}")
     ])
-    btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ ᴛᴏ Lɪsᴛ", callback_data="job#list")])
+    api_btns.append([
+        {"text": "Settings", "callback_data": f"job#settings#{job_id}", "icon_custom_emoji_id": "5807492110059838726"},
+        {"text": "Delete",  "callback_data": f"job#del#{job_id}", "icon_custom_emoji_id": "6030400221232501136"}
+    ])
+    btns.append([InlineKeyboardButton("Back to List", callback_data="job#list")])
+    api_btns.append([{"text": "Back to List", "callback_data": "job#list"}])
 
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_btns,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        except Exception:
+            pass
 
 
 @Client.on_callback_query(filters.regex(r'^job#settings#'))
@@ -2342,26 +2402,54 @@ async def job_settings_cb(bot, query):
         return await query.answer("Job not found!", show_alert=True)
 
     text = (
-        f"<b>⚙️ Job Settings</b>\n\n"
-        f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
-        f"<b>Name:</b> {job.get('name', 'Default')}\n"
-        f"<b>Source:</b> {job.get('from_title','?')}\n"
-        f"<b>Dest 1:</b> {job.get('to_title','?')}\n"
+        f'<emoji id="5807492110059838726">⚙️</emoji> <b>Job Settings</b>\n'
+        f"────────────────────\n"
+        f'<emoji id="5332423642850536254">🆔</emoji> <b>ID:-</b> <code>{job_id[-6:]}</code>\n'
+        f'<emoji id="6030400221232501136">👤</emoji> <b>Name:-</b> {job.get("name", "Default")}\n'
+        f'<emoji id="5807800879553715710">📥</emoji> <b>Source:-</b> {job.get("from_title","?")}\n'
+        f'<emoji id="5807800879553715710">📤</emoji> <b>Dest 1:-</b> {job.get("to_title","?")}\n'
+        f"────────────────────\n"
         f"<i>Configure limits, source changes, name manipulation, and duplicate prevention.</i>"
     )
 
-    skip_lbl = "✅ ON" if job.get("skip_duplicates") else "❌ OFF"
-    smart_lbl = "🧠 ON" if job.get("smart_order", True) else "⚡ OFF (raw)"
+    skip_on = bool(job.get("skip_duplicates"))
+    skip_lbl = "ON" if skip_on else "OFF"
+    skip_icon = "6123181698193559460" if skip_on else "5413424119007978384"
     
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✍️ Eᴅɪᴛ Nᴀᴍᴇ", callback_data=f"job#rename#{job_id}")],
-        [InlineKeyboardButton("🔄 Sᴏᴜʀᴄᴇ Cʜᴀɴɢᴇ Wɪᴢᴀʀᴅ", callback_data=f"job#src#{job_id}")],
-        [InlineKeyboardButton("📏 Sɪᴢᴇ / Dᴜʀᴀᴛɪᴏɴ Lɪᴍɪᴛs", callback_data=f"job#limits#{job_id}")],
-        [InlineKeyboardButton(f"📄 Sᴋɪᴘ Dᴜᴘʟɪᴄᴀᴛᴇs: {skip_lbl}", callback_data=f"job#togglededupl#{job_id}")],
-        [InlineKeyboardButton(f"🧠 Sᴍᴀʀᴛ Oʀᴅᴇʀ: {smart_lbl}", callback_data=f"job#togglesmart#{job_id}")],
-        [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="job#list")]
-    ])
-    await query.message.edit_text(text, reply_markup=btns)
+    smart_on = bool(job.get("smart_order", True))
+    smart_lbl = "ON" if smart_on else "OFF (raw)"
+    smart_icon = "6123181698193559460" if smart_on else "5413424119007978384"
+    
+    btns = [
+        [InlineKeyboardButton("✍️ Edit Name", callback_data=f"job#rename#{job_id}")],
+        [InlineKeyboardButton("🔄 Source Change Wizard", callback_data=f"job#src#{job_id}")],
+        [InlineKeyboardButton("📏 Size / Duration Limits", callback_data=f"job#limits#{job_id}")],
+        [InlineKeyboardButton(f"📄 Skip Duplicates: {skip_lbl}", callback_data=f"job#togglededupl#{job_id}")],
+        [InlineKeyboardButton(f"🧠 Smart Order: {smart_lbl}", callback_data=f"job#togglesmart#{job_id}")],
+        [InlineKeyboardButton("Back", callback_data="job#list")]
+    ]
+    api_btns = [
+        [{"text": "Edit Name", "callback_data": f"job#rename#{job_id}", "icon_custom_emoji_id": "6024110353296660793"}],
+        [{"text": "Source Change Wizard", "callback_data": f"job#src#{job_id}", "icon_custom_emoji_id": "5893192487324880883"}],
+        [{"text": "Size / Duration Limits", "callback_data": f"job#limits#{job_id}", "icon_custom_emoji_id": "6034898821517940846"}],
+        [{"text": f"Skip Duplicates: {skip_lbl}", "callback_data": f"job#togglededupl#{job_id}", "icon_custom_emoji_id": skip_icon}],
+        [{"text": f"Smart Order: {smart_lbl}", "callback_data": f"job#togglesmart#{job_id}", "icon_custom_emoji_id": smart_icon}],
+        [{"text": "Back", "callback_data": "job#list"}]
+    ]
+
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_btns,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        except Exception:
+            pass
 
 
 @Client.on_callback_query(filters.regex(r'^job#togglededupl#'))
