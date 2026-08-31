@@ -4207,7 +4207,6 @@ async def settings_query(bot, query):
           f"[JR] = join-request mode.\n\n{ch_list}",
           reply_markup=InlineKeyboardMarkup(btns)
       )
-
   elif type.startswith("sb_fsub_jr_"):
       rest = type[len("sb_fsub_jr_"):]
       # rest = "{b_id}_{idx}"
@@ -4221,7 +4220,35 @@ async def settings_query(bot, query):
           if ch_id:
               try:
                   if new_jr:
-                      lnk_obj = await bot.create_chat_i  elif type == "sb_logs_channel":
+                      lnk_obj = await bot.create_chat_invite_link(int(ch_id), creates_join_request=True)
+                      fsub_chs[idx]['invite_link'] = lnk_obj.invite_link
+                  else:
+                      try:
+                          lnk_obj = await bot.create_chat_invite_link(int(ch_id))
+                          fsub_chs[idx]['invite_link'] = lnk_obj.invite_link
+                      except Exception:
+                          fsub_chs[idx]['invite_link'] = await bot.export_chat_invite_link(int(ch_id))
+              except Exception as e:
+                  logger.warning(f"Could not regenerate invite link: {e}")
+          await db.set_bot_fsub_channels(b_id, fsub_chs)
+          status = "ON » " if new_jr else "OFF ‣ "
+          await query.answer(f"JR: {status}")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_fsub_del_"):
+      rest = type[len("sb_fsub_del_"):]
+      last_under = rest.rfind("_")
+      b_id = rest[:last_under]; idx = int(rest[last_under+1:])
+      fsub_chs = await db.get_bot_fsub_channels(b_id)
+      if 0 <= idx < len(fsub_chs):
+          fsub_chs.pop(idx)
+          await db.set_bot_fsub_channels(b_id, fsub_chs)
+          await query.answer("Removed.")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type == "sb_logs_channel":
       logs_cfg = await db.get_logs_config()
 
       CH_DEFS = [
@@ -4383,7 +4410,7 @@ async def settings_query(bot, query):
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
           )
       except asyncio.TimeoutError:
-          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
+          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=f"settings#sb_logs_manage_{ch_key}")]]))
           except Exception: pass
 
   elif type.startswith("sb_logs_del_"):
@@ -4398,155 +4425,6 @@ async def settings_query(bot, query):
           'ch_share':     ("Share Logs",      "6037622221625626773"),
       }
       label, icon_id = CH_MAP.get(ch_key, (ch_key, "5920046907782074235"))
-      await db.set_logs_config(**{ch_key: 0})
-      try:
-          import plugins.arya_logger as _alog
-          _alog._invalidate_cfg_cache()
-      except Exception:
-          pass
-      await query.answer(f"{label} channel removed!", show_alert=True)
-      query.data = f"settings#sb_logs_manage_{ch_key}"
-      return await settings_query(bot, query)��───────────────────────────────────────────
-
-  elif type == "sb_logs_channel":
-      logs_cfg = await db.get_logs_config()
-
-      CH_KEYS = [
-          ('ch_bans',      "🚫 Bans & Warnings"),
-          ('ch_new_users', "👤 New Users"),
-          ('ch_batch',     "🔗 Batch Links"),
-          ('ch_live',      "⚡ Live Jobs"),
-          ('ch_cleaner',   "🧹 Cleaner Jobs"),
-          ('ch_errors',    "❌ Error Alerts"),
-          ('ch_share',     "📤 Share Logs"),
-      ]
-
-      text = (
-          "<b>❪ LOGS CONFIGURATION ❫</b>\n\n"
-          "Configure independent Telegram channels for each log category.\n"
-          "Make sure the Main Bot is an admin in each configured channel.\n\n"
-          "<b>Current Channels:</b>\n"
-      )
-
-      btns = []
-      for key, label in CH_KEYS:
-          val = logs_cfg.get(key, 0)
-          val_str = f"<code>{val}</code>" if val else "<i>Not Set</i>"
-          text += f"  {label}: {val_str}\n"
-
-          btn_lbl = f"{label}: {'Set ✅' if val else 'Not Set ❌'}"
-          btns.append([InlineKeyboardButton(btn_lbl, callback_data=f"settings#sb_logs_manage_{key}")])
-
-      btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sharebot")])
-
-      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
-
-  elif type.startswith("sb_logs_manage_"):
-      ch_key = type.split("sb_logs_manage_")[1]
-      CH_MAP = {
-          'ch_bans':      "🚫 Bans & Warnings",
-          'ch_new_users': "👤 New Users",
-          'ch_batch':     "🔗 Batch Links",
-          'ch_live':      "⚡ Live Jobs",
-          'ch_cleaner':   "🧹 Cleaner Jobs",
-          'ch_errors':    "❌ Error Alerts",
-          'ch_share':     "📤 Share Logs",
-      }
-      label = CH_MAP.get(ch_key, ch_key)
-      logs_cfg = await db.get_logs_config()
-      ch_id = logs_cfg.get(ch_key, 0)
-      ch_lbl = f"<code>{ch_id}</code>" if ch_id else "<i>Not Configured</i>"
-
-      text = (
-          f"<b>❪ LOG CATEGORY: {label.upper()} ❫</b>\n\n"
-          f"<b>Current Channel:</b> {ch_lbl}\n\n"
-          f"You can configure a dedicated channel for {label.lower()}.\n"
-          f"Make sure the Main Bot is added as an Administrator with post message permissions."
-      )
-
-      btns = [
-          [InlineKeyboardButton("📋 Sᴇᴛ Cʜᴀɴɴᴇʟ", callback_data=f"settings#sb_logs_set_{ch_key}")],
-      ]
-      if ch_id:
-          btns.append([InlineKeyboardButton("🗑 Rᴇᴍᴏᴠᴇ Cʜᴀɴɴᴇʟ", callback_data=f"settings#sb_logs_del_{ch_key}")])
-      btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#sb_logs_channel")])
-
-      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
-
-  elif type.startswith("sb_logs_set_"):
-      ch_key = type.split("sb_logs_set_")[1]
-      CH_MAP = {
-          'ch_bans':      "🚫 Bans & Warnings",
-          'ch_new_users': "👤 New Users",
-          'ch_batch':     "🔗 Batch Links",
-          'ch_live':      "⚡ Live Jobs",
-          'ch_cleaner':   "🧹 Cleaner Jobs",
-          'ch_errors':    "❌ Error Alerts",
-          'ch_share':     "📤 Share Logs",
-      }
-      label = CH_MAP.get(ch_key, ch_key)
-      await query.message.delete()
-      ask = await bot.send_message(
-          user_id,
-          f"<b>❪ SET {label.upper()} CHANNEL ❫</b>\n\n"
-          f"Send the Channel ID or username for <b>{label}</b> logs.\n\n"
-          "<b>Examples:</b>\n"
-          "  <code>-1001234567890</code>  (private channel)\n"
-          "  <code>@mychannel</code>  (public channel)\n\n"
-          "<i>Make sure the Main Bot is an admin in that channel.</i>\n\n"
-          "Send /cancel to abort."
-      )
-      try:
-          resp = await _ask(bot, user_id, timeout=120)
-          txt = (resp.text or "").strip()
-          await resp.delete()
-          if txt.lower() in ("/cancel", "cancel"):
-              return await ask.edit_text(
-                  "<i>Process Cancelled.</i>",
-                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
-              )
-          # Resolve and validate
-          try:
-              txt_int = int(txt)
-          except ValueError:
-              txt_int = txt
-          try:
-              ch_info = await bot.get_chat(txt_int)
-              ch_id_int = ch_info.id
-              ch_title = ch_info.title or str(ch_id_int)
-          except Exception as e:
-              return await ask.edit_text(
-                  f"<b>‣  Error:</b> <code>{e}</code>\n"
-                  "Make sure the Main Bot is an admin in that channel and the ID/username is correct.",
-                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
-              )
-          await db.set_logs_config(**{ch_key: ch_id_int})
-          # Invalidate cache
-          try:
-              import plugins.arya_logger as _alog
-              _alog._invalidate_cfg_cache()
-          except Exception:
-              pass
-          await ask.edit_text(
-              f"»  ✅ <b>{label} channel set to:</b> {ch_title} (<code>{ch_id_int}</code>)",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]])
-          )
-      except asyncio.TimeoutError:
-          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_logs_manage_{ch_key}")]]))
-          except Exception: pass
-
-  elif type.startswith("sb_logs_del_"):
-      ch_key = type.split("sb_logs_del_")[1]
-      CH_MAP = {
-          'ch_bans':      "🚫 Bans & Warnings",
-          'ch_new_users': "👤 New Users",
-          'ch_batch':     "🔗 Batch Links",
-          'ch_live':      "⚡ Live Jobs",
-          'ch_cleaner':   "🧹 Cleaner Jobs",
-          'ch_errors':    "❌ Error Alerts",
-          'ch_share':     "📤 Share Logs",
-      }
-      label = CH_MAP.get(ch_key, ch_key)
       await db.set_logs_config(**{ch_key: 0})
       try:
           import plugins.arya_logger as _alog
