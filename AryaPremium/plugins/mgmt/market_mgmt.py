@@ -37,7 +37,7 @@ def _clean_markup_for_pyrogram(markup: InlineKeyboardMarkup) -> InlineKeyboardMa
     for row in markup.inline_keyboard:
         cleaned_row = []
         for btn in row:
-            kwargs = {"text": getattr(btn, "text", "")}
+            kwargs = {"text": getattr(btn, "text", "") or " "}
             if getattr(btn, "callback_data", None) is not None:
                 kwargs["callback_data"] = btn.callback_data
             if getattr(btn, "url", None) is not None:
@@ -48,13 +48,16 @@ def _clean_markup_for_pyrogram(markup: InlineKeyboardMarkup) -> InlineKeyboardMa
                 kwargs["switch_inline_query"] = btn.switch_inline_query
             if getattr(btn, "web_app", None) is not None:
                 kwargs["web_app"] = btn.web_app
-            cleaned_row.append(InlineKeyboardButton(**kwargs))
+            b = InlineKeyboardButton(**kwargs)
+            if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
+                b.icon_custom_emoji_id = str(btn.icon_custom_emoji_id)
+            cleaned_row.append(b)
         cleaned_rows.append(cleaned_row)
     return InlineKeyboardMarkup(cleaned_rows)
 
 
 def _ikb(text: str, callback_data: str = None, url: str = None, switch_inline_query_current_chat: str = None, switch_inline_query: str = None, icon_custom_emoji_id: str = None) -> InlineKeyboardButton:
-    kwargs = {"text": text}
+    kwargs = {"text": text or " "}
     if callback_data is not None: kwargs["callback_data"] = callback_data
     if url is not None: kwargs["url"] = url
     if switch_inline_query_current_chat is not None: kwargs["switch_inline_query_current_chat"] = switch_inline_query_current_chat
@@ -79,7 +82,8 @@ async def _send_or_edit_mgmt_bot_api(client, chat_id: int, text: str, markup: In
     import aiohttp
     import json
     import re
-    bot_token = getattr(Config, "MGMT_BOT_TOKEN", "") or getattr(client, "bot_token", "") or getattr(Config, "BOT_TOKEN", "")
+    import os
+    bot_token = getattr(Config, "MGMT_BOT_TOKEN", "") or os.environ.get("MGMT_BOT_TOKEN", "") or getattr(client, "bot_token", "") or getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
     if not bot_token:
         return False
 
@@ -88,7 +92,7 @@ async def _send_or_edit_mgmt_bot_api(client, chat_id: int, text: str, markup: In
     for row in markup.inline_keyboard:
         row_list = []
         for btn in row:
-            d = {"text": btn.text}
+            d = {"text": btn.text or " "}
             if getattr(btn, "callback_data", None) is not None: d["callback_data"] = btn.callback_data
             if getattr(btn, "url", None) is not None: d["url"] = btn.url
             if getattr(btn, "switch_inline_query_current_chat", None) is not None:
@@ -119,10 +123,31 @@ async def _send_or_edit_mgmt_bot_api(client, chat_id: int, text: str, markup: In
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{url}{method}", json=payload, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
                 data = await resp.json()
-                return bool(data.get("ok"))
+                if data.get("ok"):
+                    return True
+                logger.debug(f"MGMT Bot API {method} returned: {data}")
+                return False
     except Exception as e:
         logger.debug(f"Bot API call exception: {e}")
         return False
+
+
+async def _edit_or_send_mgmt_view(client, chat_id: int, text: str, markup: InlineKeyboardMarkup, message_id: int = None, query=None):
+    mid = message_id or (getattr(query.message, "id", None) if query and getattr(query, "message", None) else None)
+    ok = await _send_or_edit_mgmt_bot_api(client, chat_id, text, markup, message_id=mid)
+    if not ok:
+        clean_kb = _clean_markup_for_pyrogram(markup)
+        if query and getattr(query, "message", None):
+            try:
+                return await query.message.edit_text(text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
+        elif mid:
+            try:
+                return await client.edit_message_text(chat_id, mid, text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
+        return await client.send_message(chat_id, text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
 
 
 
@@ -233,35 +258,47 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
             supp_count = 0
 
         txt = (
-            "<b>🏪 Arya Marketplace Dashboard</b>\n"
-            "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n\n"
-            "<b>⧉ SYSTEM OVERVIEW</b>\n"
-            f"<code>  Store Bots       ›  {bots}</code>\n"
-            f"<code>  Active Stories   ›  {stories}</code>\n"
-            f"<code>  Total Customers  ›  {buyers}</code>\n"
-            f"<code>  Registered Users ›  {total_users}</code>\n"
-            f"<code>  Source Channels  ›  {db_ch}</code>\n"
-            f"<code>  Delivery Pool    ›  {dl_ch}</code>\n\n"
-            "<b>⧉ MANAGEMENT DETAILS</b>\n"
-            f"<code>  Pending Orders   ›  {pendings}</code>\n"
-            f"<code>  Completed Sales  ›  {approved}</code>\n"
-            f"<code>  Story Requests   ›  {reqs_count}</code>\n"
-            f"<code>  Support Tickets  ›  {supp_count}</code>\n"
-            f"<code>  Engine Status    ›  Online ✅</code>\n"
-            "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code>"
+            '<emoji id="5296790785981718487">🏪</emoji> <b>Arya Marketplace Dashboard</b>\n'
+            '━━━━━━━━━━━━━━━━━━━━━\n\n'
+            '<emoji id="5936143551854285132">📊</emoji> <b>System Overview</b>\n'
+            f'<code>  Store Bots       ›  {bots}</code>\n'
+            f'<code>  Active Stories   ›  {stories}</code>\n'
+            f'<code>  Total Customers  ›  {buyers}</code>\n'
+            f'<code>  Registered Users ›  {total_users}</code>\n'
+            f'<code>  Source Channels  ›  {db_ch}</code>\n'
+            f'<code>  Delivery Pool    ›  {dl_ch}</code>\n\n'
+            '<emoji id="6021637109264160908">⚙️</emoji> <b>Management Details</b>\n'
+            f'<code>  Pending Orders   ›  {pendings}</code>\n'
+            f'<code>  Completed Sales  ›  {approved}</code>\n'
+            f'<code>  Story Requests   ›  {reqs_count}</code>\n'
+            f'<code>  Support Tickets  ›  {supp_count}</code>\n'
+            f'<code>  Engine Status    ›  Online ✅</code>\n'
+            '━━━━━━━━━━━━━━━━━━━━━'
         )
 
         kb = [
             _get_top_mgmt_emoji_row(),
-            [InlineKeyboardButton("Add New Story", callback_data="mk#add_story")],
-            [InlineKeyboardButton("Manage Stories", callback_data="mk#manage_stories")],
-            [InlineKeyboardButton("Approval", callback_data="mk#pending"),
-             InlineKeyboardButton("Requests", callback_data="mk#reqs_0")],
-            [InlineKeyboardButton("Support Tab", callback_data="mk#fb_panel_0"),
-             InlineKeyboardButton("Channels", callback_data="mk#channels")],
-            [InlineKeyboardButton("Bots", callback_data="mk#accounts"),
-             InlineKeyboardButton("Costumers", callback_data="mk#users")],
-            [InlineKeyboardButton("Settings", callback_data="mk#settings")],
+            [
+                _ikb("Approval", callback_data="mk#pending", icon_custom_emoji_id="5413643931139219521"),
+                _ikb("Requests", callback_data="mk#reqs_0", icon_custom_emoji_id="5766915217552315762")
+            ],
+            [
+                _ikb("Support Tab", callback_data="mk#fb_panel_0", icon_custom_emoji_id="5945256248390721326"),
+                _ikb("Channels", callback_data="mk#channels", icon_custom_emoji_id="6021454607513819417")
+            ],
+            [
+                _ikb("Add New Story", callback_data="mk#add_story", icon_custom_emoji_id="5920332557466997677")
+            ],
+            [
+                _ikb("Manage Stories", callback_data="mk#manage_stories", icon_custom_emoji_id="6026337676091726218")
+            ],
+            [
+                _ikb("Bots", callback_data="mk#accounts", icon_custom_emoji_id="6021683099773966917"),
+                _ikb("Costumers", callback_data="mk#users", icon_custom_emoji_id="6021487472603568286")
+            ],
+            [
+                _ikb("Settings", callback_data="mk#settings", icon_custom_emoji_id="6021637109264160908")
+            ],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mk#close"),
                 InlineKeyboardButton("ʟ", callback_data="mk#close"),
@@ -271,6 +308,11 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
             ]
         ]
         markup = InlineKeyboardMarkup(kb)
+
+        mid = getattr(edit_message, "id", None) if edit_message else None
+        ok = await _send_or_edit_mgmt_bot_api(client, chat_id, txt, markup, message_id=mid)
+        if ok:
+            return
 
         clean_kb = _clean_markup_for_pyrogram(markup)
         if edit_message:
@@ -1605,7 +1647,7 @@ async def market_callback(client, query):
             # Mini App Deep Links line — only show in non show_store mode
             ma_links_line = f'<emoji id="5312536423156654273">📱</emoji> <b>Mini App Deep Links:</b> <code>{ma_links_state}</code>\n' if bot_mode != "show_store" else ""
 
-            await query.message.edit_text(
+            view_text = (
                 header
                 + f'<emoji id="6030400221232501136">✏️</emoji> <b>Name:</b> {bt.get("name")}\n'
                 + f'<emoji id="6021683099773966917">👤</emoji> <b>Username:-</b> @{bt.get("username")}\n'
@@ -1617,9 +1659,9 @@ async def market_callback(client, query):
                 + f'<emoji id="5809949600152296075">🟢</emoji> <b>Live Users ( 24H ) :-</b> <code>{live_bot_users_24h}</code>\n'
                 + f'<emoji id="6021690418398239007">👥</emoji> <b>Total Users:-</b> <code>{total_bot_users}</code>\n'
                 + ma_links_line
-                + f'<emoji id="6021435576513730578">📋</emoji> <b>Event Log Channel:</b> <code>{log_ch_str}</code>',
-                reply_markup=InlineKeyboardMarkup(kb)
+                + f'<emoji id="6021435576513730578">📋</emoji> <b>Event Log Channel:</b> <code>{log_ch_str}</code>'
             )
+            await _edit_or_send_mgmt_view(client, query.message.chat.id, view_text, InlineKeyboardMarkup(kb), query=query)
 
 
         elif cmd.startswith("bot_stats_"):
@@ -2100,14 +2142,13 @@ async def market_callback(client, query):
                     InlineKeyboardButton("1D", callback_data=f"mk#p_autodel_{b_id}_86400")],
                    [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")]
                 ]
-                await query.message.edit_text(
+                autodel_txt = (
                     f'<emoji id="5413643931139219521">⏳</emoji> <b>Auto Delete Configuration</b>\n'
                     f'━━━━━━━━━━━━━━━━━━━━━\n\n'
                     f"<b>Current setting:</b> <code>{curr_str}</code>\n\n"
-                    f"Select the time after which delivered files should be automatically deleted from the user's DM:",
-                    reply_markup=InlineKeyboardMarkup(kb)
+                    f"Select the time after which delivered files should be automatically deleted from the user's DM:"
                 )
-                return
+                return await _edit_or_send_mgmt_view(client, query.message.chat.id, autodel_txt, InlineKeyboardMarkup(kb), query=query)
             else:
                 new_val = int(parts[3])
                 bt = await _find_premium_bot(b_id)
@@ -2159,7 +2200,7 @@ async def market_callback(client, query):
                 [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")],
             ]
 
-            await query.message.edit_text(
+            upi_txt = (
                 f'<emoji id="6021637109264160908">🪙</emoji> <b>UPI Configuration</b>\n'
                 f'━━━━━━━━━━━━━━━━━━━━━\n\n'
                 f'<b>» Bot:</b> @{bt.get("username")}\n'
@@ -2167,9 +2208,9 @@ async def market_callback(client, query):
                 f'<b>» Payee Name:</b> <code>{upi_name}</code>\n'
                 f'<b>» Open-App Link:</b> <code>{upi_redirect}</code>\n'
                 f'<b>» Bot Logo (QR):</b> <code>{logo_set}</code>\n\n'
-                f'<i>Manage direct UPI payment settings, payee details, and enable/disable UPI below:</i>',
-                reply_markup=InlineKeyboardMarkup(kb)
+                f'<i>Manage direct UPI payment settings, payee details, and enable/disable UPI below:</i>'
             )
+            await _edit_or_send_mgmt_view(client, query.message.chat.id, upi_txt, InlineKeyboardMarkup(kb), query=query)
 
         elif cmd.startswith("p_upi_toggle_"):
             b_id = cmd.replace("p_upi_toggle_", "", 1)
@@ -2501,14 +2542,14 @@ async def market_callback(client, query):
                 [_ikb("Menu Media", callback_data=f"mk#menu_media_{b_id}", icon_custom_emoji_id="6026089641730382702")],
                 [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")],
             ]
-            await query.message.edit_text(
+            wa_txt = (
                 f'<emoji id="6041921818896372382">📜</emoji> <b>Welcome & About</b>\n'
                 f'━━━━━━━━━━━━━━━━━━━━━\n\n'
                 f"Configure welcome text and menu media for your delivery store bot:\n\n"
                 f"• <b>Welcome Msg:</b> Customize welcome text, about description, and quote\n"
-                f"• <b>Menu Media:</b> Add random photos/GIFs/videos shown on main menu",
-                reply_markup=InlineKeyboardMarkup(kb)
+                f"• <b>Menu Media:</b> Add random photos/GIFs/videos shown on main menu"
             )
+            await _edit_or_send_mgmt_view(client, query.message.chat.id, wa_txt, InlineKeyboardMarkup(kb), query=query)
 
         elif cmd.startswith("welcome_cfg_"):
             b_id = cmd.split("_")[2]
@@ -2520,12 +2561,12 @@ async def market_callback(client, query):
                 [InlineKeyboardButton("🔄 Reset to Default", callback_data=f"mk#welcome_reset_{b_id}")],
                 [InlineKeyboardButton("« Back", callback_data=f"mk#p_wa_{b_id}")],
             ]
-            await query.message.edit_text(
+            wcfg_txt = (
                 f'<emoji id="6041921818896372382">📜</emoji> <b>Welcome Message Settings</b>\n'
                 f'━━━━━━━━━━━━━━━━━━━━━\n\n'
-                f"Set each block shown in delivery main menu card, or reset all text to default.",
-                reply_markup=InlineKeyboardMarkup(kb)
+                f"Set each block shown in delivery main menu card, or reset all text to default."
             )
+            await _edit_or_send_mgmt_view(client, query.message.chat.id, wcfg_txt, InlineKeyboardMarkup(kb), query=query)
 
         elif cmd.startswith("welcome_reset_"):
             b_id = cmd.split("_")[2]
@@ -2610,10 +2651,7 @@ async def market_callback(client, query):
             if items:
                 kb.append([InlineKeyboardButton("👁 Preview", callback_data=f"mk#menu_media_prev_{b_id}_1")])
             kb.append([InlineKeyboardButton("« Back", callback_data=f"mk#p_wa_{b_id}")])
-            try:
-                await query.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(kb))
-            except MessageNotModified:
-                pass
+            await _edit_or_send_mgmt_view(client, query.message.chat.id, "\n".join(lines), InlineKeyboardMarkup(kb), query=query)
 
 
         elif cmd.startswith("pset_"):
