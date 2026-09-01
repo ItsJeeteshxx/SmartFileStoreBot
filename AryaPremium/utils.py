@@ -660,6 +660,7 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
     
     all_ids = list(range(s, e + 1))
     valid_ids = []
+    discovered_poster_bytes = None
     batch_size = 200
     
     for i in range(0, len(all_ids), batch_size):
@@ -683,13 +684,40 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
                 )
                 if has_content:
                     valid_ids.append(m.id)
+                    # If story has no R2 poster yet, grab first photo or thumbnail
+                    if not discovered_poster_bytes:
+                        try:
+                            if m.photo or getattr(m.video, 'thumbs', None) or getattr(m.document, 'thumbs', None):
+                                media_buf = await client.download_media(m, in_memory=True)
+                                if media_buf:
+                                    discovered_poster_bytes = media_buf.getbuffer().tobytes() if hasattr(media_buf, 'getbuffer') else bytes(media_buf)
+                        except Exception:
+                            pass
         except Exception as err:
             logger.warning(f"Scan batch {chunk[0]}-{chunk[-1]} in {src} failed: {err}")
             await asyncio.sleep(0.5)
         await asyncio.sleep(0.04) # pause to prevent Telegram flood wait
         
     valid_ids = sorted(list(set(valid_ids)))
-    
+
+    # If poster bytes were found and story has no R2 URL, upload to R2
+    current_poster = str(story_doc.get("poster_url") or story_doc.get("image") or "")
+    if discovered_poster_bytes and ("r2.dev" not in current_poster and "r2.cloudflarestorage" not in current_poster):
+        try:
+            from r2_helper import upload_image_to_r2
+            r2_url = await upload_image_to_r2(discovered_poster_bytes, width=600, height=600, format="WEBP", quality=80)
+            if r2_url:
+                updates_poster = {
+                    "poster_url": r2_url,
+                    "banner_url": r2_url,
+                    "image": r2_url,
+                    "cover": r2_url,
+                    "r2_migrated": True
+                }
+                story_doc.update(updates_poster)
+        except Exception as ex:
+            logger.debug(f"Failed to auto-upload scanned poster to R2: {ex}")
+            
     # Process parts if present
     parts = story_doc.get("parts") or []
     updated_parts = []
@@ -712,6 +740,12 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
         "valid_file_ids": valid_ids,
         "file_count": len(valid_ids),
     }
+    if "poster_url" in story_doc and story_doc["poster_url"]:
+        updates["poster_url"] = story_doc["poster_url"]
+        updates["banner_url"] = story_doc["banner_url"]
+        updates["image"] = story_doc["image"]
+        updates["cover"] = story_doc["cover"]
+        updates["r2_migrated"] = True
     if updated_parts:
         updates["parts"] = updated_parts
         

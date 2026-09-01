@@ -227,6 +227,18 @@ async def scan_and_index_channel(
                 poster_id = current_poster_msg.id if current_poster_msg else msg.id
                 show_id = str(uuid.uuid4())[:8]
 
+                poster_url = ""
+                try:
+                    target_media_msg = current_poster_msg if (current_poster_msg and current_poster_msg.photo) else (msg if (msg.photo or getattr(msg.video, 'thumbs', None)) else None)
+                    if target_media_msg:
+                        media_bytes = await client.download_media(target_media_msg, in_memory=True)
+                        if media_bytes:
+                            from r2_helper import upload_image_to_r2
+                            raw_b = media_bytes.getbuffer().tobytes() if hasattr(media_bytes, 'getbuffer') else bytes(media_bytes)
+                            poster_url = await upload_image_to_r2(raw_b, width=600, height=600, format="WEBP", quality=80)
+                except Exception as ex:
+                    logger.debug(f"[StoreIndexer] R2 poster upload skipped for {clean_title}: {ex}")
+
                 show_doc = {
                     "story_id": show_id,
                     "title": clean_title,
@@ -239,6 +251,10 @@ async def scan_and_index_channel(
                     "bot_id": int(bot_id),
                     "channel_id": channel_id,
                     "poster_msg_id": poster_id,
+                    "poster_url": poster_url,
+                    "banner_url": poster_url,
+                    "image": poster_url,
+                    "cover": poster_url,
                     "parts": [{
                         "part": 1,
                         "file_id": getattr(msg.video or msg.document, 'file_id', ''),
