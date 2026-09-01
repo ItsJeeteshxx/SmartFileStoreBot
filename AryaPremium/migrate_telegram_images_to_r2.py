@@ -2,13 +2,12 @@
 """
 Migrate Telegram File ID Images to Cloudflare R2
 =================================================
-This script scans all databases and story collections in MongoDB,
-downloads images that are stored as Telegram file_ids (AgAC... or /api/tg-image),
-optimizes them to WebP format, uploads them to Cloudflare R2, and updates MongoDB
-with permanent Cloudflare R2 public URLs.
+This script scans all databases and collections in MongoDB,
+prints document details, downloads images stored as Telegram file_ids,
+optimizes them to WebP format, uploads them to Cloudflare R2, and updates MongoDB.
 
 Usage:
-    python AryaPremium/migrate_telegram_images_to_r2.py [--dry-run] [--db-name <DB>]
+    python AryaPremium/migrate_telegram_images_to_r2.py [--dry-run]
 """
 
 import os
@@ -43,7 +42,6 @@ def _inject_env(filepath):
     except Exception:
         pass
 
-# Inject from all possible env file locations
 for path in [
     os.path.join(_DIR, ".env"),
     os.path.join(_PARENT, ".env"),
@@ -54,7 +52,6 @@ for path in [
 ]:
     _inject_env(path)
 
-# Try importing Root Config / Premium Config as fallback
 root_db_uri = ""
 prem_db_uri = ""
 try:
@@ -69,7 +66,6 @@ try:
 except Exception:
     pass
 
-# MongoDB URI Resolution
 MONGO_URI = (
     os.environ.get("MONGO_URI")
     or os.environ.get("DATABASE_URI")
@@ -82,12 +78,7 @@ MONGO_URI = (
     or ""
 )
 
-# Cloudflare R2 Credentials
-R2_ACCOUNT_ID = (
-    os.environ.get("R2_ACCOUNT_ID")
-    or os.environ.get("CLOUDFLARE_ACCOUNT_ID")
-    or ""
-)
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID") or os.environ.get("CLOUDFLARE_ACCOUNT_ID") or ""
 R2_ACCESS_KEY = (
     os.environ.get("R2_ACCESS_KEY_ID")
     or os.environ.get("R2_ACCESS_KEY")
@@ -100,18 +91,9 @@ R2_SECRET_KEY = (
     or os.environ.get("CLOUDFLARE_R2_SECRET_ACCESS_KEY")
     or ""
 )
-R2_BUCKET = (
-    os.environ.get("R2_BUCKET_NAME")
-    or os.environ.get("R2_BUCKET")
-    or "arya-images"
-)
-R2_DOMAIN = (
-    os.environ.get("R2_CUSTOM_DOMAIN")
-    or os.environ.get("R2_DOMAIN")
-    or ""
-)
+R2_BUCKET = os.environ.get("R2_BUCKET_NAME") or os.environ.get("R2_BUCKET") or "arya-images"
+R2_DOMAIN = os.environ.get("R2_CUSTOM_DOMAIN") or os.environ.get("R2_DOMAIN") or ""
 
-# Bot Tokens for telegram file resolution
 MGMT_BOT_TOKEN = os.environ.get("MGMT_BOT_TOKEN") or ""
 BOT_TOKEN = os.environ.get("BOT_TOKEN") or ""
 SOURCE_BOT_TOKEN = os.environ.get("SOURCE_BOT_TOKEN") or ""
@@ -168,7 +150,6 @@ async def download_telegram_file(file_id: str, tokens: list) -> bytes:
     if not clean_id:
         return None
 
-    # Handle /api/tg-image?file_id=...
     if "file_id=" in clean_id:
         import urllib.parse
         parsed = urllib.parse.urlparse(clean_id)
@@ -176,7 +157,6 @@ async def download_telegram_file(file_id: str, tokens: list) -> bytes:
         if params.get("file_id"):
             clean_id = params["file_id"][0]
 
-    # If it's already an HTTP URL (e.g. Catbox or external link)
     if clean_id.startswith("http://") or clean_id.startswith("https://"):
         async with aiohttp.ClientSession() as session:
             async with session.get(clean_id, timeout=aiohttp.ClientTimeout(total=15.0)) as resp:
@@ -184,7 +164,6 @@ async def download_telegram_file(file_id: str, tokens: list) -> bytes:
                     return await resp.read()
         return None
 
-    # Telegram Bot API getFile
     async with aiohttp.ClientSession() as session:
         for tok in tokens:
             if not tok:
@@ -215,36 +194,28 @@ async def main():
     
     parser = argparse.ArgumentParser(description="Migrate story images from Telegram to Cloudflare R2")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without writing changes to MongoDB")
-    parser.add_argument("--mongo-uri", default="", help="Override MongoDB URI")
-    parser.add_argument("--db-name", default="", help="Specific MongoDB Database Name")
+    parser.add_argument("--force", action="store_true", help="Re-upload even if already has a URL")
     args = parser.parse_args()
-
-    active_mongo_uri = args.mongo_uri or MONGO_URI
 
     print("=" * 60)
     print("🚀 Telegram Images ➔ Cloudflare R2 Migration Tool")
     print("=" * 60)
 
-    if not active_mongo_uri:
-        print("❌ Error: MongoDB URI not found in .env (checked MONGO_URI, DATABASE_URI, DATABASE)")
+    if not MONGO_URI:
+        print("❌ Error: MongoDB URI not found in .env")
         sys.exit(1)
 
-    print(f"📦 Connecting to MongoDB: {active_mongo_uri.split('@')[-1] if '@' in active_mongo_uri else active_mongo_uri[:25]}...")
-    client = motor.motor_asyncio.AsyncIOMotorClient(active_mongo_uri)
+    print(f"📦 Connecting to MongoDB: {MONGO_URI.split('@')[-1] if '@' in MONGO_URI else MONGO_URI[:25]}...")
+    client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 
-    # Auto-discover databases on cluster
-    if args.db_name:
-        target_db_names = [args.db_name]
-    else:
-        try:
-            all_dbs = await client.list_database_names()
-            target_db_names = [d for d in all_dbs if d not in ("admin", "local", "config")]
-        except Exception:
-            target_db_names = ["arya", "forward-bot", "arya_premium"]
+    try:
+        all_dbs = await client.list_database_names()
+        target_db_names = [d for d in all_dbs if d not in ("admin", "local", "config")]
+    except Exception:
+        target_db_names = ["arya", "forward-bot", "arya_premium"]
 
-    print(f"🗄️ Discovered Databases on cluster: {target_db_names}")
+    print(f"🗄️ Databases on cluster: {target_db_names}")
 
-    # Collect all available bot tokens from environment and DB
     tokens = []
     for tok in [MGMT_BOT_TOKEN, BOT_TOKEN, SOURCE_BOT_TOKEN]:
         if tok and tok not in tokens:
@@ -268,7 +239,7 @@ async def main():
         print("⚠️ DRY RUN MODE: No changes will be written to MongoDB.")
     print("-" * 60)
 
-    target_collections = ["stories", "premium_stories", "shows", "mini_app_banners"]
+    target_collections = ["stories", "premium_stories", "shows", "mini_app_banners", "bot_stories"]
     total_migrated = 0
     total_skipped = 0
     total_failed = 0
@@ -277,24 +248,34 @@ async def main():
         db = client[dname]
         try:
             col_list = await db.list_collection_names()
-        except Exception:
-            col_list = target_collections
-
-        matched_cols = [c for c in col_list if c in target_collections or "stor" in c.lower() or "banner" in c.lower()]
-        if not matched_cols:
+        except Exception as e:
+            print(f"   ⚠️ Could not list collections in {dname}: {e}")
             continue
 
-        for col_name in matched_cols:
+        print(f"\n📂 Database: '{dname}' (Collections: {col_list})")
+
+        for col_name in col_list:
             col = db[col_name]
+            # Check if this collection looks like stories or banners
+            is_target = (
+                col_name in target_collections
+                or "stor" in col_name.lower()
+                or "show" in col_name.lower()
+                or "banner" in col_name.lower()
+            )
+            if not is_target:
+                continue
+
             try:
                 count = await col.count_documents({})
             except Exception:
                 continue
 
             if count == 0:
+                print(f"   └ Collection '{col_name}': 0 documents")
                 continue
 
-            print(f"\n📂 Database: '{dname}' ➔ Collection: '{col_name}' ({count} documents found)")
+            print(f"   └ Collection '{col_name}': {count} documents found")
             cursor = col.find({})
             async for doc in cursor:
                 doc_id = doc.get("_id")
@@ -305,7 +286,7 @@ async def main():
                     or doc.get("name")
                     or doc.get("story_id")
                     or doc.get("clean_title")
-                    or "Untitled Story"
+                    or str(doc_id)
                 )
                 
                 raw_img = (
@@ -318,25 +299,30 @@ async def main():
                 )
 
                 if not raw_img:
+                    print(f"      • '{title}': ⚠️ No image field found in document")
                     total_skipped += 1
                     continue
 
                 raw_str = str(raw_img).strip()
 
                 # Check if it's already an R2 / Cloudflare link
-                if ("r2.cloudflarestorage.com" in raw_str or 
-                    "r2.dev" in raw_str or 
-                    (R2_DOMAIN and R2_DOMAIN.strip("/") in raw_str)):
+                is_r2 = (
+                    "r2.cloudflarestorage.com" in raw_str
+                    or "r2.dev" in raw_str
+                    or (R2_DOMAIN and R2_DOMAIN.strip("/") in raw_str)
+                )
+
+                if is_r2 and not args.force:
+                    print(f"      • '{title}': ⏭️ Already on Cloudflare R2 ({raw_str[:50]}...)")
                     total_skipped += 1
                     continue
 
-                # It's a Telegram file_id, Catbox, or tg-image endpoint!
-                print(f"\n⚡ Processing: '{title}' (ID: {doc.get('story_id', doc_id)})")
-                print(f"   Current Source: {raw_str[:60]}...")
+                print(f"\n      ⚡ Processing '{title}'...")
+                print(f"         Source: {raw_str}")
 
                 img_bytes = await download_telegram_file(raw_str, tokens)
                 if not img_bytes:
-                    print(f"   ❌ Could not download image from Telegram or Source URL.")
+                    print(f"         ❌ Could not download image from Telegram or Source URL.")
                     total_failed += 1
                     continue
 
@@ -346,7 +332,6 @@ async def main():
                     
                     if not args.dry_run:
                         r2_url = upload_to_r2(optimized_bytes, filename, "image/webp")
-                        # Update document in MongoDB
                         update_data = {
                             "poster_url": r2_url,
                             "image_url": r2_url,
@@ -357,13 +342,13 @@ async def main():
                             update_data["banner_url"] = r2_url
 
                         await col.update_one({"_id": doc_id}, {"$set": update_data})
-                        print(f"   ✅ Successfully Migrated to R2 ➔ {r2_url}")
+                        print(f"         ✅ Successfully Migrated to R2 ➔ {r2_url}")
                     else:
-                        print(f"   [DRY-RUN] Would upload {len(optimized_bytes)} bytes to R2 as {filename}")
+                        print(f"         [DRY-RUN] Would upload {len(optimized_bytes)} bytes to R2 as {filename}")
 
                     total_migrated += 1
                 except Exception as e:
-                    print(f"   ❌ Failed to upload to Cloudflare R2: {e}")
+                    print(f"         ❌ Failed to upload to Cloudflare R2: {e}")
                     total_failed += 1
 
     print("\n" + "=" * 60)
