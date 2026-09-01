@@ -3032,12 +3032,15 @@ async def _process_start(client, message):
 
         valid_file_ids = None
         if part_info and part_info.get("valid_file_ids"):
-            valid_file_ids = part_info["valid_file_ids"]
+            valid_file_ids = list(part_info["valid_file_ids"])
+            if end_id and valid_file_ids and int(end_id) > max(valid_file_ids):
+                valid_file_ids = sorted(list(set(valid_file_ids + list(range(max(valid_file_ids) + 1, int(end_id) + 1)))))
         elif story.get("valid_file_ids"):
+            valid_file_ids = list(story["valid_file_ids"])
+            if end_id and valid_file_ids and int(end_id) > max(valid_file_ids):
+                valid_file_ids = sorted(list(set(valid_file_ids + list(range(max(valid_file_ids) + 1, int(end_id) + 1)))))
             if part_info and start_id and end_id:
-                valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
-            else:
-                valid_file_ids = story["valid_file_ids"]
+                valid_file_ids = [mid for mid in valid_file_ids if start_id <= mid <= end_id]
 
         total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
         s_id_str = str(story['_id'])
@@ -3053,8 +3056,10 @@ async def _process_start(client, message):
             for i in range(0, total_files, chunk):
                 f_start = i + 1
                 f_end   = min(i + chunk, total_files)
-                lbl = f"Files {f_start} - {f_end}" if lang != "hi" else f"फ़ाइलें {f_start} - {f_end}"
-                row.append(lbl)
+                lbl = f"{f_start} - {f_end}"
+                is_last_chunk = (f_end == total_files)
+                icon_id = "6147506120920405501" if is_last_chunk else "5341492148468465410"
+                row.append(_kb_btn(lbl, icon_custom_emoji_id=icon_id))
                 if len(row) == 2:
                     kb.append(row)
                     row = []
@@ -3062,18 +3067,22 @@ async def _process_start(client, message):
                 kb.append(row)
 
             full_btn   = "Full Delivery (All Files)" if lang != "hi" else "Full Delivery (सभी फ़ाइलें)"
-            cancel_btn = "Cancel" if lang != "hi" else "रद्द करें"
-            kb.append([full_btn])
-            kb.append([cancel_btn])
+            cancel_btn = "« " + ("Cancel" if lang != "hi" else "रद्द करें")
+            kb.append([_kb_btn(full_btn, icon_custom_emoji_id="5805550320985578625")])
+            kb.append([_kb_btn(cancel_btn)])
 
             await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id_str}})
 
             if lang == "hi":
-                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
+                p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।'
             else:
-                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
+                p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below.'
 
-            return await message.reply_text(p_text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+            ok = await _send_reply_keyboard_bot_api(client, user_id, p_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                return await message.reply_text(p_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+            return
 
         else:
             # Small story — deliver all files directly
@@ -3848,10 +3857,11 @@ async def _process_text(client, message):
     pending_s_id = user.get("dm_story_id_pending")
     import re
     is_chunk_btn = bool(
-        re.search(r"^\s*\d+\s*-\s*\d+\s*$", txt)
+        re.search(r"(\d+)\s*-\s*(\d+)", txt)
         or "full delivery" in txt_lower
         or "सभी फ़ाइलें" in txt_lower
         or (("cancel" in txt_lower or "रद्द" in txt_lower) and "«" in txt)
+        or txt.strip().lower() in ["cancel", "/cancel", "रद्द करें", "« cancel", "«"]
     )
     if pending_s_id and is_chunk_btn:
         try:
@@ -3894,19 +3904,21 @@ async def _process_text(client, message):
 
             valid_list = None
             if part_info and part_info.get("valid_file_ids"):
-                valid_list = part_info["valid_file_ids"]
+                valid_list = list(part_info["valid_file_ids"])
+                if end_id and valid_list and int(end_id) > max(valid_list):
+                    valid_list = sorted(list(set(valid_list + list(range(max(valid_list) + 1, int(end_id) + 1)))))
             elif story.get("valid_file_ids"):
+                valid_list = list(story["valid_file_ids"])
+                if end_id and valid_list and int(end_id) > max(valid_list):
+                    valid_list = sorted(list(set(valid_list + list(range(max(valid_list) + 1, int(end_id) + 1)))))
                 if part_info and start_id and end_id:
-                    valid_list = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
-                else:
-                    valid_list = story["valid_file_ids"]
+                    valid_list = [mid for mid in valid_list if start_id <= mid <= end_id]
 
-            import re
             match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
             custom_msg_ids = None
             if match:
                 fs, fe = int(match.group(1)), int(match.group(2))
-                if valid_list:
+                if valid_list and len(valid_list) >= fs:
                     custom_msg_ids = valid_list[fs - 1 : fe]
                 else:
                     c_start = start_id + fs - 1
@@ -3920,7 +3932,7 @@ async def _process_text(client, message):
                     c_start, c_end = start_id, end_id
 
             m = await message.reply_text(f"<i>⏳ Initializing DM Delivery (Files {fs}-{fe})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
-            if custom_msg_ids is not None:
+            if custom_msg_ids is not None and len(custom_msg_ids) > 0:
                 return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, custom_msg_ids=custom_msg_ids))
             else:
                 return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
@@ -8277,12 +8289,15 @@ async def _process_callback(client, query):
 
         valid_file_ids = None
         if part_info and part_info.get("valid_file_ids"):
-            valid_file_ids = part_info["valid_file_ids"]
+            valid_file_ids = list(part_info["valid_file_ids"])
+            if end_id and valid_file_ids and int(end_id) > max(valid_file_ids):
+                valid_file_ids = sorted(list(set(valid_file_ids + list(range(max(valid_file_ids) + 1, int(end_id) + 1)))))
         elif story.get("valid_file_ids"):
+            valid_file_ids = list(story["valid_file_ids"])
+            if end_id and valid_file_ids and int(end_id) > max(valid_file_ids):
+                valid_file_ids = sorted(list(set(valid_file_ids + list(range(max(valid_file_ids) + 1, int(end_id) + 1)))))
             if part_info and start_id and end_id:
-                valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
-            else:
-                valid_file_ids = story["valid_file_ids"]
+                valid_file_ids = [mid for mid in valid_file_ids if start_id <= mid <= end_id]
 
         total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
 
@@ -8299,7 +8314,9 @@ async def _process_callback(client, query):
                 f_start = i + 1
                 f_end = min(i + chunk, total_files)
                 lbl = f"{f_start} - {f_end}"
-                row.append(_kb_btn(lbl, icon_custom_emoji_id="5341492148468465410"))
+                is_last_chunk = (f_end == total_files)
+                icon_id = "6147506120920405501" if is_last_chunk else "5341492148468465410"
+                row.append(_kb_btn(lbl, icon_custom_emoji_id=icon_id))
                 if len(row) == 2:
                     kb.append(row)
                     row = []
@@ -9060,11 +9077,19 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
         start = part_start if part_start else story.get('start_id')
         end = part_end if part_end else story.get('end_id')
         story_id_str = str(story['_id'])
+
+        # Resolve complete and up-to-date valid file list
+        val_ids = None
+        if story.get('valid_file_ids'):
+            val_ids = list(story['valid_file_ids'])
+            if end and val_ids and int(end) > max(val_ids):
+                val_ids = sorted(list(set(val_ids + list(range(max(val_ids) + 1, int(end) + 1)))))
+            elif end and not val_ids and start:
+                val_ids = list(range(int(start), int(end) + 1))
         
-        if custom_msg_ids is not None:
+        if custom_msg_ids is not None and len(custom_msg_ids) > 0:
             msg_range = custom_msg_ids
-        elif story.get('valid_file_ids'):
-            val_ids = story['valid_file_ids']
+        elif val_ids:
             if part_start and part_end:
                 ps = min(int(part_start), int(part_end))
                 pe = max(int(part_start), int(part_end))
@@ -9075,7 +9100,12 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
             if not src or not start or not end:
                 await client.send_message(user_id, "❌ Story file range is not configured correctly. Please contact admin.")
                 return
-            msg_range = list(range(int(start), int(end) + 1))
+            ps = min(int(start), int(end))
+            pe = max(int(start), int(end))
+            if part_start and part_end:
+                ps = min(int(part_start), int(part_end))
+                pe = max(int(part_start), int(part_end))
+            msg_range = list(range(ps, pe + 1))
 
         if not msg_range:
             await client.send_message(user_id, "❌ No valid files found in this selection. Please contact support.")
