@@ -8,7 +8,7 @@ optimizes them to WebP format, uploads them to Cloudflare R2, and updates MongoD
 with permanent Cloudflare R2 public URLs.
 
 Usage:
-    python migrate_telegram_images_to_r2.py [--dry-run]
+    python AryaPremium/migrate_telegram_images_to_r2.py [--dry-run] [--mongo-uri <URI>]
 """
 
 import os
@@ -20,73 +20,116 @@ import asyncio
 import argparse
 import aiohttp
 from PIL import Image
-from decouple import config
 
-# Auto-load .env
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_DIR)
 
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+if _PARENT not in sys.path:
+    sys.path.insert(0, _PARENT)
+
+def _inject_env(filepath):
+    """Read a .env file and inject values into os.environ."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip("'").strip('"')
+                    os.environ.setdefault(_k, _v)
+    except Exception:
+        pass
+
+# Inject from all possible env file locations
+for path in [
+    os.path.join(_DIR, ".env"),
+    os.path.join(_PARENT, ".env"),
+    os.path.join(_DIR, "config.env"),
+    os.path.join(_PARENT, "config.env"),
+    os.path.join(os.getcwd(), ".env"),
+    os.path.join(os.getcwd(), "config.env"),
+]:
+    _inject_env(path)
+
+# Try importing Root Config / Premium Config as fallback
+root_db_uri = ""
+prem_db_uri = ""
 try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(_DIR, ".env"))
-    load_dotenv(os.path.join(_PARENT, ".env"))
-except ImportError:
+    from config import Config as RootConfig
+    root_db_uri = getattr(RootConfig, "DATABASE_URI", "") or getattr(RootConfig, "DATABASE", "") or ""
+except Exception:
     pass
 
-import motor.motor_asyncio
-import boto3
+try:
+    from AryaPremium.config import Config as PremConfig
+    prem_db_uri = getattr(PremConfig, "MONGO_URI", "") or getattr(PremConfig, "DATABASE_URI", "") or ""
+except Exception:
+    pass
 
-# Configs
+# MongoDB URI Resolution
 MONGO_URI = (
     os.environ.get("MONGO_URI")
     or os.environ.get("DATABASE_URI")
     or os.environ.get("DATABASE")
-    or config("MONGO_URI", default="")
-    or config("DATABASE_URI", default="")
-)
-DB_NAME = (
-    os.environ.get("DATABASE_NAME")
-    or config("DATABASE_NAME", default="forward-bot")
+    or os.environ.get("MONGODB_URI")
+    or os.environ.get("MONGO_URL")
+    or os.environ.get("DB_URI")
+    or root_db_uri
+    or prem_db_uri
+    or ""
 )
 
+DB_NAME = (
+    os.environ.get("DATABASE_NAME")
+    or os.environ.get("DB_NAME")
+    or "forward-bot"
+)
+
+# Cloudflare R2 Credentials
 R2_ACCOUNT_ID = (
     os.environ.get("R2_ACCOUNT_ID")
-    or config("R2_ACCOUNT_ID", default="")
+    or os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    or ""
 )
 R2_ACCESS_KEY = (
     os.environ.get("R2_ACCESS_KEY_ID")
     or os.environ.get("R2_ACCESS_KEY")
-    or config("R2_ACCESS_KEY_ID", default="")
-    or config("R2_ACCESS_KEY", default="")
+    or os.environ.get("CLOUDFLARE_R2_ACCESS_KEY_ID")
+    or ""
 )
 R2_SECRET_KEY = (
     os.environ.get("R2_SECRET_ACCESS_KEY")
     or os.environ.get("R2_SECRET_KEY")
-    or config("R2_SECRET_ACCESS_KEY", default="")
-    or config("R2_SECRET_KEY", default="")
+    or os.environ.get("CLOUDFLARE_R2_SECRET_ACCESS_KEY")
+    or ""
 )
 R2_BUCKET = (
     os.environ.get("R2_BUCKET_NAME")
     or os.environ.get("R2_BUCKET")
-    or config("R2_BUCKET_NAME", default="arya-images")
-    or config("R2_BUCKET", default="arya-images")
+    or "arya-images"
 )
 R2_DOMAIN = (
     os.environ.get("R2_CUSTOM_DOMAIN")
     or os.environ.get("R2_DOMAIN")
-    or config("R2_CUSTOM_DOMAIN", default="")
-    or config("R2_DOMAIN", default="")
+    or ""
 )
 
-MGMT_BOT_TOKEN = os.environ.get("MGMT_BOT_TOKEN") or config("MGMT_BOT_TOKEN", default="")
-BOT_TOKEN = os.environ.get("BOT_TOKEN") or config("BOT_TOKEN", default="")
-SOURCE_BOT_TOKEN = os.environ.get("SOURCE_BOT_TOKEN") or config("SOURCE_BOT_TOKEN", default="")
+# Bot Tokens for telegram file resolution
+MGMT_BOT_TOKEN = os.environ.get("MGMT_BOT_TOKEN") or ""
+BOT_TOKEN = os.environ.get("BOT_TOKEN") or ""
+SOURCE_BOT_TOKEN = os.environ.get("SOURCE_BOT_TOKEN") or ""
 
 
 def upload_to_r2(img_bytes: bytes, filename: str, content_type: str = "image/webp") -> str:
     """Uploads bytes to Cloudflare R2 bucket and returns public URL."""
+    import boto3
     if not (R2_ACCOUNT_ID and R2_ACCESS_KEY and R2_SECRET_KEY and R2_BUCKET):
-        raise ValueError("Missing Cloudflare R2 credentials in environment / .env")
+        raise ValueError(
+            "Missing Cloudflare R2 credentials! Ensure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY are set in .env"
+        )
 
     s3 = boto3.client(
         "s3",
@@ -139,7 +182,7 @@ async def download_telegram_file(file_id: str, tokens: list) -> bytes:
         if params.get("file_id"):
             clean_id = params["file_id"][0]
 
-    # If it's already an HTTP URL (e.g. Catbox or other external URL)
+    # If it's already an HTTP URL (e.g. Catbox or external link)
     if clean_id.startswith("http://") or clean_id.startswith("https://"):
         async with aiohttp.ClientSession() as session:
             async with session.get(clean_id, timeout=aiohttp.ClientTimeout(total=15.0)) as resp:
@@ -174,21 +217,29 @@ async def download_telegram_file(file_id: str, tokens: list) -> bytes:
 
 
 async def main():
+    import motor.motor_asyncio
+    
     parser = argparse.ArgumentParser(description="Migrate story images from Telegram to Cloudflare R2")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without writing changes to MongoDB")
+    parser.add_argument("--mongo-uri", default="", help="Override MongoDB URI")
+    parser.add_argument("--db-name", default="", help="Override MongoDB Database Name")
     args = parser.parse_args()
+
+    active_mongo_uri = args.mongo_uri or MONGO_URI
+    active_db_name = args.db_name or DB_NAME
 
     print("=" * 60)
     print("🚀 Telegram Images ➔ Cloudflare R2 Migration Tool")
     print("=" * 60)
 
-    if not MONGO_URI:
-        print("❌ Error: MONGO_URI / DATABASE_URI is missing in .env")
+    if not active_mongo_uri:
+        print("❌ Error: MongoDB URI not found in .env (checked MONGO_URI, DATABASE_URI, DATABASE)")
+        print("   You can provide it directly: python AryaPremium/migrate_telegram_images_to_r2.py --mongo-uri 'mongodb+srv://...'")
         sys.exit(1)
 
-    print(f"📦 Connecting to MongoDB: {MONGO_URI.split('@')[-1] if '@' in MONGO_URI else MONGO_URI[:20]}...")
-    client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-    db = client[DB_NAME]
+    print(f"📦 Connecting to MongoDB: {active_mongo_uri.split('@')[-1] if '@' in active_mongo_uri else active_mongo_uri[:25]}...")
+    client = motor.motor_asyncio.AsyncIOMotorClient(active_mongo_uri)
+    db = client[active_db_name]
 
     # Collect all available bot tokens
     tokens = []
@@ -205,11 +256,11 @@ async def main():
     except Exception:
         pass
 
-    print(f"🔑 Available Bot Tokens for resolution: {len(tokens)}")
+    print(f"🔑 Available Bot Tokens for image resolution: {len(tokens)}")
     print(f"☁️ Cloudflare R2 Bucket: {R2_BUCKET}")
     print(f"🌐 Cloudflare Domain: {R2_DOMAIN or 'Default R2 URL'}")
     if args.dry_run:
-        print("⚠️ DRY RUN MODE: No changes will be written to database.")
+        print("⚠️ DRY RUN MODE: No changes will be written to MongoDB.")
     print("-" * 60)
 
     collections = ["stories", "premium_stories"]
