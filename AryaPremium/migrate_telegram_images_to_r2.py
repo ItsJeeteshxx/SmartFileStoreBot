@@ -132,10 +132,15 @@ async def download_telegram_file(file_id: str, bot_tokens: list) -> bytes:
             clean_id = params["file_id"][0]
 
     if clean_id.startswith("http://") or clean_id.startswith("https://"):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(clean_id, timeout=aiohttp.ClientTimeout(total=15.0)) as resp:
-                if resp.status == 200:
-                    return await resp.read()
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(clean_id, timeout=aiohttp.ClientTimeout(total=20.0)) as resp:
+                        if resp.status == 200:
+                            return await resp.read()
+            except Exception:
+                await asyncio.sleep(0.8)
         return None
 
     async with aiohttp.ClientSession() as session:
