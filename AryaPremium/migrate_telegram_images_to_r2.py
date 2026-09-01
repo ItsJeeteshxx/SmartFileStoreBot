@@ -2,9 +2,9 @@
 """
 Migrate Telegram File ID Images to Cloudflare R2
 =================================================
-This script scans all databases and collections in MongoDB,
-prints document details, downloads images stored as Telegram file_ids,
-optimizes them to WebP format, uploads them to Cloudflare R2, and updates MongoDB.
+This script inspects all story documents, identifies image sources
+(file_id, poster_url, image, cover, parts.file_id, poster_msg_id),
+optimizes them to WebP, uploads them to Cloudflare R2, and updates MongoDB.
 
 Usage:
     python AryaPremium/migrate_telegram_images_to_r2.py [--dry-run]
@@ -13,6 +13,7 @@ Usage:
 import os
 import sys
 import io
+import json
 import re
 import uuid
 import asyncio
@@ -29,7 +30,6 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 def _inject_env(filepath):
-    """Read a .env file and inject values into os.environ."""
     try:
         with open(filepath, "r", encoding="utf-8") as _f:
             for _line in _f:
@@ -212,7 +212,7 @@ async def main():
         all_dbs = await client.list_database_names()
         target_db_names = [d for d in all_dbs if d not in ("admin", "local", "config")]
     except Exception:
-        target_db_names = ["arya", "forward-bot", "arya_premium"]
+        target_db_names = ["arya", "forward-bot", "sample_mflix"]
 
     print(f"🗄️ Databases on cluster: {target_db_names}")
 
@@ -239,7 +239,6 @@ async def main():
         print("⚠️ DRY RUN MODE: No changes will be written to MongoDB.")
     print("-" * 60)
 
-    target_collections = ["stories", "premium_stories", "shows", "mini_app_banners", "bot_stories"]
     total_migrated = 0
     total_skipped = 0
     total_failed = 0
@@ -252,18 +251,18 @@ async def main():
             print(f"   ⚠️ Could not list collections in {dname}: {e}")
             continue
 
-        print(f"\n📂 Database: '{dname}' (Collections: {col_list})")
-
         for col_name in col_list:
+            if col_name.startswith("system."):
+                continue
+
             col = db[col_name]
-            # Check if this collection looks like stories or banners
-            is_target = (
-                col_name in target_collections
-                or "stor" in col_name.lower()
-                or "show" in col_name.lower()
-                or "banner" in col_name.lower()
+            # Check if this collection contains stories, shows, or banners
+            is_story_col = (
+                col_name in ("stories", "premium_stories", "shows", "mini_app_banners", "bot_stories")
+                or "story" in col_name.lower()
+                or "stories" in col_name.lower()
             )
-            if not is_target:
+            if not is_story_col:
                 continue
 
             try:
@@ -272,10 +271,9 @@ async def main():
                 continue
 
             if count == 0:
-                print(f"   └ Collection '{col_name}': 0 documents")
                 continue
 
-            print(f"   └ Collection '{col_name}': {count} documents found")
+            print(f"\n📂 Database: '{dname}' ➔ Collection: '{col_name}' ({count} documents found)")
             cursor = col.find({})
             async for doc in cursor:
                 doc_id = doc.get("_id")
@@ -283,12 +281,18 @@ async def main():
                     doc.get("title")
                     or doc.get("story_name_en")
                     or doc.get("story_name")
+                    or doc.get("clean_title")
                     or doc.get("name")
                     or doc.get("story_id")
-                    or doc.get("clean_title")
                     or str(doc_id)
                 )
-                
+
+                # Inspect all keys of this document
+                keys_preview = {k: (str(v)[:40] + "..." if len(str(v)) > 40 else v) for k, v in doc.items() if k != "_id"}
+                print(f"\n   📄 Document: '{title}' (ID: {doc_id})")
+                print(f"      Keys present: {list(doc.keys())}")
+
+                # Extract potential image fields
                 raw_img = (
                     doc.get("poster_url")
                     or doc.get("poster")
@@ -296,14 +300,25 @@ async def main():
                     or doc.get("cover")
                     or doc.get("image")
                     or doc.get("image_path")
+                    or doc.get("thumb")
+                    or doc.get("thumbnail")
+                    or doc.get("banner_url")
+                    or doc.get("banner")
                 )
 
+                # If parts array has a file_id
+                if not raw_img and doc.get("parts") and isinstance(doc["parts"], list) and len(doc["parts"]) > 0:
+                    first_part = doc["parts"][0]
+                    if isinstance(first_part, dict):
+                        raw_img = first_part.get("file_id") or first_part.get("thumb")
+
                 if not raw_img:
-                    print(f"      • '{title}': ⚠️ No image field found in document")
+                    print(f"      ⚠️ No image / file_id found in document fields.")
                     total_skipped += 1
                     continue
 
                 raw_str = str(raw_img).strip()
+                print(f"      Source image value: {raw_str}")
 
                 # Check if it's already an R2 / Cloudflare link
                 is_r2 = (
@@ -313,16 +328,14 @@ async def main():
                 )
 
                 if is_r2 and not args.force:
-                    print(f"      • '{title}': ⏭️ Already on Cloudflare R2 ({raw_str[:50]}...)")
+                    print(f"      ⏭️ Already on Cloudflare R2")
                     total_skipped += 1
                     continue
 
-                print(f"\n      ⚡ Processing '{title}'...")
-                print(f"         Source: {raw_str}")
-
+                print(f"      ⚡ Downloading & Uploading to Cloudflare R2...")
                 img_bytes = await download_telegram_file(raw_str, tokens)
                 if not img_bytes:
-                    print(f"         ❌ Could not download image from Telegram or Source URL.")
+                    print(f"      ❌ Could not download image from Telegram (Token or file_id invalid).")
                     total_failed += 1
                     continue
 
@@ -342,13 +355,13 @@ async def main():
                             update_data["banner_url"] = r2_url
 
                         await col.update_one({"_id": doc_id}, {"$set": update_data})
-                        print(f"         ✅ Successfully Migrated to R2 ➔ {r2_url}")
+                        print(f"      ✅ Successfully Migrated to R2 ➔ {r2_url}")
                     else:
-                        print(f"         [DRY-RUN] Would upload {len(optimized_bytes)} bytes to R2 as {filename}")
+                        print(f"      [DRY-RUN] Would upload {len(optimized_bytes)} bytes to R2 as {filename}")
 
                     total_migrated += 1
                 except Exception as e:
-                    print(f"         ❌ Failed to upload to Cloudflare R2: {e}")
+                    print(f"      ❌ Failed to upload to Cloudflare R2: {e}")
                     total_failed += 1
 
     print("\n" + "=" * 60)
