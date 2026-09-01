@@ -136,18 +136,24 @@ async def _edit_or_send_mgmt_view(client, chat_id: int, text: str, markup: Inlin
     mid = message_id or (getattr(query.message, "id", None) if query and getattr(query, "message", None) else None)
     ok = await _send_or_edit_mgmt_bot_api(client, chat_id, text, markup, message_id=mid)
     if not ok:
+        import re
+        clean_text = re.sub(r'<emoji id="\d+">([^<]*)</emoji>', r'\1', text)
+        clean_text = re.sub(r'<tg-emoji emoji-id="\d+">([^<]*)</tg-emoji>', r'\1', clean_text)
         clean_kb = _clean_markup_for_pyrogram(markup)
         if query and getattr(query, "message", None):
             try:
-                return await query.message.edit_text(text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+                return await query.message.edit_text(clean_text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
             except Exception:
                 pass
         elif mid:
             try:
-                return await client.edit_message_text(chat_id, mid, text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+                return await client.edit_message_text(chat_id, mid, clean_text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
             except Exception:
                 pass
-        return await client.send_message(chat_id, text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+        try:
+            return await client.send_message(chat_id, clean_text, reply_markup=clean_kb, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
 
 
 
@@ -670,18 +676,24 @@ async def market_callback(client, query):
             await query.answer(f"T&C Requirement: {status}", show_alert=True)
             await _render_more_settings(client, query)
 
-        elif cmd in ("toggle_checkout_v1", "toggle_checkout_v2"):
+        elif cmd == "toggle_checkout_v1":
             await _safe_answer(query)
-            cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-            current = cfg.get("checkout_mode", "v1")
-            new_val = "v2" if current == "v1" else "v1"
             await db.db.mini_app_config.update_one(
                 {"_key": "feature_toggles"},
-                {"$set": {"checkout_mode": new_val}},
+                {"$set": {"checkout_mode": "v1"}},
                 upsert=True
             )
-            status = "Page 1 (Razorpay+UPI)" if new_val == "v1" else "Page 2 (UPI+Crypto)"
-            await query.answer(f"Checkout Mode Set To: {status}", show_alert=True)
+            await query.answer("Checkout Mode Set To: Page 1 (Razorpay + Manual UPI)", show_alert=True)
+            await _render_payments_settings(client, query)
+
+        elif cmd == "toggle_checkout_v2":
+            await _safe_answer(query)
+            await db.db.mini_app_config.update_one(
+                {"_key": "feature_toggles"},
+                {"$set": {"checkout_mode": "v2"}},
+                upsert=True
+            )
+            await query.answer("Checkout Mode Set To: Page 2 (Direct UPI + Cashfree + Crypto)", show_alert=True)
             await _render_payments_settings(client, query)
 
         elif cmd == "toggle_gmail_verify":
@@ -1506,6 +1518,7 @@ async def market_callback(client, query):
             asyncio.create_task(_add_store_bot_flow(client, user_id))
 
         elif cmd.startswith("bot_view_"):
+            await _safe_answer(query)
             b_id = cmd.replace("bot_view_", "", 1) if cmd.startswith("bot_view_") else (data[2] if len(data) > 2 else cmd.split("_")[-1])
             bt = await _find_premium_bot(b_id)
             if not bt:
@@ -1532,7 +1545,11 @@ async def market_callback(client, query):
             else:
                 upi_state = "Auto"
 
-            b_id_int = int(b_id)
+            try:
+                b_id_int = int(bt.get("id") or b_id)
+            except Exception:
+                b_id_int = int(bt.get("id", 0))
+
             bot_mode = cfg.get("bot_mode", "full")
             if bot_mode == "show_store":
                 mode_btn_text = "🎬 STORE: Show Store (OTT)"
@@ -1543,7 +1560,14 @@ async def market_callback(client, query):
             else:
                 mode_btn_text = "🔴 STORE: OFF (Mini App)"
                 mode_desc = "🔴 <b>Mini App Only Mode</b> (Store off, /mystories & delivery active)"
-            story_count = await db.db.premium_stories.count_documents({"bot_id": b_id_int})
+
+            story_count = 0
+            total_bot_users = 0
+            live_bot_users_24h = 0
+            try:
+                story_count = await db.db.premium_stories.count_documents({"bot_id": b_id_int})
+            except Exception:
+                pass
 
             log_ch_val = cfg.get("log_channel", None)
             log_ch_str = str(log_ch_val) if log_ch_val else "Default Global"
@@ -1557,33 +1581,36 @@ async def market_callback(client, query):
                 ma_links_state = "✅ ON (Default)"
 
             # ── Per-Bot Live & Total Users Analytics ──
-            from datetime import datetime, timedelta, timezone
-            now_utc = datetime.now(timezone.utc)
-            cutoff_24h = now_utc - timedelta(hours=24)
+            try:
+                from datetime import datetime, timedelta, timezone
+                now_utc = datetime.now(timezone.utc)
+                cutoff_24h = now_utc - timedelta(hours=24)
 
-            bot_stories = await db.db.premium_stories.find({"bot_id": b_id_int}, {"_id": 1, "story_id": 1}).to_list(length=3000)
-            bot_s_ids = [str(s["_id"]) for s in bot_stories] + [s.get("story_id") for s in bot_stories if s.get("story_id")]
+                bot_stories = await db.db.premium_stories.find({"bot_id": b_id_int}, {"_id": 1, "story_id": 1}).to_list(length=3000)
+                bot_s_ids = [str(s["_id"]) for s in bot_stories] + [s.get("story_id") for s in bot_stories if s.get("story_id")]
 
-            # Total Lifetime Users who have used this specific bot
-            total_bot_users = await db.db.users.count_documents({
-                "$or": [
-                    {"used_bots": b_id_int},
-                    {"bot_ids": b_id_int},
-                    {f"bot_last_active.{b_id}": {"$exists": True}},
-                    {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}
-                ]
-            })
+                # Total Lifetime Users who have used this specific bot
+                total_bot_users = await db.db.users.count_documents({
+                    "$or": [
+                        {"used_bots": b_id_int},
+                        {"bot_ids": b_id_int},
+                        {f"bot_last_active.{b_id}": {"$exists": True}},
+                        {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}
+                    ]
+                })
 
-            # Currently Live / Active users in the last 24h on this bot
-            live_bot_users_24h = await db.db.users.count_documents({
-                "$or": [
-                    {f"bot_last_active.{b_id}": {"$gte": cutoff_24h}},
-                    {"$and": [
-                        {"$or": [{"used_bots": b_id_int}, {"bot_ids": b_id_int}, {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}]},
-                        {"last_active": {"$gte": cutoff_24h}}
-                    ]}
-                ]
-            })
+                # Currently Live / Active users in the last 24h on this bot
+                live_bot_users_24h = await db.db.users.count_documents({
+                    "$or": [
+                        {f"bot_last_active.{b_id}": {"$gte": cutoff_24h}},
+                        {"$and": [
+                            {"$or": [{"used_bots": b_id_int}, {"bot_ids": b_id_int}, {"purchases": {"$in": bot_s_ids}} if bot_s_ids else {"_non_exist_": 1}]},
+                            {"last_active": {"$gte": cutoff_24h}}
+                        ]}
+                    ]
+                })
+            except Exception:
+                pass
 
             kb = [
                 [InlineKeyboardButton(f"⚡ {mode_btn_text}", callback_data=f"mk#bot_mode_menu_{b_id}")],
