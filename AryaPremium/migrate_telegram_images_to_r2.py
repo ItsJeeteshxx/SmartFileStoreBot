@@ -2,9 +2,10 @@
 """
 Migrate Telegram File ID Images to Cloudflare R2
 =================================================
-This script scans all databases and collections across both AryaForwardBot
-and riyanew_disk MongoDB databases, identifies stories with Telegram file_ids,
-optimizes them to WebP, uploads them to Cloudflare R2, and updates MongoDB.
+This script scans all databases and collections across all MongoDB URIs
+found in AryaForwardBot and riyanew_disk, checks every single collection
+for story/media image fields, downloads Telegram file_ids, optimizes them,
+uploads them to Cloudflare R2, and updates MongoDB.
 
 Usage:
     python AryaPremium/migrate_telegram_images_to_r2.py [--dry-run]
@@ -15,6 +16,7 @@ import sys
 import io
 import re
 import uuid
+import glob
 import asyncio
 import argparse
 import aiohttp
@@ -23,11 +25,6 @@ from PIL import Image
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_DIR)
 _GRANDPARENT = os.path.dirname(_PARENT)
-
-if _DIR not in sys.path:
-    sys.path.insert(0, _DIR)
-if _PARENT not in sys.path:
-    sys.path.insert(0, _PARENT)
 
 def _read_env_file(filepath):
     env_dict = {}
@@ -44,64 +41,66 @@ def _read_env_file(filepath):
         pass
     return env_dict
 
-# Collect envs from all sources
-all_envs = {}
-env_paths = [
-    os.path.join(_DIR, ".env"),
-    os.path.join(_PARENT, ".env"),
-    os.path.join(_DIR, "config.env"),
-    os.path.join(_PARENT, "config.env"),
-    os.path.join(_GRANDPARENT, "riyanew_disk", ".env"),
-    "/home/ubuntu/riyanew_disk/.env",
-    os.path.join(os.getcwd(), ".env"),
-    os.path.join(os.getcwd(), "config.env"),
+def _extract_mongo_uris_from_file(filepath):
+    uris = set()
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+            matches = re.findall(r'mongodb(?:\+srv)?://[^\s"\'\n]+', content)
+            for m in matches:
+                uris.add(m.strip().strip('"').strip("'"))
+    except Exception:
+        pass
+    return uris
+
+# Find all MongoDB URIs from all files in AryaForwardBot and riyanew_disk
+all_mongo_uris = set()
+all_bot_tokens = set()
+
+search_dirs = [
+    _DIR,
+    _PARENT,
+    os.path.join(_GRANDPARENT, "riyanew_disk"),
+    "/home/ubuntu/riyanew_disk",
+    os.getcwd()
 ]
 
-for p in env_paths:
-    d = _read_env_file(p)
-    all_envs.update(d)
-    for k, v in d.items():
-        os.environ.setdefault(k, v)
+for sdir in search_dirs:
+    if not os.path.exists(sdir):
+        continue
+    for fname in [".env", "config.env", "config.py", "settings.py", "database.py", "mongo_search.py", "stories_bot.py"]:
+        fpath = os.path.join(sdir, fname)
+        if os.path.isfile(fpath):
+            # Parse key-values
+            env_map = _read_env_file(fpath)
+            for k, v in env_map.items():
+                if "mongo" in k.lower() or "database" in k.lower() or "db" in k.lower():
+                    if "mongodb" in v:
+                        all_mongo_uris.add(v)
+                if "token" in k.lower() and len(v) > 20 and ":" in v:
+                    all_bot_tokens.add(v)
+            # Regex scan
+            for u in _extract_mongo_uris_from_file(fpath):
+                all_mongo_uris.add(u)
 
-# Collect all distinct MongoDB URIs across all config files
-mongo_uris = set()
-for k in ["MONGO_URI", "DATABASE_URI", "DATABASE", "MONGODB_URI", "MONGO_URL", "DB_URI"]:
-    if os.environ.get(k):
-        mongo_uris.add(os.environ.get(k))
-    if all_envs.get(k):
-        mongo_uris.add(all_envs.get(k))
+# System environment variables
+for k, v in os.environ.items():
+    if ("mongo" in k.lower() or "database" in k.lower() or "db" in k.lower()) and "mongodb" in str(v):
+        all_mongo_uris.add(v)
+    if "token" in k.lower() and len(str(v)) > 20 and ":" in str(v):
+        all_bot_tokens.add(v)
 
-# Also read riyanew_disk .env explicitly if available
-riya_env = _read_env_file("/home/ubuntu/riyanew_disk/.env") or _read_env_file(os.path.join(_GRANDPARENT, "riyanew_disk", ".env"))
-for k in ["MONGO_URI", "DATABASE_URI", "DATABASE", "MONGODB_URI", "MONGO_URL", "DB_URI"]:
-    if riya_env.get(k):
-        mongo_uris.add(riya_env.get(k))
-
-# Cloudflare R2 Credentials
-R2_ACCOUNT_ID = all_envs.get("R2_ACCOUNT_ID") or os.environ.get("R2_ACCOUNT_ID") or "d738aa13a7944050a7edb60cc5cd91bb"
-R2_ACCESS_KEY = all_envs.get("R2_ACCESS_KEY_ID") or all_envs.get("R2_ACCESS_KEY") or os.environ.get("R2_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY") or ""
-R2_SECRET_KEY = all_envs.get("R2_SECRET_ACCESS_KEY") or all_envs.get("R2_SECRET_KEY") or os.environ.get("R2_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET_KEY") or ""
-R2_BUCKET = all_envs.get("R2_BUCKET_NAME") or all_envs.get("R2_BUCKET") or os.environ.get("R2_BUCKET_NAME") or "arya-images"
-R2_DOMAIN = all_envs.get("R2_CUSTOM_DOMAIN") or all_envs.get("R2_DOMAIN") or os.environ.get("R2_CUSTOM_DOMAIN") or "https://pub-d738aa13a7944050a7edb60cc5cd91bb.r2.dev"
-
-# Bot Tokens
-tokens = set()
-for k in ["MGMT_BOT_TOKEN", "BOT_TOKEN", "SOURCE_BOT_TOKEN", "TG_BOT_TOKEN"]:
-    if os.environ.get(k):
-        tokens.add(os.environ.get(k))
-    if all_envs.get(k):
-        tokens.add(all_envs.get(k))
-    if riya_env.get(k):
-        tokens.add(riya_env.get(k))
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID") or "d738aa13a7944050a7edb60cc5cd91bb"
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY") or ""
+R2_SECRET_KEY = os.environ.get("R2_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET_KEY") or ""
+R2_BUCKET = os.environ.get("R2_BUCKET_NAME") or "arya-images"
+R2_DOMAIN = os.environ.get("R2_CUSTOM_DOMAIN") or "https://pub-d738aa13a7944050a7edb60cc5cd91bb.r2.dev"
 
 
 def upload_to_r2(img_bytes: bytes, filename: str, content_type: str = "image/webp") -> str:
-    """Uploads bytes to Cloudflare R2 bucket and returns public URL."""
     import boto3
     if not (R2_ACCOUNT_ID and R2_ACCESS_KEY and R2_SECRET_KEY and R2_BUCKET):
-        raise ValueError(
-            "Missing Cloudflare R2 credentials! Ensure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY are set in .env"
-        )
+        raise ValueError("Missing Cloudflare R2 credentials in environment!")
 
     s3 = boto3.client(
         "s3",
@@ -128,7 +127,6 @@ def upload_to_r2(img_bytes: bytes, filename: str, content_type: str = "image/web
 
 
 def optimize_image(img_raw_bytes: bytes, quality: int = 80) -> bytes:
-    """Converts image bytes to optimized WebP format."""
     img = Image.open(io.BytesIO(img_raw_bytes))
     if img.mode == "CMYK":
         img = img.convert("RGB")
@@ -141,7 +139,6 @@ def optimize_image(img_raw_bytes: bytes, quality: int = 80) -> bytes:
 
 
 async def download_telegram_file(file_id: str, bot_tokens: list) -> bytes:
-    """Downloads a file_id from Telegram Bot API trying each token in tokens list."""
     clean_id = file_id.strip()
     if not clean_id:
         return None
@@ -191,16 +188,13 @@ async def main():
     parser = argparse.ArgumentParser(description="Migrate story images from Telegram to Cloudflare R2")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without writing changes to MongoDB")
     parser.add_argument("--force", action="store_true", help="Re-upload even if already has a URL")
-    parser.add_argument("--mongo-uri", default="", help="Specific MongoDB URI")
     args = parser.parse_args()
-
-    active_uris = [args.mongo_uri] if args.mongo_uri else list(mongo_uris)
 
     print("=" * 60)
     print("🚀 Telegram Images ➔ Cloudflare R2 Migration Tool")
     print("=" * 60)
-    print(f"📦 Total MongoDB Clusters to scan: {len(active_uris)}")
-    print(f"🔑 Available Bot Tokens: {len(tokens)}")
+    print(f"📦 Discovered MongoDB URIs: {len(all_mongo_uris)}")
+    print(f"🔑 Discovered Bot Tokens: {len(all_bot_tokens)}")
     print(f"☁️ Cloudflare R2 Bucket: {R2_BUCKET}")
     print(f"🌐 Cloudflare Domain: {R2_DOMAIN}")
     if args.dry_run:
@@ -211,11 +205,9 @@ async def main():
     total_skipped = 0
     total_failed = 0
 
-    token_list = list(tokens)
+    token_list = list(all_bot_tokens)
 
-    for uri in active_uris:
-        if not uri:
-            continue
+    for uri in all_mongo_uris:
         masked_uri = uri.split('@')[-1] if '@' in uri else uri[:25]
         print(f"\n📡 Connecting to Cluster: {masked_uri}...")
         try:
@@ -230,23 +222,8 @@ async def main():
             db = client[dname]
             try:
                 col_list = await db.list_collection_names()
-            except Exception as e:
-                continue
-
-            # Fetch any extra bot tokens from DB
-            try:
-                if "premium_bots" in col_list:
-                    async for b in db.premium_bots.find({"token": {"$exists": True, "$ne": ""}}):
-                        t = b.get("token")
-                        if t and t not in token_list:
-                            token_list.append(t)
-                if "bots" in col_list:
-                    async for b in db.bots.find({"token": {"$exists": True, "$ne": ""}}):
-                        t = b.get("token")
-                        if t and t not in token_list:
-                            token_list.append(t)
             except Exception:
-                pass
+                continue
 
             for col_name in col_list:
                 if col_name.startswith("system."):
@@ -261,18 +238,23 @@ async def main():
                 if count == 0:
                     continue
 
-                # Scan collections that might hold stories or shows or media
-                is_target = (
-                    "stor" in col_name.lower()
-                    or "show" in col_name.lower()
-                    or "banner" in col_name.lower()
-                    or "media" in col_name.lower()
-                    or "post" in col_name.lower()
-                )
-                if not is_target:
+                # Check first document to see if this collection has images / stories
+                sample = await col.find_one({})
+                if not sample:
                     continue
 
-                print(f"\n📂 Database: '{dname}' ➔ Collection: '{col_name}' ({count} documents found)")
+                # Check if sample has any media or story fields
+                has_image_field = any(
+                    k in sample for k in [
+                        "poster_url", "poster", "image_url", "cover", "image", 
+                        "image_path", "thumb", "thumbnail", "photo", "banner_url", "banner"
+                    ]
+                ) or ("parts" in sample and isinstance(sample["parts"], list))
+
+                if not has_image_field:
+                    continue
+
+                print(f"\n📂 Database: '{dname}' ➔ Collection: '{col_name}' ({count} documents with image fields found)")
                 cursor = col.find({})
                 async for doc in cursor:
                     doc_id = doc.get("_id")
@@ -286,7 +268,6 @@ async def main():
                         or str(doc_id)
                     )
 
-                    # Extract potential image fields
                     raw_img = (
                         doc.get("poster_url")
                         or doc.get("poster")
@@ -296,6 +277,7 @@ async def main():
                         or doc.get("image_path")
                         or doc.get("thumb")
                         or doc.get("thumbnail")
+                        or doc.get("photo")
                         or doc.get("banner_url")
                         or doc.get("banner")
                     )
@@ -319,16 +301,16 @@ async def main():
                     )
 
                     if is_r2 and not args.force:
-                        print(f"      • '{title}': ⏭️ Already on Cloudflare R2")
+                        print(f"   • '{title}': ⏭️ Already on Cloudflare R2")
                         total_skipped += 1
                         continue
 
-                    print(f"\n      ⚡ Processing '{title}' (ID: {doc.get('story_id', doc_id)})")
-                    print(f"         Source Image: {raw_str[:70]}...")
+                    print(f"\n   ⚡ Processing '{title}' (ID: {doc.get('story_id', doc_id)})")
+                    print(f"      Source Image: {raw_str[:70]}...")
 
                     img_bytes = await download_telegram_file(raw_str, token_list)
                     if not img_bytes:
-                        print(f"         ❌ Could not download image from Telegram or Source URL.")
+                        print(f"      ❌ Could not download image from Telegram or Source URL.")
                         total_failed += 1
                         continue
 
@@ -348,13 +330,13 @@ async def main():
                                 update_data["banner_url"] = r2_url
 
                             await col.update_one({"_id": doc_id}, {"$set": update_data})
-                            print(f"         ✅ Successfully Migrated to R2 ➔ {r2_url}")
+                            print(f"      ✅ Successfully Migrated to R2 ➔ {r2_url}")
                         else:
-                            print(f"         [DRY-RUN] Would upload {len(optimized_bytes)} bytes to R2 as {filename}")
+                            print(f"      [DRY-RUN] Would upload {len(optimized_bytes)} bytes to R2 as {filename}")
 
                         total_migrated += 1
                     except Exception as e:
-                        print(f"         ❌ Failed to upload to Cloudflare R2: {e}")
+                        print(f"      ❌ Failed to upload to Cloudflare R2: {e}")
                         total_failed += 1
 
     print("\n" + "=" * 60)
