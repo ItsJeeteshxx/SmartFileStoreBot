@@ -277,6 +277,24 @@ async def main():
 
                 raw_str = str(raw_img).strip()
 
+                # Ensure metadata integrity for all stories
+                missing_meta = {}
+                if not doc.get("story_id"):
+                    missing_meta["story_id"] = str(doc_id)
+                if not doc.get("visibility"):
+                    missing_meta["visibility"] = "available"
+                if not doc.get("status"):
+                    missing_meta["status"] = "Completed"
+                if not doc.get("created_at"):
+                    from datetime import datetime, timezone
+                    missing_meta["created_at"] = datetime.now(timezone.utc)
+                if not doc.get("uploaded_at"):
+                    from datetime import datetime, timezone
+                    missing_meta["uploaded_at"] = datetime.now(timezone.utc)
+
+                if missing_meta and not args.dry_run:
+                    await col.update_one({"_id": doc_id}, {"$set": missing_meta})
+
                 # Check if it's already an R2 / Cloudflare link
                 is_r2 = (
                     "r2.cloudflarestorage.com" in raw_str
@@ -308,6 +326,7 @@ async def main():
                             "poster_url": r2_url,
                             "image_url": r2_url,
                             "cover": r2_url,
+                            "image": r2_url,
                             "r2_migrated": True
                         }
                         if not doc.get("banner_url"):

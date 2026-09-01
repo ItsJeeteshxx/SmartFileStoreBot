@@ -3458,45 +3458,43 @@ async def _add_story_flow(client, user_id):
                     return await client.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
 
                 if getattr(msg_img, "photo", None):
-                    await client.send_message(user_id, "<i>Uploading image to CDN and store bot...</i>")
+                    await client.send_message(user_id, "<i>Uploading image to Cloudflare R2 & store bot...</i>")
                     try:
                         from plugins.userbot.market_seller import market_clients
-                        from utils import upload_to_catbox
-                        store_cli = market_clients.get(str(sj["bot_id"]))
+                        from r2_helper import upload_image_to_r2
                         dl = await client.download_media(msg_img.photo.file_id)
 
-                        catbox_url = await upload_to_catbox(dl)
-                        if catbox_url:
-                            sj["poster_url"] = catbox_url
-                            sj["image_url"] = catbox_url
+                        clean_name = sj.get("story_name_en") or sj.get("story_name_hi") or "story"
+                        r2_url = await upload_image_to_r2(dl, clean_title=clean_name)
+                        if r2_url:
+                            sj["poster_url"] = r2_url
+                            sj["banner_url"] = r2_url
+                            sj["image_url"] = r2_url
+                            sj["image"] = r2_url
+                            sj["cover"] = r2_url
+                        else:
+                            from utils import upload_to_catbox
+                            catbox_url = await upload_to_catbox(dl)
+                            if catbox_url:
+                                sj["poster_url"] = catbox_url
+                                sj["banner_url"] = catbox_url
+                                sj["image_url"] = catbox_url
+                                sj["image"] = catbox_url
+                                sj["cover"] = catbox_url
 
-                        uploaded = False
-                        if store_cli:
+                        store_cli = market_clients.get(str(sj["bot_id"]))
+                        if store_cli and not sj.get("poster_url"):
                             try:
                                 ul = await store_cli.send_photo(user_id, photo=dl)
                                 sj["image"] = ul.photo.file_id
-                                uploaded = True
                             except Exception:
                                 pass
-
-                            if not uploaded:
-                                log_ch = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or getattr(Config, "ARYA_LOGS_CHANNEL", None)
-                                if log_ch:
-                                    try:
-                                        ul = await store_cli.send_photo(int(log_ch), photo=dl)
-                                        sj["image"] = ul.photo.file_id
-                                        uploaded = True
-                                        try: await ul.delete()
-                                        except Exception: pass
-                                    except Exception: pass
-
-                        if not uploaded:
-                            sj["image"] = catbox_url or msg_img.photo.file_id
 
                         try:
                             import os; os.remove(dl)
                         except Exception: pass
                     except Exception as e:
+                        logger.warning(f"[AddStory] Image upload error: {e}")
                         sj["image"] = msg_img.photo.file_id
                 else:
                     sj["image"] = None
@@ -3758,6 +3756,13 @@ async def _add_story_flow(client, user_id):
                     sj["delivery_mode"] = "pool"
                     sj["channel_pool"] = [c["channel_id"] for c in delivery_channels] if delivery_channels else []
 
+                from datetime import datetime, timezone
+                now_utc = datetime.now(timezone.utc)
+                sj.setdefault("created_at", now_utc)
+                sj.setdefault("uploaded_at", now_utc)
+                sj.setdefault("visibility", "available")
+                sj.setdefault("status", sj.get("status") or "Completed")
+
                 # Default payment methods
                 sj.setdefault("payment_methods", ["upi", "razorpay", "cashfree"])
                 sj.setdefault("forwarding_enabled", True)
@@ -3765,6 +3770,15 @@ async def _add_story_flow(client, user_id):
                 # Save Story to DB
                 result = await db.db.premium_stories.insert_one(sj)
                 story_id = str(result.inserted_id)
+                await db.db.premium_stories.update_one(
+                    {"_id": result.inserted_id},
+                    {"$set": {
+                        "story_id": story_id,
+                        "visibility": "available",
+                        "created_at": now_utc,
+                        "uploaded_at": now_utc
+                    }}
+                )
 
                 try:
                     from utils import scan_and_index_story

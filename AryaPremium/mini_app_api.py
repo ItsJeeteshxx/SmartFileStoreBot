@@ -1212,6 +1212,22 @@ def _format_story(s: dict) -> dict | None:
     if len(cleaned_parts) > 0 and raw_ep is not False and str(raw_ep).lower() != "false":
         enable_parts_bool = True
 
+    c_at = s.get("created_at") or s.get("uploaded_at") or s.get("createdAt")
+    c_at_str = ""
+    if isinstance(c_at, (int, float)):
+        try:
+            from datetime import datetime, timezone
+            c_at_str = datetime.fromtimestamp(c_at, tz=timezone.utc).isoformat()
+        except Exception:
+            c_at_str = ""
+    elif isinstance(c_at, datetime):
+        c_at_str = c_at.isoformat()
+    elif isinstance(c_at, str) and c_at.strip():
+        c_at_str = c_at.strip()
+    if not c_at_str:
+        from datetime import datetime, timezone
+        c_at_str = datetime.now(timezone.utc).isoformat()
+
     return {
         "id":           story_id,
         "story_id":     s.get("story_id") or story_id,
@@ -1242,7 +1258,7 @@ def _format_story(s: dict) -> dict | None:
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
-        "created_at":    s.get("created_at").isoformat() if isinstance(s.get("created_at"), datetime) else str(s.get("created_at") or ""),
+        "created_at":    c_at_str,
     }
 
 
@@ -1251,7 +1267,7 @@ def _format_story(s: dict) -> dict | None:
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 _stories_cache = None
 _stories_cache_time = 0
-_stories_cache_ttl = 30  # 30 seconds
+_stories_cache_ttl = 5  # 5 seconds fast cache
 
 @api_router.get("/series")
 async def get_series():
