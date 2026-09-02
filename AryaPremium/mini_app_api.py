@@ -2280,11 +2280,13 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                 p_end = int(selected_part.get("end_id") or story_doc.get("end_id") or 0)
                 p_price = float(selected_part.get("price") or 0)
                 p_name = selected_part.get("name") or "Part"
+                p_episodes = selected_part.get("episodes") or (f"Ep {p_start}-{p_end}" if (p_start and p_end) else "")
                 resolved_items.append({
                     "story_id": str(story_doc.get("_id")),
                     "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
                     "part_id": str(selected_part.get("id")),
                     "part_name": p_name,
+                    "episodes": p_episodes,
                     "start_id": p_start,
                     "end_id": p_end,
                     "price": p_price,
@@ -2299,6 +2301,7 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                     "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
                     "part_id": None,
                     "part_name": None,
+                    "episodes": None,
                     "start_id": s_start,
                     "end_id": s_end,
                     "price": s_price,
@@ -2327,6 +2330,7 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                 "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
                 "part_id": None,
                 "part_name": None,
+                "episodes": None,
                 "start_id": int(story_doc.get("start_id") or 0),
                 "end_id": int(story_doc.get("end_id") or 0),
                 "price": float(story_doc.get("price") or 0),
@@ -2335,7 +2339,16 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
             
     subtotal = sum(i["price"] for i in resolved_items)
     unique_story_ids = list(dict.fromkeys([i["story_id"] for i in resolved_items]))
-    story_names = [i["story_title"] + (f" ({i['part_name']})" if i.get("part_name") else "") for i in resolved_items]
+    story_names = []
+    for i in resolved_items:
+        if i.get("part_name"):
+            ep_str = i.get("episodes") or (f"Ep {i.get('start_id')}-{i.get('end_id')}" if (i.get("start_id") and i.get("end_id")) else "")
+            if ep_str and ep_str.lower() not in str(i.get("part_name")).lower():
+                story_names.append(f"{i['story_title']} - {i['part_name']} ({ep_str})")
+            else:
+                story_names.append(f"{i['story_title']} - {i['part_name']}")
+        else:
+            story_names.append(i["story_title"])
     return resolved_items, subtotal, unique_story_ids, story_names
 
 
@@ -6013,11 +6026,12 @@ async def get_my_purchases(telegram_id: str):
                 "user_id": {"$in": [user_id_int, user_id_str]},
                 "story_ids": {"$in": purchased_story_ids},
                 "status": {"$in": ["paid", "delivered"]}
-            })
+            }).sort("created_at", -1)
             async for ord_doc in order_cursor:
                 for sid in (ord_doc.get("story_ids") or []):
                     if sid not in orders_by_story:
-                        orders_by_story[sid] = ord_doc
+                        orders_by_story[sid] = []
+                    orders_by_story[sid].append(ord_doc)
 
         # ── BULK FETCH: premium_purchases in ONE query ──
         pp_by_story: dict = {}
@@ -6039,35 +6053,58 @@ async def get_my_purchases(telegram_id: str):
                     formatted = _format_story(story)
                     if formatted:
                         formatted["story_id"] = formatted["id"]
-                        order = orders_by_story.get(story_id)
-                        if order:
-                            purchased_part = None
-                            if order.get("items"):
-                                for itm in order["items"]:
-                                    if (itm.get("story_id") == story_id or itm.get("story_id") == str(story["_id"])) and itm.get("part_id"):
-                                        purchased_part = {
-                                            "id": itm.get("part_id"),
-                                            "name": itm.get("part_name"),
-                                            "start_id": itm.get("start_id"),
-                                            "end_id": itm.get("end_id"),
-                                            "price": itm.get("price")
-                                        }
-                                        break
-                            if purchased_part:
-                                formatted["purchased_part"] = purchased_part
-                                formatted["selected_part"] = purchased_part
-                                if purchased_part.get("start_id"):
-                                    formatted["start_id"] = purchased_part["start_id"]
-                                if purchased_part.get("end_id"):
-                                    formatted["end_id"] = purchased_part["end_id"]
+                        user_story_orders = orders_by_story.get(story_id, [])
+                        all_purchased_parts = []
+                        has_full_purchase = False
+                        latest_order = user_story_orders[0] if user_story_orders else None
 
+                        for ord_doc in user_story_orders:
+                            if ord_doc.get("items") and isinstance(ord_doc["items"], list):
+                                for itm in ord_doc["items"]:
+                                    if str(itm.get("story_id") or "") in (story_id, str(story["_id"])):
+                                        if itm.get("part_id"):
+                                            p_start = itm.get("start_id")
+                                            p_end = itm.get("end_id")
+                                            p_ep = itm.get("episodes") or (f"Ep {p_start}-{p_end}" if (p_start and p_end) else "")
+                                            part_dict = {
+                                                "id": str(itm.get("part_id")),
+                                                "name": itm.get("part_name") or "Part",
+                                                "start_id": p_start,
+                                                "end_id": p_end,
+                                                "episodes": p_ep,
+                                                "price": itm.get("price")
+                                            }
+                                            if not any(p["id"] == part_dict["id"] for p in all_purchased_parts):
+                                                all_purchased_parts.append(part_dict)
+                                        else:
+                                            has_full_purchase = True
+                            else:
+                                has_full_purchase = True
+
+                        if all_purchased_parts:
+                            formatted["purchased_parts"] = all_purchased_parts
+                            formatted["purchased_part"] = all_purchased_parts[0]
+                            formatted["selected_part"] = all_purchased_parts[0]
+                            formatted["is_full_purchased"] = has_full_purchase
+                            if not has_full_purchase:
+                                formatted["price"] = all_purchased_parts[0].get("price") or formatted.get("price")
+                            if all_purchased_parts[0].get("start_id"):
+                                formatted["start_id"] = all_purchased_parts[0]["start_id"]
+                            if all_purchased_parts[0].get("end_id"):
+                                formatted["end_id"] = all_purchased_parts[0]["end_id"]
+                        else:
+                            formatted["is_full_purchased"] = True
+
+                        if latest_order:
                             formatted["order_details"] = {
-                                "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
-                                "source": order.get("source", "miniapp"),
-                                "status": order.get("status"),
-                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
-                                "resolved_by": order.get("resolved_by"),
-                                "purchased_part": purchased_part,
+                                "order_id": latest_order.get("order_id") or latest_order.get("payment_link_id") or latest_order.get("razorpay_order_id"),
+                                "source": latest_order.get("source", "miniapp"),
+                                "status": latest_order.get("status"),
+                                "amount": latest_order.get("total") or latest_order.get("amount"),
+                                "created_at": latest_order.get("created_at").isoformat() if isinstance(latest_order.get("created_at"), datetime) else str(latest_order.get("created_at", "")),
+                                "resolved_by": latest_order.get("resolved_by"),
+                                "purchased_part": all_purchased_parts[0] if all_purchased_parts else None,
+                                "purchased_parts": all_purchased_parts,
                             }
                         else:
                             purchase_rec = pp_by_story.get(story_id)
@@ -6077,6 +6114,7 @@ async def get_my_purchases(telegram_id: str):
                                     "order_id": purchase_rec.get("order_id") or "",
                                     "source": purchase_rec.get("source", "imported"),
                                     "status": "paid",
+                                    "amount": purchase_rec.get("amount"),
                                     "created_at": p_at.isoformat() if isinstance(p_at, datetime) else str(p_at or "")
                                 }
                             else:
@@ -12094,9 +12132,25 @@ async def trigger_payment_log_from_order(order: dict):
         else:
             user_display = f'<a href="{tg_link}">{full_name}</a>'
 
-        # Join story names
-        story_names = order.get("story_names", [])
-        if not story_names:
+        # Join story names with parts and episode ranges
+        story_names = []
+        if order.get("items") and isinstance(order["items"], list):
+            for itm in order["items"]:
+                stitle = itm.get("story_title") or "Story"
+                pname = itm.get("part_name")
+                ep_range = itm.get("episodes") or (f"Ep {itm.get('start_id')}-{itm.get('end_id')}" if (itm.get("start_id") and itm.get("end_id")) else "")
+                if pname:
+                    if ep_range and ep_range.lower() not in str(pname).lower():
+                        story_names.append(f"{stitle} - {pname} ({ep_range})")
+                    else:
+                        story_names.append(f"{stitle} - {pname}")
+                elif ep_range:
+                    story_names.append(f"{stitle} ({ep_range})")
+                else:
+                    story_names.append(stitle)
+        elif order.get("story_names"):
+            story_names = list(order.get("story_names", []))
+        else:
             story_ids = order.get("story_ids", [])
             from bson.objectid import ObjectId
             for sid in story_ids:

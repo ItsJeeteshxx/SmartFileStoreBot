@@ -9219,9 +9219,22 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
         dm_aborts.discard(user_id)
 
-
-
-        s_name = story.get('story_name_en', 'Story')
+        s_name = story.get('story_name_en') or story.get('title') or 'Story'
+        if part_start and part_end:
+            part_matched = None
+            for p in (story.get('parts') or []):
+                if isinstance(p, dict) and str(p.get('start_id')) == str(part_start) and str(p.get('end_id')) == str(part_end):
+                    part_matched = p
+                    break
+            if part_matched:
+                pname = part_matched.get('name') or "Part"
+                ep_r = part_matched.get('episodes') or f"Ep {part_start}-{part_end}"
+                if ep_r.lower() not in pname.lower():
+                    s_name = f"{s_name} - {pname} ({ep_r})"
+                else:
+                    s_name = f"{s_name} - {pname}"
+            else:
+                s_name = f"{s_name} (Ep {part_start}-{part_end})"
 
         rep_tpl = (bt_cfg.get("delivery_report") or "").strip()
 
