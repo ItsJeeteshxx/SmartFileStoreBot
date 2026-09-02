@@ -3220,6 +3220,10 @@ async def _process_start(client, message):
         if part_info and part_info.get("start_id") and part_info.get("end_id"):
             start_id = int(part_info["start_id"])
             end_id   = int(part_info["end_id"])
+            is_ong   = bool(part_info.get("is_ongoing") or str(part_info.get("badge") or "").lower() == "ongoing")
+            story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
+            if is_ong and story_end_id > end_id:
+                end_id = story_end_id
             p_id_str = str(part_info.get("id"))
         else:
             start_id = story.get('start_id')
@@ -4109,6 +4113,10 @@ async def _process_text(client, message):
             if part_info and part_info.get("start_id") and part_info.get("end_id"):
                 start_id = int(part_info["start_id"])
                 end_id = int(part_info["end_id"])
+                is_ong = bool(part_info.get("is_ongoing") or str(part_info.get("badge") or "").lower() == "ongoing")
+                story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
+                if is_ong and story_end_id > end_id:
+                    end_id = story_end_id
             else:
                 start_id = story.get("start_id")
                 end_id = story.get("end_id")
@@ -6743,9 +6751,21 @@ async def _process_callback(client, query):
                 p_label = part_doc.get("name", f"Part {part_id}")
                 s_name = f"{s_name} · {p_label}"
                 ep_range = part_doc.get("episodes", "")
-                episodes_display = ep_range if ep_range else "N/A"
+                is_ong = bool(part_doc.get("is_ongoing") or str(part_doc.get("badge") or "").lower() == "ongoing")
                 start_p = int(part_doc.get("start_id", 0))
                 end_p = int(part_doc.get("end_id", 0))
+                story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
+                if is_ong and story_end_id > end_p:
+                    end_p = story_end_id
+                    story_eps = str(story.get("episodes") or "").strip()
+                    if story_eps and story_eps.isdigit():
+                        import re
+                        m = re.search(r"(\d+)", str(ep_range))
+                        if m:
+                            ep_range = f"{m.group(1)}-{story_eps}"
+                        elif not ep_range:
+                            ep_range = story_eps
+                episodes_display = ep_range if ep_range else "N/A"
                 part_files = [mid for mid in story.get("valid_file_ids", []) if start_p <= mid <= end_p] if (start_p and end_p and story.get("valid_file_ids")) else []
                 ep_count = len(part_files) if part_files else ((end_p - start_p) + 1 if (start_p and end_p) else "?")
                 access_cb = f"mb#access_{s_id}_{part_id}"
@@ -8556,6 +8576,10 @@ async def _process_callback(client, query):
         if part_info and part_info.get("start_id") and part_info.get("end_id"):
             start_id = int(part_info["start_id"])
             end_id   = int(part_info["end_id"])
+            is_ong   = bool(part_info.get("is_ongoing") or str(part_info.get("badge") or "").lower() == "ongoing")
+            story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
+            if is_ong and story_end_id > end_id:
+                end_id = story_end_id
             p_id_str = str(part_info.get("id"))
         else:
             start_id = story.get('start_id')

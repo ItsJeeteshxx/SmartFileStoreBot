@@ -439,6 +439,12 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                         if matched_part:
                             part_start = matched_part.get("start_id") if part_start is None else part_start
                             part_end = matched_part.get("end_id") if part_end is None else part_end
+                            
+                            is_ong = bool(matched_part.get("is_ongoing") or str(matched_part.get("badge") or "").lower() == "ongoing")
+                            story_end_id = int(s_doc.get("end_id") or s_doc.get("end_message_id") or 0)
+                            if is_ong and story_end_id > int(part_end or 0):
+                                part_end = story_end_id
+
                             part_name = matched_part.get("name") or part_name or f"Part {part_id}"
                             part_episodes = matched_part.get("episodes") or part_episodes or f"{part_start}-{part_end}"
 

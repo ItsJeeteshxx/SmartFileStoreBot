@@ -270,6 +270,34 @@ async def start_premium_live_monitor(bot: Client):
                 if highest_ep_num > -1:
                     update_data["episodes"] = str(highest_ep_num)
                     
+                # If story has parts, automatically update the ongoing part
+                raw_parts = story.get("parts") or story.get("story_parts") or []
+                if isinstance(raw_parts, list) and len(raw_parts) > 0:
+                    import re
+                    updated_parts = []
+                    found_ongoing = False
+                    for idx, p in enumerate(raw_parts):
+                        p_copy = dict(p)
+                        b_val = str(p_copy.get("badge") or p_copy.get("badge_type") or "").lower()
+                        is_ong = bool(p_copy.get("is_ongoing") or b_val == "ongoing")
+                        is_last = (idx == len(raw_parts) - 1)
+                        
+                        if is_ong or (not found_ongoing and is_last and story.get("status") == "Ongoing"):
+                            found_ongoing = True
+                            p_copy["end_id"] = new_end_id
+                            p_copy["is_ongoing"] = True
+                            if not p_copy.get("badge"):
+                                p_copy["badge"] = "ongoing"
+                            if highest_ep_num > -1:
+                                curr_ep_str = str(p_copy.get("episodes") or "").strip()
+                                m = re.search(r"(\d+)", curr_ep_str)
+                                if m:
+                                    p_copy["episodes"] = f"{m.group(1)}-{highest_ep_num}"
+                                else:
+                                    p_copy["episodes"] = str(highest_ep_num)
+                        updated_parts.append(p_copy)
+                    update_data["parts"] = updated_parts
+                    
                 await db.db.premium_stories.update_one(
                     {"_id": story["_id"]},
                     {"$set": update_data}

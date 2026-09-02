@@ -121,19 +121,42 @@ class PremiumDatabase:
         
         # Clean parts list if present
         if "parts" in clean_data and isinstance(clean_data["parts"], list):
+            story_end_id = int(clean_data.get("end_id") or (existing.get("end_id") if existing else 0) or 0)
+            story_eps_val = str(clean_data.get("episodes") or (existing.get("episodes") if existing else "") or "").strip()
             cleaned_parts = []
+            found_ongoing = False
             for idx, p in enumerate(clean_data["parts"]):
                 if isinstance(p, dict):
                     b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none"))
                     is_new_val = bool(p.get("is_new") or b_val == "new")
                     is_ongoing_val = bool(p.get("is_ongoing") or b_val == "ongoing")
+                    is_last_part = (idx == len(clean_data["parts"]) - 1)
+                    
+                    p_start = int(p.get("start_id") or 0)
+                    p_end = int(p.get("end_id") or 0)
+                    p_episodes = str(p.get("episodes") or "").strip()
+                    
+                    if is_ongoing_val or (not found_ongoing and is_last_part and str(clean_data.get("status") or (existing.get("status") if existing else "")).lower() == "ongoing"):
+                        is_ongoing_val = True
+                        b_val = "ongoing"
+                        found_ongoing = True
+                        if story_end_id > p_end:
+                            p_end = story_end_id
+                        if story_eps_val and story_eps_val.isdigit():
+                            import re
+                            m = re.search(r"(\d+)", p_episodes)
+                            if m:
+                                p_episodes = f"{m.group(1)}-{story_eps_val}"
+                            elif not p_episodes:
+                                p_episodes = story_eps_val
+                    
                     cleaned_parts.append({
                         "id": str(p.get("id") or f"part_{idx+1}"),
                         "name": str(p.get("name") or f"Part {idx+1}"),
                         "name_hi": p.get("name_hi"),
-                        "start_id": int(p.get("start_id") or 0),
-                        "end_id": int(p.get("end_id") or 0),
-                        "episodes": str(p.get("episodes") or ""),
+                        "start_id": p_start,
+                        "end_id": p_end,
+                        "episodes": p_episodes,
                         "price": float(p.get("price") or 0),
                         "badge": b_val,
                         "badge_type": b_val,

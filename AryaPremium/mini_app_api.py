@@ -1116,19 +1116,44 @@ def _format_story(s: dict) -> dict | None:
     else:
         enable_parts_bool = bool(raw_ep)
 
+    story_end_id = int(s.get("end_id") or s.get("end_message_id") or 0)
+    story_episodes_val = str(s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "").strip()
+    
     cleaned_parts = []
+    found_ongoing = False
     for idx, p in enumerate(parts_list):
         if isinstance(p, dict):
             b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none")).lower()
             is_new_val = bool(p.get("is_new") or b_val == "new")
             is_ongoing_val = bool(p.get("is_ongoing") or b_val == "ongoing")
+            is_last_part = (idx == len(parts_list) - 1)
+            
+            p_start = int(p.get("start_id") or 0)
+            p_end = int(p.get("end_id") or 0)
+            p_episodes = str(p.get("episodes") or "").strip()
+            
+            # If this part is ongoing (or is the last part of an ongoing story), auto-include latest episodes and end_id
+            if is_ongoing_val or (not found_ongoing and is_last_part and status_val == "Ongoing"):
+                is_ongoing_val = True
+                b_val = "ongoing"
+                found_ongoing = True
+                if story_end_id > p_end:
+                    p_end = story_end_id
+                if story_episodes_val and story_episodes_val.isdigit():
+                    import re
+                    m = re.search(r"(\d+)", p_episodes)
+                    if m:
+                        p_episodes = f"{m.group(1)}-{story_episodes_val}"
+                    elif not p_episodes:
+                        p_episodes = story_episodes_val
+            
             cleaned_parts.append({
                 "id": str(p.get("id") or f"part_{idx+1}"),
                 "name": str(p.get("name") or f"Part {idx+1}"),
                 "name_hi": p.get("name_hi"),
-                "start_id": int(p.get("start_id") or 0),
-                "end_id": int(p.get("end_id") or 0),
-                "episodes": str(p.get("episodes") or ""),
+                "start_id": p_start,
+                "end_id": p_end,
+                "episodes": p_episodes,
                 "price": float(p.get("price") or 0),
                 "badge": b_val,
                 "badge_type": b_val,
@@ -6135,23 +6160,26 @@ async def get_my_purchases(telegram_id: str):
                     part_id = itm.get("part_id")
                     part_dict = None
                     if part_id:
-                        # Find matching part doc in story.parts
+                        # Find matching part doc in formatted.parts or story.parts
                         matched_p = None
-                        for sp in (story.get("parts") or []):
+                        for sp in (formatted.get("parts") or story.get("parts") or []):
                             if str(sp.get("id")) == str(part_id):
                                 matched_p = sp
                                 break
 
-                        p_start = itm.get("start_id") or (matched_p.get("start_id") if matched_p else 0)
-                        p_end = itm.get("end_id") or (matched_p.get("end_id") if matched_p else 0)
-                        p_ep = itm.get("episodes") or (matched_p.get("episodes") if matched_p else "") or (f"{p_start}-{p_end}" if (p_start and p_end) else "")
+                        p_start = (matched_p.get("start_id") if matched_p else 0) or itm.get("start_id") or 0
+                        p_end = (matched_p.get("end_id") if matched_p else 0) or itm.get("end_id") or 0
+                        p_ep = (matched_p.get("episodes") if matched_p else "") or itm.get("episodes") or (f"{p_start}-{p_end}" if (p_start and p_end) else "")
                         part_dict = {
                             "id": str(part_id),
-                            "name": itm.get("part_name") or (matched_p.get("name") if matched_p else f"Part {part_id}"),
+                            "name": (matched_p.get("name") if matched_p else "") or itm.get("part_name") or f"Part {part_id}",
+                            "name_hi": matched_p.get("name_hi") if matched_p else None,
                             "start_id": p_start,
                             "end_id": p_end,
                             "episodes": str(p_ep),
-                            "price": itm.get("price") or (matched_p.get("price") if matched_p else 0)
+                            "price": itm.get("price") or (matched_p.get("price") if matched_p else 0),
+                            "badge": matched_p.get("badge") if matched_p else None,
+                            "is_ongoing": matched_p.get("is_ongoing") if matched_p else False,
                         }
 
                     unique_id = f"{sid}_{part_id}_{ord_id_str}" if part_id else f"{sid}_{ord_id_str}_{itm_idx}"
