@@ -1003,18 +1003,14 @@ def _format_story(s: dict) -> dict | None:
     raw_cover_str = str(raw_cover).strip() if raw_cover else ""
     bot_id = s.get("bot_id")
     
-    if "catbox.moe" in raw_cover_str:
-        cover = f"/api/image-proxy?url={raw_cover_str}"
-    elif raw_cover_str and not raw_cover_str.startswith("http") and not raw_cover_str.startswith("/api/"):
+    if raw_cover_str and not raw_cover_str.startswith("http") and not raw_cover_str.startswith("/api/"):
         cover = f"/api/tg-image?file_id={raw_cover_str}" + (f"&bot_id={bot_id}" if bot_id else "")
     else:
         cover = raw_cover_str
 
     raw_banner = s.get("banner_url") or s.get("banner") or s.get("poster_url") or raw_cover
     raw_banner_str = str(raw_banner).strip() if raw_banner else ""
-    if "catbox.moe" in raw_banner_str:
-        banner = f"/api/image-proxy?url={raw_banner_str}"
-    elif raw_banner_str and not raw_banner_str.startswith("http") and not raw_banner_str.startswith("/api/"):
+    if raw_banner_str and not raw_banner_str.startswith("http") and not raw_banner_str.startswith("/api/"):
         banner = f"/api/tg-image?file_id={raw_banner_str}" + (f"&bot_id={bot_id}" if bot_id else "")
     else:
         banner = raw_banner_str
