@@ -259,14 +259,43 @@ logging.basicConfig(level=logging.INFO)
 import sys
 import importlib
 
-# Add AryaPremium to path so we can import its database
-_arya_path = os.path.join(os.path.dirname(__file__), "AryaPremium")
-if _arya_path not in sys.path:
-    sys.path.insert(0, _arya_path)
+# Add both directory and parent to sys.path so imports work regardless of CWD
+_curr_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_curr_dir)
+for _p in [_curr_dir, _parent_dir, os.path.join(_curr_dir, "AryaPremium"), os.path.join(_parent_dir, "AryaPremium")]:
+    if _p and os.path.exists(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Lifespan: connect/disconnect
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def get_api_db(request: Request = None):
+    """Universal robust database resolver with automatic fallback to module-level singleton."""
+    if request:
+        req_app = getattr(request, "app", None)
+        if req_app:
+            d = getattr(req_app.state, "db", None)
+            if d and getattr(d, "db", None) is not None:
+                return d
+    d = getattr(app.state, "db", None) if "app" in globals() else None
+    if d and getattr(d, "db", None) is not None:
+        return d
+    try:
+        from AryaPremium.database import db as arya_db
+        if arya_db:
+            if "app" in globals():
+                app.state.db = arya_db
+            return arya_db
+    except Exception:
+        pass
+    try:
+        from database import db as arya_db
+        if arya_db:
+            if "app" in globals():
+                app.state.db = arya_db
+            return arya_db
+    except Exception:
+        pass
+    return None
+
 
 # ─────────────────────────────────────────────────────────────────
 # 24-Hour Stale Orders Auto-Cleanup Worker
@@ -340,10 +369,19 @@ async def _stale_orders_cleanup_worker(arya_db):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        from AryaPremium.database import db as arya_db
-        await arya_db.connect()
+        try:
+            from AryaPremium.database import db as arya_db
+        except (ImportError, ModuleNotFoundError):
+            try:
+                from database import db as arya_db
+            except Exception:
+                import database as db_mod
+                arya_db = getattr(db_mod, "db", None)
+
+        if arya_db and hasattr(arya_db, "connect"):
+            await arya_db.connect()
         app.state.db = arya_db
-        logger.info("âœ… Connected to MongoDB via AryaPremium DB module")
+        logger.info("✅ Connected to MongoDB via AryaPremium DB module")
         
         # Background index creation for performance optimization
         try:
@@ -12364,7 +12402,7 @@ async def setup_admin_email(telegram_id: str = Form(...), email: str = Form(...)
     if "@" not in email_clean or "." not in email_clean:
         raise HTTPException(status_code=400, detail="Invalid email address")
 
-    db = getattr(app.state, "db", None)
+    db = get_api_db(None)
     if not db:
         raise HTTPException(status_code=500, detail="Database not available")
 
@@ -12397,7 +12435,7 @@ async def send_admin_otp(email: str = Form(...)):
     from AryaPremium.config import Config
     owner_emails_str = os.environ.get("OWNER_EMAILS", "")
     
-    db = getattr(app.state, "db", None)
+    db = get_api_db(None)
     cfg = {}
     if db:
         try:
@@ -12454,7 +12492,7 @@ async def verify_admin_otp(request: Request, email: str = Form(...), otp: str = 
     email_clean = email.strip().lower()
     otp_clean = otp.strip()
     
-    db = getattr(app.state, "db", None)
+    db = get_api_db(request)
     if not db:
         raise HTTPException(status_code=500, detail="Database connection not available")
         
@@ -12511,7 +12549,7 @@ async def verify_admin_otp(request: Request, email: str = Form(...), otp: str = 
 async def get_admin_sessions(request: Request):
     """Lists all active device sessions for the authenticated administrator."""
     session_token = request.headers.get("X-Admin-Session")
-    db = getattr(app.state, "db", None)
+    db = get_api_db(request)
     if not session_token or not db:
         raise HTTPException(status_code=401, detail="Unauthorized")
         
@@ -12551,7 +12589,7 @@ async def get_admin_sessions(request: Request):
 async def revoke_admin_session(request: Request, token_to_revoke: str = Form(...)):
     """Terminates a specific device session."""
     session_token = request.headers.get("X-Admin-Session")
-    db = getattr(app.state, "db", None)
+    db = get_api_db(request)
     if not session_token or not db:
         raise HTTPException(status_code=401, detail="Unauthorized")
         
@@ -12574,7 +12612,7 @@ async def revoke_admin_session(request: Request, token_to_revoke: str = Form(...
 async def admin_logout(request: Request):
     """Expires and revokes the active session token."""
     session_token = request.headers.get("X-Admin-Session")
-    db = getattr(app.state, "db", None)
+    db = get_api_db(request)
     if session_token and db:
         await db.db.admin_sessions.update_one(
             {"session_token": session_token},
