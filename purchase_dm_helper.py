@@ -377,17 +377,28 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                 await asyncio.sleep(5)
                 continue
 
-            items = job.get("items", [])
-            if not items and "story_ids" in job:
-                items = [{"story_id": sid} for sid in job.get("story_ids", [])]
+            items = job.get("items")
+            # If items not in job, fallback to fetching original order document from orders collection
+            if not items and job.get("order_id"):
+                try:
+                    ord_rec = await db.db.orders.find_one({"order_id": job.get("order_id")})
+                    if ord_rec and ord_rec.get("items"):
+                        items = ord_rec["items"]
+                except Exception as ord_fetch_err:
+                    logger.warning(f"[AutoDeliveryQueue] Could not fetch items from order {job.get('order_id')}: {ord_fetch_err}")
+
+            if not items:
+                items = [{"story_id": sid} for sid in story_ids]
 
             total_items = len(items)
+
+            # If multiple items: notify user upfront, then deliver one by one with gap
             if total_items > 1:
                 try:
                     await selected_client.send_message(
                         user_id,
-                        f"🎉 <b>Thank you for your purchase!</b>\n\n"
-                        f"📦 You have <b>{total_items} items</b> in this order. "
+                        f"📦 <b>Auto Instant Delivery Starting</b>\n\n"
+                        f"You have <b>{total_items} items/parts</b> in your order.\n"
                         f"They will be delivered <b>one by one</b> automatically.\n\n"
                         f"⏳ Please wait — your first item is being sent now...",
                         parse_mode="html"
@@ -401,9 +412,12 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                     sid = itm.get("story_id") or itm.get("id")
                     if not sid:
                         continue
+
+                    part_id = itm.get("part_id")
                     part_start = itm.get("start_id")
                     part_end = itm.get("end_id")
                     part_name = itm.get("part_name")
+                    part_episodes = itm.get("episodes")
 
                     from bson.objectid import ObjectId
                     s_obj_id = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
@@ -413,10 +427,41 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
 
                     if s_doc:
                         story_name = s_doc.get("story_name_en") or s_doc.get("story_name") or f"Story {i}"
-                        display_name = f"{story_name} ({part_name})" if part_name else story_name
+
+                        # Robust part matching from story.parts
+                        matched_part = None
+                        if part_id:
+                            for p in (s_doc.get("parts") or s_doc.get("story_parts") or []):
+                                if str(p.get("id")).strip() == str(part_id).strip():
+                                    matched_part = p
+                                    break
+
+                        if matched_part:
+                            part_start = matched_part.get("start_id") if part_start is None else part_start
+                            part_end = matched_part.get("end_id") if part_end is None else part_end
+                            part_name = matched_part.get("name") or part_name or f"Part {part_id}"
+                            part_episodes = matched_part.get("episodes") or part_episodes or f"{part_start}-{part_end}"
+
+                        is_part_order = bool(part_id or (part_start and part_end and (part_start != s_doc.get("start_id") or part_end != s_doc.get("end_id"))))
+                        
+                        custom_msg_ids = None
+                        if is_part_order and part_start is not None and part_end is not None:
+                            ps = min(int(part_start), int(part_end))
+                            pe = max(int(part_start), int(part_end))
+                            if s_doc.get("valid_file_ids"):
+                                custom_msg_ids = [mid for mid in s_doc["valid_file_ids"] if ps <= mid <= pe]
+                            else:
+                                custom_msg_ids = list(range(ps, pe + 1))
+
+                            ep_str = f" (Ep {part_episodes})" if part_episodes else ""
+                            p_label = part_name or f"Part {part_id}"
+                            display_name = f"{story_name} · {p_label}{ep_str}"
+                        else:
+                            display_name = story_name
+
                         logger.info(
                             f"[AutoDeliveryQueue] Delivering item {i}/{total_items} "
-                            f"'{display_name}' (range: {part_start} to {part_end}) to user {user_id}..."
+                            f"'{display_name}' (range: {part_start} to {part_end}, msg_count: {len(custom_msg_ids) if custom_msg_ids else 'all'}) to user {user_id}..."
                         )
 
                         # Notify user which story/part is being delivered (only for multi-item orders)
@@ -433,13 +478,14 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                             except Exception:
                                 pass
 
-                        # Deliver the exact story/part range
+                        # Deliver strictly the exact story/part range
                         await _do_dm_delivery(
                             selected_client,
                             user_id,
                             s_doc,
-                            part_start=part_start,
-                            part_end=part_end
+                            part_start=int(part_start) if part_start is not None else None,
+                            part_end=int(part_end) if part_end is not None else None,
+                            custom_msg_ids=custom_msg_ids
                         )
 
                         # Wait between items so delivery is clearly sequential
@@ -496,6 +542,16 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
         if not story_ids:
             return
 
+        # Ensure items is populated if missing
+        items = order_doc.get("items", [])
+        if not items and order_doc.get("order_id") and db and hasattr(db, "db"):
+            try:
+                db_ord = await db.db.orders.find_one({"order_id": order_doc.get("order_id")})
+                if db_ord and db_ord.get("items"):
+                    items = db_ord["items"]
+            except Exception:
+                pass
+
         # Idempotency claim check
         rec_oid = order_doc.get("order_id") or order_doc.get("payment_id") or "_".join(str(s) for s in story_ids)
         delivery_claim_key = f"auto_deliv_{tg_id_int}_{rec_oid}"
@@ -515,6 +571,7 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     "claim_key": delivery_claim_key,
                     "user_id": tg_id_int,
                     "story_ids": story_ids,
+                    "items": items,
                     "order_id": rec_oid,
                     "status": "pending",
                     "created_at": datetime.now(timezone.utc)

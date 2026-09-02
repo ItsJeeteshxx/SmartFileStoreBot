@@ -2126,14 +2126,23 @@ async def check_payment_link(id: str, payload: dict):
                     {"$set": {"status": "paid", "updated_at": datetime.now(timezone.utc)}}
                 )
                 
-                # Logic to grant stories to user in DB goes here
-                for sid in order.get("story_ids", []):
-                    await arya_db.add_purchase(int(telegram_id) if str(telegram_id).isdigit() else telegram_id, sid)
+                # Logic to grant stories to user in DB (only full stories, not parts)
+                tg_id_int = int(telegram_id) if str(telegram_id).isdigit() else telegram_id
+                if order.get("items"):
+                    for itm in order["items"]:
+                        if itm.get("is_full", True) and not itm.get("part_id"):
+                            sid = str(itm.get("story_id") or itm.get("id") or "")
+                            if sid:
+                                await arya_db.add_purchase(tg_id_int, sid)
+                else:
+                    for sid in order.get("story_ids", []):
+                        await arya_db.add_purchase(tg_id_int, sid)
                 
                 # Log and audit records
                 updated_order = {**order, "status": "paid"}
                 asyncio.create_task(trigger_payment_log_from_order(updated_order))
                 asyncio.create_task(record_purchased_stories(updated_order))
+                asyncio.create_task(send_purchase_success_dm(arya_db, telegram_id, order_doc=updated_order, payment_method="Razorpay", verified_by="Auto Verified By System"))
             
             bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
             return {
@@ -2511,8 +2520,15 @@ async def verify_payment(payload: dict):
     await arya_db.db.orders.insert_one(order_doc)
 
     if tg_id:
-        for sid in story_ids:
-            await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
+        if resolved_items:
+            for itm in resolved_items:
+                if itm.get("is_full", True) and not itm.get("part_id"):
+                    sid = str(itm.get("story_id") or itm.get("id") or "")
+                    if sid:
+                        await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
+        else:
+            for sid in story_ids:
+                await arya_db.add_purchase(tg_id_int if tg_id_int else tg_id, sid)
 
     # Log and audit records
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
@@ -3066,10 +3082,17 @@ async def verify_upi_utr(payload: dict):
         order_doc["created_at"] = datetime.now(timezone.utc)
         await db.db.orders.insert_one(order_doc)
 
-    # 7. Grant story access
+    # 7. Grant story access (only for full stories)
     if telegram_id:
-        for sid in story_ids:
-            await db.add_purchase(tg_id_int if tg_id_int else telegram_id, sid)
+        if resolved_items:
+            for itm in resolved_items:
+                if itm.get("is_full", True) and not itm.get("part_id"):
+                    sid = str(itm.get("story_id") or itm.get("id") or "")
+                    if sid:
+                        await db.add_purchase(tg_id_int if tg_id_int else telegram_id, sid)
+        else:
+            for sid in story_ids:
+                await db.add_purchase(tg_id_int if tg_id_int else telegram_id, sid)
 
     # 8. Trigger Logs
     asyncio.create_task(trigger_payment_log_from_order(order_doc))
@@ -12279,14 +12302,29 @@ async def record_purchased_stories(order: dict):
         except Exception as e:
             logger.error(f"Failed to query default bot_id: {e}")
             
+        # Only record full story purchases in premium_purchases table
+        full_story_sids = set()
+        if order.get("items"):
+            for itm in order["items"]:
+                if itm.get("is_full", True) and not itm.get("part_id"):
+                    sid_clean = str(itm.get("story_id") or itm.get("id") or "").strip()
+                    if sid_clean:
+                        full_story_sids.add(sid_clean)
+        else:
+            full_story_sids = set(str(s).strip() for s in story_ids if str(s).strip())
+
+        if not full_story_sids:
+            # All items were specific parts, securely tracked in orders collection
+            return
+
         total_order_amt = float(order.get("total", 0) or order.get("amount", 0) or 0)
-        num_stories = max(1, len(story_ids))
+        num_stories = max(1, len(full_story_sids))
         per_story_amt = round(total_order_amt / num_stories, 2) if num_stories > 1 else total_order_amt
         pay_method = str(order.get("payment_method") or order.get("method") or order.get("gateway") or "UPI").upper()
         ref_id = str(order.get("reference") or order.get("utr") or order.get("razorpay_payment_id") or order.get("payment_id") or order.get("cf_order_id") or order.get("track_id") or "").strip()
         ord_id = str(order.get("order_id") or order.get("cf_order_id") or "").strip()
 
-        for sid in story_ids:
+        for sid in full_story_sids:
             try:
                 story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
                 if not story:
