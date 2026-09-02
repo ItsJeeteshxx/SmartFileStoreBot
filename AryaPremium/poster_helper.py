@@ -127,11 +127,8 @@ def escape_html(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 async def send_story_to_channel(bot_token: str, channel_id: str, story_doc: dict, watermark_config: dict = None) -> dict:
-    """
-    Downloads banner, applies watermark (if enabled), builds keyboard, and posts to Telegram channel.
-    Returns dict with success status and message_id if successful.
-    """
-    story_name = story_doc.get("story_name_en") or story_doc.get("title") or "Unknown Story"
+    """Poster Bot module disabled."""
+    return {"success": False, "error": "Poster Bot module disabled"}
     status = story_doc.get("status") or "Ongoing"
     platform = story_doc.get("platform") or "N/A"
     genre = story_doc.get("genre") or "N/A"
