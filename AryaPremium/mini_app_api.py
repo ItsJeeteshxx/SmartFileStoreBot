@@ -2286,12 +2286,14 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                 p_start = int(selected_part.get("start_id") or story_doc.get("start_id") or 0)
                 p_end = int(selected_part.get("end_id") or story_doc.get("end_id") or 0)
                 p_price = float(selected_part.get("price") or 0)
-                p_name = selected_part.get("name") or "Part"
+                p_name = selected_part.get("name") or f"Part {selected_part.get('id')}"
+                p_episodes = selected_part.get("episodes") or (f"{p_start}-{p_end}" if p_start and p_end else "")
                 resolved_items.append({
                     "story_id": str(story_doc.get("_id")),
                     "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
                     "part_id": str(selected_part.get("id")),
                     "part_name": p_name,
+                    "episodes": p_episodes,
                     "start_id": p_start,
                     "end_id": p_end,
                     "price": p_price,
@@ -2306,6 +2308,7 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                     "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
                     "part_id": None,
                     "part_name": None,
+                    "episodes": "",
                     "start_id": s_start,
                     "end_id": s_end,
                     "price": s_price,
@@ -2334,6 +2337,7 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
                 "story_title": story_doc.get("story_name_en") or story_doc.get("title") or "Story",
                 "part_id": None,
                 "part_name": None,
+                "episodes": "",
                 "start_id": int(story_doc.get("start_id") or 0),
                 "end_id": int(story_doc.get("end_id") or 0),
                 "price": float(story_doc.get("price") or 0),
@@ -2342,7 +2346,10 @@ async def _resolve_order_items(arya_db, payload: dict) -> tuple:
             
     subtotal = sum(i["price"] for i in resolved_items)
     unique_story_ids = list(dict.fromkeys([i["story_id"] for i in resolved_items]))
-    story_names = [i["story_title"] + (f" ({i['part_name']})" if i.get("part_name") else "") for i in resolved_items]
+    story_names = [
+        i["story_title"] + (f" ({i['part_name']} · Ep {i['episodes']})" if (i.get("part_name") and i.get("episodes")) else (f" ({i['part_name']})" if i.get("part_name") else ""))
+        for i in resolved_items
+    ]
     return resolved_items, subtotal, unique_story_ids, story_names
 
 
@@ -4903,12 +4910,18 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                     if claimed:
                         user_id = order.get("user_id")
                         story_ids = order.get("story_ids", [])
-                        if user_id and story_ids:
-                            for sid in story_ids:
-                                try:
-                                    await arya_db.add_purchase(user_id, sid)
-                                except Exception as e:
-                                    logger.error(f"add_purchase error for {sid}: {e}")
+                        
+                        # Only add full story purchases to user.purchases (skip parts)
+                        if user_id:
+                            is_full_order = True
+                            if order.get("items"):
+                                is_full_order = all(itm.get("is_full", True) and not itm.get("part_id") for itm in order["items"])
+                            if is_full_order and story_ids:
+                                for sid in story_ids:
+                                    try:
+                                        await arya_db.add_purchase(user_id, sid)
+                                    except Exception as e:
+                                        logger.error(f"add_purchase error for {sid}: {e}")
                                     
                         story_names = order.get("story_names", [])
                         updated_order = {
@@ -4923,9 +4936,10 @@ async def verify_cashfree_payment(payload: dict = None, order_id: str = None):
                             "payment_method": "Cashfree",
                             "source": "Cashfree"
                         }
+                        invalidate_buyers_cache()
                         asyncio.create_task(trigger_payment_log_from_order(updated_order))
                         asyncio.create_task(record_purchased_stories(updated_order))
-                        asyncio.create_task(send_purchase_receipt_to_user(updated_order))
+                        asyncio.create_task(send_purchase_success_dm(arya_db, user_id, order_doc=updated_order, payment_method="Cashfree", verified_by="Auto Verified By System"))
 
                     return {"success": True, "status": "paid", "order_id": order.get("order_id", oid), "payment_id": str(payment_id)}
                 else:
@@ -6276,7 +6290,10 @@ async def fetch_processed_buyers_data(arya_db):
             user_purchases_map[uid_str] = set(purchases_list)
             user_doc_map[uid_str] = u
 
-        story_proj = {"_id": 1, "story_id": 1, "story_name_en": 1, "title": 1, "price": 1, "discounted_price": 1}
+        story_proj = {
+            "_id": 1, "story_id": 1, "story_name_en": 1, "title": 1, "price": 1, "discounted_price": 1,
+            "parts": 1, "story_parts": 1, "episode_parts": 1, "episodes_parts": 1, "part_list": 1
+        }
         stories = await arya_db.db.premium_stories.find({}, story_proj).to_list(length=10000)
         story_cache_by_id = {}
         story_cache_by_oid = {}
@@ -6295,9 +6312,22 @@ async def fetch_processed_buyers_data(arya_db):
                 story_cache_by_oid[soid_str] = s
                 sid_to_canonical[soid_str] = canon
 
-        ord_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "created_at": 1}
-        chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1}
-        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "amount": 1, "source": 1, "method": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1}
+        ord_proj = {
+            "_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1,
+            "items": 1, "part_id": 1, "part_name": 1, "episodes": 1,
+            "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "payment_method": 1,
+            "reference": 1, "utr": 1, "payment_id": 1, "created_at": 1, "paid_at": 1
+        }
+        chk_proj = {
+            "_id": 1, "order_id": 1, "track_id": 1, "user_id": 1, "status": 1, "story_id": 1,
+            "part_id": 1, "part_name": 1, "episodes": 1,
+            "amount": 1, "method": 1, "reference": 1, "utr": 1, "created_at": 1, "first_name": 1, "username": 1
+        }
+        pur_proj = {
+            "_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "part_id": 1, "part_name": 1,
+            "amount": 1, "source": 1, "method": 1, "reference": 1, "utr": 1, "payment_id": 1,
+            "bot_id": 1, "purchased_at": 1, "created_at": 1
+        }
 
         orders = await arya_db.db.orders.find({}, ord_proj).sort("created_at", -1).to_list(length=50000)
         checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
@@ -6391,19 +6421,20 @@ async def fetch_processed_buyers_data(arya_db):
             except: amt = 0
 
             story_names = []
-            if doc.get("items"):
+            if doc.get("items") and isinstance(doc["items"], list):
                 for itm in doc["items"]:
                     sid = str(itm.get("story_id") or itm.get("id") or "")
                     st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
-                    s_title = itm.get("story_title") or (st.get("story_name_en") if st else sid)
+                    s_title = itm.get("story_title") or (st.get("story_name_en") or st.get("title") if st else sid)
                     part_name = itm.get("part_name")
                     part_id = itm.get("part_id")
                     episodes = itm.get("episodes")
                     if (not episodes or not part_name) and part_id and st:
-                        for sp in (st.get("parts") or []):
-                            if str(sp.get("id")) == str(part_id):
-                                episodes = episodes or sp.get("episodes")
-                                part_name = part_name or sp.get("name")
+                        parts_list = st.get("parts") or st.get("story_parts") or st.get("episode_parts") or st.get("part_list") or []
+                        for sp in parts_list:
+                            if str(sp.get("id")).strip() == str(part_id).strip():
+                                episodes = episodes or sp.get("episodes") or (f"{sp.get('start_id')}-{sp.get('end_id')}" if sp.get("start_id") and sp.get("end_id") else "")
+                                part_name = part_name or sp.get("name") or f"Part {part_id}"
                                 break
                     if part_name or part_id:
                         p_label = part_name or f"Part {part_id}"
@@ -6411,10 +6442,27 @@ async def fetch_processed_buyers_data(arya_db):
                         story_names.append(f"{s_title} ({p_label}{ep_str})")
                     else:
                         story_names.append(s_title)
+            elif doc.get("part_id") or doc.get("part_name"):
+                part_id = doc.get("part_id")
+                part_name = doc.get("part_name")
+                episodes = doc.get("episodes")
+                for sid in story_ids:
+                    st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+                    s_title = st.get("story_name_en") or st.get("title") if st else sid
+                    if (not episodes or not part_name) and part_id and st:
+                        parts_list = st.get("parts") or st.get("story_parts") or st.get("episode_parts") or st.get("part_list") or []
+                        for sp in parts_list:
+                            if str(sp.get("id")).strip() == str(part_id).strip():
+                                episodes = episodes or sp.get("episodes")
+                                part_name = part_name or sp.get("name")
+                                break
+                    p_label = part_name or f"Part {part_id}"
+                    ep_str = f" · Ep {episodes}" if episodes else ""
+                    story_names.append(f"{s_title} ({p_label}{ep_str})")
             else:
                 for sid in story_ids:
                     story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
-                    if story: story_names.append(story.get("story_name_en", sid))
+                    if story: story_names.append(story.get("story_name_en") or story.get("title", sid))
                     else: story_names.append(sid)
 
             if amt <= 0 and story_ids:
