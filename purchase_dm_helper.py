@@ -377,16 +377,17 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                 await asyncio.sleep(5)
                 continue
 
-            items = job.get("items") or [{"story_id": sid} for sid in story_ids]
-            total_items = len(items)
+            items = job.get("items", [])
+            if not items and "story_ids" in job:
+                items = [{"story_id": sid} for sid in job.get("story_ids", [])]
 
-            # If multiple items: notify user upfront, then deliver one by one with gap
+            total_items = len(items)
             if total_items > 1:
                 try:
                     await selected_client.send_message(
                         user_id,
-                        f"📦 <b>Auto Instant Delivery Starting</b>\n\n"
-                        f"You have <b>{total_items} items/parts</b> in your order.\n"
+                        f"🎉 <b>Thank you for your purchase!</b>\n\n"
+                        f"📦 You have <b>{total_items} items</b> in this order. "
                         f"They will be delivered <b>one by one</b> automatically.\n\n"
                         f"⏳ Please wait — your first item is being sent now...",
                         parse_mode="html"
@@ -483,16 +484,14 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
         if not tg_id_int:
             return
 
-        # Check auto_deliver flag (skip ONLY if explicitly set to False)
-        if order_doc.get("auto_deliver") is False:
-            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver=False, skipping auto delivery.")
+        # Check auto_deliver flag (must be explicitly True, defaults to False if off/missing)
+        if not order_doc.get("auto_deliver"):
+            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver={order_doc.get('auto_deliver')}, skipping auto delivery.")
             return
 
         story_ids = order_doc.get("story_ids", [])
         if not story_ids and order_doc.get("story_id"):
             story_ids = [order_doc.get("story_id")]
-        if not story_ids and order_doc.get("items"):
-            story_ids = [itm.get("story_id") or itm.get("id") for itm in order_doc.get("items") if isinstance(itm, dict) and (itm.get("story_id") or itm.get("id"))]
 
         if not story_ids:
             return
@@ -516,7 +515,6 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     "claim_key": delivery_claim_key,
                     "user_id": tg_id_int,
                     "story_ids": story_ids,
-                    "items": order_doc.get("items", []),
                     "order_id": rec_oid,
                     "status": "pending",
                     "created_at": datetime.now(timezone.utc)

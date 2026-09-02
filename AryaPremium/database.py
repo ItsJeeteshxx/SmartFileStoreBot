@@ -1,4 +1,3 @@
-from typing import Optional, List, Dict, Any, Union
 from motor.motor_asyncio import AsyncIOMotorClient
 try:
     from AryaPremium.config import Config
@@ -222,8 +221,8 @@ class PremiumDatabase:
     async def update_user(self, user_id: int, data: dict):
         await self.users.update_one({"id": int(user_id)}, {"$set": data}, upsert=True)
 
-    async def has_purchase(self, user_id: int, story_id: str, part_id: Optional[str] = None) -> bool:
-        """Checks if a user has purchased a given story (or specific part) across users, orders, premium_purchases, and premium_checkout collections."""
+    async def has_purchase(self, user_id: int, story_id: str) -> bool:
+        """Checks if a user has purchased a given story across users, orders, premium_purchases, and premium_checkout collections."""
         if not user_id or not story_id:
             return False
         try:
@@ -257,38 +256,7 @@ class PremiumDatabase:
 
             story_aliases_list = list(story_aliases)
 
-            # 1. If part_id is specified, check orders / premium_purchases for this specific part
-            if part_id is not None:
-                pid_str = str(part_id)
-                part_order = await self.db.orders.find_one({
-                    "user_id": {"$in": u_filter},
-                    "status": {"$in": ["paid", "delivered", "completed", "success"]},
-                    "items": {
-                        "$elemMatch": {
-                            "$or": [
-                                {"story_id": {"$in": story_aliases_list}},
-                                {"id": {"$in": story_aliases_list}}
-                            ],
-                            "part_id": pid_str
-                        }
-                    }
-                })
-                if part_order:
-                    return True
-
-                part_purchase = await self.db.premium_purchases.find_one({
-                    "user_id": {"$in": u_filter},
-                    "$or": [
-                        {"story_id": {"$in": story_aliases_list}},
-                        {"story_ids": {"$in": story_aliases_list}}
-                    ],
-                    "part_id": pid_str
-                })
-                if part_purchase:
-                    return True
-                return False
-
-            # 2. If part_id is None (checking full story access):
+            # 1. Check users collection
             user = await self.users.find_one({"id": {"$in": u_filter}})
             if user:
                 purchases = [str(p) for p in user.get("purchases", [])]
@@ -296,29 +264,39 @@ class PremiumDatabase:
                     if alias in purchases:
                         return True
 
+            # 2. Check orders collection (paid, delivered, completed, success)
             order = await self.db.orders.find_one({
                 "user_id": {"$in": u_filter},
                 "status": {"$in": ["paid", "delivered", "completed", "success"]},
                 "$or": [
                     {"story_id": {"$in": story_aliases_list}},
                     {"story_ids": {"$in": story_aliases_list}},
-                    {"items": {"$elemMatch": {"$or": [{"story_id": {"$in": story_aliases_list}}, {"id": {"$in": story_aliases_list}}], "part_id": {"$in": [None, ""]}}}}
+                    {"items.id": {"$in": story_aliases_list}}
                 ]
             })
             if order:
+                try:
+                    await self.add_purchase(uid_int, sid_str)
+                except Exception:
+                    pass
                 return True
 
+            # 3. Check premium_purchases collection
             purchase = await self.db.premium_purchases.find_one({
                 "user_id": {"$in": u_filter},
                 "$or": [
                     {"story_id": {"$in": story_aliases_list}},
                     {"story_ids": {"$in": story_aliases_list}}
-                ],
-                "part_id": {"$in": [None, ""]}
+                ]
             })
             if purchase:
+                try:
+                    await self.add_purchase(uid_int, sid_str)
+                except Exception:
+                    pass
                 return True
 
+            # 4. Check premium_checkout collection (approved/paid manual UPI checkout)
             checkout = await self.db.premium_checkout.find_one({
                 "user_id": {"$in": u_filter},
                 "status": {"$in": ["approved", "completed", "paid", "success"]},
@@ -328,6 +306,10 @@ class PremiumDatabase:
                 ]
             })
             if checkout:
+                try:
+                    await self.add_purchase(uid_int, sid_str)
+                except Exception:
+                    pass
                 return True
 
             return False

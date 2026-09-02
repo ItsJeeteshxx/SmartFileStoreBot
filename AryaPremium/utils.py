@@ -432,8 +432,8 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else ""
 
         full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
-        open_msg_link = f"tg://openmessage?user_id={user_id}"
-        user_display = f'<a href="{open_msg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{open_msg_link}">{full_name_esc}</a>'
+        tg_link = f"tg://user?id={user_id}"
+        user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
         link_line = f"\n<b>Payment Link:</b> <a href=\"{pay_link}\">View Receipt</a>" if pay_link and "razorpay" in method.lower() else ""
 
@@ -442,7 +442,7 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Order ID:</b> <code>{order_id or 'N/A'}</code>\n"
             f"<b>❖ User:</b> {user_display}\n"
-            f"<b>❖ Telegram ID:</b> <a href=\"{open_msg_link}\"><code>{user_id}</code></a>\n"
+            f"<b>❖ Telegram ID:</b> <code>{user_id}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Story:</b> {escape_html(s_name)}\n"
             f"<b>❖ Amount Paid:</b> ₹{amount}\n"
@@ -512,8 +512,8 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else ""
 
         full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
-        open_msg_link = f"tg://openmessage?user_id={user_id}"
-        user_display = f'<a href="{open_msg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{open_msg_link}">{full_name_esc}</a>'
+        tg_link = f"tg://user?id={user_id}"
+        user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
         text = (
             f"<b>📦 DELIVERY EVENT</b>\n"
@@ -521,7 +521,7 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
             f"<b>Order ID:</b> <code>{order_id or 'N/A'}</code>\n"
             f"<b>Store Bot:</b> @{bot_username or 'Unknown'}\n"
             f"<b>User:</b> {user_display}\n"
-            f"<b>Telegram ID:</b> <a href=\"{open_msg_link}\"><code>{user_id}</code></a>\n"
+            f"<b>Telegram ID:</b> <code>{user_id}</code>\n"
             f"<b>Story:</b> {escape_html(s_name)}\n"
             f"<b>Method:</b> {d_type.upper()}\n"
             f"<b>Status:</b> {status}\n"
@@ -591,8 +591,8 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
             return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else ""
 
         full_name_esc = escape_html(clean_name(user_first_name, user_last_name))
-        open_msg_link = f"tg://openmessage?user_id={user_id}"
-        user_display = f'<a href="{open_msg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{open_msg_link}">{full_name_esc}</a>'
+        tg_link = f"tg://user?id={user_id}"
+        user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
         joined = (user_info or {}).get("joined_date", time_str)
         if isinstance(joined, datetime):
@@ -604,7 +604,7 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
             f"<b>🛡️ ARYA CORE LOG | {event_type}</b>\n"
             f"────────────────────\n"
             f"<b>User:</b> {user_display}\n"
-            f"<b>Telegram ID:</b> <a href=\"{open_msg_link}\"><code>{user_id}</code></a>\n"
+            f"<b>Telegram ID:</b> <code>{user_id}</code>\n"
             f"<b>Joined:</b> {joined}\n"
             f"────────────────────\n"
             f"<b>Details:</b>\n{details}\n"
