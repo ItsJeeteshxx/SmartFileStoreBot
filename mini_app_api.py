@@ -1155,11 +1155,11 @@ async def get_stories():
             import asyncio
             purchases_agg = await asyncio.wait_for(
                 arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None),
-                timeout=0.6
+                timeout=3.0
             )
             purchase_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in purchases_agg}
         except Exception as pe:
-            logger.warning(f"Failed to aggregate purchases: {pe}")
+            logger.debug(f"Failed to aggregate purchases: {pe}")
 
         # 2. Aggregate views & searches over the last 3 days for real-time Trending
         views_map = {}
