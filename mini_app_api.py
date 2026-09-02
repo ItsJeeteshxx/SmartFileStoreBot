@@ -1068,6 +1068,22 @@ def _format_story(s: dict) -> dict | None:
     if len(cleaned_parts) > 0 and raw_ep is not False and str(raw_ep).lower() != "false":
         enable_parts_bool = True
 
+    c_at = s.get("created_at") or s.get("uploaded_at") or s.get("createdAt")
+    c_at_str = ""
+    if isinstance(c_at, (int, float)):
+        try:
+            from datetime import datetime, timezone
+            c_at_str = datetime.fromtimestamp(c_at, tz=timezone.utc).isoformat()
+        except Exception:
+            c_at_str = ""
+    elif isinstance(c_at, datetime):
+        c_at_str = c_at.isoformat()
+    elif isinstance(c_at, str) and c_at.strip():
+        c_at_str = c_at.strip()
+    if not c_at_str:
+        from datetime import datetime, timezone
+        c_at_str = datetime.now(timezone.utc).isoformat()
+
     return {
         "id":           story_id,
         "story_id":     s.get("story_id") or story_id,
@@ -1098,7 +1114,7 @@ def _format_story(s: dict) -> dict | None:
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
-        "created_at":    s.get("created_at").isoformat() if isinstance(s.get("created_at"), datetime) else str(s.get("created_at") or ""),
+        "created_at":    c_at_str,
     }
 
 
@@ -1107,7 +1123,7 @@ def _format_story(s: dict) -> dict | None:
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 _stories_cache = None
 _stories_cache_time = 0
-_stories_cache_ttl = 30  # 30 seconds
+_stories_cache_ttl = 5  # 5 seconds fast cache
 
 @api_router.get("/series")
 async def get_series():
@@ -6263,16 +6279,20 @@ async def fetch_processed_buyers_data(arya_db):
                 story_cache_by_oid[soid_str] = s
                 sid_to_canonical[soid_str] = canon
 
-        ord_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1, "method": 1, "created_at": 1}
-        chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1}
-        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "amount": 1, "source": 1, "method": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1}
+        ord_proj = {
+            "_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_ids": 1, "story_id": 1,
+            "items": 1, "story_names": 1, "source": 1, "total_amount": 1, "total": 1, "amount": 1,
+            "method": 1, "payment_method": 1, "reference": 1, "utr": 1, "payment_id": 1, "track_id": 1,
+            "created_at": 1, "paid_at": 1, "first_name": 1, "username": 1
+        }
+        chk_proj = {"_id": 1, "order_id": 1, "user_id": 1, "status": 1, "story_id": 1, "part_id": 1, "part_name": 1, "amount": 1, "method": 1, "created_at": 1, "first_name": 1, "username": 1, "reference": 1, "utr": 1, "payment_id": 1, "track_id": 1}
+        pur_proj = {"_id": 1, "order_id": 1, "user_id": 1, "story_id": 1, "part_id": 1, "part_name": 1, "amount": 1, "source": 1, "method": 1, "bot_id": 1, "purchased_at": 1, "created_at": 1, "reference": 1, "utr": 1, "payment_id": 1}
 
         orders = await arya_db.db.orders.find({}, ord_proj).sort("created_at", -1).to_list(length=50000)
         checkouts = await arya_db.db.premium_checkout.find({}, chk_proj).sort("created_at", -1).to_list(length=50000)
         purchases = await arya_db.db.premium_purchases.find({}, pur_proj).sort("purchased_at", -1).to_list(length=50000)
 
         buyers_map = {}
-        added_paid_stories = {}  # uid_str -> set of story_id_strs
 
         def _clean_order_id_value(doc, uid_str: str, story_ids: list = None, source: str = "miniapp") -> str:
             raw_oid = doc.get("order_id") if isinstance(doc, dict) else None
@@ -6281,7 +6301,7 @@ async def fetch_processed_buyers_data(arya_db):
             if raw_oid:
                 oid_str = str(raw_oid).strip()
                 if oid_str and not oid_str.startswith("uid_"):
-                    if oid_str.startswith("AB-") or oid_str.startswith("AM-") or oid_str.startswith("ORD-") or oid_str.startswith("PAY-"):
+                    if oid_str.startswith("AB-") or oid_str.startswith("AM-") or oid_str.startswith("ORD-") or oid_str.startswith("PAY-") or oid_str.startswith("OD-"):
                         return oid_str
                     clean_base = oid_str.replace("checkout_", "").replace("purchase_", "").replace("order_", "").replace("OD_", "").replace("OD-", "").strip()
                     if clean_base:
@@ -6301,6 +6321,73 @@ async def fetch_processed_buyers_data(arya_db):
             stable_hash = str(abs(hash(doc_id_str or str(story_ids))) % 90000 + 10000)
             pfx = "AB" if "bot" in str(source).lower() else "AM"
             return f"{pfx}-{uid_str}-{date_part}-{stable_hash}"
+
+        def _extract_story_names_and_parts(doc):
+            s_names = []
+            s_ids = []
+            stories_meta = []
+            
+            items = doc.get("items")
+            if items and isinstance(items, list):
+                for itm in items:
+                    sid = str(itm.get("story_id") or itm.get("id") or "")
+                    stitle = itm.get("story_title")
+                    if not stitle:
+                        st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+                        stitle = st.get("story_name_en", st.get("title", sid)) if st else (sid or "Story")
+                    pname = itm.get("part_name")
+                    part_id = itm.get("part_id")
+                    ep_range = itm.get("episodes") or (f"Ep {itm.get('start_id')}-{itm.get('end_id')}" if (itm.get("start_id") and itm.get("end_id")) else "")
+                    
+                    if pname:
+                        if ep_range and ep_range.lower() not in str(pname).lower():
+                            disp_name = f"{stitle} - {pname} ({ep_range})"
+                        else:
+                            disp_name = f"{stitle} - {pname}"
+                    elif ep_range:
+                        disp_name = f"{stitle} ({ep_range})"
+                    else:
+                        disp_name = stitle
+                        
+                    s_names.append(disp_name)
+                    if sid:
+                        s_ids.append(sid)
+                        stories_meta.append({
+                            "story_id": sid,
+                            "story_name": disp_name,
+                            "part_id": str(part_id) if part_id is not None else None,
+                            "part_name": pname
+                        })
+            elif doc.get("story_names") and isinstance(doc["story_names"], list):
+                s_names = list(doc["story_names"])
+                for sid in doc.get("story_ids", []):
+                    if sid:
+                        s_ids.append(str(sid))
+                        stories_meta.append({"story_id": str(sid), "story_name": s_names[0] if len(s_names) == 1 else str(sid)})
+            else:
+                raw_sids = [str(s) for s in doc.get("story_ids", []) if s]
+                if not raw_sids and doc.get("story_id"):
+                    raw_sids = [str(doc.get("story_id"))]
+                pname = doc.get("part_name")
+                for sid in raw_sids:
+                    st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+                    s_title = st.get("story_name_en", st.get("title", sid)) if st else sid
+                    if pname:
+                        disp_name = f"{s_title} - {pname}"
+                    else:
+                        disp_name = s_title
+                    s_names.append(disp_name)
+                    s_ids.append(sid)
+                    stories_meta.append({
+                        "story_id": sid,
+                        "story_name": disp_name,
+                        "part_id": str(doc.get("part_id")) if doc.get("part_id") is not None else None,
+                        "part_name": pname
+                    })
+
+            if not s_names:
+                s_names = ["Story Purchase"]
+            return s_names, s_ids, stories_meta
 
         def get_or_create_buyer(uid_str, fallback_doc=None, fallback_source="miniapp"):
             if uid_str not in buyers_map:
@@ -6330,72 +6417,16 @@ async def fetch_processed_buyers_data(arya_db):
                 }
             return buyers_map[uid_str]
 
-        # Process A: premium_purchases
-        for p in purchases:
-            uid = p.get("user_id")
-            if uid is None: continue
-            uid_str = str(uid)
-            
-            if uid_str not in existing_user_ids:
-                continue
-                
-            story_id = p.get("story_id")
-            story_id_str = str(story_id) if story_id else ""
-            if not story_id_str: continue
-
-            story_canon = sid_to_canonical.get(story_id_str, story_id_str)
-            if uid_str not in added_paid_stories:
-                added_paid_stories[uid_str] = set()
-            added_paid_stories[uid_str].add(story_id_str)
-            added_paid_stories[uid_str].add(story_canon)
-
-            story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
-            sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
-            
-            amt = p.get("amount", 0)
-            try: amt = float(amt)
-            except: amt = 0
-            
-            if amt <= 0:
-                amt = story["_clean_price"] if story else 99.0
-
-            date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
-            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
-
-            src_val = str(p.get("source", "")).lower()
-            oid_val = str(p.get("order_id", "")).upper()
-            if "bot" in src_val or oid_val.startswith("AB-") or oid_val.startswith("MANUAL_") or bool(p.get("bot_id")):
-                source_label = "bot"
-            else:
-                source_label = "miniapp"
-
-            b = get_or_create_buyer(uid_str, fallback_doc=p, fallback_source=source_label)
-
-            b["payments"].append({
-                "order_id": _clean_order_id_value(p, uid_str, [story_id_str], source=source_label),
-                "reference": str(p.get("reference") or p.get("utr") or p.get("payment_id") or p.get("order_id") or "").strip(),
-                "story_id": story_id_str,
-                "story_name": sname,
-                "amount": amt,
-                "method": str(p.get("method") or p.get("source", "UPI")).upper(),
-                "status": "paid",
-                "date": date_str,
-                "source": source_label
-            })
-
-        # Process B: orders
+        # Process A: orders (Primary Source of truth for Mini App & Web checkout orders)
         for doc in orders:
             uid = doc.get("user_id")
             if uid is None: continue
             uid_str = str(uid)
-            
             if uid_str not in existing_user_ids:
                 continue
 
-            status_raw = doc.get("status", "unknown").lower()
-            story_ids = [str(s) for s in doc.get("story_ids", []) if s]
-            if not story_ids and doc.get("story_id"):
-                story_ids = [str(doc.get("story_id"))]
+            status_raw = str(doc.get("status", "unknown")).lower()
+            s_names, s_ids, s_meta = _extract_story_names_and_parts(doc)
 
             src_val = str(doc.get("source", "")).lower()
             oid_val = str(doc.get("order_id", "") or doc.get("_id", "")).upper()
@@ -6408,51 +6439,91 @@ async def fetch_processed_buyers_data(arya_db):
             try: amt = float(amt)
             except: amt = 0
 
-            if status_raw in ["paid", "delivered", "approved", "completed", "success"]:
-                if uid_str in added_paid_stories and any(sid in added_paid_stories[uid_str] for sid in story_ids):
-                    b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
-                    for p_item in b["payments"]:
-                        if p_item["story_id"] in story_ids:
-                            if amt > 0: p_item["amount"] = amt
-                            p_item["source"] = source_label
-                            p_item["method"] = str(doc.get("method", doc.get("payment_method", p_item.get("method") or "UPI"))).upper()
-                    continue
-
-            story_names = []
-            for sid in story_ids:
-                story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
-                if story: story_names.append(story.get("story_name_en", sid))
-                else: story_names.append(sid)
-
-            if amt <= 0 and story_ids:
-                st = story_cache_by_oid.get(story_ids[0]) or story_cache_by_id.get(story_ids[0])
+            if amt <= 0 and s_ids:
+                st = story_cache_by_oid.get(s_ids[0]) or story_cache_by_id.get(s_ids[0])
                 amt = st["_clean_price"] if st else 99.0
 
-            date_val = doc.get("created_at") or datetime.now(timezone.utc)
+            date_val = doc.get("paid_at") or doc.get("created_at") or datetime.now(timezone.utc)
             date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
             b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
 
-            method_str = str(doc.get("method", doc.get("payment_method", "UPI"))).upper()
+            method_str = str(doc.get("method") or doc.get("payment_method") or "UPI").upper()
+            clean_oid = _clean_order_id_value(doc, uid_str, s_ids, source=source_label)
+            ref_str = str(doc.get("reference") or doc.get("utr") or doc.get("payment_id") or doc.get("track_id") or doc.get("order_id") or "").strip()
 
             b["payments"].append({
-                "order_id": _clean_order_id_value(doc, uid_str, story_ids, source=source_label),
-                "reference": str(doc.get("reference") or doc.get("utr") or doc.get("payment_id") or doc.get("order_id") or "").strip(),
-                "story_id": story_ids[0] if story_ids else "",
-                "story_name": ", ".join(story_names) if story_names else "Store Order",
+                "order_id": clean_oid,
+                "reference": ref_str,
+                "story_id": s_ids[0] if s_ids else "",
+                "story_ids": s_ids,
+                "story_names": s_names,
+                "stories": s_meta,
+                "story_name": ", ".join(s_names) if s_names else "Store Order",
                 "amount": amt,
                 "method": method_str,
                 "status": status_raw,
                 "date": date_str,
-                "source": source_label
+                "source": source_label,
+                "_origin": "orders"
             })
 
-        # Process C: premium_checkout
+        # Process B: premium_purchases (Legacy / Bot / Direct manual grants)
+        for p in purchases:
+            uid = p.get("user_id")
+            if uid is None: continue
+            uid_str = str(uid)
+            if uid_str not in existing_user_ids:
+                continue
+                
+            story_id = p.get("story_id")
+            story_id_str = str(story_id) if story_id else ""
+            if not story_id_str: continue
+
+            s_names, s_ids, s_meta = _extract_story_names_and_parts(p)
+
+            amt = p.get("amount", 0)
+            try: amt = float(amt)
+            except: amt = 0
+            if amt <= 0 and s_ids:
+                st = story_cache_by_oid.get(s_ids[0]) or story_cache_by_id.get(s_ids[0])
+                amt = st["_clean_price"] if st else 99.0
+
+            date_val = p.get("purchased_at") or p.get("created_at") or datetime.now(timezone.utc)
+            date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
+
+            src_val = str(p.get("source", "")).lower()
+            oid_val = str(p.get("order_id", "")).upper()
+            if "bot" in src_val or oid_val.startswith("AB-") or oid_val.startswith("MANUAL_") or bool(p.get("bot_id")):
+                source_label = "bot"
+            else:
+                source_label = "miniapp"
+
+            b = get_or_create_buyer(uid_str, fallback_doc=p, fallback_source=source_label)
+            clean_oid = _clean_order_id_value(p, uid_str, [story_id_str], source=source_label)
+            ref_str = str(p.get("reference") or p.get("utr") or p.get("payment_id") or p.get("order_id") or "").strip()
+
+            b["payments"].append({
+                "order_id": clean_oid,
+                "reference": ref_str,
+                "story_id": story_id_str,
+                "story_ids": s_ids or [story_id_str],
+                "story_names": s_names,
+                "stories": s_meta,
+                "story_name": ", ".join(s_names) if s_names else "Story Purchase",
+                "amount": amt,
+                "method": str(p.get("method") or p.get("source", "UPI")).upper(),
+                "status": "paid",
+                "date": date_str,
+                "source": source_label,
+                "_origin": "premium_purchases"
+            })
+
+        # Process C: premium_checkout (In-progress / Bot checkouts)
         for c in checkouts:
             uid = c.get("user_id")
             if uid is None: continue
             uid_str = str(uid)
-            
             if uid_str not in existing_user_ids:
                 continue
 
@@ -6466,37 +6537,36 @@ async def fetch_processed_buyers_data(arya_db):
 
             story_id = c.get("story_id")
             story_id_str = str(story_id) if story_id else ""
-            story_canon = sid_to_canonical.get(story_id_str, story_id_str)
-
-            # If user already owns/paid for this story, skip ALL checkout records for this story
-            if uid_str in added_paid_stories and (story_id_str in added_paid_stories[uid_str] or story_canon in added_paid_stories[uid_str]):
-                continue
-
-            story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
-            sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
+            s_names, s_ids, s_meta = _extract_story_names_and_parts(c)
 
             amt = c.get("amount", 0)
             try: amt = float(amt)
             except: amt = 0
-
-            if amt <= 0 and story:
-                amt = story["_clean_price"]
+            if amt <= 0 and s_ids:
+                st = story_cache_by_oid.get(s_ids[0]) or story_cache_by_id.get(s_ids[0])
+                amt = st["_clean_price"] if st else 99.0
 
             date_val = c.get("created_at") or datetime.now(timezone.utc)
             date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
             b = get_or_create_buyer(uid_str, fallback_doc=c, fallback_source="bot")
+            clean_oid = _clean_order_id_value(c, uid_str, [story_id_str], source="bot")
+            ref_str = str(c.get("reference") or c.get("utr") or c.get("payment_id") or c.get("order_id") or "").strip()
 
             b["payments"].append({
-                "order_id": _clean_order_id_value(c, uid_str, [story_id_str], source="bot"),
-                "reference": str(c.get("reference") or c.get("utr") or c.get("payment_id") or c.get("order_id") or "").strip(),
+                "order_id": clean_oid,
+                "reference": ref_str,
                 "story_id": story_id_str,
-                "story_name": sname,
+                "story_ids": s_ids or ([story_id_str] if story_id_str else []),
+                "story_names": s_names,
+                "stories": s_meta,
+                "story_name": ", ".join(s_names) if s_names else "Bot Purchase",
                 "amount": amt,
                 "method": str(c.get("method", "UPI")).upper(),
                 "status": status_label,
                 "date": date_str,
-                "source": "bot"
+                "source": "bot",
+                "_origin": "premium_checkout"
             })
 
         buyers_list = []
@@ -6505,113 +6575,28 @@ async def fetch_processed_buyers_data(arya_db):
         miniapp_rev = 0.0
         total_paid_orders_count = 0
         paid_user_ids = set()
+        specific_gateways = ("CASHFREE", "CASHFREE_UPI", "UPI_MANUAL", "UPI_MANUAL_MINIAPP", "RAZORPAY", "OXAPAY", "DODO_PAYMENTS", "PAYU", "PAYTM")
 
         for uid_str, data in buyers_map.items():
             payments = data["payments"]
             if not payments: continue
 
-            # Group payments by order_id / reference / date-minute so multi-story cart checkouts
-            # appear as ONE single order entry in Admin Panel with true order total (no duplicate revenue multiplication).
-            grouped_payments = {}
-            for p_item in payments:
-                ref = str(p_item.get("reference") or "").strip()
-                oid = str(p_item.get("order_id") or "").strip()
-                date_str = str(p_item.get("date") or "")
-                date_minute = date_str[:16] if len(date_str) >= 16 else date_str
-                
-                # Determine stable grouping key for multi-story cart checkouts
-                if ref and len(ref) > 3 and not ref.startswith("uid_"):
-                    group_key = f"ref_{ref}"
-                elif oid and not oid.startswith("uid_") and not oid.startswith("single_"):
-                    group_key = f"order_{oid}"
-                else:
-                    group_key = f"batch_{p_item.get('source')}_{p_item.get('method')}_{date_minute}"
-
-                if group_key not in grouped_payments:
-                    grouped_payments[group_key] = {
-                        "order_id": oid or f"AM-{uid_str}-{group_key[-8:]}",
-                        "reference": ref,
-                        "story_id": p_item.get("story_id", ""),
-                        "story_ids": [p_item.get("story_id")] if p_item.get("story_id") else [],
-                        "story_names": [p_item.get("story_name")] if p_item.get("story_name") else [],
-                        "stories": [{
-                            "story_id": p_item.get("story_id", ""),
-                            "story_name": p_item.get("story_name", "")
-                        }] if p_item.get("story_id") else [],
-                        "raw_amounts": [float(p_item.get("amount", 0.0) or 0.0)],
-                        "amount": float(p_item.get("amount", 0.0) or 0.0),
-                        "method": p_item.get("method", "UPI"),
-                        "status": p_item.get("status", "paid"),
-                        "date": p_item.get("date"),
-                        "source": p_item.get("source", "miniapp")
-                    }
-                else:
-                    g = grouped_payments[group_key]
-                    sid = p_item.get("story_id")
-                    if sid and sid not in g["story_ids"]:
-                        g["story_ids"].append(sid)
-                        g["story_names"].append(p_item.get("story_name", sid))
-                        g["stories"].append({
-                            "story_id": sid,
-                            "story_name": p_item.get("story_name", sid)
-                        })
-                    curr_amt = float(p_item.get("amount", 0.0) or 0.0)
-                    g["raw_amounts"].append(curr_amt)
-
-            final_payments = []
-            for group_key, g in grouped_payments.items():
-                raw_amts = g.pop("raw_amounts", [g["amount"]])
-                if raw_amts:
-                    # Fix duplicate revenue: if all items in this grouped order share the same order total amount (e.g. [524.0, 524.0, 524.0, 524.0]),
-                    # use the single 524.0. If distinct item prices were stored, sum them up.
-                    if all(a == raw_amts[0] for a in raw_amts):
-                        g["amount"] = raw_amts[0]
-                    else:
-                        g["amount"] = sum(raw_amts)
-
-                if len(g["story_names"]) > 1:
-                    g["story_name"] = f"{', '.join(g['story_names'][:2])} (+{len(g['story_names']) - 2} more)" if len(g['story_names']) > 3 else ", ".join(g["story_names"])
-                elif len(g["story_names"]) == 1:
-                    g["story_name"] = g["story_names"][0]
-                else:
-                    g["story_name"] = "Store Purchase"
-                final_payments.append(g)
-
-            # ── Smart Payment Deduplication Pass ──
-            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI' or multi-story cart duplicates).
-            # Groups payments by (canonical_story_signature, date_day) per user and keeps 1 clean canonical payment record!
+            # Deduplicate records across collections (orders, premium_purchases, premium_checkout)
+            # Distinct orders (e.g. separate purchases for Part 1 and Part 2) have distinct order IDs and are ALWAYS preserved!
             dedup_payments = {}
-            specific_gateways = ("CASHFREE", "CASHFREE_UPI", "UPI_MANUAL", "UPI_MANUAL_MINIAPP", "RAZORPAY", "OXAPAY", "DODO_PAYMENTS", "PAYU", "PAYTM")
-
-            for p_item in final_payments:
-                p_date = str(p_item.get("date") or "")[:10]  # YYYY-MM-DD
+            for p_item in payments:
+                oid = str(p_item.get("order_id") or "").strip().upper()
+                ref = str(p_item.get("reference") or "").strip().upper()
                 p_status = str(p_item.get("status", "")).lower()
-                p_ref = str(p_item.get("reference") or "").strip().upper()
-                p_oid = str(p_item.get("order_id") or "").strip().upper()
 
-                # Calculate canonical story signature for single & multi-story cart orders
-                s_ids = p_item.get("story_ids", [])
-                if not s_ids and p_item.get("story_id"):
-                    s_ids = [p_item.get("story_id")]
-                
-                s_canons = sorted(list(set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])))
-                if s_canons:
-                    s_signature = "-".join(s_canons)
+                if oid and any(oid.startswith(pfx) for pfx in ("OD-", "OD_", "AM-", "AB-", "CF-", "ORD-", "PAY-", "CHECKOUT_", "PURCHASE_")):
+                    uniq_key = f"oid_{oid}"
+                elif ref and len(ref) >= 6 and not ref.startswith("UID_") and not ref.startswith("SINGLE_"):
+                    uniq_key = f"ref_{ref}"
                 else:
-                    s_key = str(p_item.get("story_name") or "story").strip().lower()
-                    s_signature = sid_to_canonical.get(s_key, s_key)
-
-                # Determine deduplication key:
-                # 1. Primary: Structured Order ID (starts with AM-, AB-, ORD-, CF-, PAY-)
-                #    Order ID is generated once per checkout attempt and shared across orders, premium_purchases, & premium_checkout.
-                # 2. Secondary: Transaction reference (UTR / payment_id) if valid (len >= 6).
-                # 3. Fallback: Group by (story_signature, date_day) for this buyer.
-                if p_oid and any(p_oid.startswith(prefix) for prefix in ("AM-", "AB-", "ORD-", "CF-", "PAY-")):
-                    uniq_key = f"oid_{p_oid}"
-                elif p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
-                    uniq_key = f"ref_{p_ref}"
-                else:
-                    uniq_key = f"story_{s_signature}_{p_date}"
+                    s_sig = "-".join(sorted(p_item.get("story_ids", []))) or p_item.get("story_id", "")
+                    p_date_min = str(p_item.get("date") or "")[:16]
+                    uniq_key = f"fallback_{s_sig}_{p_date_min}_{p_item.get('amount')}"
 
                 if uniq_key not in dedup_payments:
                     dedup_payments[uniq_key] = p_item
@@ -6619,24 +6604,25 @@ async def fetch_processed_buyers_data(arya_db):
                     existing = dedup_payments[uniq_key]
                     e_status = str(existing.get("status", "")).lower()
 
-                    # 1. If existing is NOT paid, but new p_item IS paid, replace with paid!
+                    # Prefer 'orders' origin over 'premium_purchases' / 'premium_checkout' as it contains full items/part descriptions
+                    if p_item.get("_origin") == "orders" and existing.get("_origin") != "orders":
+                        dedup_payments[uniq_key] = p_item
+                        continue
+
+                    # If existing is NOT paid, but new IS paid, update to paid
                     if p_status in ("paid", "approved", "delivered", "completed", "success") and e_status not in ("paid", "approved", "delivered", "completed", "success"):
                         dedup_payments[uniq_key] = p_item
                         continue
 
-                    # 2. If both are paid (or same status):
-                    #    - Prefer multi-story aggregated order ("His Secret Fortune, Divine Flame Burst") over single-story fragments!
-                    e_story_count = len(existing.get("story_ids", []))
-                    p_story_count = len(p_item.get("story_ids", []))
+                    # Prefer richer story descriptions (e.g. with parts)
+                    if len(p_item.get("story_names", [])) > len(existing.get("story_names", [])):
+                        existing["story_names"] = p_item["story_names"]
+                        existing["story_name"] = p_item["story_name"]
+                        existing["stories"] = p_item.get("stories", [])
 
-                    if p_story_count > e_story_count:
-                        dedup_payments[uniq_key] = p_item
-                        continue
-
-                    #    - Prefer specific gateway method ("CASHFREE", "UPI_MANUAL") over generic "UPI"
+                    # Prefer specific gateway method
                     m_existing = str(existing.get("method", "")).upper()
                     m_new = str(p_item.get("method", "")).upper()
-
                     if any(g in m_new for g in specific_gateways) and not any(g in m_existing for g in specific_gateways):
                         existing["method"] = m_new
                         if p_item.get("source"): existing["source"] = p_item["source"]
@@ -6644,63 +6630,7 @@ async def fetch_processed_buyers_data(arya_db):
                     if p_item.get("reference") and not existing.get("reference"):
                         existing["reference"] = p_item["reference"]
 
-                    if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
-                        existing["order_id"] = p_item["order_id"]
-
-            # Second Pass: Same-Day Same-Story Merging per Buyer
-            # Guarantees that a user NEVER gets duplicate paid orders for the exact same story/cart on the same day.
-            merged_payments = {}
-            for p_item in list(dedup_payments.values()):
-                p_date = str(p_item.get("date") or "")[:10]
-                p_status = str(p_item.get("status", "")).lower()
-                s_ids = p_item.get("story_ids", [])
-                if not s_ids and p_item.get("story_id"):
-                    s_ids = [p_item.get("story_id")]
-
-                s_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])
-                is_multi = len(s_canons) > 1
-                
-                # Check if there is already a multi-story order on the same date that contains these story IDs
-                already_covered = False
-                if not is_multi and s_canons:
-                    single_sid = next(iter(s_canons))
-                    for m_key, m_item in merged_payments.items():
-                        m_date = str(m_item.get("date") or "")[:10]
-                        m_ids = m_item.get("story_ids", [])
-                        if not m_ids and m_item.get("story_id"):
-                            m_ids = [m_item.get("story_id")]
-                        m_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in m_ids if sid])
-                        
-                        if m_date == p_date and len(m_canons) > 1 and single_sid in m_canons:
-                            already_covered = True
-                            m_new = str(p_item.get("method", "")).upper()
-                            if any(g in m_new for g in specific_gateways) and not any(g in str(m_item.get("method", "")).upper() for g in specific_gateways):
-                                m_item["method"] = m_new
-                            break
-
-                if not already_covered:
-                    m_key = f"{p_date}_{','.join(sorted(list(s_canons)))}" if s_canons else f"{p_date}_{p_item.get('order_id')}"
-                    if m_key not in merged_payments:
-                        merged_payments[m_key] = p_item
-                    else:
-                        existing = merged_payments[m_key]
-                        e_status = str(existing.get("status", "")).lower()
-
-                        if p_status in ("paid", "approved", "delivered", "completed", "success") and e_status not in ("paid", "approved", "delivered", "completed", "success"):
-                            merged_payments[m_key] = p_item
-                        else:
-                            # Merge fields
-                            m_existing = str(existing.get("method", "")).upper()
-                            m_new = str(p_item.get("method", "")).upper()
-                            if any(g in m_new for g in specific_gateways) and not any(g in m_existing for g in specific_gateways):
-                                existing["method"] = m_new
-                                if p_item.get("source"): existing["source"] = p_item["source"]
-                            if p_item.get("reference") and not existing.get("reference"):
-                                existing["reference"] = p_item["reference"]
-                            if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
-                                existing["order_id"] = p_item["order_id"]
-
-            final_payments = list(merged_payments.values())
+            final_payments = list(dedup_payments.values())
             data["payments"] = final_payments
             payments = final_payments
 
@@ -12293,36 +12223,80 @@ async def record_purchased_stories(order: dict):
         ref_id = str(order.get("reference") or order.get("utr") or order.get("razorpay_payment_id") or order.get("payment_id") or order.get("cf_order_id") or order.get("track_id") or "").strip()
         ord_id = str(order.get("order_id") or order.get("cf_order_id") or "").strip()
 
-        for sid in story_ids:
-            try:
-                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
-                if not story:
-                    story = await arya_db.db.premium_stories.find_one({"story_id": sid})
-                    
-                bot_id = None
-                if story:
-                    bot_id = story.get("bot_id")
-                if not bot_id:
-                    bot_id = default_bot_id
-                    
-                existing = await arya_db.db.premium_purchases.find_one({
-                    "user_id": tg_id_int,
-                    "story_id": ObjectId(sid)
-                })
-                if not existing:
-                    await arya_db.db.premium_purchases.insert_one({
-                        "user_id": tg_id_int,
-                        "story_id": ObjectId(sid),
-                        "bot_id": bot_id,
-                        "purchased_at": datetime.now(timezone.utc),
-                        "source": order.get("source", "miniapp"),
-                        "method": pay_method,
-                        "amount": per_story_amt,
-                        "reference": ref_id,
-                        "order_id": ord_id
-                    })
-            except Exception as e:
-                logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
+        items = order.get("items")
+        if items and isinstance(items, list):
+            for itm in items:
+                sid = str(itm.get("story_id") or itm.get("id") or "")
+                if not sid: continue
+                part_id = itm.get("part_id")
+                part_name = itm.get("part_name")
+                item_amt = float(itm.get("price", per_story_amt) or per_story_amt)
+                try:
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                    if not story:
+                        story = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                        
+                    bot_id = story.get("bot_id") if story else default_bot_id
+                    if not bot_id:
+                        bot_id = default_bot_id
+                        
+                    chk_filter = {"user_id": tg_id_int, "story_id": ObjectId(sid)}
+                    if part_id is not None:
+                        chk_filter["part_id"] = str(part_id)
+                    elif ord_id:
+                        chk_filter["order_id"] = ord_id
+                        
+                    existing = await arya_db.db.premium_purchases.find_one(chk_filter)
+                    if not existing:
+                        doc_to_ins = {
+                            "user_id": tg_id_int,
+                            "story_id": ObjectId(sid),
+                            "bot_id": bot_id,
+                            "purchased_at": datetime.now(timezone.utc),
+                            "source": order.get("source", "miniapp"),
+                            "method": pay_method,
+                            "amount": item_amt,
+                            "reference": ref_id,
+                            "order_id": ord_id
+                        }
+                        if part_id is not None:
+                            doc_to_ins["part_id"] = str(part_id)
+                        if part_name:
+                            doc_to_ins["part_name"] = str(part_name)
+                        await arya_db.db.premium_purchases.insert_one(doc_to_ins)
+                except Exception as e:
+                    logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
+        else:
+            for sid in story_ids:
+                try:
+                    story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(sid)})
+                    if not story:
+                        story = await arya_db.db.premium_stories.find_one({"story_id": sid})
+                        
+                    bot_id = None
+                    if story:
+                        bot_id = story.get("bot_id")
+                    if not bot_id:
+                        bot_id = default_bot_id
+                        
+                    chk_filter = {"user_id": tg_id_int, "story_id": ObjectId(sid)}
+                    if ord_id:
+                        chk_filter["order_id"] = ord_id
+                    existing = await arya_db.db.premium_purchases.find_one(chk_filter)
+                    if not existing:
+                        await arya_db.db.premium_purchases.insert_one({
+                            "user_id": tg_id_int,
+                            "story_id": ObjectId(sid),
+                            "bot_id": bot_id,
+                            "purchased_at": datetime.now(timezone.utc),
+                            "source": order.get("source", "miniapp"),
+                            "method": pay_method,
+                            "amount": per_story_amt,
+                            "reference": ref_id,
+                            "order_id": ord_id
+                        })
+                except Exception as e:
+                    logger.error(f"Failed to record story purchase for {sid}: {e}", exc_info=True)
                 
         # Increment usage count for the promo code if used in the completed order
         promo_code = order.get("promo_code")
