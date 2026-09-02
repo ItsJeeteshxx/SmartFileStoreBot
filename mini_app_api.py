@@ -1143,7 +1143,6 @@ def _format_story(s: dict) -> dict | None:
     c_at_str = ""
     if isinstance(c_at, (int, float)):
         try:
-            from datetime import datetime, timezone
             c_at_str = datetime.fromtimestamp(c_at, tz=timezone.utc).isoformat()
         except Exception:
             c_at_str = ""
@@ -1152,7 +1151,6 @@ def _format_story(s: dict) -> dict | None:
     elif isinstance(c_at, str) and c_at.strip():
         c_at_str = c_at.strip()
     if not c_at_str:
-        from datetime import datetime, timezone
         c_at_str = datetime.now(timezone.utc).isoformat()
 
     return {
@@ -6014,7 +6012,6 @@ async def get_my_purchases(telegram_id: str):
         
         # Auto-verify any pending orders created within the last 2 hours
         try:
-            from datetime import timedelta
             two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
             pending_orders = await arya_db.db.orders.find({
                 "user_id": {"$in": [user_id_int, user_id_str]},
@@ -6201,7 +6198,6 @@ async def get_my_purchases(telegram_id: str):
                         purchased_items.append(formatted)
                 
         # Also query for recent pending/failed/processing/review orders (recent within 5m, under review/rejected within 7d)
-        from datetime import timedelta
         # Broad range query using naive UTC
         eight_days_ago_naive = datetime.utcnow() - timedelta(days=8)
         
