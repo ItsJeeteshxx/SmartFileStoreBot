@@ -1634,17 +1634,19 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
     # 1. Fetch user's paid orders
     order_cursor = db.db.orders.find({
         "user_id": {"$in": [user_id_int, user_id_str]},
-        "status": {"$in": ["paid", "delivered"]}
+        "status": {"$in": ["paid", "delivered", "completed", "success"]}
     }).sort("created_at", -1)
-    paid_orders = await order_cursor.to_list(length=200)
+    paid_orders = await order_cursor.to_list(length=300)
 
-    # Collect story IDs
+    # 2. Collect story IDs
     story_id_set = set()
     for ord_doc in paid_orders:
         if ord_doc.get("items") and isinstance(ord_doc["items"], list):
             for itm in ord_doc["items"]:
                 if itm.get("story_id"):
                     story_id_set.add(str(itm["story_id"]))
+                elif itm.get("id"):
+                    story_id_set.add(str(itm["id"]))
         for sid in (ord_doc.get("story_ids") or []):
             if sid:
                 story_id_set.add(str(sid))
@@ -1667,28 +1669,40 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
 
     purchases = []
     seen_entries = set()
+    purchased_part_story_ids = set()
 
+    # Process items in paid orders
     for ord_doc in paid_orders:
         if ord_doc.get("items") and isinstance(ord_doc["items"], list):
             for itm in ord_doc["items"]:
                 sid = str(itm.get("story_id") or itm.get("id") or "")
                 if sid in stories_by_oid:
                     part_id = str(itm.get("part_id")) if itm.get("part_id") else None
-                    part_name = itm.get("part_name")
-                    entry_key = f"{sid}_{part_id}" if part_id else sid
-                    if entry_key not in seen_entries:
-                        purchases.append({
-                            "story_id": sid,
-                            "part_id": part_id,
-                            "part_name": part_name,
-                            "start_id": itm.get("start_id"),
-                            "end_id": itm.get("end_id")
-                        })
-                        seen_entries.add(entry_key)
+                    if part_id:
+                        purchased_part_story_ids.add(sid)
+                        part_name = itm.get("part_name")
+                        entry_key = f"{sid}_{part_id}"
+                        if entry_key not in seen_entries:
+                            purchases.append({
+                                "story_id": sid,
+                                "part_id": part_id,
+                                "part_name": part_name,
+                                "start_id": itm.get("start_id"),
+                                "end_id": itm.get("end_id")
+                            })
+                            seen_entries.add(entry_key)
+                    else:
+                        if sid not in seen_entries:
+                            purchases.append({
+                                "story_id": sid,
+                                "part_id": None,
+                                "part_name": None
+                            })
+                            seen_entries.add(sid)
         elif ord_doc.get("story_ids") and isinstance(ord_doc["story_ids"], list):
             for sid in ord_doc["story_ids"]:
                 sid_str = str(sid)
-                if sid_str in stories_by_oid and sid_str not in seen_entries:
+                if sid_str in stories_by_oid and sid_str not in seen_entries and sid_str not in purchased_part_story_ids:
                     purchases.append({
                         "story_id": sid_str,
                         "part_id": None,
@@ -1696,9 +1710,10 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
                     })
                     seen_entries.add(sid_str)
 
+    # Add items from raw_purchases ONLY if story wasn't already split into purchased parts
     for p in raw_purchases:
         pid_str = str(p)
-        if pid_str in stories_by_oid and pid_str not in seen_entries:
+        if pid_str in stories_by_oid and pid_str not in seen_entries and pid_str not in purchased_part_story_ids:
             purchases.append({
                 "story_id": pid_str,
                 "part_id": None,
@@ -1724,7 +1739,20 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
                 part_name = item.get("part_name")
                 if part_name or part_id:
                     p_label = part_name or f"Part {part_id}"
-                    s_name = f"📖 {base_title} · {p_label}"
+                    st_ep_start = item.get("start_id")
+                    st_ep_end = item.get("end_id")
+                    if not st_ep_start or not st_ep_end:
+                        for sp in (st.get("parts") or []):
+                            if str(sp.get("id")) == str(part_id):
+                                st_ep_start = sp.get("start_id")
+                                st_ep_end = sp.get("end_id")
+                                if not part_name and sp.get("name"):
+                                    p_label = sp.get("name")
+                                break
+                    if st_ep_start and st_ep_end and f"{st_ep_start}" not in str(p_label):
+                        s_name = f"📖 {base_title} · {p_label} (Ep {st_ep_start}-{st_ep_end})"
+                    else:
+                        s_name = f"📖 {base_title} · {p_label}"
                     cb_data = f"mb#purchased_view_{item['story_id']}_{part_id}"
                 else:
                     s_name = f"📖 {base_title}"
@@ -3660,208 +3688,10 @@ async def _process_media(client, message):
 
 
 async def _process_my_stories(client, message):
-
     user_id = message.from_user.id
-
-    user = await db.get_user(user_id, from_user=message.from_user)
-
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=client.me.id)
     lang = user.get('lang', 'en')
-
-    from bson.objectid import ObjectId
-
-
-
-    # ── 1. Bot purchases (via user.purchases[] field) ─────────────
-
-    bot_purchase_ids = [str(p) for p in user.get('purchases', [])]
-
-
-
-    # ── 2. Mini App Razorpay purchases (via orders collection) ────
-
-    miniapp_purchase_ids = []
-
-    try:
-
-        async for order in db.db.orders.find(
-
-            {"user_id": int(user_id), "status": "paid"},
-
-            {"story_ids": 1}
-
-        ):
-
-            miniapp_purchase_ids.extend([str(s) for s in order.get("story_ids", [])])
-
-    except Exception:
-
-        pass
-
-
-
-    # ── 3. Merge unique IDs, bot purchases first ──────────────────
-
-    seen = set()
-
-    merged_ids = []
-
-    source_map = {}  # story_id → "bot" | "app" | "both"
-
-    for pid in bot_purchase_ids:
-
-        if pid not in seen:
-
-            merged_ids.append(pid)
-
-            seen.add(pid)
-
-            source_map[pid] = "bot"
-
-    for pid in miniapp_purchase_ids:
-
-        if pid not in seen:
-
-            merged_ids.append(pid)
-
-            seen.add(pid)
-
-            source_map[pid] = "app"
-
-        elif pid in source_map:
-
-            source_map[pid] = "both"
-
-
-
-    total = len(merged_ids)
-
-    PAGE_SIZE = 5
-
-    page = 0
-
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-
-    page_purchases = merged_ids[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
-
-
-
-    # ── 4. Build keyboard ─────────────────────────────────────────
-
-    kb = []
-
-    for pid in page_purchases:
-
-        try:
-
-            st = await db.db.premium_stories.find_one({"_id": ObjectId(pid)})
-
-            if st:
-
-                en_name = st.get('story_name_en', 'Story')
-
-                hi_name = st.get('story_name_hi', en_name)
-
-                s_name = hi_name if lang == 'hi' else en_name
-
-                src = source_map.get(pid, "bot")
-
-                badge = "🤖" if src == "bot" else ("📱" if src == "app" else "🔗")
-
-                kb.append([InlineKeyboardButton(
-
-                    f"{badge} {s_name}",
-
-                    callback_data=f"mb#purchased_view_{pid}"
-
-                )])
-
-        except Exception:
-
-            pass
-
-
-
-    if lang == 'hi':
-
-        title     = "⟦ मेरी स्टोरीज ⟧"
-
-        total_txt = "कुल स्टोरी ⟶"
-
-        desc      = "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं।\n🤖 = Bot से खरीदी | 📱 = Mini App से खरीदी"
-
-        next_btn  = "आगे ❭"
-
-        back_btn  = "« वापस मेनू"
-
-        empty_txt = "कोई खरीद नहीं मिली।"
-
-        market_btn = "स्टोर खोलें"
-
-    else:
-
-        title     = "⟦ 𝗠𝗬 𝗦𝗧𝗢𝗥𝗜𝗘𝗦 ⟧"
-
-        total_txt = "ᴛᴏᴛᴀʟ ⟶"
-
-        desc      = "All your purchased stories are listed below.\n🤖 = Bought via Bot  |  📱 = Bought via Mini App"
-
-        next_btn  = "𝗡𝗲𝘅𝘁 ❭"
-
-        back_btn  = "Back to Menu"
-
-        empty_txt = "ɴᴏ ᴘᴜʀᴄʜᴀꜱᴇꜱ ꜰᴏᴜɴᴅ."
-
-        market_btn = "OPEN MARKETPLACE"
-
-
-
-    if total_pages > 1:
-
-        nav = [
-
-            InlineKeyboardButton(f"ᴘᴀɢᴇ 1/{total_pages}", callback_data="mb#noop"),
-
-            InlineKeyboardButton(next_btn, callback_data="mb#my_buys_page_1"),
-
-        ]
-
-        kb.append(nav)
-
-
-
-    kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
-
-
-
-    if total > 0:
-
-        txt_b = (
-
-            f"<b>{title}</b>\n\n"
-
-            f"<b>{total_txt}</b> {total}\n\n"
-
-            f"{desc}"
-
-        )
-
-    else:
-
-        txt_b = (
-
-            f"<b>{title}</b>\n\n"
-
-            f"<b>{total_txt}</b> 0\n\n"
-
-            f"{empty_txt}"
-
-        )
-
-        kb.insert(0, [InlineKeyboardButton(market_btn, callback_data="mb#main_marketplace")])
-
-
-
-    await client.send_message(user_id, txt_b, reply_markup=InlineKeyboardMarkup(kb))
+    return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
 
 
 
@@ -3962,6 +3792,8 @@ async def _process_text(client, message):
             or "फ़ाइलें" in txt_lower
             or "full delivery" in txt_lower
             or "सभी फ़ाइलें" in txt_lower
+            or "एपिसोड" in txt_lower
+            or "episodes" in txt_lower
             or "cancel" in txt_lower
             or "रद्द" in txt_lower
             or "«" in txt
@@ -3999,29 +3831,6 @@ async def _process_text(client, message):
             story = await db.db.premium_stories.find_one({"story_id": pending_s_id})
         
         if story:
-            # Check all parts purchased by user for this story across all paid orders
-            purchased_parts = []
-            has_full_story = False
-            user_orders = await db.db.orders.find({
-                "user_id": {"$in": [user_id, str(user_id)]},
-                "$or": [
-                    {"story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]}},
-                    {"items.story_id": {"$in": [pending_s_id, str(story.get('_id', ''))]}}
-                ],
-                "status": {"$in": ["paid", "delivered"]}
-            }).sort("created_at", -1).to_list(length=50)
-
-            for ord_doc in user_orders:
-                if ord_doc.get("items") and isinstance(ord_doc["items"], list):
-                    for itm in ord_doc["items"]:
-                        if str(itm.get("story_id") or "") in (pending_s_id, str(story["_id"])):
-                            if itm.get("part_id"):
-                                purchased_parts.append(itm)
-                            else:
-                                has_full_story = True
-                else:
-                    has_full_story = True
-
             part_info = None
             if pending_part_id:
                 for p in (story.get("parts") or []):
@@ -4029,57 +3838,60 @@ async def _process_text(client, message):
                         part_info = p
                         break
                 if not part_info:
-                    for p in purchased_parts:
-                        if str(p.get("part_id")) == str(pending_part_id):
-                            part_info = p
-                            break
+                    user_order = await db.db.orders.find_one({
+                        "user_id": {"$in": [user_id, str(user_id)]},
+                        "$or": [{"story_ids": pending_s_id}, {"items.story_id": pending_s_id}],
+                        "status": {"$in": ["paid", "delivered", "completed", "success"]}
+                    }, sort=[("created_at", -1)])
+                    if user_order and user_order.get("items"):
+                        for itm in user_order["items"]:
+                            if str(itm.get("part_id")) == str(pending_part_id):
+                                part_info = itm
+                                break
 
-            if part_info:
-                start_id = int(part_info["start_id"]) if part_info.get("start_id") else story.get("start_id")
-                end_id = int(part_info["end_id"]) if part_info.get("end_id") else story.get("end_id")
-                if story.get("valid_file_ids") and start_id and end_id:
-                    valid_list = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
-                else:
-                    valid_list = story.get("valid_file_ids")
-            elif purchased_parts and not has_full_story:
-                valid_starts = [int(p["start_id"]) for p in purchased_parts if p.get("start_id")]
-                valid_ends = [int(p["end_id"]) for p in purchased_parts if p.get("end_id")]
-                start_id = min(valid_starts) if valid_starts else story.get("start_id")
-                end_id = max(valid_ends) if valid_ends else story.get("end_id")
-                if story.get("valid_file_ids"):
-                    valid_list = [
-                        mid for mid in story["valid_file_ids"]
-                        if any(int(p.get("start_id", 0)) <= mid <= int(p.get("end_id", 999999)) for p in purchased_parts)
-                    ]
-                else:
-                    valid_list = None
+            # Resolve story's complete file list
+            all_valid_ids = story.get("valid_file_ids")
+            if not all_valid_ids:
+                st_start = int(story.get("start_id", 1))
+                st_end = int(story.get("end_id", 1))
+                all_valid_ids = list(range(st_start, st_end + 1))
+            total_story_files = len(all_valid_ids)
+
+            if part_info and part_info.get("start_id") and part_info.get("end_id"):
+                p_ep_start = max(1, int(part_info["start_id"]))
+                p_ep_end = min(total_story_files, int(part_info["end_id"]))
             else:
-                start_id = story.get("start_id")
-                end_id = story.get("end_id")
-                valid_list = story.get("valid_file_ids")
+                p_ep_start = 1
+                p_ep_end = total_story_files
+
+            part_all_msg_ids = all_valid_ids[p_ep_start - 1 : p_ep_end]
 
             match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
-            custom_msg_ids = None
             if match:
-                fs, fe = int(match.group(1)), int(match.group(2))
-                if valid_list:
-                    custom_msg_ids = valid_list[fs - 1 : fe]
-                else:
-                    c_start = start_id + fs - 1
-                    c_end = min(start_id + fe - 1, end_id)
+                req_s = int(match.group(1))
+                req_e = int(match.group(2))
+                c_start = max(p_ep_start, min(req_s, p_ep_end))
+                c_end = min(p_ep_end, max(req_e, p_ep_start))
+                if c_start > c_end:
+                    c_start, c_end = p_ep_start, p_ep_end
+                
+                offset_s = c_start - p_ep_start
+                offset_e = c_end - p_ep_start + 1
+                chosen_msg_ids = part_all_msg_ids[offset_s : offset_e]
+                disp_start = c_start
+                disp_end = c_end
             else:
-                # Full Delivery
-                fs, fe = 1, len(valid_list) if valid_list else ((end_id - start_id) + 1 if (start_id and end_id) else "All")
-                if valid_list:
-                    custom_msg_ids = valid_list
-                else:
-                    c_start, c_end = start_id, end_id
+                # Full Delivery for this part/story
+                chosen_msg_ids = part_all_msg_ids
+                disp_start = p_ep_start
+                disp_end = p_ep_end
 
-            m = await message.reply_text(f"<i>⏳ Initializing DM Delivery (Files {fs}-{fe})... Preparing your files.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
-            if custom_msg_ids is not None:
-                return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, custom_msg_ids=custom_msg_ids))
-            else:
-                return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, c_start, c_end))
+            m = await message.reply_text(
+                f"<i>⏳ Initializing DM Delivery (Episodes {disp_start}-{disp_end})... Preparing your files.</i>",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode=enums.ParseMode.HTML
+            )
+            return asyncio.create_task(_do_dm_delivery(client, user_id, story, m, custom_msg_ids=chosen_msg_ids, part_start=disp_start, part_end=disp_end))
         else:
             return await message.reply_text("❌ <i>Story not found.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
@@ -8448,7 +8260,7 @@ async def _process_callback(client, query):
                 user_order = await db.db.orders.find_one({
                     "user_id": {"$in": [user_id, str(user_id)]},
                     "$or": [{"story_ids": s_id}, {"items.story_id": s_id}],
-                    "status": {"$in": ["paid", "delivered"]}
+                    "status": {"$in": ["paid", "delivered", "completed", "success"]}
                 }, sort=[("created_at", -1)])
                 if user_order and user_order.get("items"):
                     for itm in user_order["items"]:
@@ -8456,37 +8268,38 @@ async def _process_callback(client, query):
                             part_info = itm
                             break
 
+        # Resolve story's complete file list
+        all_valid_ids = story.get("valid_file_ids")
+        if not all_valid_ids:
+            st_start = int(story.get("start_id", 1))
+            st_end = int(story.get("end_id", 1))
+            all_valid_ids = list(range(st_start, st_end + 1))
+        total_story_files = len(all_valid_ids)
+
         if part_info and part_info.get("start_id") and part_info.get("end_id"):
-            start_id = int(part_info["start_id"])
-            end_id   = int(part_info["end_id"])
+            p_ep_start = max(1, int(part_info["start_id"]))
+            p_ep_end = min(total_story_files, int(part_info["end_id"]))
         else:
-            start_id = story.get('start_id')
-            end_id   = story.get('end_id')
+            p_ep_start = 1
+            p_ep_end = total_story_files
 
-        valid_file_ids = None
-        if part_info and part_info.get("valid_file_ids"):
-            valid_file_ids = part_info["valid_file_ids"]
-        elif story.get("valid_file_ids"):
-            if part_info and start_id and end_id:
-                valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
-            else:
-                valid_file_ids = story["valid_file_ids"]
-
-        total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
+        # Slicing the exact message IDs for this part
+        part_msg_ids = all_valid_ids[p_ep_start - 1 : p_ep_end]
+        total_part_files = len(part_msg_ids)
 
         pending_s_id_str = f"{s_id}_{part_id}" if part_id else s_id
 
-        if c_start is None and total_files > 40:
-            if total_files > 300: chunk = 100
-            elif total_files > 100: chunk = 50
+        if c_start is None and total_part_files > 40:
+            if total_part_files > 300: chunk = 100
+            elif total_part_files > 100: chunk = 50
             else: chunk = 30
 
             kb = []
             row = []
-            for i in range(0, total_files, chunk):
-                f_start = i + 1
-                f_end = min(i + chunk, total_files)
-                lbl = f"{f_start} - {f_end}"
+            for i in range(0, total_part_files, chunk):
+                f_start_ep = p_ep_start + i
+                f_end_ep = min(p_ep_start + i + chunk - 1, p_ep_end)
+                lbl = f"{f_start_ep} - {f_end_ep}"
                 row.append(_kb_btn(lbl, icon_custom_emoji_id="5341492148468465410"))
                 if len(row) == 2:
                     kb.append(row)
@@ -8494,7 +8307,12 @@ async def _process_callback(client, query):
             if row:
                 kb.append(row)
 
-            full_btn = "Full Delivery (All Files)" if lang != "hi" else "Full Delivery (सभी फ़ाइलें)"
+            if part_info:
+                p_label = part_info.get("name") or part_info.get("part_name") or f"Part {part_id}"
+                full_btn = f"Full Delivery ({p_label}: Ep {p_ep_start}-{p_ep_end})" if lang != "hi" else f"Full Delivery ({p_label}: एपिसोड {p_ep_start}-{p_ep_end})"
+            else:
+                full_btn = f"Full Delivery (All Episodes: 1-{total_part_files})" if lang != "hi" else f"Full Delivery (सभी एपिसोड: 1-{total_part_files})"
+
             cancel_btn = "« " + ("Cancel" if lang != "hi" else "रद्द करें")
             kb.append([_kb_btn(full_btn, icon_custom_emoji_id="5805550320985578625")])
             kb.append([_kb_btn(cancel_btn)])
@@ -8516,15 +8334,15 @@ async def _process_callback(client, query):
                 return await client.send_message(user_id, p_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
             return
 
-        final_start = c_start if c_start is not None else start_id
-        final_end = c_end if c_end is not None else end_id
+        final_start = c_start if c_start is not None else p_ep_start
+        final_end = c_end if c_end is not None else p_ep_end
 
         await query.answer()
         await query.message.edit_text(
             f"<i>⏳ Initializing DM Delivery... Preparing your files.</i>",
             reply_markup=None
         )
-        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, final_start, final_end))
+        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, part_start=final_start, part_end=final_end, custom_msg_ids=part_msg_ids))
 
     elif cmd == "cancel_dm":
 
@@ -9216,9 +9034,9 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
         elif story.get('valid_file_ids'):
             val_ids = story['valid_file_ids']
             if part_start and part_end:
-                ps = min(int(part_start), int(part_end))
-                pe = max(int(part_start), int(part_end))
-                msg_range = [mid for mid in val_ids if ps <= mid <= pe]
+                ps = max(1, min(int(part_start), int(part_end)))
+                pe = min(len(val_ids), max(int(part_start), int(part_end)))
+                msg_range = val_ids[ps - 1 : pe]
             else:
                 msg_range = val_ids
         else:
