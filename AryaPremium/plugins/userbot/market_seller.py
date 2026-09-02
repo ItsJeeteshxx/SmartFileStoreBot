@@ -1632,32 +1632,63 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
 
     raw_purchases = user.get('purchases', []) if isinstance(user, dict) else []
     
-    # Fetch all paid orders for this user to distinguish parts vs whole stories
+    # Fetch all paid orders for this user across all active statuses
     paid_orders = await db.db.orders.find({
-        "user_id": {"$in": [uid_int, uid_str]},
-        "status": {"$in": ["paid", "delivered"]}
-    }).sort("created_at", -1).to_list(length=200)
+        "$or": [
+            {"user_id": {"$in": [uid_int, uid_str]}},
+            {"telegram_id": {"$in": [uid_int, uid_str]}}
+        ],
+        "status": {"$in": ["paid", "delivered", "approved", "completed", "success"]}
+    }).sort("created_at", -1).to_list(length=300)
 
-    # Collect all needed story ObjectIds
+    # Also fetch approved checkouts (from bot checkout flow)
+    paid_checkouts = await db.db.premium_checkout.find({
+        "user_id": {"$in": [uid_int, uid_str]},
+        "status": {"$in": ["approved", "paid", "completed", "success"]}
+    }).sort("created_at", -1).to_list(length=100)
+
+    # Collect all needed story ObjectIds and string IDs
     story_id_set = set()
     for p in raw_purchases:
-        story_id_set.add(str(p))
+        if p: story_id_set.add(str(p).strip())
     for o in paid_orders:
         if o.get("items"):
             for itm in o["items"]:
-                if itm.get("story_id"): story_id_set.add(str(itm["story_id"]))
-                elif itm.get("id"): story_id_set.add(str(itm["id"]))
+                if itm.get("story_id"): story_id_set.add(str(itm["story_id"]).strip())
+                elif itm.get("id"): story_id_set.add(str(itm["id"]).strip())
         for sid in (o.get("story_ids") or []):
-            if sid: story_id_set.add(str(sid))
+            if sid: story_id_set.add(str(sid).strip())
+        if o.get("story_id"):
+            story_id_set.add(str(o["story_id"]).strip())
+    for c in paid_checkouts:
+        if c.get("story_id"):
+            story_id_set.add(str(c["story_id"]).strip())
 
     p_oids = []
+    p_str_ids = []
     for s_str in story_id_set:
-        try: p_oids.append(ObjectId(s_str))
-        except: pass
+        if isinstance(s_str, str) and len(s_str) == 24:
+            try: p_oids.append(ObjectId(s_str))
+            except: pass
+        p_str_ids.append(s_str)
 
-    valid_stories_cursor = db.db.premium_stories.find({"_id": {"$in": p_oids}})
-    valid_stories = await valid_stories_cursor.to_list(length=1000)
-    stories_map = {str(s['_id']): s for s in valid_stories}
+    query_filter = []
+    if p_oids:
+        query_filter.append({"_id": {"$in": p_oids}})
+    if p_str_ids:
+        query_filter.append({"_id": {"$in": p_str_ids}})
+        query_filter.append({"story_id": {"$in": p_str_ids}})
+
+    valid_stories = []
+    if query_filter:
+        valid_stories_cursor = db.db.premium_stories.find({"$or": query_filter})
+        valid_stories = await valid_stories_cursor.to_list(length=1000)
+
+    stories_map = {}
+    for s in valid_stories:
+        stories_map[str(s['_id'])] = s
+        if s.get("story_id"):
+            stories_map[str(s["story_id"])] = s
 
     # Build purchase list items (distinct per part and per whole story)
     purchased_items = []
@@ -1667,66 +1698,115 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
     for o in paid_orders:
         if o.get("items"):
             for itm in o["items"]:
-                sid = str(itm.get("story_id") or itm.get("id") or "")
+                sid = str(itm.get("story_id") or itm.get("id") or "").strip()
                 part_id = itm.get("part_id")
-                if sid in stories_map:
+                st = stories_map.get(sid)
+                if not st and sid in story_id_set:
+                    for k, v in stories_map.items():
+                        if str(v.get("_id")) == sid or str(v.get("story_id")) == sid:
+                            st = v
+                            break
+                if st:
+                    canonical_sid = str(st["_id"])
                     if part_id:
-                        key = f"{sid}_{part_id}"
+                        key = f"{canonical_sid}_{part_id}"
                         if key not in seen_keys:
                             seen_keys.add(key)
-                            # Find part details in story doc
-                            st = stories_map[sid]
                             matched_p = None
                             for sp in (st.get("parts") or []):
-                                if str(sp.get("id")) == str(part_id):
+                                if str(sp.get("id")).strip() == str(part_id).strip():
                                     matched_p = sp
                                     break
                             p_name = itm.get("part_name") or (matched_p.get("name") if matched_p else f"Part {part_id}")
                             p_ep = itm.get("episodes") or (matched_p.get("episodes") if matched_p else "")
                             purchased_items.append({
                                 "key": key,
-                                "story_id": sid,
+                                "story_id": canonical_sid,
                                 "part_id": str(part_id),
                                 "part_name": p_name,
                                 "episodes": p_ep,
                                 "story": st
                             })
                     else:
-                        full_story_sids.add(sid)
-                        key = sid
+                        full_story_sids.add(canonical_sid)
+                        key = canonical_sid
                         if key not in seen_keys:
                             seen_keys.add(key)
                             purchased_items.append({
                                 "key": key,
-                                "story_id": sid,
+                                "story_id": canonical_sid,
                                 "part_id": None,
-                                "story": stories_map[sid]
+                                "story": st
                             })
-        elif o.get("story_ids"):
-            for sid in o["story_ids"]:
-                sid_str = str(sid)
-                if sid_str in stories_map:
-                    full_story_sids.add(sid_str)
-                    if sid_str not in seen_keys:
-                        seen_keys.add(sid_str)
+        else:
+            sids = o.get("story_ids") or ([o.get("story_id")] if o.get("story_id") else [])
+            for sid in sids:
+                sid_str = str(sid).strip()
+                st = stories_map.get(sid_str)
+                if st:
+                    canonical_sid = str(st["_id"])
+                    full_story_sids.add(canonical_sid)
+                    if canonical_sid not in seen_keys:
+                        seen_keys.add(canonical_sid)
                         purchased_items.append({
-                            "key": sid_str,
-                            "story_id": sid_str,
+                            "key": canonical_sid,
+                            "story_id": canonical_sid,
                             "part_id": None,
-                            "story": stories_map[sid_str]
+                            "story": st
                         })
+
+    # Also process paid_checkouts (bot purchases)
+    for c in paid_checkouts:
+        sid = str(c.get("story_id") or "").strip()
+        part_id = c.get("part_id")
+        st = stories_map.get(sid)
+        if st:
+            canonical_sid = str(st["_id"])
+            if part_id:
+                key = f"{canonical_sid}_{part_id}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    matched_p = None
+                    for sp in (st.get("parts") or []):
+                        if str(sp.get("id")).strip() == str(part_id).strip():
+                            matched_p = sp
+                            break
+                    p_name = c.get("part_name") or (matched_p.get("name") if matched_p else f"Part {part_id}")
+                    p_ep = c.get("episodes") or (matched_p.get("episodes") if matched_p else "")
+                    purchased_items.append({
+                        "key": key,
+                        "story_id": canonical_sid,
+                        "part_id": str(part_id),
+                        "part_name": p_name,
+                        "episodes": p_ep,
+                        "story": st
+                    })
+            else:
+                full_story_sids.add(canonical_sid)
+                if canonical_sid not in seen_keys:
+                    seen_keys.add(canonical_sid)
+                    purchased_items.append({
+                        "key": canonical_sid,
+                        "story_id": canonical_sid,
+                        "part_id": None,
+                        "story": st
+                    })
 
     # Add any remaining legacy purchases from user.purchases (if not already listed as part or full)
     for p in raw_purchases:
-        pid_str = str(p)
-        if pid_str in stories_map and pid_str not in seen_keys and pid_str not in full_story_sids:
-            seen_keys.add(pid_str)
-            purchased_items.append({
-                "key": pid_str,
-                "story_id": pid_str,
-                "part_id": None,
-                "story": stories_map[pid_str]
-            })
+        pid_str = str(p).strip()
+        st = stories_map.get(pid_str)
+        if st:
+            canonical_sid = str(st["_id"])
+            has_parts = any(item.get("story_id") == canonical_sid and item.get("part_id") is not None for item in purchased_items)
+            if canonical_sid not in seen_keys and canonical_sid not in full_story_sids and not has_parts:
+                seen_keys.add(canonical_sid)
+                purchased_items.append({
+                    "key": canonical_sid,
+                    "story_id": canonical_sid,
+                    "part_id": None,
+                    "story": st
+                })
 
     PAGE_SIZE = 5
     total = len(purchased_items)
