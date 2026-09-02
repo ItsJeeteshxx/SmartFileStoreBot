@@ -6388,9 +6388,11 @@ async def fetch_processed_buyers_data(arya_db):
                 }
             return buyers_map[uid_str]
 
-        # Track seen order keys per user to prevent cross-collection duplicate entries for the exact same order
-        # Key: (uid_str, order_id_or_ref)
+        # Track seen order keys and story parts per user to prevent cross-collection duplicate entries
+        # user_seen_orders: uid_str -> set of order_id / ref strings
+        # user_seen_stories: uid_str -> set of (canonical_sid, part_id or "FULL")
         user_seen_orders = {}
+        user_seen_stories = {}
 
         # 1. Process B FIRST: `orders` collection (richest data source with items, part details, actual totals)
         for doc in orders:
@@ -6400,13 +6402,20 @@ async def fetch_processed_buyers_data(arya_db):
             if uid_str not in existing_user_ids:
                 continue
 
+            if uid_str not in user_seen_orders:
+                user_seen_orders[uid_str] = set()
+            if uid_str not in user_seen_stories:
+                user_seen_stories[uid_str] = set()
+
             status_raw = doc.get("status", "unknown").lower()
             story_ids = [str(s) for s in doc.get("story_ids", []) if s]
             if not story_ids and doc.get("story_id"):
                 story_ids = [str(doc.get("story_id"))]
 
             src_val = str(doc.get("source", "")).lower()
-            oid_val = str(doc.get("order_id", "") or doc.get("_id", "")).strip()
+            raw_oid_val = str(doc.get("order_id", "") or "").strip()
+            doc_id_val = str(doc.get("_id", "")).strip()
+            oid_val = raw_oid_val or doc_id_val
             if "bot" in src_val or oid_val.upper().startswith("AB-") or oid_val.upper().startswith("MANUAL_"):
                 source_label = "bot"
             else:
@@ -6420,6 +6429,7 @@ async def fetch_processed_buyers_data(arya_db):
             if doc.get("items") and isinstance(doc["items"], list):
                 for itm in doc["items"]:
                     sid = str(itm.get("story_id") or itm.get("id") or "")
+                    canonical_sid = sid_to_canonical.get(sid, sid)
                     st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
                     s_title = itm.get("story_title") or (st.get("story_name_en") or st.get("title") if st else sid)
                     part_name = itm.get("part_name")
@@ -6432,6 +6442,9 @@ async def fetch_processed_buyers_data(arya_db):
                                 episodes = episodes or sp.get("episodes") or (f"{sp.get('start_id')}-{sp.get('end_id')}" if sp.get("start_id") and sp.get("end_id") else "")
                                 part_name = part_name or sp.get("name") or f"Part {part_id}"
                                 break
+                    p_key = str(part_id).strip() if part_id else "FULL"
+                    if canonical_sid:
+                        user_seen_stories[uid_str].add((canonical_sid, p_key))
                     if part_name or part_id:
                         p_label = part_name or f"Part {part_id}"
                         ep_str = f" · Ep {episodes}" if episodes else ""
@@ -6442,7 +6455,11 @@ async def fetch_processed_buyers_data(arya_db):
                 part_id = doc.get("part_id")
                 part_name = doc.get("part_name")
                 episodes = doc.get("episodes")
+                p_key = str(part_id).strip() if part_id else "FULL"
                 for sid in story_ids:
+                    canonical_sid = sid_to_canonical.get(sid, sid)
+                    if canonical_sid:
+                        user_seen_stories[uid_str].add((canonical_sid, p_key))
                     st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
                     s_title = st.get("story_name_en") or st.get("title") if st else sid
                     if (not episodes or not part_name) and part_id and st:
@@ -6457,6 +6474,9 @@ async def fetch_processed_buyers_data(arya_db):
                     story_names.append(f"{s_title} ({p_label}{ep_str})")
             else:
                 for sid in story_ids:
+                    canonical_sid = sid_to_canonical.get(sid, sid)
+                    if canonical_sid:
+                        user_seen_stories[uid_str].add((canonical_sid, "FULL"))
                     story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
                     if story: story_names.append(story.get("story_name_en") or story.get("title", sid))
                     else: story_names.append(sid)
@@ -6469,31 +6489,30 @@ async def fetch_processed_buyers_data(arya_db):
             date_str = date_val.isoformat() if isinstance(date_val, datetime) else str(date_val)
 
             clean_oid = _clean_order_id_value(doc, uid_str, story_ids, source=source_label)
-            ref_val = str(doc.get("reference") or doc.get("utr") or doc.get("payment_id") or doc.get("order_id") or "").strip()
+            ref_val = str(doc.get("reference") or doc.get("utr") or doc.get("payment_id") or doc.get("transaction_id") or "").strip()
             method_str = str(doc.get("method", doc.get("payment_method", "UPI"))).upper()
+            if method_str.lower() == "miniapp":
+                method_str = "UPI"
 
             b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
-            if uid_str not in user_seen_orders:
-                user_seen_orders[uid_str] = set()
 
-            ord_key = (clean_oid.upper(), ref_val.upper()) if ref_val else (clean_oid.upper(), "")
-            if ord_key not in user_seen_orders[uid_str]:
-                user_seen_orders[uid_str].add(ord_key)
-                if oid_val: user_seen_orders[uid_str].add((oid_val.upper(), ""))
-                if ref_val: user_seen_orders[uid_str].add(("", ref_val.upper()))
+            if clean_oid: user_seen_orders[uid_str].add(clean_oid.upper())
+            if raw_oid_val: user_seen_orders[uid_str].add(raw_oid_val.upper())
+            if doc_id_val: user_seen_orders[uid_str].add(doc_id_val.upper())
+            if ref_val: user_seen_orders[uid_str].add(ref_val.upper())
 
-                b["payments"].append({
-                    "order_id": clean_oid,
-                    "reference": ref_val,
-                    "story_id": story_ids[0] if story_ids else "",
-                    "story_name": ", ".join(story_names) if story_names else "Store Order",
-                    "amount": amt,
-                    "method": method_str,
-                    "status": status_raw,
-                    "date": date_str,
-                    "source": source_label,
-                    "items": doc.get("items", [])
-                })
+            b["payments"].append({
+                "order_id": clean_oid,
+                "reference": ref_val or raw_oid_val or doc_id_val,
+                "story_id": story_ids[0] if story_ids else "",
+                "story_name": ", ".join(story_names) if story_names else "Store Order",
+                "amount": amt,
+                "method": method_str,
+                "status": status_raw,
+                "date": date_str,
+                "source": source_label,
+                "items": doc.get("items", [])
+            })
 
         # 2. Process A: `premium_purchases` (legacy / direct DB records)
         for p in purchases:
@@ -6507,15 +6526,32 @@ async def fetch_processed_buyers_data(arya_db):
             story_id_str = str(story_id) if story_id else ""
             if not story_id_str: continue
 
+            canonical_sid = sid_to_canonical.get(story_id_str, story_id_str)
+            part_id = str(p.get("part_id") or "").strip()
+            p_key = part_id if part_id else "FULL"
+            item_key = (canonical_sid, p_key)
+
             p_oid = str(p.get("order_id", "")).strip()
             p_ref = str(p.get("reference") or p.get("utr") or p.get("payment_id") or "").strip()
 
+            # Skip if order ID or reference was already processed
             if uid_str in user_seen_orders:
-                if (p_oid.upper(), "") in user_seen_orders[uid_str] or (("", p_ref.upper()) in user_seen_orders[uid_str] if p_ref else False):
+                if (p_oid and p_oid.upper() in user_seen_orders[uid_str]) or (p_ref and p_ref.upper() in user_seen_orders[uid_str]):
+                    continue
+            # Skip if this user already has this exact story or part from the orders collection
+            if uid_str in user_seen_stories:
+                if item_key in user_seen_stories[uid_str]:
                     continue
 
             story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
             sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
+            if part_id and story:
+                for sp in (story.get("parts") or []):
+                    if str(sp.get("id")) == str(part_id):
+                        p_ep = sp.get("episodes", "")
+                        ep_str = f" · Ep {p_ep}" if p_ep else ""
+                        sname = f"{sname} ({sp.get('name', f'Part {part_id}')}{ep_str})"
+                        break
 
             amt = p.get("amount", 0)
             try: amt = float(amt)
@@ -6538,7 +6574,17 @@ async def fetch_processed_buyers_data(arya_db):
             b = get_or_create_buyer(uid_str, fallback_doc=p, fallback_source=source_label)
             if uid_str not in user_seen_orders:
                 user_seen_orders[uid_str] = set()
-            user_seen_orders[uid_str].add((clean_oid.upper(), p_ref.upper()))
+            if uid_str not in user_seen_stories:
+                user_seen_stories[uid_str] = set()
+
+            if clean_oid: user_seen_orders[uid_str].add(clean_oid.upper())
+            if p_oid: user_seen_orders[uid_str].add(p_oid.upper())
+            if p_ref: user_seen_orders[uid_str].add(p_ref.upper())
+            user_seen_stories[uid_str].add(item_key)
+
+            pay_method = str(p.get("method") or "UPI").upper()
+            if pay_method.lower() == "miniapp":
+                pay_method = "UPI"
 
             b["payments"].append({
                 "order_id": clean_oid,
@@ -6546,7 +6592,7 @@ async def fetch_processed_buyers_data(arya_db):
                 "story_id": story_id_str,
                 "story_name": sname,
                 "amount": amt,
-                "method": str(p.get("method") or p.get("source", "UPI")).upper(),
+                "method": pay_method,
                 "status": "paid",
                 "date": date_str,
                 "source": source_label
@@ -6560,11 +6606,21 @@ async def fetch_processed_buyers_data(arya_db):
             if uid_str not in existing_user_ids:
                 continue
 
+            story_id = c.get("story_id")
+            story_id_str = str(story_id) if story_id else ""
+            canonical_sid = sid_to_canonical.get(story_id_str, story_id_str)
+            part_id = str(c.get("part_id") or "").strip()
+            p_key = part_id if part_id else "FULL"
+            item_key = (canonical_sid, p_key)
+
             c_oid = str(c.get("order_id") or c.get("track_id") or c.get("_id") or "").strip()
             c_ref = str(c.get("reference") or c.get("utr") or "").strip()
 
             if uid_str in user_seen_orders:
-                if (c_oid.upper(), "") in user_seen_orders[uid_str] or (("", c_ref.upper()) in user_seen_orders[uid_str] if c_ref else False):
+                if (c_oid and c_oid.upper() in user_seen_orders[uid_str]) or (c_ref and c_ref.upper() in user_seen_orders[uid_str]):
+                    continue
+            if uid_str in user_seen_stories:
+                if item_key in user_seen_stories[uid_str]:
                     continue
 
             status_raw = c.get("status", "unknown")
@@ -6575,12 +6631,9 @@ async def fetch_processed_buyers_data(arya_db):
                 "pending_gateway": "processing",
             }.get(status_raw, status_raw.lower())
 
-            story_id = c.get("story_id")
-            story_id_str = str(story_id) if story_id else ""
             story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
             sname = story.get("story_name_en", story_id_str) if story else "Bot Purchase"
 
-            part_id = c.get("part_id")
             if part_id and story:
                 for sp in (story.get("parts") or []):
                     if str(sp.get("id")) == str(part_id):
@@ -6603,7 +6656,13 @@ async def fetch_processed_buyers_data(arya_db):
             b = get_or_create_buyer(uid_str, fallback_doc=c, fallback_source="bot")
             if uid_str not in user_seen_orders:
                 user_seen_orders[uid_str] = set()
-            user_seen_orders[uid_str].add((clean_oid.upper(), c_ref.upper()))
+            if uid_str not in user_seen_stories:
+                user_seen_stories[uid_str] = set()
+
+            if clean_oid: user_seen_orders[uid_str].add(clean_oid.upper())
+            if c_oid: user_seen_orders[uid_str].add(c_oid.upper())
+            if c_ref: user_seen_orders[uid_str].add(c_ref.upper())
+            user_seen_stories[uid_str].add(item_key)
 
             b["payments"].append({
                 "order_id": clean_oid,
