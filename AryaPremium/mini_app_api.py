@@ -1072,7 +1072,6 @@ def _format_story(s: dict) -> dict | None:
     c_at_str = ""
     if isinstance(c_at, (int, float)):
         try:
-            from datetime import datetime, timezone
             c_at_str = datetime.fromtimestamp(c_at, tz=timezone.utc).isoformat()
         except Exception:
             c_at_str = ""
@@ -1081,7 +1080,6 @@ def _format_story(s: dict) -> dict | None:
     elif isinstance(c_at, str) and c_at.strip():
         c_at_str = c_at.strip()
     if not c_at_str:
-        from datetime import datetime, timezone
         c_at_str = datetime.now(timezone.utc).isoformat()
 
     return {
@@ -5955,46 +5953,28 @@ async def get_my_purchases(telegram_id: str):
         user = await arya_db.db.users.find_one({"id": user_id_int})
         purchased_story_ids = list(user.get("purchases", [])) if user else []
 
+        # ── BULK FETCH: all paid orders in ONE query ──
+        order_cursor = arya_db.db.orders.find({
+            "user_id": {"$in": [user_id_int, user_id_str]},
+            "status": {"$in": ["paid", "delivered"]}
+        }).sort("created_at", -1)
+        paid_orders = await order_cursor.to_list(length=200)
 
-        # Robust fallback: fetch story IDs from all successfully paid/delivered orders
-        try:
-            order_story_ids = await asyncio.wait_for(
-                arya_db.db.orders.distinct(
-                    "story_ids",
-                    {
-                        "user_id": {"$in": [user_id_int, user_id_str]},
-                        "status": {"$in": ["paid", "delivered"]}
-                    }
-                ),
-                timeout=1.5
-            )
-            if order_story_ids:
-                for sid in order_story_ids:
-                    if sid and sid not in purchased_story_ids:
-                        purchased_story_ids.append(sid)
-        except Exception as oe:
-            logger.warning(f"Failed to fetch purchased story IDs from orders distinct query: {oe}")
+        # Collect all story IDs needed
+        story_id_set = set(purchased_story_ids)
+        for ord_doc in paid_orders:
+            if ord_doc.get("items") and isinstance(ord_doc["items"], list):
+                for itm in ord_doc["items"]:
+                    if itm.get("story_id"):
+                        story_id_set.add(str(itm["story_id"]))
+                    elif itm.get("id"):
+                        story_id_set.add(str(itm["id"]))
+            for sid in (ord_doc.get("story_ids") or []):
+                if sid:
+                    story_id_set.add(str(sid))
 
-        # Robust fallback: fetch story IDs from premium_purchases
-        try:
-            pp_story_ids = await asyncio.wait_for(
-                arya_db.db.premium_purchases.distinct(
-                    "story_id",
-                    {"user_id": {"$in": [user_id_int, user_id_str]}}
-                ),
-                timeout=1.5
-            )
-            if pp_story_ids:
-                for sid in pp_story_ids:
-                    sid_str = str(sid)
-                    if sid_str and sid_str not in purchased_story_ids:
-                        purchased_story_ids.append(sid_str)
-        except Exception as pe:
-            logger.warning(f"Failed to fetch purchased story IDs from premium_purchases distinct query: {pe}")
-        
-        # ── BULK FETCH: all stories in ONE query instead of N separate queries ──
         story_oid_list = []
-        for sid in purchased_story_ids:
+        for sid in story_id_set:
             try:
                 story_oid_list.append(ObjectId(sid))
             except Exception:
@@ -6005,19 +5985,6 @@ async def get_my_purchases(telegram_id: str):
             story_cursor = arya_db.db.premium_stories.find({"_id": {"$in": story_oid_list}})
             async for s in story_cursor:
                 stories_by_oid[str(s["_id"])] = s
-
-        # ── BULK FETCH: all paid orders in ONE query ──
-        orders_by_story: dict = {}
-        if purchased_story_ids:
-            order_cursor = arya_db.db.orders.find({
-                "user_id": {"$in": [user_id_int, user_id_str]},
-                "story_ids": {"$in": purchased_story_ids},
-                "status": {"$in": ["paid", "delivered"]}
-            })
-            async for ord_doc in order_cursor:
-                for sid in (ord_doc.get("story_ids") or []):
-                    if sid not in orders_by_story:
-                        orders_by_story[sid] = ord_doc
 
         # ── BULK FETCH: premium_purchases in ONE query ──
         pp_by_story: dict = {}
@@ -6032,62 +5999,132 @@ async def get_my_purchases(telegram_id: str):
                     pp_by_story[sid_str] = pp
 
         purchased_items = []
-        for story_id in purchased_story_ids:
-            try:
-                story = stories_by_oid.get(story_id)
+        represented_stories = set()
+
+        for ord_doc in paid_orders:
+            ord_id_str = str(ord_doc.get("order_id") or ord_doc.get("payment_link_id") or ord_doc.get("razorpay_order_id") or "")
+            created_at_str = ord_doc.get("created_at").isoformat() if isinstance(ord_doc.get("created_at"), datetime) else str(ord_doc.get("created_at", ""))
+            paid_at_str = ord_doc.get("paid_at").isoformat() if isinstance(ord_doc.get("paid_at"), datetime) else str(ord_doc.get("paid_at", created_at_str))
+
+            if ord_doc.get("items") and isinstance(ord_doc["items"], list):
+                for itm_idx, itm in enumerate(ord_doc["items"]):
+                    sid = str(itm.get("story_id") or itm.get("id") or "")
+                    story = stories_by_oid.get(sid)
+                    if not story:
+                        continue
+                    represented_stories.add(sid)
+                    formatted = _format_story(story)
+                    if not formatted:
+                        continue
+
+                    part_id = itm.get("part_id")
+                    part_dict = None
+                    if part_id:
+                        # Find matching part doc in story.parts
+                        matched_p = None
+                        for sp in (story.get("parts") or []):
+                            if str(sp.get("id")) == str(part_id):
+                                matched_p = sp
+                                break
+
+                        p_start = itm.get("start_id") or (matched_p.get("start_id") if matched_p else 0)
+                        p_end = itm.get("end_id") or (matched_p.get("end_id") if matched_p else 0)
+                        p_ep = itm.get("episodes") or (matched_p.get("episodes") if matched_p else "") or (f"{p_start}-{p_end}" if (p_start and p_end) else "")
+                        part_dict = {
+                            "id": str(part_id),
+                            "name": itm.get("part_name") or (matched_p.get("name") if matched_p else f"Part {part_id}"),
+                            "start_id": p_start,
+                            "end_id": p_end,
+                            "episodes": str(p_ep),
+                            "price": itm.get("price") or (matched_p.get("price") if matched_p else 0)
+                        }
+
+                    unique_id = f"{sid}_{part_id}_{ord_id_str}" if part_id else f"{sid}_{ord_id_str}_{itm_idx}"
+                    formatted["id"] = unique_id
+                    formatted["purchase_id"] = unique_id
+                    formatted["story_id"] = sid
+
+                    if part_dict:
+                        formatted["purchased_parts"] = [part_dict]
+                        formatted["purchased_part"] = part_dict
+                        formatted["selected_part"] = part_dict
+                        formatted["episodes"] = part_dict["episodes"]
+                        formatted["totalEpisodes"] = part_dict["episodes"]
+                        formatted["is_full_purchased"] = False
+                        formatted["price"] = itm.get("price") or part_dict.get("price") or formatted.get("price")
+                        if part_dict.get("start_id"): formatted["start_id"] = part_dict["start_id"]
+                        if part_dict.get("end_id"): formatted["end_id"] = part_dict["end_id"]
+                    else:
+                        formatted["is_full_purchased"] = True
+                        formatted["price"] = itm.get("price") or ord_doc.get("total") or formatted.get("price")
+
+                    formatted["order_details"] = {
+                        "order_id": ord_id_str,
+                        "source": ord_doc.get("source", "miniapp"),
+                        "status": ord_doc.get("status"),
+                        "amount": itm.get("price") or ord_doc.get("total") or ord_doc.get("amount"),
+                        "created_at": created_at_str,
+                        "paid_at": paid_at_str,
+                        "resolved_by": ord_doc.get("resolved_by"),
+                        "purchased_part": part_dict,
+                        "purchased_parts": [part_dict] if part_dict else []
+                    }
+                    purchased_items.append(formatted)
+
+            elif ord_doc.get("story_ids") and isinstance(ord_doc["story_ids"], list):
+                for sid in ord_doc["story_ids"]:
+                    sid_str = str(sid)
+                    story = stories_by_oid.get(sid_str)
+                    if not story:
+                        continue
+                    represented_stories.add(sid_str)
+                    formatted = _format_story(story)
+                    if not formatted:
+                        continue
+
+                    unique_id = f"{sid_str}_{ord_id_str}"
+                    formatted["id"] = unique_id
+                    formatted["purchase_id"] = unique_id
+                    formatted["story_id"] = sid_str
+                    formatted["is_full_purchased"] = True
+                    formatted["price"] = ord_doc.get("total") or ord_doc.get("amount") or formatted.get("price")
+                    formatted["order_details"] = {
+                        "order_id": ord_id_str,
+                        "source": ord_doc.get("source", "miniapp"),
+                        "status": ord_doc.get("status"),
+                        "amount": ord_doc.get("total") or ord_doc.get("amount"),
+                        "created_at": created_at_str,
+                        "paid_at": paid_at_str,
+                        "resolved_by": ord_doc.get("resolved_by")
+                    }
+                    purchased_items.append(formatted)
+
+        # Fallback for manual/legacy purchases in user.purchases or premium_purchases
+        for sid_str in purchased_story_ids:
+            if sid_str not in represented_stories:
+                story = stories_by_oid.get(sid_str)
                 if story:
                     formatted = _format_story(story)
                     if formatted:
-                        formatted["story_id"] = formatted["id"]
-                        order = orders_by_story.get(story_id)
-                        if order:
-                            purchased_part = None
-                            if order.get("items"):
-                                for itm in order["items"]:
-                                    if (itm.get("story_id") == story_id or itm.get("story_id") == str(story["_id"])) and itm.get("part_id"):
-                                        purchased_part = {
-                                            "id": itm.get("part_id"),
-                                            "name": itm.get("part_name"),
-                                            "start_id": itm.get("start_id"),
-                                            "end_id": itm.get("end_id"),
-                                            "price": itm.get("price")
-                                        }
-                                        break
-                            if purchased_part:
-                                formatted["purchased_part"] = purchased_part
-                                formatted["selected_part"] = purchased_part
-                                if purchased_part.get("start_id"):
-                                    formatted["start_id"] = purchased_part["start_id"]
-                                if purchased_part.get("end_id"):
-                                    formatted["end_id"] = purchased_part["end_id"]
-
+                        formatted["id"] = sid_str
+                        formatted["purchase_id"] = sid_str
+                        formatted["story_id"] = sid_str
+                        formatted["is_full_purchased"] = True
+                        purchase_rec = pp_by_story.get(sid_str)
+                        if purchase_rec:
+                            p_at = purchase_rec.get("purchased_at") or purchase_rec.get("created_at")
                             formatted["order_details"] = {
-                                "order_id": order.get("order_id") or order.get("payment_link_id") or order.get("razorpay_order_id"),
-                                "source": order.get("source", "miniapp"),
-                                "status": order.get("status"),
-                                "created_at": order.get("created_at").isoformat() if isinstance(order.get("created_at"), datetime) else str(order.get("created_at", "")),
-                                "resolved_by": order.get("resolved_by"),
-                                "purchased_part": purchased_part,
+                                "order_id": purchase_rec.get("order_id") or "",
+                                "source": purchase_rec.get("source", "imported"),
+                                "status": "paid",
+                                "amount": purchase_rec.get("amount"),
+                                "created_at": p_at.isoformat() if isinstance(p_at, datetime) else str(p_at or "")
                             }
                         else:
-                            purchase_rec = pp_by_story.get(story_id)
-                            if purchase_rec:
-                                p_at = purchase_rec.get("purchased_at") or purchase_rec.get("created_at")
-                                formatted["order_details"] = {
-                                    "order_id": purchase_rec.get("order_id") or "",
-                                    "source": purchase_rec.get("source", "imported"),
-                                    "status": "paid",
-                                    "created_at": p_at.isoformat() if isinstance(p_at, datetime) else str(p_at or "")
-                                }
-                            else:
-                                formatted["order_details"] = None
+                            formatted["order_details"] = None
                         purchased_items.append(formatted)
-            except Exception:
-                pass
-                
+
         # Also query for recent pending/failed/processing/review orders (recent within 5m, under review/rejected within 7d)
-        from datetime import timedelta
-        # Broad range query using naive UTC
         eight_days_ago_naive = datetime.utcnow() - timedelta(days=8)
         
         recent_orders_cursor = arya_db.db.orders.find({

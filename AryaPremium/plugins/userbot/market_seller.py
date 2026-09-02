@@ -1626,42 +1626,130 @@ async def _clear_utr_state(user_id: int):
 
 
 async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, page: int = 0, reply_to_message=None, edit_query=None):
-    raw_purchases = user.get('purchases', []) if isinstance(user, dict) else []
     from bson.objectid import ObjectId
-    p_oids = []
-    for p in raw_purchases:
-        try: p_oids.append(ObjectId(p))
-        except: pass
+    uid_int = int(user_id) if str(user_id).isdigit() else user_id
+    uid_str = str(user_id)
+
+    raw_purchases = user.get('purchases', []) if isinstance(user, dict) else []
     
+    # Fetch all paid orders for this user to distinguish parts vs whole stories
+    paid_orders = await db.db.orders.find({
+        "user_id": {"$in": [uid_int, uid_str]},
+        "status": {"$in": ["paid", "delivered"]}
+    }).sort("created_at", -1).to_list(length=200)
+
+    # Collect all needed story ObjectIds
+    story_id_set = set()
+    for p in raw_purchases:
+        story_id_set.add(str(p))
+    for o in paid_orders:
+        if o.get("items"):
+            for itm in o["items"]:
+                if itm.get("story_id"): story_id_set.add(str(itm["story_id"]))
+                elif itm.get("id"): story_id_set.add(str(itm["id"]))
+        for sid in (o.get("story_ids") or []):
+            if sid: story_id_set.add(str(sid))
+
+    p_oids = []
+    for s_str in story_id_set:
+        try: p_oids.append(ObjectId(s_str))
+        except: pass
+
     valid_stories_cursor = db.db.premium_stories.find({"_id": {"$in": p_oids}})
     valid_stories = await valid_stories_cursor.to_list(length=1000)
-    valid_ids_set = {str(s['_id']) for s in valid_stories}
-    
-    purchases = []
-    seen = set()
+    stories_map = {str(s['_id']): s for s in valid_stories}
+
+    # Build purchase list items (distinct per part and per whole story)
+    purchased_items = []
+    seen_keys = set()
+    full_story_sids = set()
+
+    for o in paid_orders:
+        if o.get("items"):
+            for itm in o["items"]:
+                sid = str(itm.get("story_id") or itm.get("id") or "")
+                part_id = itm.get("part_id")
+                if sid in stories_map:
+                    if part_id:
+                        key = f"{sid}_{part_id}"
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            # Find part details in story doc
+                            st = stories_map[sid]
+                            matched_p = None
+                            for sp in (st.get("parts") or []):
+                                if str(sp.get("id")) == str(part_id):
+                                    matched_p = sp
+                                    break
+                            p_name = itm.get("part_name") or (matched_p.get("name") if matched_p else f"Part {part_id}")
+                            p_ep = itm.get("episodes") or (matched_p.get("episodes") if matched_p else "")
+                            purchased_items.append({
+                                "key": key,
+                                "story_id": sid,
+                                "part_id": str(part_id),
+                                "part_name": p_name,
+                                "episodes": p_ep,
+                                "story": st
+                            })
+                    else:
+                        full_story_sids.add(sid)
+                        key = sid
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            purchased_items.append({
+                                "key": key,
+                                "story_id": sid,
+                                "part_id": None,
+                                "story": stories_map[sid]
+                            })
+        elif o.get("story_ids"):
+            for sid in o["story_ids"]:
+                sid_str = str(sid)
+                if sid_str in stories_map:
+                    full_story_sids.add(sid_str)
+                    if sid_str not in seen_keys:
+                        seen_keys.add(sid_str)
+                        purchased_items.append({
+                            "key": sid_str,
+                            "story_id": sid_str,
+                            "part_id": None,
+                            "story": stories_map[sid_str]
+                        })
+
+    # Add any remaining legacy purchases from user.purchases (if not already listed as part or full)
     for p in raw_purchases:
         pid_str = str(p)
-        if pid_str in valid_ids_set and pid_str not in seen:
-            purchases.append(p)
-            seen.add(pid_str)
-    purchases.reverse()
+        if pid_str in stories_map and pid_str not in seen_keys and pid_str not in full_story_sids:
+            seen_keys.add(pid_str)
+            purchased_items.append({
+                "key": pid_str,
+                "story_id": pid_str,
+                "part_id": None,
+                "story": stories_map[pid_str]
+            })
 
     PAGE_SIZE = 5
-    total = len(purchases)
+    total = len(purchased_items)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
-    page_purchases = purchases[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+    page_purchases = purchased_items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
 
     kb = []
-    for pid in page_purchases:
-        try:
-            st = next((s for s in valid_stories if str(s['_id']) == str(pid)), None)
-            if st:
-                name_en = st.get('story_name_en', 'Story')
-                name_hi = st.get('story_name_hi', name_en)
-                s_name = f"📖 {name_hi if lang == 'hi' else name_en}"
-                kb.append([InlineKeyboardButton(s_name, callback_data=f"mb#purchased_view_{pid}")])
-        except Exception: pass
+    for item in page_purchases:
+        st = item["story"]
+        name_en = st.get('story_name_en', 'Story')
+        name_hi = st.get('story_name_hi', name_en)
+        base_title = name_hi if lang == 'hi' else name_en
+        if item.get("part_id"):
+            p_label = item.get("part_name", "Part")
+            ep_range = item.get("episodes", "")
+            ep_str = f" · Ep {ep_range}" if ep_range else ""
+            s_name = f"📖 {base_title} ({p_label}{ep_str})"
+            cb = f"mb#purchased_view_{item['story_id']}_{item['part_id']}"
+        else:
+            s_name = f"📖 {base_title}"
+            cb = f"mb#purchased_view_{item['story_id']}"
+        kb.append([InlineKeyboardButton(s_name, callback_data=cb)])
 
     if lang == 'hi':
         title, total_txt, desc = "⟦ मेरी स्टोरीज ⟧", "कुल स्टोरी ⟶", "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं।"
@@ -2976,9 +3064,10 @@ async def _process_start(client, message):
 
     # ── Mini App Fast-Delivery: skip "Access Granted" screen, go straight to episode selection ──
     if len(args) > 1 and args[1].startswith("madeliver_"):
-
-        story_id = args[1][10:].strip()  # strip "madeliver_" prefix (10 chars)
-        logger.error(f"DEBUG_MADELIVER: extracted story_id: '{story_id}' from args: {args}")
+        raw_madeliver = args[1][10:].strip()  # strip "madeliver_" prefix
+        parts = raw_madeliver.split("_", 1)
+        story_id = parts[0]
+        part_id = parts[1] if len(parts) > 1 else None
 
         from bson.objectid import ObjectId
         from bson.errors import InvalidId
@@ -2997,11 +3086,11 @@ async def _process_start(client, message):
         if not story:
             return await message.reply_text("❌ <b>Story not found!</b>\n\nThe link is invalid or this story has been removed.", parse_mode=enums.ParseMode.HTML)
 
-        has_paid = await db.has_purchase(user_id, story_id)
+        has_paid = await db.has_purchase(user_id, story_id, part_id=part_id)
         if not has_paid and story:
-            has_paid = await db.has_purchase(user_id, str(story['_id']))
+            has_paid = await db.has_purchase(user_id, str(story['_id']), part_id=part_id)
         if not has_paid and story and story.get('story_id'):
-            has_paid = await db.has_purchase(user_id, str(story.get('story_id')))
+            has_paid = await db.has_purchase(user_id, str(story.get('story_id')), part_id=part_id)
 
         if not has_paid:
             # User doesn't actually own it — redirect to normal purchase flow
@@ -3011,40 +3100,50 @@ async def _process_start(client, message):
             )
 
         # ── FAST PATH: directly trigger DM episode selection (no "Access Granted" screen) ──
-        # Check if user purchased a specific part
         part_info = None
-        user_order = await db.db.orders.find_one({
-            "user_id": {"$in": [user_id, str(user_id)]},
-            "story_ids": {"$in": [story_id, str(story.get('_id', ''))]},
-            "status": {"$in": ["paid", "delivered"]}
-        }, sort=[("created_at", -1)])
-        if user_order and user_order.get("items"):
-            for itm in user_order["items"]:
-                if (itm.get("story_id") == story_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                    part_info = itm
+        if part_id:
+            for p in (story.get("parts") or []):
+                if str(p.get("id")) == str(part_id):
+                    part_info = p
                     break
+
+        if not part_info:
+            user_order = await db.db.orders.find_one({
+                "user_id": {"$in": [user_id, str(user_id)]},
+                "story_ids": {"$in": [story_id, str(story.get('_id', ''))]},
+                "status": {"$in": ["paid", "delivered"]}
+            }, sort=[("created_at", -1)])
+            if user_order and user_order.get("items"):
+                for itm in user_order["items"]:
+                    if (itm.get("story_id") == story_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
+                        for sp in (story.get("parts") or []):
+                            if str(sp.get("id")) == str(itm.get("part_id")):
+                                part_info = sp
+                                break
+                        break
 
         if part_info and part_info.get("start_id") and part_info.get("end_id"):
             start_id = int(part_info["start_id"])
             end_id   = int(part_info["end_id"])
+            p_id_str = str(part_info.get("id"))
         else:
             start_id = story.get('start_id')
             end_id   = story.get('end_id')
+            p_id_str = None
 
         valid_file_ids = None
-        if part_info and part_info.get("valid_file_ids"):
-            valid_file_ids = part_info["valid_file_ids"]
-        elif story.get("valid_file_ids"):
+        if story.get("valid_file_ids"):
             if part_info and start_id and end_id:
                 valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
             else:
                 valid_file_ids = story["valid_file_ids"]
+        elif start_id and end_id:
+            valid_file_ids = list(range(int(start_id), int(end_id) + 1))
 
         total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
         s_id_str = str(story['_id'])
 
         if total_files > 40:
-            # Build episode/chunk selection keyboard
             if total_files > 300: chunk = 100
             elif total_files > 100: chunk = 50
             else: chunk = 30
@@ -3054,8 +3153,10 @@ async def _process_start(client, message):
             for i in range(0, total_files, chunk):
                 f_start = i + 1
                 f_end   = min(i + chunk, total_files)
-                lbl = f"Files {f_start} - {f_end}" if lang != "hi" else f"फ़ाइलें {f_start} - {f_end}"
-                row.append(lbl)
+                lbl = f"{f_start} - {f_end}"
+                is_last_chunk = (f_end == total_files)
+                icon_id = "6147506120920405501" if is_last_chunk else "5341492148468465410"
+                row.append(_kb_btn(lbl, icon_custom_emoji_id=icon_id))
                 if len(row) == 2:
                     kb.append(row)
                     row = []
@@ -3063,18 +3164,27 @@ async def _process_start(client, message):
                 kb.append(row)
 
             full_btn   = "Full Delivery (All Files)" if lang != "hi" else "Full Delivery (सभी फ़ाइलें)"
-            cancel_btn = "Cancel" if lang != "hi" else "रद्द करें"
-            kb.append([full_btn])
-            kb.append([cancel_btn])
+            cancel_btn = "« " + ("Cancel" if lang != "hi" else "रद्द करें")
+            kb.append([_kb_btn(full_btn, icon_custom_emoji_id="5805550320985578625")])
+            kb.append([_kb_btn(cancel_btn)])
 
-            await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id_str}})
+            set_state = {"dm_story_id_pending": s_id_str}
+            if p_id_str:
+                set_state["dm_part_id_pending"] = p_id_str
+            else:
+                set_state["dm_part_id_pending"] = None
+            await db.db.users.update_one({"id": user_id}, {"$set": set_state})
 
             if lang == "hi":
-                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।"
+                p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? नीचे दिए गए मेन्यू बटन का उपयोग करें।'
             else:
-                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below."
+                p_text = '<b><emoji id="6021620268697393273">ℹ️</emoji> Select Files:</b>\n\nWhich part would you like to receive? Please use the keyboard options below.'
 
-            return await message.reply_text(p_text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+            ok = await _send_reply_keyboard_bot_api(client, user_id, p_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                return await message.reply_text(p_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+            return
 
         else:
             # Small story — deliver all files directly
@@ -3084,7 +3194,8 @@ async def _process_start(client, message):
                 wait_txt = "<i>⏳ Initializing DM Delivery... Preparing your files.</i>"
 
             wait_msg = await message.reply_text(wait_txt, parse_mode=enums.ParseMode.HTML)
-            asyncio.create_task(_do_dm_delivery(client, user_id, story, wait_msg, start_id, end_id))
+            asyncio.create_task(_do_dm_delivery(client, user_id, story, wait_msg, custom_msg_ids=valid_file_ids))
+            return
             return
 
     if len(args) > 1 and (args[1].startswith("buy_") or args[1].startswith("story_")):
@@ -3847,6 +3958,7 @@ async def _process_text(client, message):
 
     # 2. Episode Chunk Range Selection (Reply Keyboard)
     pending_s_id = user.get("dm_story_id_pending")
+    pending_p_id = user.get("dm_part_id_pending")
     import re
     is_chunk_btn = bool(
         re.search(r"^\s*\d+\s*-\s*\d+\s*$", txt)
@@ -3859,7 +3971,7 @@ async def _process_text(client, message):
             await message.delete()
         except Exception:
             pass
-        await db.db.users.update_one({"id": user_id}, {"$unset": {"dm_story_id_pending": 1}})
+        await db.db.users.update_one({"id": user_id}, {"$unset": {"dm_story_id_pending": 1, "dm_part_id_pending": 1}})
         
         if "cancel" in txt_lower or "रद्द" in txt_lower or txt.startswith("«"):
             return await message.reply_text("<i>❌ Delivery Selection Cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
@@ -3877,30 +3989,43 @@ async def _process_text(client, message):
             story = await db.db.premium_stories.find_one({"story_id": pending_s_id})
         
         if story:
-            # Check for part purchase
             part_info = None
-            user_order = await db.db.orders.find_one({
-                "user_id": {"$in": [user_id, str(user_id)]},
-                "story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]},
-                "status": {"$in": ["paid", "delivered"]}
-            }, sort=[("created_at", -1)])
-            if user_order and user_order.get("items"):
-                for itm in user_order["items"]:
-                    if (itm.get("story_id") == pending_s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                        part_info = itm
+            if pending_p_id:
+                for p in (story.get("parts") or []):
+                    if str(p.get("id")) == str(pending_p_id):
+                        part_info = p
                         break
 
-            start_id = int(part_info["start_id"]) if (part_info and part_info.get("start_id")) else story.get("start_id")
-            end_id = int(part_info["end_id"]) if (part_info and part_info.get("end_id")) else story.get("end_id")
+            if not part_info:
+                user_order = await db.db.orders.find_one({
+                    "user_id": {"$in": [user_id, str(user_id)]},
+                    "story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]},
+                    "status": {"$in": ["paid", "delivered"]}
+                }, sort=[("created_at", -1)])
+                if user_order and user_order.get("items"):
+                    for itm in user_order["items"]:
+                        if (itm.get("story_id") == pending_s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
+                            for sp in (story.get("parts") or []):
+                                if str(sp.get("id")) == str(itm.get("part_id")):
+                                    part_info = sp
+                                    break
+                            break
+
+            if part_info and part_info.get("start_id") and part_info.get("end_id"):
+                start_id = int(part_info["start_id"])
+                end_id = int(part_info["end_id"])
+            else:
+                start_id = story.get("start_id")
+                end_id = story.get("end_id")
 
             valid_list = None
-            if part_info and part_info.get("valid_file_ids"):
-                valid_list = part_info["valid_file_ids"]
-            elif story.get("valid_file_ids"):
+            if story.get("valid_file_ids"):
                 if part_info and start_id and end_id:
                     valid_list = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
                 else:
                     valid_list = story["valid_file_ids"]
+            elif start_id and end_id:
+                valid_list = list(range(int(start_id), int(end_id) + 1))
 
             import re
             match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
@@ -3913,7 +4038,7 @@ async def _process_text(client, message):
                     c_start = start_id + fs - 1
                     c_end = min(start_id + fe - 1, end_id)
             else:
-                # Full Delivery
+                # Full Delivery of this part/story
                 fs, fe = 1, len(valid_list) if valid_list else ((end_id - start_id) + 1 if (start_id and end_id) else "All")
                 if valid_list:
                     custom_msg_ids = valid_list
@@ -6470,82 +6595,82 @@ async def _process_callback(client, query):
 
 
     # ── View Purchased Story Details ──
-
     elif cmd.startswith("purchased_view_"):
-
-        s_id = data[2] if len(data) > 2 else cmd.replace("purchased_view_", "")
-
+        raw_target = data[2] if len(data) > 2 else cmd.replace("purchased_view_", "")
         await query.answer()
 
         from bson.objectid import ObjectId
+        from bson.errors import InvalidId
 
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        target_parts = raw_target.split("_", 1)
+        s_id = target_parts[0]
+        part_id = target_parts[1] if len(target_parts) > 1 else None
+
+        story = None
+        try:
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        except Exception:
+            pass
+        if not story:
+            story = await db.db.premium_stories.find_one({"_id": s_id})
+        if not story:
+            story = await db.db.premium_stories.find_one({"story_id": s_id})
 
         if story:
-
-            purchase = await db.db.premium_purchases.find_one({"user_id": int(user_id), "story_id": ObjectId(s_id)})
-
-            
+            part_doc = None
+            if part_id:
+                for p in (story.get("parts") or []):
+                    if str(p.get("id")) == str(part_id):
+                        part_doc = p
+                        break
 
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en'))
+            if part_doc:
+                p_label = part_doc.get("name", f"Part {part_id}")
+                s_name = f"{s_name} · {p_label}"
+                ep_range = part_doc.get("episodes", "")
+                episodes_display = ep_range if ep_range else "N/A"
+                start_p = int(part_doc.get("start_id", 0))
+                end_p = int(part_doc.get("end_id", 0))
+                part_files = [mid for mid in story.get("valid_file_ids", []) if start_p <= mid <= end_p] if (start_p and end_p and story.get("valid_file_ids")) else []
+                ep_count = len(part_files) if part_files else ((end_p - start_p) + 1 if (start_p and end_p) else "?")
+                access_cb = f"mb#access_{s_id}_{part_id}"
+            else:
+                episodes_display = story.get('episodes', 'N/A')
+                ep_count = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None) or (abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?")
+                access_cb = f"mb#access_{s_id}"
 
-            ep_count = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None) or (abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?")
-
-
+            purchase = await db.db.premium_purchases.find_one({"user_id": int(user_id), "story_id": story.get("_id")})
 
             # Clean payment label
-
             payment_label = "Verified"
-
             if purchase:
-
                 src = str(purchase.get("source", "manual")).lower()
-
                 amount_paid = purchase.get("amount", story.get('price', 0))
-
                 payment_label = {
-
                     "razorpay":   f"Razorpay (₹{amount_paid})",
-
                     "easebuzz":   f"Easebuzz (₹{amount_paid})",
-
                     "upi":        f"Manual UPI (₹{amount_paid})",
-
                     "manual_upi": f"Manual UPI (₹{amount_paid})",
-
                     "crypto":     f"Crypto (₹{amount_paid})",
-
                     "oxapay":     f"Crypto (₹{amount_paid})",
-
                 }.get(src, f"{src.capitalize()} (₹{amount_paid})")
 
-
-
             if lang == 'hi':
-
                 txt_req = (
-
                     "<b>⟦ स्टोरी विवरण ⟧</b>\n\n"
-
                     f"<b>{s_name}</b>\n\n"
-
                     "──────────────\n"
-
                     f"<b>प्लेटफॉर्म  ⟶</b> {story.get('platform', 'अन्य')}\n"
-
-                    f"<b>एपिसोड्स   ⟶</b> {story.get('episodes', 'N/A')}\n"
-
+                    f"<b>एपिसोड्स   ⟶</b> {episodes_display}\n"
                     f"<b>फाइलें     ⟶</b> {ep_count}\n"
-
                     f"<b>स्थिति     ⟶</b> आपकी अपनी (Owned)\n"
-
                     f"<b>पेमेंट      ⟶</b> {payment_label}\n"
-
                     "──────────────\n"
                     'अपनी फाइलें प्राप्त करने के लिए नीचे टैप करें। <emoji id="6147439566107186310">👇</emoji>'
                 )
                 kb = [
-                    [_ikb("डिलीवरी प्राप्त करें", callback_data=f"mb#access_{s_id}", icon_custom_emoji_id="6024030612933844303")],
+                    [_ikb("डिलीवरी प्राप्त करें", callback_data=access_cb, icon_custom_emoji_id="6024030612933844303")],
                     [InlineKeyboardButton("« मेरी स्टोरीज पर वापस", callback_data="mb#my_buys")]
                 ]
             else:
@@ -6554,7 +6679,7 @@ async def _process_callback(client, query):
                     f"<b>{s_name}</b>\n\n"
                     "──────────────\n"
                     f"<b>ᴘʟᴀᴛꜰᴏʀᴍ ⟶</b> {story.get('platform', 'Other')}\n"
-                    f"<b>ᴇᴘɪꜱᴏᴅᴇꜱ ⟶</b> {story.get('episodes', 'N/A')}\n"
+                    f"<b>ᴇᴘɪꜱᴏᴅᴇꜱ ⟶</b> {episodes_display}\n"
                     f"<b>ꜰɪʟᴇꜱ    ⟶</b> {ep_count}\n"
                     f"<b>ꜱᴛᴀᴛᴜꜱ   ⟶</b> ᴏᴡɴᴇᴅ\n"
                     f"<b>ᴘᴀʏᴍᴇɴᴛ  ⟶</b> {payment_label}\n"
@@ -6562,13 +6687,11 @@ async def _process_callback(client, query):
                     '𝖳𝖺𝗉 𝖻𝖾𝗅𝗈𝗐 𝗍𝗈 𝗋𝖾𝖼𝖾𝗂𝗏𝖾 𝗒𝗈𝗎𝗋 𝖿𝗂𝗅𝖾𝗌. <emoji id="6147439566107186310">👇</emoji>'
                 )
                 kb = [
-                    [_ikb("Get Delivery", callback_data=f"mb#access_{s_id}", icon_custom_emoji_id="6024030612933844303")],
+                    [_ikb("Get Delivery", callback_data=access_cb, icon_custom_emoji_id="6024030612933844303")],
                     [InlineKeyboardButton(_bs("Back to My Stories"), callback_data="mb#my_buys")]
                 ]
 
             await _safe_edit(query.message, text=txt_req, markup=InlineKeyboardMarkup(kb))
-
-            
 
     # ── Marketplace Inline Navigation ──
     elif cmd == "mkt_plat":
@@ -6596,24 +6719,39 @@ async def _process_callback(client, query):
 
     # ── Access purchased story directly ──
     elif cmd.startswith("access_"):
-
-        s_id = data[2] if len(data) > 2 else cmd.replace("access_", "")
-
+        raw_target = data[2] if len(data) > 2 else cmd.replace("access_", "")
         await query.answer()
 
         from bson.objectid import ObjectId
+        from bson.errors import InvalidId
 
-        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        target_parts = raw_target.split("_", 1)
+        s_id = target_parts[0]
+        part_id = target_parts[1] if len(target_parts) > 1 else None
+
+        story = None
+        try:
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        except Exception:
+            pass
+        if not story:
+            story = await db.db.premium_stories.find_one({"_id": s_id})
+        if not story:
+            story = await db.db.premium_stories.find_one({"story_id": s_id})
 
         if story:
+            part_doc = None
+            if part_id:
+                for p in (story.get("parts") or []):
+                    if str(p.get("id")) == str(part_id):
+                        part_doc = p
+                        break
 
             # Delete message to pop a new dialogue
-
             try: await query.message.delete()
-
             except: pass
 
-            return await dispatch_delivery_choice(client, user_id, story)
+            return await dispatch_delivery_choice(client, user_id, story, part_info=part_doc)
 
 
 
@@ -8237,8 +8375,8 @@ async def _process_callback(client, query):
     # ── Delivery choice (DM vs Channel) - handled via callbacks now ──
 
     elif cmd == "deliver_dm":
-
         s_id = data[2]
+        part_id = data[3] if len(data) > 3 and not data[3].isdigit() else None
 
         from bson.objectid import ObjectId
         from bson.errors import InvalidId
@@ -8255,39 +8393,49 @@ async def _process_callback(client, query):
 
         if not story: return await query.answer("Story not found!", show_alert=True)
 
-        
-
         part_info = None
-        user_order = await db.db.orders.find_one({
-            "user_id": {"$in": [user_id, str(user_id)]},
-            "story_ids": {"$in": [s_id, str(story.get('_id', ''))]},
-            "status": {"$in": ["paid", "delivered"]}
-        }, sort=[("created_at", -1)])
-        if user_order and user_order.get("items"):
-            for itm in user_order["items"]:
-                if (itm.get("story_id") == s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                    part_info = itm
+        if part_id:
+            for p in (story.get("parts") or []):
+                if str(p.get("id")) == str(part_id):
+                    part_info = p
                     break
+
+        if not part_info:
+            user_order = await db.db.orders.find_one({
+                "user_id": {"$in": [user_id, str(user_id)]},
+                "story_ids": {"$in": [s_id, str(story.get('_id', ''))]},
+                "status": {"$in": ["paid", "delivered"]}
+            }, sort=[("created_at", -1)])
+            if user_order and user_order.get("items"):
+                for itm in user_order["items"]:
+                    if (itm.get("story_id") == s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
+                        for sp in (story.get("parts") or []):
+                            if str(sp.get("id")) == str(itm.get("part_id")):
+                                part_info = sp
+                                break
+                        break
 
         if part_info and part_info.get("start_id") and part_info.get("end_id"):
             start_id = int(part_info["start_id"])
             end_id   = int(part_info["end_id"])
+            p_id_str = str(part_info.get("id"))
         else:
             start_id = story.get('start_id')
             end_id   = story.get('end_id')
+            p_id_str = None
 
         valid_file_ids = None
-        if part_info and part_info.get("valid_file_ids"):
-            valid_file_ids = part_info["valid_file_ids"]
-        elif story.get("valid_file_ids"):
+        if story.get("valid_file_ids"):
             if part_info and start_id and end_id:
                 valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
             else:
                 valid_file_ids = story["valid_file_ids"]
+        elif start_id and end_id:
+            valid_file_ids = list(range(int(start_id), int(end_id) + 1))
 
         total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
 
-        parts_data = len(data) > 3
+        parts_data = len(data) > 3 and data[3].isdigit()
 
         if not parts_data and total_files > 40:
             if total_files > 300: chunk = 100
@@ -8300,7 +8448,9 @@ async def _process_callback(client, query):
                 f_start = i + 1
                 f_end = min(i + chunk, total_files)
                 lbl = f"{f_start} - {f_end}"
-                row.append(_kb_btn(lbl, icon_custom_emoji_id="5341492148468465410"))
+                is_last_chunk = (f_end == total_files)
+                icon_id = "6147506120920405501" if is_last_chunk else "5341492148468465410"
+                row.append(_kb_btn(lbl, icon_custom_emoji_id=icon_id))
                 if len(row) == 2:
                     kb.append(row)
                     row = []
@@ -8312,7 +8462,12 @@ async def _process_callback(client, query):
             kb.append([_kb_btn(full_btn, icon_custom_emoji_id="5805550320985578625")])
             kb.append([_kb_btn(cancel_btn)])
 
-            await db.db.users.update_one({"id": user_id}, {"$set": {"dm_story_id_pending": s_id}})
+            set_state = {"dm_story_id_pending": s_id}
+            if p_id_str:
+                set_state["dm_part_id_pending"] = p_id_str
+            else:
+                set_state["dm_part_id_pending"] = None
+            await db.db.users.update_one({"id": user_id}, {"$set": set_state})
 
             await query.answer()
             try: await query.message.delete()
@@ -8329,25 +8484,18 @@ async def _process_callback(client, query):
                 return await client.send_message(user_id, p_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
             return
 
-            
-
-        c_start = int(data[3]) if len(data) > 3 else start_id
-
-        c_end = int(data[4]) if len(data) > 4 else end_id
-
-
+        c_start = int(data[3]) if (len(data) > 3 and data[3].isdigit()) else start_id
+        c_end = int(data[4]) if (len(data) > 4 and data[4].isdigit()) else end_id
 
         await query.answer()
-
         await query.message.edit_text(
-
             f"<i>⏳ Initializing DM Delivery... Preparing your files.</i>",
-
             reply_markup=None
-
         )
-
-        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, c_start, c_end))
+        if valid_file_ids:
+            asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, custom_msg_ids=valid_file_ids))
+        else:
+            asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, c_start, c_end))
 
 
 
@@ -8666,71 +8814,41 @@ async def _process_screenshot(client, message):
 
 # ─────────────────────────────────────────────────────────────────
 
-async def dispatch_delivery_choice(client, user_id, story):
-
+async def dispatch_delivery_choice(client, user_id, story, part_info=None):
     try:
-
         from utils import log_arya_event
-
-        asyncio.create_task(log_arya_event("DELIVERY REQUEST", user_id, {"first_name": "User", "last_name": "", "username": ""}, f"User requested delivery options for story: {story.get('story_name_en', 'Unknown')}"))
-
+        p_extra = f" (Part: {part_info.get('name')})" if part_info else ""
+        asyncio.create_task(log_arya_event("DELIVERY REQUEST", user_id, {"first_name": "User", "last_name": "", "username": ""}, f"User requested delivery options for story: {story.get('story_name_en', 'Unknown')}{p_extra}"))
     except Exception: pass
 
-
-
-    """
-
-    Called when Admin approves OR user already owns. Shows inline delivery options.
-
-    """
-
     user = await db.get_user(user_id)
-
     lang = user.get('lang', 'en')
-
     story_id_str = str(story['_id'])
 
-
-
     used_channels = user.get("used_channels", [])
-
     mode = story.get("delivery_mode") or ("single" if story.get("channel_id") else "pool")
-
     fallback = await db.db.premium_channels.find_one({"type": "delivery"})
-
     pool = story.get("channel_pool") or []
-
     has_any_delivery = bool(story.get('channel_id') or pool or (fallback and fallback.get("channel_id")))
-
-    can_use_channel = (story_id_str not in used_channels) and (mode != "dm_only") and has_any_delivery
-
-
+    
+    # Parts delivery is always DM-only
+    can_use_channel = (story_id_str not in used_channels) and (mode != "dm_only") and has_any_delivery and (part_info is None)
 
     # Find purchase source to display
-
     from bson.objectid import ObjectId
-
-    purchase = await db.db.premium_purchases.find_one({"user_id": int(user_id), "story_id": ObjectId(story_id_str)})
-
+    purchase = await db.db.premium_purchases.find_one({"user_id": int(user_id), "story_id": story.get("_id")})
     method_info = "Verified Purchase"
-
     if purchase:
-
         src = str(purchase.get("source", "manual")).lower()
-
         if src == "razorpay": method_info = "💳 Razorpay"
-
         elif src == "easebuzz": method_info = "💸 Easebuzz"
-
         elif src == "upi": method_info = "🏦 Manual UPI"
-
         else: method_info = f"🛒 {src.capitalize()}"
 
-
-
     s_name = story.get(f'story_name_{lang}', story.get('story_name_en'))
-
-
+    if part_info:
+        p_label = part_info.get("name", f"Part {part_info.get('id')}")
+        s_name = f"{s_name} · {p_label}"
 
     if lang == 'hi':
         del_txt = (
@@ -8755,33 +8873,20 @@ async def dispatch_delivery_choice(client, user_id, story):
             + (f"<b>Method:</b> {method_info}\n" if method_info else "")
             + "\n"
             + '<b><emoji id="6021620268697393273">ℹ️</emoji> Delivery Info</b>\n\n'
-
             + "<blockquote>• <b>DM Delivery:</b> Files are sent directly here. Save or forward them immediately—they auto-delete after some time.</blockquote>\n"
-
             + "<blockquote>• <b>Channel Link:</b> A one-time private invite link is generated. Each story allows only one channel link per account.</blockquote>\n"
-
             + "<blockquote>• <b>Lifetime Access:</b> You can re-access any purchased story anytime from <b>Main Menu ⟶ My Stories</b>.</blockquote>\n"
-
             + "──────────────\n\n"
-
             + "How would you like to receive your files?"
-
         )
-
         dm_btn_txt = f"⤓ {_sc('RECEIVE IN DM')}"
-
         chan_btn_txt = f"➦ {_sc('ACCESS CHANNEL LINK')}"
-
         back_btn_txt = f"« ❮ {_sc('MAIN MENU')}"
 
-
-
-    kb = [[InlineKeyboardButton(dm_btn_txt, callback_data=f"mb#deliver_dm#{story_id_str}")]]
-
+    dm_cb = f"mb#deliver_dm#{story_id_str}#{part_info.get('id')}" if part_info else f"mb#deliver_dm#{story_id_str}"
+    kb = [[InlineKeyboardButton(dm_btn_txt, callback_data=dm_cb)]]
     if can_use_channel:
-
         kb.append([InlineKeyboardButton(chan_btn_txt, callback_data=f"mb#deliver_channel#{story_id_str}")])
-
     kb.append([InlineKeyboardButton(back_btn_txt, callback_data="mb#main_back")])
 
 

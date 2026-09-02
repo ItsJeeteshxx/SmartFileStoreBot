@@ -1,3 +1,4 @@
+from typing import Optional, List, Dict, Any, Union
 from motor.motor_asyncio import AsyncIOMotorClient
 try:
     from AryaPremium.config import Config
@@ -221,8 +222,8 @@ class PremiumDatabase:
     async def update_user(self, user_id: int, data: dict):
         await self.users.update_one({"id": int(user_id)}, {"$set": data}, upsert=True)
 
-    async def has_purchase(self, user_id: int, story_id: str) -> bool:
-        """Checks if a user has purchased a given story across users, orders, premium_purchases, and premium_checkout collections."""
+    async def has_purchase(self, user_id: int, story_id: str, part_id: Optional[str] = None) -> bool:
+        """Checks if a user has purchased a given story or specific part across users, orders, premium_purchases, and premium_checkout collections."""
         if not user_id or not story_id:
             return False
         try:
@@ -256,6 +257,34 @@ class PremiumDatabase:
 
             story_aliases_list = list(story_aliases)
 
+            # If part_id is requested, check orders specifically for that part
+            if part_id:
+                part_id_str = str(part_id).strip()
+                order = await self.db.orders.find_one({
+                    "user_id": {"$in": u_filter},
+                    "status": {"$in": ["paid", "delivered", "completed", "success"]},
+                    "items": {
+                        "$elemMatch": {
+                            "$or": [
+                                {"story_id": {"$in": story_aliases_list}},
+                                {"id": {"$in": story_aliases_list}}
+                            ],
+                            "part_id": part_id_str
+                        }
+                    }
+                })
+                if order:
+                    return True
+
+                # Also check if whole story is owned (whole story ownership grants all parts)
+                user = await self.users.find_one({"id": {"$in": u_filter}})
+                if user:
+                    purchases = [str(p) for p in user.get("purchases", [])]
+                    for alias in story_aliases_list:
+                        if alias in purchases:
+                            return True
+                return False
+
             # 1. Check users collection
             user = await self.users.find_one({"id": {"$in": u_filter}})
             if user:
@@ -264,21 +293,30 @@ class PremiumDatabase:
                     if alias in purchases:
                         return True
 
-            # 2. Check orders collection (paid, delivered, completed, success)
+            # 2. Check orders collection (paid, delivered, completed, success) for whole story
             order = await self.db.orders.find_one({
                 "user_id": {"$in": u_filter},
                 "status": {"$in": ["paid", "delivered", "completed", "success"]},
                 "$or": [
                     {"story_id": {"$in": story_aliases_list}},
                     {"story_ids": {"$in": story_aliases_list}},
-                    {"items.id": {"$in": story_aliases_list}}
+                    {"items.id": {"$in": story_aliases_list}},
+                    {"items.story_id": {"$in": story_aliases_list}}
                 ]
             })
             if order:
-                try:
-                    await self.add_purchase(uid_int, sid_str)
-                except Exception:
-                    pass
+                # Only add to user.purchases if order was for the full story (no part_id)
+                has_parts_only = False
+                if order.get("items"):
+                    for itm in order["items"]:
+                        if (itm.get("story_id") in story_aliases_list or itm.get("id") in story_aliases_list) and itm.get("part_id"):
+                            has_parts_only = True
+                            break
+                if not has_parts_only:
+                    try:
+                        await self.add_purchase(uid_int, sid_str)
+                    except Exception:
+                        pass
                 return True
 
             # 3. Check premium_purchases collection
