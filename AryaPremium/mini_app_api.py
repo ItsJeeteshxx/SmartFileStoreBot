@@ -486,6 +486,8 @@ IMAGE_CACHE = {}
 MAX_CACHE_ITEMS = 1000
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "data", "image_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 def get_cached_image(cache_key: str) -> bytes | None:
     if cache_key in IMAGE_CACHE:
@@ -932,7 +934,8 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
                 continue
 
     if not img_bytes:
-        raise HTTPException(status_code=404, detail="File download failed")
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400")
         
     # Optimize using Pillow in a separate thread
     import asyncio
@@ -940,10 +943,10 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
         img = Image.open(io.BytesIO(img_data))
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
-        img.thumbnail((w, h), Image.Resampling.LANCZOS)
+        img.thumbnail((w, h), Image.Resampling.BILINEAR)
         output = io.BytesIO()
         quality = 85 if w > 600 else 80
-        img.save(output, format="WEBP", quality=quality, method=2)
+        img.save(output, format="WEBP", quality=quality)
         return output.getvalue()
         
     optimized_bytes = await asyncio.to_thread(process_image, img_bytes)
@@ -954,6 +957,72 @@ async def tg_image_proxy(file_id: str, bot_id: str = None, w: int = 400, h: int 
         media_type="image/webp",
         headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'}
     )
+
+
+@api_router.get("/uploads/{filename}")
+@app.get("/uploads/{filename}")
+async def get_uploaded_image(filename: str):
+    """Serves locally uploaded poster/banner images."""
+    clean_name = os.path.basename(str(filename).strip())
+    filepath = os.path.join(UPLOADS_DIR, clean_name)
+    if os.path.exists(filepath) and os.path.isfile(filepath):
+        return FileResponse(filepath, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
+@api_router.get("/r2-image")
+async def r2_image_handler(key: str, w: int = 600, h: int = 600):
+    """Fetches image from Cloudflare R2 bucket using S3 credentials, caches and serves it as WebP."""
+    key_clean = str(key).strip()
+    if "/" in key_clean:
+        key_clean = key_clean.split("/")[-1]
+    
+    cache_key = hashlib.md5(f"r2_{key_clean}_{w}_{h}".encode()).hexdigest()
+    cached_bytes = get_cached_image(cache_key)
+    if cached_bytes:
+        return Response(content=cached_bytes, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
+    
+    # 1. Try local uploads first
+    local_path = os.path.join(UPLOADS_DIR, key_clean)
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, "rb") as f:
+                img_data = f.read()
+            save_cached_image(cache_key, img_data)
+            return Response(content=img_data, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
+        except Exception:
+            pass
+
+    # 2. Try fetching from Cloudflare R2 using S3 credentials
+    from decouple import config
+    r2_account_id = config("R2_ACCOUNT_ID", default="") or os.environ.get("R2_ACCOUNT_ID", "")
+    r2_access_key = config("R2_ACCESS_KEY_ID", default="") or config("R2_ACCESS_KEY", default="") or os.environ.get("R2_ACCESS_KEY_ID", "")
+    r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="") or config("R2_SECRET_KEY", default="") or os.environ.get("R2_SECRET_ACCESS_KEY", "")
+    r2_bucket = config("R2_BUCKET_NAME", default="") or config("R2_BUCKET", default="arya-images") or os.environ.get("R2_BUCKET_NAME", "arya-images")
+
+    if r2_account_id and r2_access_key and r2_secret_key:
+        import boto3
+        try:
+            def fetch_r2():
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                    aws_access_key_id=r2_access_key,
+                    aws_secret_access_key=r2_secret_key,
+                    region_name="auto"
+                )
+                obj = s3.get_object(Bucket=r2_bucket, Key=key_clean)
+                return obj["Body"].read()
+            img_data = await asyncio.to_thread(fetch_r2)
+            if img_data:
+                save_cached_image(cache_key, img_data)
+                return Response(content=img_data, media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable", "ETag": f'"{cache_key}"'})
+        except Exception as e:
+            logger.warning(f"R2 fetch error for {key_clean}: {e}")
+
+    # 3. Fallback placeholder
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400")
 
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 # Helper: format a single MongoDB story doc → frontend Story shape
@@ -995,22 +1064,29 @@ def _format_story(s: dict) -> dict | None:
         s.get("poster_url")
         or s.get("image_url")
         or s.get("cover")
-        or s.get("image")       # Telegram file_id (mgmt bot saves this)
         or s.get("poster")
+        or s.get("banner_url")
         or s.get("banner")
+        or s.get("image")       # Telegram file_id (mgmt bot saves this)
         or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce?w=400"
     )
     raw_cover_str = str(raw_cover).strip() if raw_cover else ""
     bot_id = s.get("bot_id")
     
-    if raw_cover_str and not raw_cover_str.startswith("http") and not raw_cover_str.startswith("/api/"):
+    if "r2.cloudflarestorage.com" in raw_cover_str:
+        obj_key = raw_cover_str.split("/")[-1]
+        cover = f"/api/r2-image?key={obj_key}"
+    elif raw_cover_str and not raw_cover_str.startswith("http") and not raw_cover_str.startswith("/api/"):
         cover = f"/api/tg-image?file_id={raw_cover_str}" + (f"&bot_id={bot_id}" if bot_id else "")
     else:
         cover = raw_cover_str
 
     raw_banner = s.get("banner_url") or s.get("banner") or s.get("poster_url") or raw_cover
     raw_banner_str = str(raw_banner).strip() if raw_banner else ""
-    if raw_banner_str and not raw_banner_str.startswith("http") and not raw_banner_str.startswith("/api/"):
+    if "r2.cloudflarestorage.com" in raw_banner_str:
+        obj_key = raw_banner_str.split("/")[-1]
+        banner = f"/api/r2-image?key={obj_key}"
+    elif raw_banner_str and not raw_banner_str.startswith("http") and not raw_banner_str.startswith("/api/"):
         banner = f"/api/tg-image?file_id={raw_banner_str}" + (f"&bot_id={bot_id}" if bot_id else "")
     else:
         banner = raw_banner_str
@@ -7060,14 +7136,20 @@ async def get_admin_stories(telegram_id: str):
         result = []
         for s in stories:
             _id_str = str(s["_id"])
-            # Always ensure story_id is set â€” fallback to _id if missing
             story_id = s.get("story_id") or _id_str
             
-            # Normalize poster_url so it always exists
-            cover = s.get("poster_url") or s.get("cover") or s.get("image_url") or s.get("image") or ""
-            if cover and not cover.startswith("http") and not cover.startswith("/api/"):
-                bot_id = s.get("bot_id")
-                cover = f"/api/tg-image?file_id={cover}" + (f"&bot_id={bot_id}" if bot_id else "")
+            # Normalize poster_url so it always exists and is accessible
+            cover = s.get("poster_url") or s.get("image_url") or s.get("cover") or s.get("poster") or ""
+            if "r2.cloudflarestorage.com" in cover:
+                obj_key = cover.split("/")[-1]
+                cover = f"/api/r2-image?key={obj_key}"
+            elif not cover and s.get("image"):
+                tg_img = str(s.get("image")).strip()
+                if tg_img.startswith("http") or tg_img.startswith("/api/"):
+                    cover = tg_img
+                elif tg_img:
+                    bot_id = s.get("bot_id")
+                    cover = f"/api/tg-image?file_id={tg_img}" + (f"&bot_id={bot_id}" if bot_id else "")
                 
             s["poster_url"] = cover
             s["status"] = s.get("status") or "available"
@@ -7109,10 +7191,10 @@ class StoryUpdate(BaseModel):
     poster_url: Optional[str] = ""
     is_completed: Optional[bool] = False
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ────────────────────────────────────────────────────────────────────────────────────────────────────
 # POST /admin/story
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, height: int = None, format: str = "WEBP", quality: int = 75) -> str:
+# ────────────────────────────────────────────────────────────────────────────────────────────────────
+async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, height: int = None, format: str = "WEBP", quality: int = 80) -> str:
     import io
     import uuid
     import asyncio
@@ -7120,18 +7202,18 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
     from PIL import Image
     from decouple import config
     
-    r2_account_id = config("R2_ACCOUNT_ID", default="")
-    r2_access_key = config("R2_ACCESS_KEY_ID", default="")
-    r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="")
-    r2_bucket = config("R2_BUCKET_NAME", default="arya-images")
-    r2_domain = config("R2_CUSTOM_DOMAIN", default="")
+    r2_account_id = config("R2_ACCOUNT_ID", default="") or os.environ.get("R2_ACCOUNT_ID", "")
+    r2_access_key = config("R2_ACCESS_KEY_ID", default="") or config("R2_ACCESS_KEY", default="") or os.environ.get("R2_ACCESS_KEY_ID", "")
+    r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="") or config("R2_SECRET_KEY", default="") or os.environ.get("R2_SECRET_ACCESS_KEY", "")
+    r2_bucket = config("R2_BUCKET_NAME", default="") or config("R2_BUCKET", default="arya-images") or os.environ.get("R2_BUCKET_NAME", "arya-images")
+    r2_domain = config("R2_CUSTOM_DOMAIN", default="") or config("R2_DOMAIN", default="") or os.environ.get("R2_CUSTOM_DOMAIN", "")
 
     def process_data(data):
         img = Image.open(io.BytesIO(data))
         if img.mode == "CMYK":
             img = img.convert("RGB")
         if width and height:
-            img = img.resize((width, height), Image.Resampling.LANCZOS)
+            img = img.resize((width, height), Image.Resampling.BILINEAR)
         elif width:
             img.thumbnail((width, width))
         output = io.BytesIO()
@@ -7140,8 +7222,20 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
 
     processed_bytes = await asyncio.to_thread(process_data, img_bytes)
     
+    ext = format.lower()
+    filename = f"{uuid.uuid4().hex}.{ext}"
+
+    # Always save a local copy to persistent uploads directory for 100% reliable serving
+    try:
+        local_filepath = os.path.join(UPLOADS_DIR, filename)
+        with open(local_filepath, "wb") as f:
+            f.write(processed_bytes)
+    except Exception as e:
+        logger.warning(f"Failed to save local upload file: {e}")
+
     url = ""
-    if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
+    # If R2 is configured AND has a public custom domain, upload to Cloudflare R2
+    if r2_account_id and r2_access_key and r2_secret_key and r2_bucket and r2_domain:
         import boto3
         def upload_r2():
             try:
@@ -7152,24 +7246,17 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
                     aws_secret_access_key=r2_secret_key,
                     region_name="auto"
                 )
-                ext = format.lower()
-                content_type = f"image/{ext}"
-                if ext == "jpg":
-                    ext = "jpeg"
-                filename = f"{uuid.uuid4().hex}.{ext}"
+                content_type = f"image/{ext if ext != 'jpg' else 'jpeg'}"
                 s3.put_object(
                     Bucket=r2_bucket,
                     Key=filename,
                     Body=processed_bytes,
                     ContentType=content_type
                 )
-                if r2_domain:
-                    domain = r2_domain.strip("/")
-                    if not domain.startswith("http"):
-                        domain = "https://" + domain
-                    return f"{domain}/{filename}"
-                else:
-                    return f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{filename}"
+                domain = r2_domain.strip("/")
+                if not domain.startswith("http"):
+                    domain = "https://" + domain
+                return f"{domain}/{filename}"
             except Exception as e:
                 logger.error(f"Cloudflare R2 upload failed: {e}")
                 return ""
@@ -7181,16 +7268,18 @@ async def optimize_and_upload_to_storage(img_bytes: bytes, width: int = None, he
             async with aiohttp.ClientSession() as session:
                 form = aiohttp.FormData()
                 form.add_field("reqtype", "fileupload")
-                ext = format.lower()
-                content_type = f"image/{ext}"
-                filename = f"image.{ext}"
-                form.add_field("fileToUpload", processed_bytes, filename=filename, content_type=content_type)
+                content_type = f"image/{ext if ext != 'jpg' else 'jpeg'}"
+                form.add_field("fileToUpload", processed_bytes, filename=f"image.{ext}", content_type=content_type)
                 async with session.post("https://catbox.moe/user/api.php", data=form, timeout=10) as resp:
                     if resp.status == 200:
                         url = (await resp.text()).strip()
         except Exception as e:
             logger.error(f"Catbox upload failed: {e}")
             url = ""
+
+    # Guaranteed fallback to local persistent uploads endpoint
+    if not url:
+        url = f"/api/uploads/{filename}"
             
     return url
 
@@ -7214,34 +7303,32 @@ async def save_admin_story(request: Request):
         if not save_doc.get("story_id"):
             save_doc["story_id"] = str(data.get("_id") or data.get("id") or f"story_{int(time.time()*1000)}")
         
-        # Check if we should automatically outpaint and upload widescreen banner
-        poster_url = save_doc.get("poster_url")
-        banner_url = save_doc.get("banner_url")
+        poster_url = str(save_doc.get("poster_url") or "").strip()
+        banner_url = str(save_doc.get("banner_url") or "").strip()
+
+        # Sync all poster/cover fields across MongoDB schemas
+        if poster_url:
+            save_doc["poster_url"] = poster_url
+            save_doc["image_url"] = poster_url
+            save_doc["cover"] = poster_url
+            save_doc["poster"] = poster_url
+            if poster_url.startswith("http") or poster_url.startswith("/api/"):
+                save_doc["image"] = ""
+        if banner_url:
+            save_doc["banner_url"] = banner_url
+            save_doc["banner"] = banner_url
         
         # Determine if we should generate the outpainted banner
         should_outpaint = False
-        if poster_url and (not banner_url or banner_url == poster_url):
+        if poster_url and poster_url.startswith("http") and (not banner_url or banner_url == poster_url):
             should_outpaint = True
-        elif poster_url:
-            # Check if poster changed from existing story
-            try:
-                arya_db = app.state.db
-                from bson.objectid import ObjectId
-                query = {"story_id": save_doc.get("story_id")}
-                if len(str(save_doc.get("story_id"))) == 24:
-                    query = {"$or": [{"story_id": save_doc.get("story_id")}, {"_id": ObjectId(str(save_doc.get("story_id")))}]}
-                existing = await arya_db.db.premium_stories.find_one(query)
-                if existing and (existing.get("poster_url") != poster_url or not existing.get("banner_url")):
-                    should_outpaint = True
-            except:
-                should_outpaint = True
                 
         if should_outpaint:
             try:
                 logger.info(f"Auto-outpainting banner for story: {save_doc.get('story_name_en') or save_doc.get('story_id')}")
                 import aiohttp
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(poster_url) as resp:
+                    async with session.get(poster_url, timeout=12) as resp:
                         if resp.status == 200:
                             poster_bytes = await resp.read()
                             
@@ -7256,6 +7343,7 @@ async def save_admin_story(request: Request):
                             )
                             if uploaded_banner_url:
                                 save_doc["banner_url"] = uploaded_banner_url
+                                save_doc["banner"] = uploaded_banner_url
                                 logger.info(f"Successfully auto-generated and uploaded banner: {uploaded_banner_url}")
             except Exception as e:
                 logger.error(f"Failed to auto-outpaint story banner: {e}", exc_info=True)
@@ -7263,12 +7351,9 @@ async def save_admin_story(request: Request):
         save_doc["updated_via"] = "mini_app_admin"
 
         # ── Validate completion status ─────────────────────────────────────────
-        # Only 4 valid statuses allowed. Any other value (e.g. "available", etc.)
-        # gets normalised to "Ongoing" to keep the DB clean.
         _valid_statuses = ("Ongoing", "Completed", "Unfinished", "Stucked")
         raw_st = str(save_doc.get("status") or "").strip()
         if raw_st not in _valid_statuses:
-            # Check is_completed flag as fallback
             is_comp = bool(save_doc.get("is_completed") or raw_st.lower() == "completed")
             save_doc["status"] = "Completed" if is_comp else "Ongoing"
         # ──────────────────────────────────────────────────────────────────────
@@ -7357,9 +7442,9 @@ async def adjust_all_story_prices(payload: dict):
         logger.error(f"Error bulk adjusting prices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ────────────────────────────────────────────────────────────────────────────────────────────────────
 # UPLOAD ADMIN IMAGE (POST /admin/upload-image)
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ────────────────────────────────────────────────────────────────────────────────────────────────────
 @api_router.post("/admin/upload-image")
 async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = File(...)):
     from AryaPremium.config import Config
@@ -7367,100 +7452,14 @@ async def upload_admin_image(telegram_id: str = Form(...), file: UploadFile = Fi
     import io
     from PIL import Image
 
-    user_id_int = int(telegram_id) if telegram_id.isdigit() else telegram_id
     if not is_admin(str(telegram_id)):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
         contents = await file.read()
+        poster_url = await optimize_and_upload_to_storage(contents, width=1200, format="WEBP", quality=85)
         
-        import asyncio
-        import os
-        raw_filename = getattr(file, "filename", "file.bin") or "file.bin"
-        
-        def process_and_upload(data_bytes, filename_input):
-            ext = "bin"
-            if "." in filename_input:
-                ext = filename_input.rsplit(".", 1)[-1].lower()
-
-            compressed_bytes = data_bytes
-            is_image = False
-            try:
-                img = Image.open(io.BytesIO(data_bytes))
-                if img.mode == "CMYK":
-                    img = img.convert("RGB")
-                img.thumbnail((1200, 1200))
-                output = io.BytesIO()
-                img.save(output, format="WEBP", quality=80)
-                compressed_bytes = output.getvalue()
-                is_image = True
-                ext = "webp"
-            except Exception:
-                is_image = False
-
-            mime_types = {
-                "webp": "image/webp", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                "mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo", "webm": "video/webm",
-                "mp3": "audio/mpeg", "ogg": "audio/ogg", "wav": "audio/wav", "m4a": "audio/mp4",
-                "pdf": "application/pdf", "zip": "application/zip", "doc": "application/msword", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            }
-            content_type = mime_types.get(ext, getattr(file, "content_type", None) or "application/octet-stream")
-            from decouple import config
-            r2_account_id = config("R2_ACCOUNT_ID", default="") or os.environ.get("R2_ACCOUNT_ID", "")
-            r2_access_key = config("R2_ACCESS_KEY_ID", default="") or config("R2_ACCESS_KEY", default="") or os.environ.get("R2_ACCESS_KEY_ID", "")
-            r2_secret_key = config("R2_SECRET_ACCESS_KEY", default="") or config("R2_SECRET_KEY", default="") or os.environ.get("R2_SECRET_ACCESS_KEY", "")
-            r2_bucket = config("R2_BUCKET_NAME", default="") or config("R2_BUCKET", default="arya-images") or os.environ.get("R2_BUCKET_NAME", "arya-images")
-            r2_domain = config("R2_CUSTOM_DOMAIN", default="") or config("R2_DOMAIN", default="") or os.environ.get("R2_CUSTOM_DOMAIN", "")
-
-            url = ""
-            if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
-                import boto3
-                try:
-                    s3 = boto3.client(
-                        "s3",
-                        endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
-                        aws_access_key_id=r2_access_key,
-                        aws_secret_access_key=r2_secret_key,
-                        region_name="auto"
-                    )
-                    out_name = f"{uuid.uuid4().hex}.{ext}"
-                    s3.put_object(
-                        Bucket=r2_bucket,
-                        Key=out_name,
-                        Body=compressed_bytes,
-                        ContentType=content_type
-                    )
-                    if r2_domain:
-                        domain = r2_domain.strip("/")
-                        if not domain.startswith("http"):
-                            domain = "https://" + domain
-                        url = f"{domain}/{out_name}"
-                    else:
-                        url = f"https://{r2_account_id}.r2.cloudflarestorage.com/{r2_bucket}/{out_name}"
-                except Exception as e:
-                    logger.error(f"Cloudflare R2 upload failed: {e}")
-            
-            return compressed_bytes, url, ext, content_type, is_image
-            
-        img_bytes, poster_url, file_ext, file_content_type, is_img = await asyncio.to_thread(process_and_upload, contents, raw_filename)
-        
-        file_id = ""
-        
-        # Fallback to Catbox
-        if not poster_url:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    form = aiohttp.FormData()
-                    form.add_field("reqtype", "fileupload")
-                    form.add_field("fileToUpload", img_bytes, filename=f"upload.{file_ext}", content_type=file_content_type)
-                    async with session.post("https://catbox.moe/user/api.php", data=form, timeout=12) as resp:
-                        if resp.status == 200:
-                            poster_url = (await resp.text()).strip()
-            except Exception as e:
-                logger.error(f"Catbox upload failed: {e}")
-                poster_url = ""
-        
-        return {"success": True, "poster_url": poster_url, "file_id": file_id}
+        return {"success": True, "poster_url": poster_url, "file_id": ""}
     except Exception as e:
         logger.error(f"Image upload error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

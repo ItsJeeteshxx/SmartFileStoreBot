@@ -144,6 +144,15 @@ class PremiumDatabase:
             if len(cleaned_parts) > 0 and clean_data.get("enable_parts") is not False:
                 clean_data["enable_parts"] = True
                 
+        p_url = str(clean_data.get("poster_url") or "").strip()
+        if p_url:
+            clean_data["poster_url"] = p_url
+            clean_data["image_url"] = p_url
+            clean_data["cover"] = p_url
+            clean_data["poster"] = p_url
+            if p_url.startswith("http") or p_url.startswith("/api/"):
+                clean_data["image"] = ""
+
         if existing:
             await self.stories.update_one({"_id": existing["_id"]}, {"$set": clean_data})
         else:
