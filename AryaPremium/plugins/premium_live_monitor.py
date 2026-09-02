@@ -11,13 +11,16 @@ logger = logging.getLogger(__name__)
 # Track pending notifications: story_id -> { "end_id": int, "highest_ep_num": int, "story_name": str }
 _PENDING_NOTIFICATIONS = {}
 
-async def _extract_episode_number(file_name: str, caption: str, title: str = "", current_ep_num: int = 0):
+async def _extract_episode_number(file_name: str, caption: str, title: str = ""):
     """
     Extracts the episode number from audio metadata (file_name, caption, title).
-    Uses strict episode regex first so 'Part 4' is not mistaken for episode 4.
+    Matches explicit episode labels and numbers without confusing 'Part X' with episode number.
     """
-    fname_clean = re.sub(r'\.[a-zA-Z0-9]+$', '', file_name) if file_name else ""
-    text = f"{fname_clean} {title or ''} {caption or ''}".strip()
+    fname = ""
+    if file_name:
+        fname, _ = os.path.splitext(file_name)
+
+    text = f"{fname} {title or ''} {caption or ''}".strip()
     if not text:
         return None
 
@@ -26,19 +29,22 @@ async def _extract_episode_number(file_name: str, caption: str, title: str = "",
     if match:
         return int(match.group(1))
 
-    # 2. Match numbers in parentheses/brackets e.g. (1065) or [1065]
+    # 2. Match "E 3062" or "E-3062" specifically
+    match = re.search(r'\b[eE][\.\-\s_]+(\d+)\b', text)
+    if match:
+        return int(match.group(1))
+
+    # 3. Match numbers in parentheses/brackets e.g. (1065) or [1065]
     match = re.search(r'[\(\[\{](\d+)[\)\]\}]', text)
     if match:
         return int(match.group(1))
 
-    # 3. Match standalone numbers
-    numbers = [int(n) for n in re.findall(r'\b\d+\b', text) if int(n) < 50000]
+    # 4. Fallback: extract standalone numbers
+    numbers = re.findall(r'\b\d+\b', text)
     if numbers:
-        if current_ep_num > 0:
-            valid_candidates = [n for n in numbers if n >= current_ep_num - 5]
-            if valid_candidates:
-                return valid_candidates[-1]
-        return numbers[-1]
+        valid_eps = [int(n) for n in numbers if int(n) < 50000]
+        if valid_eps:
+            return valid_eps[-1]
 
     return None
 
@@ -164,8 +170,12 @@ Thank you.</blockquote>"""
 
 async def check_and_update_single_story(client: Client, story: dict, db) -> bool:
     """
-    Checks Telegram source channel for new audio episodes of a single ongoing story,
-    updates story end_id, episodes count, valid_file_ids, and synchronizes ongoing parts.
+    Original global ongoing monitor logic extended for ongoing parts:
+    - Finds channel latest message ID via get_chat_history
+    - Advances end_id to fetch_end
+    - Extracts episode number from file_name / audio title / caption
+    - Updates story end_id and episodes in DB
+    - Synchronizes ongoing part in parts list
     """
     story_id = str(story.get("_id", ""))
     story_name = story.get("story_name_en") or story.get("story_name") or story.get("title") or "Story"
@@ -179,27 +189,12 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
     except (ValueError, TypeError):
         pass
 
-    # 1. Determine the true maximum end_id across root story, parts, and valid_file_ids
+    # 1. Determine base end_id: max between story.end_id and any parts end_id
     story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
     parts_end_ids = [int(p.get("end_id") or 0) for p in (story.get("parts") or []) if p.get("end_id")]
-    valid_f_ids = [int(x) for x in (story.get("valid_file_ids") or []) if isinstance(x, (int, float))]
-    
-    effective_end_id = max([story_end_id] + parts_end_ids + valid_f_ids + [0])
-    if effective_end_id <= 0:
-        effective_end_id = int(story.get("start_id") or 0)
+    end_id = max([story_end_id] + parts_end_ids + [0])
 
-    # 2. Determine current total episodes count
-    curr_ep_str = str(story.get("episodes") or story.get("ep_count") or story.get("total_eps") or "").strip()
-    m_ep = re.search(r"(\d+)", curr_ep_str)
-    current_ep_num = int(m_ep.group(1)) if m_ep else 0
-
-    # 3. Fetch next chunk of messages from source channel
-    fetch_start = effective_end_id + 1
-    fetch_end = effective_end_id + 200
-    ids_to_fetch = list(range(fetch_start, fetch_end + 1))
-
-    msgs = []
-    # Try fetching via primary client or fallback store clients
+    # Find client to query source channel (try bot or market_clients fallback)
     clients_to_try = [client] if client else []
     try:
         from plugins.userbot.market_seller import market_clients
@@ -209,77 +204,93 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
     except Exception:
         pass
 
-    fetched = False
+    channel_last_id = 0
+    active_client = None
+
     for cli in clients_to_try:
         try:
-            msgs = await cli.get_messages(source_id, ids_to_fetch)
-            fetched = True
-            break
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value)
-            continue
-        except Exception as ex:
-            logger.debug(f"[Premium Monitor] Client {getattr(cli, 'name', 'unknown')} failed for channel {source_id}: {ex}")
+            async for last_msg in cli.get_chat_history(source_id, limit=1):
+                channel_last_id = last_msg.id
+                active_client = cli
+                break
+            if channel_last_id > 0:
+                break
+        except Exception as e:
+            logger.debug(f"[Premium Monitor] Could not get history for {source_id} via {getattr(cli, 'name', 'bot')}: {e}")
             continue
 
-    if not fetched or not msgs:
+    if channel_last_id == 0 or not active_client:
         return False
 
+    # 2. Fast-forward if end_id is missing or 0
+    if end_id == 0:
+        end_id = max(0, channel_last_id - 100)
+
+    # 3. Check if there are actually any new messages to process
+    if channel_last_id <= end_id:
+        # No new messages in channel
+        if story_id in _PENDING_NOTIFICATIONS:
+            pending_info = _PENDING_NOTIFICATIONS[story_id]
+            if pending_info["end_id"] == end_id and active_client:
+                await send_announcement(active_client, pending_info)
+                logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
+                del _PENDING_NOTIFICATIONS[story_id]
+        return False
+
+    # 4. Fetch the next chunk of messages (up to 100)
+    fetch_end = min(end_id + 100, channel_last_id)
+    ids_to_fetch = list(range(end_id + 1, fetch_end + 1))
+
+    try:
+        msgs = await active_client.get_messages(source_id, ids_to_fetch)
+    except FloodWait as fw:
+        await asyncio.sleep(fw.value)
+        return False
+    except Exception as e:
+        logger.warning(f"[Premium Monitor] Error fetching msgs for channel {source_id}: {e}")
+        return False
+
+    highest_ep_num = -1
+    last_audio_id = -1
     new_audio_ids = []
-    highest_extracted_ep = -1
 
     for msg in msgs:
         if not msg or msg.empty:
             continue
 
-        is_audio = bool(
-            msg.audio or msg.voice or
-            (msg.document and str(getattr(msg.document, "mime_type", "")).startswith(("audio/", "video/"))) or
-            (msg.document and str(getattr(msg.document, "file_name", "")).lower().endswith((".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".opus", ".mp4", ".mkv")))
-        )
-
-        if not is_audio:
+        if not msg.audio and not msg.document and not msg.voice:
             continue
 
+        if msg.id > last_audio_id:
+            last_audio_id = msg.id
         new_audio_ids.append(msg.id)
 
         fname = getattr(msg.audio or msg.document or msg.voice, "file_name", "")
         caption = msg.caption or ""
         title = getattr(msg.audio, "title", "") if msg.audio else ""
 
-        ep_val = await _extract_episode_number(fname, caption, title, current_ep_num)
-        if ep_val and ep_val > highest_extracted_ep:
-            highest_extracted_ep = ep_val
+        ep_num = await _extract_episode_number(fname, caption, title)
+        if ep_num and ep_num > highest_ep_num:
+            highest_ep_num = ep_num
 
-    if not new_audio_ids:
-        # Check if there is a pending announcement to send
-        if story_id in _PENDING_NOTIFICATIONS:
-            pending_info = _PENDING_NOTIFICATIONS[story_id]
-            if pending_info["end_id"] == effective_end_id and client:
-                await send_announcement(client, pending_info)
-                logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
-                del _PENDING_NOTIFICATIONS[story_id]
-        return False
+    # We advance end_id to fetch_end because we bounded it by channel_last_id
+    new_end_id = fetch_end
 
-    # 4. We found new audio episodes! Calculate new end_id and episode count
-    new_end_id = max(new_audio_ids)
-    
-    if highest_extracted_ep >= current_ep_num:
-        new_total_episodes = highest_extracted_ep
-    else:
-        new_total_episodes = current_ep_num + len(new_audio_ids)
-
-    all_valid_ids = sorted(list(set(valid_f_ids + new_audio_ids)))
-
+    # 5. Update DB immediately
     update_data = {
         "end_id": new_end_id,
-        "end_message_id": new_end_id,
-        "episodes": str(new_total_episodes),
-        "valid_file_ids": all_valid_ids,
-        "file_count": len(all_valid_ids)
+        "end_message_id": new_end_id
     }
+    if highest_ep_num > -1:
+        update_data["episodes"] = str(highest_ep_num)
 
-    # 5. Synchronize ongoing parts in parts list
+    # If valid_file_ids array exists in story document, append new audio msg ids
+    if story.get("valid_file_ids") is not None and new_audio_ids:
+        existing_val_ids = story.get("valid_file_ids") or []
+        update_data["valid_file_ids"] = sorted(list(set(existing_val_ids + new_audio_ids)))
+        update_data["file_count"] = len(update_data["valid_file_ids"])
+
+    # 6. Synchronize ongoing part in parts list if configured
     raw_parts = story.get("parts") or story.get("story_parts") or []
     if isinstance(raw_parts, list) and len(raw_parts) > 0:
         updated_parts = []
@@ -290,28 +301,30 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
             is_ong = bool(p_copy.get("is_ongoing") or b_val == "ongoing")
             is_last = (idx == len(raw_parts) - 1)
 
-            if is_ong or (not found_ongoing and is_last):
+            if is_ong or (not found_ongoing and is_last and str(story.get("status", "")).lower() == "ongoing"):
                 found_ongoing = True
                 p_copy["end_id"] = new_end_id
                 p_copy["is_ongoing"] = True
-                p_copy["badge"] = "ongoing"
-                p_copy["badge_type"] = "ongoing"
+                if not p_copy.get("badge"):
+                    p_copy["badge"] = "ongoing"
 
-                curr_p_eps = str(p_copy.get("episodes") or "").strip()
-                m_p = re.search(r"(\d+)", curr_p_eps)
-                if m_p:
-                    start_ep = int(m_p.group(1))
-                    if new_total_episodes >= start_ep:
-                        p_copy["episodes"] = f"{start_ep}-{new_total_episodes}"
+                if highest_ep_num > -1:
+                    curr_p_eps = str(p_copy.get("episodes") or "").strip()
+                    m_p = re.search(r"(\d+)", curr_p_eps)
+                    if m_p:
+                        start_ep = int(m_p.group(1))
+                        if highest_ep_num >= start_ep:
+                            p_copy["episodes"] = f"{start_ep}-{highest_ep_num}"
+                        else:
+                            p_copy["episodes"] = str(highest_ep_num)
                     else:
-                        p_copy["episodes"] = str(new_total_episodes)
-                else:
-                    p_copy["episodes"] = str(new_total_episodes)
+                        p_copy["episodes"] = str(highest_ep_num)
 
-                p_start_id = int(p_copy.get("start_id") or 0)
-                p_val_ids = [mid for mid in all_valid_ids if p_start_id <= mid <= new_end_id]
-                p_copy["valid_file_ids"] = p_val_ids
-                p_copy["file_count"] = len(p_val_ids)
+                # Sync part valid_file_ids if present
+                if "valid_file_ids" in update_data:
+                    p_start_id = int(p_copy.get("start_id") or 0)
+                    p_copy["valid_file_ids"] = [mid for mid in update_data["valid_file_ids"] if p_start_id <= mid <= new_end_id]
+                    p_copy["file_count"] = len(p_copy["valid_file_ids"])
 
             updated_parts.append(p_copy)
         update_data["parts"] = updated_parts
@@ -322,19 +335,22 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
     )
 
     logger.info(
-        f"[Premium Monitor] ✅ Successfully updated '{story_name}' -> "
-        f"end_id: {new_end_id} (prev: {effective_end_id}), "
-        f"episodes: {new_total_episodes} (prev: {current_ep_num}), "
-        f"+{len(new_audio_ids)} new audio files added."
+        f"[Premium Monitor] ✅ Updated DB for '{story_name}' -> "
+        f"end_id: {new_end_id}, "
+        f"episodes: {highest_ep_num if highest_ep_num > -1 else 'unchanged'}"
     )
 
-    # Queue announcement
-    _PENDING_NOTIFICATIONS[story_id] = {
-        "story_id": story_id,
-        "end_id": new_end_id,
-        "highest_ep_num": new_total_episodes,
-        "story_name": story_name
-    }
+    # Mark as pending for delayed announcement ONLY if we found audio episodes
+    if highest_ep_num > -1:
+        _PENDING_NOTIFICATIONS[story_id] = {
+            "story_id": story_id,
+            "end_id": new_end_id,
+            "highest_ep_num": highest_ep_num,
+            "story_name": story_name
+        }
+    else:
+        if story_id in _PENDING_NOTIFICATIONS:
+            _PENDING_NOTIFICATIONS[story_id]["end_id"] = new_end_id
 
     # Clear Mini App API cache immediately
     try:
@@ -384,6 +400,7 @@ async def start_premium_live_monitor(bot: Client):
         except Exception as e:
             logger.error(f"[Premium Monitor] Polling loop error: {e}")
 
-        # Poll every 60 seconds for fast real-time updates
+        # Poll every 60 seconds
         await asyncio.sleep(60)
+
 
