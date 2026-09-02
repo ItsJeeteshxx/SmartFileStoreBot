@@ -11487,6 +11487,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
             "data": {
                 "mini_app_enabled": cfg.get("mini_app_enabled", True),
                 "tnc_enabled": cfg.get("tnc_enabled", True),
+                "support_feedback_enabled": cfg.get("support_feedback_enabled", True),
                 "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
                 "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
                 "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
@@ -11909,6 +11910,7 @@ async def get_public_settings():
             "success": True,
             "mini_app_enabled": cfg.get("mini_app_enabled", True),
             "tnc_enabled": cfg.get("tnc_enabled", True),
+            "support_feedback_enabled": cfg.get("support_feedback_enabled", True),
             "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
             "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
             "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
