@@ -3011,34 +3011,45 @@ async def _process_start(client, message):
             )
 
         # ── FAST PATH: directly trigger DM episode selection (no "Access Granted" screen) ──
-        # Check if user purchased a specific part
-        part_info = None
-        user_order = await db.db.orders.find_one({
+        # Check all purchased parts for this user and story across all paid orders
+        purchased_parts = []
+        has_full_story = False
+        user_orders = await db.db.orders.find({
             "user_id": {"$in": [user_id, str(user_id)]},
-            "story_ids": {"$in": [story_id, str(story.get('_id', ''))]},
+            "$or": [
+                {"story_ids": {"$in": [story_id, str(story.get('_id', ''))]}},
+                {"items.story_id": {"$in": [story_id, str(story.get('_id', ''))]}}
+            ],
             "status": {"$in": ["paid", "delivered"]}
-        }, sort=[("created_at", -1)])
-        if user_order and user_order.get("items"):
-            for itm in user_order["items"]:
-                if (itm.get("story_id") == story_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                    part_info = itm
-                    break
+        }).sort("created_at", -1).to_list(length=50)
 
-        if part_info and part_info.get("start_id") and part_info.get("end_id"):
-            start_id = int(part_info["start_id"])
-            end_id   = int(part_info["end_id"])
+        for ord_doc in user_orders:
+            if ord_doc.get("items") and isinstance(ord_doc["items"], list):
+                for itm in ord_doc["items"]:
+                    if str(itm.get("story_id") or "") in (story_id, str(story["_id"])):
+                        if itm.get("part_id"):
+                            purchased_parts.append(itm)
+                        else:
+                            has_full_story = True
+            else:
+                has_full_story = True
+
+        if purchased_parts and not has_full_story:
+            valid_starts = [int(p["start_id"]) for p in purchased_parts if p.get("start_id")]
+            valid_ends = [int(p["end_id"]) for p in purchased_parts if p.get("end_id")]
+            start_id = min(valid_starts) if valid_starts else story.get("start_id")
+            end_id = max(valid_ends) if valid_ends else story.get("end_id")
+            if story.get("valid_file_ids"):
+                valid_file_ids = [
+                    mid for mid in story["valid_file_ids"]
+                    if any(int(p.get("start_id", 0)) <= mid <= int(p.get("end_id", 999999)) for p in purchased_parts)
+                ]
+            else:
+                valid_file_ids = None
         else:
             start_id = story.get('start_id')
-            end_id   = story.get('end_id')
-
-        valid_file_ids = None
-        if part_info and part_info.get("valid_file_ids"):
-            valid_file_ids = part_info["valid_file_ids"]
-        elif story.get("valid_file_ids"):
-            if part_info and start_id and end_id:
-                valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
-            else:
-                valid_file_ids = story["valid_file_ids"]
+            end_id = story.get('end_id')
+            valid_file_ids = story.get("valid_file_ids")
 
         total_files = len(valid_file_ids) if valid_file_ids else ((end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1)
         s_id_str = str(story['_id'])
@@ -3849,10 +3860,16 @@ async def _process_text(client, message):
     pending_s_id = user.get("dm_story_id_pending")
     import re
     is_chunk_btn = bool(
-        re.search(r"^\s*\d+\s*-\s*\d+\s*$", txt)
-        or "full delivery" in txt_lower
-        or "सभी फ़ाइलें" in txt_lower
-        or (("cancel" in txt_lower or "रद्द" in txt_lower) and "«" in txt)
+        pending_s_id and (
+            re.search(r"\d+\s*-\s*\d+", txt)
+            or "files" in txt_lower
+            or "फ़ाइलें" in txt_lower
+            or "full delivery" in txt_lower
+            or "सभी फ़ाइलें" in txt_lower
+            or "cancel" in txt_lower
+            or "रद्द" in txt_lower
+            or "«" in txt
+        )
     )
     if pending_s_id and is_chunk_btn:
         try:
@@ -3877,32 +3894,46 @@ async def _process_text(client, message):
             story = await db.db.premium_stories.find_one({"story_id": pending_s_id})
         
         if story:
-            # Check for part purchase
-            part_info = None
-            user_order = await db.db.orders.find_one({
+            # Check all parts purchased by user for this story across all paid orders
+            purchased_parts = []
+            has_full_story = False
+            user_orders = await db.db.orders.find({
                 "user_id": {"$in": [user_id, str(user_id)]},
-                "story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]},
+                "$or": [
+                    {"story_ids": {"$in": [pending_s_id, str(story.get('_id', ''))]}},
+                    {"items.story_id": {"$in": [pending_s_id, str(story.get('_id', ''))]}}
+                ],
                 "status": {"$in": ["paid", "delivered"]}
-            }, sort=[("created_at", -1)])
-            if user_order and user_order.get("items"):
-                for itm in user_order["items"]:
-                    if (itm.get("story_id") == pending_s_id or itm.get("story_id") == str(story.get('_id', ''))) and itm.get("part_id"):
-                        part_info = itm
-                        break
+            }).sort("created_at", -1).to_list(length=50)
 
-            start_id = int(part_info["start_id"]) if (part_info and part_info.get("start_id")) else story.get("start_id")
-            end_id = int(part_info["end_id"]) if (part_info and part_info.get("end_id")) else story.get("end_id")
-
-            valid_list = None
-            if part_info and part_info.get("valid_file_ids"):
-                valid_list = part_info["valid_file_ids"]
-            elif story.get("valid_file_ids"):
-                if part_info and start_id and end_id:
-                    valid_list = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
+            for ord_doc in user_orders:
+                if ord_doc.get("items") and isinstance(ord_doc["items"], list):
+                    for itm in ord_doc["items"]:
+                        if str(itm.get("story_id") or "") in (pending_s_id, str(story["_id"])):
+                            if itm.get("part_id"):
+                                purchased_parts.append(itm)
+                            else:
+                                has_full_story = True
                 else:
-                    valid_list = story["valid_file_ids"]
+                    has_full_story = True
 
-            import re
+            if purchased_parts and not has_full_story:
+                valid_starts = [int(p["start_id"]) for p in purchased_parts if p.get("start_id")]
+                valid_ends = [int(p["end_id"]) for p in purchased_parts if p.get("end_id")]
+                start_id = min(valid_starts) if valid_starts else story.get("start_id")
+                end_id = max(valid_ends) if valid_ends else story.get("end_id")
+                if story.get("valid_file_ids"):
+                    valid_list = [
+                        mid for mid in story["valid_file_ids"]
+                        if any(int(p.get("start_id", 0)) <= mid <= int(p.get("end_id", 999999)) for p in purchased_parts)
+                    ]
+                else:
+                    valid_list = None
+            else:
+                start_id = story.get("start_id")
+                end_id = story.get("end_id")
+                valid_list = story.get("valid_file_ids")
+
             match = re.search(r"(\d+)\s*-\s*(\d+)", txt)
             custom_msg_ids = None
             if match:

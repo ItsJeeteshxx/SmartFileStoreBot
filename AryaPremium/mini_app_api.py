@@ -6024,14 +6024,23 @@ async def get_my_purchases(telegram_id: str):
         if purchased_story_ids:
             order_cursor = arya_db.db.orders.find({
                 "user_id": {"$in": [user_id_int, user_id_str]},
-                "story_ids": {"$in": purchased_story_ids},
+                "$or": [
+                    {"story_ids": {"$in": purchased_story_ids}},
+                    {"items.story_id": {"$in": purchased_story_ids}}
+                ],
                 "status": {"$in": ["paid", "delivered"]}
             }).sort("created_at", -1)
             async for ord_doc in order_cursor:
-                for sid in (ord_doc.get("story_ids") or []):
-                    if sid not in orders_by_story:
-                        orders_by_story[sid] = []
-                    orders_by_story[sid].append(ord_doc)
+                matched_sids = set(ord_doc.get("story_ids") or [])
+                if ord_doc.get("items") and isinstance(ord_doc["items"], list):
+                    for itm in ord_doc["items"]:
+                        if itm.get("story_id"):
+                            matched_sids.add(str(itm["story_id"]))
+                for sid in matched_sids:
+                    sid_str = str(sid)
+                    if sid_str not in orders_by_story:
+                        orders_by_story[sid_str] = []
+                    orders_by_story[sid_str].append(ord_doc)
 
         # ── BULK FETCH: premium_purchases in ONE query ──
         pp_by_story: dict = {}
@@ -6068,7 +6077,7 @@ async def get_my_purchases(telegram_id: str):
                                             p_ep = itm.get("episodes") or (f"Ep {p_start}-{p_end}" if (p_start and p_end) else "")
                                             part_dict = {
                                                 "id": str(itm.get("part_id")),
-                                                "name": itm.get("part_name") or "Part",
+                                                "name": itm.get("part_name") or f"Part {itm.get('part_id')}",
                                                 "start_id": p_start,
                                                 "end_id": p_end,
                                                 "episodes": p_ep,
@@ -6087,7 +6096,8 @@ async def get_my_purchases(telegram_id: str):
                             formatted["selected_part"] = all_purchased_parts[0]
                             formatted["is_full_purchased"] = has_full_purchase
                             if not has_full_purchase:
-                                formatted["price"] = all_purchased_parts[0].get("price") or formatted.get("price")
+                                total_paid_for_parts = sum(float(p.get("price") or 0) for p in all_purchased_parts)
+                                formatted["price"] = total_paid_for_parts if total_paid_for_parts > 0 else (all_purchased_parts[0].get("price") or formatted.get("price"))
                             if all_purchased_parts[0].get("start_id"):
                                 formatted["start_id"] = all_purchased_parts[0]["start_id"]
                             if all_purchased_parts[0].get("end_id"):
