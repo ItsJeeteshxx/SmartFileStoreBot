@@ -6384,6 +6384,27 @@ async def fetch_processed_buyers_data(arya_db):
             story = story_cache_by_oid.get(story_id_str) or story_cache_by_id.get(story_id_str)
             sname = story.get("story_name_en", story.get("title", story_id_str)) if story else "Story Purchase"
             
+            # If purchase is linked to an order with a part, reflect part details
+            p_oid = p.get("order_id")
+            if p_oid:
+                matching_order = next((o for o in orders if o.get("order_id") == p_oid), None)
+                if matching_order and matching_order.get("items"):
+                    for itm in matching_order["items"]:
+                        if (str(itm.get("story_id")) == story_id_str or str(itm.get("id")) == story_id_str) and itm.get("part_id"):
+                            part_name = itm.get("part_name")
+                            part_id = itm.get("part_id")
+                            episodes = itm.get("episodes")
+                            if (not episodes or not part_name) and story:
+                                for sp in (story.get("parts") or []):
+                                    if str(sp.get("id")) == str(part_id):
+                                        episodes = episodes or sp.get("episodes")
+                                        part_name = part_name or sp.get("name")
+                                        break
+                            p_label = part_name or f"Part {part_id}"
+                            ep_str = f" · Ep {episodes}" if episodes else ""
+                            sname = f"{sname} ({p_label}{ep_str})"
+                            break
+
             amt = p.get("amount", 0)
             try: amt = float(amt)
             except: amt = 0
@@ -6440,6 +6461,33 @@ async def fetch_processed_buyers_data(arya_db):
             try: amt = float(amt)
             except: amt = 0
 
+            story_names = []
+            if doc.get("items"):
+                for itm in doc["items"]:
+                    sid = str(itm.get("story_id") or itm.get("id") or "")
+                    st = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+                    s_title = itm.get("story_title") or (st.get("story_name_en") if st else sid)
+                    part_name = itm.get("part_name")
+                    part_id = itm.get("part_id")
+                    episodes = itm.get("episodes")
+                    if (not episodes or not part_name) and part_id and st:
+                        for sp in (st.get("parts") or []):
+                            if str(sp.get("id")) == str(part_id):
+                                episodes = episodes or sp.get("episodes")
+                                part_name = part_name or sp.get("name")
+                                break
+                    if part_name or part_id:
+                        p_label = part_name or f"Part {part_id}"
+                        ep_str = f" · Ep {episodes}" if episodes else ""
+                        story_names.append(f"{s_title} ({p_label}{ep_str})")
+                    else:
+                        story_names.append(s_title)
+            else:
+                for sid in story_ids:
+                    story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
+                    if story: story_names.append(story.get("story_name_en", sid))
+                    else: story_names.append(sid)
+
             if status_raw in ["paid", "delivered", "approved", "completed", "success"]:
                 if uid_str in added_paid_stories and any(sid in added_paid_stories[uid_str] for sid in story_ids):
                     b = get_or_create_buyer(uid_str, fallback_doc=doc, fallback_source=source_label)
@@ -6448,13 +6496,9 @@ async def fetch_processed_buyers_data(arya_db):
                             if amt > 0: p_item["amount"] = amt
                             p_item["source"] = source_label
                             p_item["method"] = str(doc.get("method", doc.get("payment_method", p_item.get("method") or "UPI"))).upper()
+                            if story_names:
+                                p_item["story_name"] = ", ".join(story_names)
                     continue
-
-            story_names = []
-            for sid in story_ids:
-                story = story_cache_by_oid.get(sid) or story_cache_by_id.get(sid)
-                if story: story_names.append(story.get("story_name_en", sid))
-                else: story_names.append(sid)
 
             if amt <= 0 and story_ids:
                 st = story_cache_by_oid.get(story_ids[0]) or story_cache_by_id.get(story_ids[0])

@@ -2979,21 +2979,36 @@ async def _process_start(client, message):
             status_res = await check_cashfree_order_status(order_id)
             if status_res.get("is_paid") and story:
                 await db.db.orders.update_one({"order_id": order_id}, {"$set": {"status": "paid", "paid_at": time.time()}})
-                await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": ObjectId(s_id)}})
-                await db.db.premium_purchases.update_one(
-                    {"user_id": int(user_id), "story_id": ObjectId(s_id)},
-                    {"$set": {"user_id": int(user_id), "story_id": ObjectId(s_id), "source": "cashfree", "amount": story.get("price", 0), "order_id": order_id, "created_at": time.time()}},
-                    upsert=True
-                )
+                
+                # Check if order was for a specific part
+                part_info = None
+                is_full = True
+                if ord_doc.get("items"):
+                    for itm in ord_doc["items"]:
+                        if itm.get("part_id"):
+                            part_info = itm
+                            is_full = False
+                            break
+                        if itm.get("is_full", True):
+                            is_full = True
+
+                if is_full and not part_info:
+                    await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": ObjectId(s_id)}})
+                    await db.db.premium_purchases.update_one(
+                        {"user_id": int(user_id), "story_id": ObjectId(s_id)},
+                        {"$set": {"user_id": int(user_id), "story_id": ObjectId(s_id), "source": "cashfree", "amount": story.get("price", 0), "order_id": order_id, "created_at": time.time()}},
+                        upsert=True
+                    )
+
                 from utils import log_payment
                 asyncio.create_task(log_payment(
-                    amount=story.get("price", 0),
+                    amount=ord_doc.get("total", story.get("price", 0)),
                     user_id=user_id,
                     story_name=story.get('story_name_en', 'Story'),
                     payment_method="Cashfree",
                     order_id=order_id
                 ))
-                return await dispatch_delivery_choice(client, user_id, story)
+                return await dispatch_delivery_choice(client, user_id, story, part_info=part_info)
 
     # ── Deep Link Handler (Bypass Force Join & Lang Prompt) ──
 
@@ -6624,6 +6639,25 @@ async def _process_callback(client, query):
                         part_doc = p
                         break
 
+            # If part_id not in callback, check if user's order was for a specific part
+            if not part_doc:
+                uid_int = int(user_id) if str(user_id).isdigit() else user_id
+                user_part_order = await db.db.orders.find_one({
+                    "user_id": {"$in": [uid_int, str(user_id)]},
+                    "status": {"$in": ["paid", "delivered", "approved", "completed", "success"]},
+                    "items": {"$elemMatch": {"story_id": str(story["_id"]), "part_id": {"$ne": None}}}
+                }, sort=[("created_at", -1)])
+                if user_part_order and user_part_order.get("items"):
+                    for itm in user_part_order["items"]:
+                        if (str(itm.get("story_id")) == str(story["_id"]) or str(itm.get("id")) == str(story["_id"])) and itm.get("part_id"):
+                            part_id = str(itm["part_id"])
+                            for p in (story.get("parts") or []):
+                                if str(p.get("id")) == str(part_id):
+                                    part_doc = p
+                                    break
+                            if part_doc:
+                                break
+
             s_name = story.get(f'story_name_{lang}', story.get('story_name_en'))
             if part_doc:
                 p_label = part_doc.get("name", f"Part {part_id}")
@@ -6640,21 +6674,45 @@ async def _process_callback(client, query):
                 ep_count = story.get('file_count') or (len(story.get('valid_file_ids')) if story.get('valid_file_ids') else None) or (abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?")
                 access_cb = f"mb#access_{s_id}"
 
-            purchase = await db.db.premium_purchases.find_one({"user_id": int(user_id), "story_id": story.get("_id")})
+            # Query orders collection first for accurate payment method and price
+            uid_int = int(user_id) if str(user_id).isdigit() else user_id
+            user_order = await db.db.orders.find_one({
+                "user_id": {"$in": [uid_int, str(user_id)]},
+                "status": {"$in": ["paid", "delivered", "approved", "completed", "success"]},
+                "$or": [
+                    {"items.story_id": str(story["_id"])},
+                    {"story_ids": str(story["_id"])},
+                    {"story_id": str(story["_id"])}
+                ]
+            }, sort=[("created_at", -1)])
 
-            # Clean payment label
             payment_label = "Verified"
-            if purchase:
-                src = str(purchase.get("source", "manual")).lower()
-                amount_paid = purchase.get("amount", story.get('price', 0))
+            if user_order:
+                src = str(user_order.get("source", user_order.get("method", user_order.get("gateway", "UPI")))).lower()
+                amount_paid = user_order.get("total", user_order.get("amount", (part_doc.get("price") if part_doc else story.get("price", 0))))
                 payment_label = {
                     "razorpay":   f"Razorpay (₹{amount_paid})",
+                    "cashfree":   f"Cashfree (₹{amount_paid})",
                     "easebuzz":   f"Easebuzz (₹{amount_paid})",
                     "upi":        f"Manual UPI (₹{amount_paid})",
                     "manual_upi": f"Manual UPI (₹{amount_paid})",
                     "crypto":     f"Crypto (₹{amount_paid})",
                     "oxapay":     f"Crypto (₹{amount_paid})",
                 }.get(src, f"{src.capitalize()} (₹{amount_paid})")
+            else:
+                purchase = await db.db.premium_purchases.find_one({"user_id": uid_int, "story_id": story.get("_id")})
+                if purchase:
+                    src = str(purchase.get("source", "manual")).lower()
+                    amount_paid = purchase.get("amount", (part_doc.get("price") if part_doc else story.get('price', 0)))
+                    payment_label = {
+                        "razorpay":   f"Razorpay (₹{amount_paid})",
+                        "cashfree":   f"Cashfree (₹{amount_paid})",
+                        "easebuzz":   f"Easebuzz (₹{amount_paid})",
+                        "upi":        f"Manual UPI (₹{amount_paid})",
+                        "manual_upi": f"Manual UPI (₹{amount_paid})",
+                        "crypto":     f"Crypto (₹{amount_paid})",
+                        "oxapay":     f"Crypto (₹{amount_paid})",
+                    }.get(src, f"{src.capitalize()} (₹{amount_paid})")
 
             if lang == 'hi':
                 txt_req = (
