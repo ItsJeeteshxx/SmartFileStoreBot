@@ -44,6 +44,7 @@ from utils import native_ask, _deliver_purchased_story, to_smallcap
 
 from plugins.userbot.razorpay_helpers import _create_rzp_link, _check_rzp_status
 import os
+from typing import Optional, List, Dict, Any, Union
 
 MINI_APP_WELCOME_TEXT = (
     "<b>╰┈➤ Welcome to the world of Arya Premium!</b>\n\n"

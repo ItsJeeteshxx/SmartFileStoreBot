@@ -15,8 +15,9 @@ from pyrogram.types import (
 )
 from pyrogram.errors import (
     FloodWait, UserChannelsTooMuch, UsersTooMuch,
-    UserDeleted, UserIdInvalid, HideRequesterMissing, UserAlreadyParticipant,
-    ChannelInvalid, PeerIdInvalid, ChannelPrivate, ChatAdminRequired, UserNotParticipant
+    UserDeactivated, UserDeactivatedBan, UserIdInvalid, UserAlreadyParticipant,
+    ChannelInvalid, PeerIdInvalid, ChannelPrivate, ChatAdminRequired, UserNotParticipant,
+    RPCError
 )
 from database import db
 from plugins.owner_utils import require_feature
@@ -597,7 +598,7 @@ async def _requests_run_job(job_id: str):
                             else:
                                 failed_count += 1
                             success = True  # handled
-                        except (UserDeleted, UserIdInvalid, HideRequesterMissing):
+                        except (UserDeactivated, UserDeactivatedBan, UserIdInvalid):
                             if auto_skip:
                                 skipped_deleted += 1
                                 skipped_total += 1
