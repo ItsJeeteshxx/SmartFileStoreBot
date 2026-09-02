@@ -125,6 +125,9 @@ class PremiumDatabase:
             story_eps_val = str(clean_data.get("episodes") or (existing.get("episodes") if existing else "") or "").strip()
             cleaned_parts = []
             found_ongoing = False
+            max_part_end = 0
+            max_part_ep = 0
+
             for idx, p in enumerate(clean_data["parts"]):
                 if isinstance(p, dict):
                     b_val = str(p.get("badge") or p.get("badge_type") or ("ongoing" if p.get("is_ongoing") else "new" if p.get("is_new") else "none"))
@@ -149,6 +152,16 @@ class PremiumDatabase:
                                 p_episodes = f"{m.group(1)}-{story_eps_val}"
                             elif not p_episodes:
                                 p_episodes = story_eps_val
+
+                    if p_end > max_part_end:
+                        max_part_end = p_end
+
+                    import re
+                    m_ep_all = re.findall(r"\d+", p_episodes)
+                    if m_ep_all:
+                        last_num = int(m_ep_all[-1])
+                        if last_num > max_part_ep:
+                            max_part_ep = last_num
                     
                     cleaned_parts.append({
                         "id": str(p.get("id") or f"part_{idx+1}"),
@@ -163,7 +176,15 @@ class PremiumDatabase:
                         "is_new": is_new_val,
                         "is_ongoing": is_ongoing_val,
                     })
+
             clean_data["parts"] = cleaned_parts
+            if max_part_end > int(clean_data.get("end_id") or 0):
+                clean_data["end_id"] = max_part_end
+                clean_data["end_message_id"] = max_part_end
+            if max_part_ep > 0:
+                curr_eps = int(clean_data["episodes"]) if (str(clean_data.get("episodes", "")).isdigit()) else 0
+                if max_part_ep > curr_eps:
+                    clean_data["episodes"] = str(max_part_ep)
             if len(cleaned_parts) > 0 and clean_data.get("enable_parts") is not False:
                 clean_data["enable_parts"] = True
                 

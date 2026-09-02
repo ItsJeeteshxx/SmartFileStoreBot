@@ -7502,6 +7502,28 @@ async def delete_admin_story(story_id: str, telegram_id: str):
     except Exception as e:
         logger.error(f"Failed to delete story {story_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.api_route("/admin/stories/sync-ongoing", methods=["GET", "POST"])
+async def sync_ongoing_stories_endpoint(telegram_id: str = "0"):
+    """Instantly scans all ongoing stories across connected channels and synchronizes new episodes and ongoing parts."""
+    try:
+        if telegram_id != "0" and not is_admin(str(telegram_id)):
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        from plugins.premium_live_monitor import check_and_update_all_ongoing_stories
+        arya_db = app.state.db
+        mgmt_bot = getattr(arya_db, "mgmt_client", None)
+        
+        # Run sync in background or immediately
+        asyncio.create_task(check_and_update_all_ongoing_stories(mgmt_bot))
+        return {"status": "success", "message": "Ongoing stories sync initiated successfully in background"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error initiating ongoing stories sync: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SUPPORT MANAGEMENT
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
