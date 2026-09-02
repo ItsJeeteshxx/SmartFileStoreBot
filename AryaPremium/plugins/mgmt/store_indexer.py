@@ -157,7 +157,8 @@ async def scan_and_index_channel(
 ) -> dict:
     """
     Scans a database channel sequentially, pairs Poster Image + Video files,
-    creates clean records in premium_stories, and returns statistics.
+    creates clean records in premium_stories, uploads posters to Cloudflare R2,
+    tracks last_scanned_msg_id to prevent re-scanning old messages, and returns statistics.
     """
     indexed_count = 0
     duplicate_count = 0
@@ -166,10 +167,23 @@ async def scan_and_index_channel(
     current_poster_msg = None
     current_poster_title = ""
 
-    logger.info(f"[StoreIndexer] Scanning DB channel {channel_id} for bot {bot_id}...")
-    msg_id = start_msg_id
+    # Fetch bot document to resolve username and last scanned position
+    bot_doc = await db.db.premium_bots.find_one({"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]})
+    bot_cfg = (bot_doc.get("config") or {}) if bot_doc else {}
+    bot_uname = bot_doc.get("username", "StoreBot") if bot_doc else "StoreBot"
+
+    # Resume from last scanned position if start_msg_id wasn't manually overridden
+    saved_last_id = int(bot_cfg.get("last_scanned_msg_id", 0) or 0)
+    if start_msg_id == 1 and saved_last_id > 0:
+        msg_id = saved_last_id + 1
+        logger.info(f"[StoreIndexer] Resuming scan for channel {channel_id} from Msg #{msg_id} (Last scanned: #{saved_last_id})...")
+    else:
+        msg_id = start_msg_id
+        logger.info(f"[StoreIndexer] Scanning DB channel {channel_id} starting from Msg #{msg_id} for bot {bot_id}...")
+
     consecutive_empty = 0
     max_id = end_msg_id if end_msg_id > 0 else 1000000
+    highest_seen_msg_id = saved_last_id
 
     while msg_id <= max_id:
         batch_ids = list(range(msg_id, min(msg_id + 50, max_id + 1)))
@@ -195,6 +209,9 @@ async def scan_and_index_channel(
             if not msg or msg.empty:
                 continue
 
+            if msg.id > highest_seen_msg_id:
+                highest_seen_msg_id = msg.id
+
             # Case 1: Message is a Photo / Poster
             if msg.photo:
                 raw_caption = msg.caption or ""
@@ -217,8 +234,16 @@ async def scan_and_index_channel(
                 clean_title = _clean_show_title(show_title)
                 norm_key = _normalize_title(clean_title)
 
-                # Deduplication Check
-                existing = await db.db.premium_stories.find_one({"clean_title": norm_key})
+                file_uid = getattr(msg.video or msg.document, 'file_unique_id', '')
+
+                # Robust Deduplication Check (by clean title, file_unique_id, or msg_id in channel)
+                existing = await db.db.premium_stories.find_one({
+                    "$or": [
+                        {"clean_title": norm_key},
+                        {"parts.file_unique_id": file_uid} if file_uid else {"_id": None},
+                        {"parts.msg_id": msg.id, "channel_id": channel_id}
+                    ]
+                })
                 if existing:
                     duplicate_count += 1
                     duplicate_titles.append(clean_title)
@@ -231,17 +256,24 @@ async def scan_and_index_channel(
                 try:
                     target_media_msg = current_poster_msg if (current_poster_msg and current_poster_msg.photo) else (msg if (msg.photo or getattr(msg.video, 'thumbs', None)) else None)
                     if target_media_msg:
-                        media_bytes = await client.download_media(target_media_msg, in_memory=True)
-                        if media_bytes:
+                        media_dl = await client.download_media(target_media_msg)
+                        if media_dl:
                             from r2_helper import upload_image_to_r2
-                            raw_b = media_bytes.getbuffer().tobytes() if hasattr(media_bytes, 'getbuffer') else bytes(media_bytes)
-                            poster_url = await upload_image_to_r2(raw_b, width=600, height=600, format="WEBP", quality=80)
+                            poster_url = await upload_image_to_r2(media_dl, width=600, height=720, format="WEBP", quality=85, clean_title=clean_title)
+                            try:
+                                if os.path.exists(media_dl): os.remove(media_dl)
+                            except Exception: pass
                 except Exception as ex:
                     logger.debug(f"[StoreIndexer] R2 poster upload skipped for {clean_title}: {ex}")
+
+                from datetime import datetime, timezone
+                now_utc = datetime.now(timezone.utc)
 
                 show_doc = {
                     "story_id": show_id,
                     "title": clean_title,
+                    "story_name_en": clean_title,
+                    "story_name_hi": clean_title,
                     "clean_title": norm_key,
                     "platform": default_platform,
                     "genre": default_genre,
@@ -249,6 +281,7 @@ async def scan_and_index_channel(
                     "duration_seconds": duration_sec,
                     "price": default_price,
                     "bot_id": int(bot_id),
+                    "bot_username": bot_uname,
                     "channel_id": channel_id,
                     "poster_msg_id": poster_id,
                     "poster_url": poster_url,
@@ -264,7 +297,10 @@ async def scan_and_index_channel(
                         "file_name": getattr(msg.video or msg.document, 'file_name', f"{clean_title}.mp4")
                     }],
                     "is_show": True,
-                    "created_at": time.time()
+                    "visibility": "available",
+                    "status": "Completed",
+                    "created_at": now_utc,
+                    "uploaded_at": now_utc
                 }
 
                 await db.db.premium_stories.insert_one(show_doc)
@@ -279,6 +315,18 @@ async def scan_and_index_channel(
                 except Exception: pass
 
         msg_id += 50
+
+    # Persist the highest scanned message ID so we never repeat already scanned messages
+    if highest_seen_msg_id > saved_last_id:
+        await db.db.premium_bots.update_one(
+            {"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]},
+            {"$set": {"config.last_scanned_msg_id": highest_seen_msg_id}}
+        )
+        await db.db.premium_channels.update_one(
+            {"channel_id": channel_id},
+            {"$set": {"last_scanned_id": highest_seen_msg_id}}
+        )
+        logger.info(f"[StoreIndexer] Updated last_scanned_msg_id to #{highest_seen_msg_id} for channel {channel_id}")
 
     return {
         "indexed": indexed_count,
@@ -417,8 +465,16 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
 
         clean_t = _clean_show_title(show_title)
         norm_key = _normalize_title(clean_t)
+        file_uid = getattr(message.video or message.document, 'file_unique_id', '')
 
-        existing = await db.db.premium_stories.find_one({"clean_title": norm_key})
+        # Deduplication Check
+        existing = await db.db.premium_stories.find_one({
+            "$or": [
+                {"clean_title": norm_key},
+                {"parts.file_unique_id": file_uid} if file_uid else {"_id": None},
+                {"parts.msg_id": message.id, "channel_id": ch_id}
+            ]
+        })
         if existing:
             logger.warning(f"[LiveStoreWatcher] Duplicate show skipped: {clean_t}")
             return
@@ -432,9 +488,36 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
         def_price = cfg.get("default_price", 19)
         def_platform = cfg.get("platform_name", "Story TV")
 
+        # Upload poster to Cloudflare R2
+        poster_url = ""
+        try:
+            target_poster_msg = None
+            if pending and pending.get("msg_id"):
+                try:
+                    target_poster_msg = await client.get_messages(ch_id, pending["msg_id"])
+                except Exception: pass
+            if not target_poster_msg or not target_poster_msg.photo:
+                target_poster_msg = message if (message.photo or getattr(message.video, 'thumbs', None)) else None
+
+            if target_poster_msg:
+                media_dl = await client.download_media(target_poster_msg)
+                if media_dl:
+                    from r2_helper import upload_image_to_r2
+                    poster_url = await upload_image_to_r2(media_dl, width=600, height=720, format="WEBP", quality=85, clean_title=clean_t)
+                    try:
+                        if os.path.exists(media_dl): os.remove(media_dl)
+                    except Exception: pass
+        except Exception as ex:
+            logger.debug(f"[LiveStoreWatcher] R2 poster upload skipped for {clean_t}: {ex}")
+
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+
         show_doc = {
             "story_id": show_id,
             "title": clean_t,
+            "story_name_en": clean_t,
+            "story_name_hi": clean_t,
             "clean_title": norm_key,
             "platform": def_platform,
             "genre": "Drama / Romance",
@@ -442,8 +525,13 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
             "duration_seconds": duration_sec,
             "price": def_price,
             "bot_id": int(b_id),
+            "bot_username": b_uname,
             "channel_id": ch_id,
             "poster_msg_id": poster_id,
+            "poster_url": poster_url,
+            "banner_url": poster_url,
+            "image": poster_url,
+            "cover": poster_url,
             "parts": [{
                 "part": 1,
                 "file_id": getattr(message.video or message.document, 'file_id', ''),
@@ -453,11 +541,27 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
                 "file_name": getattr(message.video or message.document, 'file_name', f"{clean_t}.mp4")
             }],
             "is_show": True,
-            "created_at": time.time()
+            "visibility": "available",
+            "status": "Completed",
+            "created_at": now_utc,
+            "uploaded_at": now_utc
         }
 
         await db.db.premium_stories.insert_one(show_doc)
         logger.info(f"[LiveStoreWatcher] Auto-indexed live show '{clean_t}' (ShowID: {show_id})")
+
+        # Update last scanned ID
+        await db.db.premium_bots.update_one(
+            {"id": int(b_id)},
+            {"$set": {"config.last_scanned_msg_id": message.id}}
+        )
+
+        # Clear Mini App Cache so new show is instantly visible in Mini App
+        try:
+            import mini_app_api
+            mini_app_api._stories_cache = None
+        except Exception:
+            pass
 
         try:
             await publish_show_to_showcase(

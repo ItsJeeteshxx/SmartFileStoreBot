@@ -112,6 +112,16 @@ async def main():
         )
         setup_ask_router(mgmt_bot)
         db.mgmt_client = mgmt_bot
+        
+        try:
+            from pyrogram.handlers import MessageHandler, ChatMemberUpdatedHandler
+            from plugins.userbot.market_seller import _process_chat_member
+            from plugins.mgmt.store_indexer import handle_live_channel_show_arrival
+            mgmt_bot.add_handler(MessageHandler(handle_live_channel_show_arrival, filters.channel))
+            mgmt_bot.add_handler(ChatMemberUpdatedHandler(_process_chat_member))
+        except Exception as ex:
+            logger.warning(f"Could not attach extra channel handlers to mgmt_bot: {ex}")
+
         apps.append(mgmt_bot)
     except Exception as e:
         logger.error(f"Failed to load mgmt_bot: {e}")
@@ -215,6 +225,14 @@ async def main():
             cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
             cli.add_handler(ChatMemberUpdatedHandler(_process_chat_member))
             cli.add_handler(InlineQueryHandler(_process_inline_query))
+            
+            # ── Live Channel Show Arrival & Indexer Listener ─────────────────
+            try:
+                from plugins.mgmt.store_indexer import handle_live_channel_show_arrival
+                cli.add_handler(MessageHandler(handle_live_channel_show_arrival, filters.channel))
+            except Exception as e:
+                logger.warning(f"Could not register handle_live_channel_show_arrival on bot {b.get('username')}: {e}")
+
             market_clients[str(b['id'])] = cli
             apps.append(cli)
     except Exception as e:

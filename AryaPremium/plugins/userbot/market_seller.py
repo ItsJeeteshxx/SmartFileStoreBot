@@ -9714,20 +9714,89 @@ def _schedule_auto_delete(msg, seconds: int):
 # ─────────────────────────────────────────────────────────────────
 
 async def _process_chat_member(client, update):
-
-    # If a user joins the channel with an invite link
-
+    # 1. If a user joins the channel with an invite link -> Revoke it instantly to prevent reuse
     if getattr(update, "new_chat_member", None) and getattr(update, "invite_link", None):
-
         try:
-
-            # Revoke it instantly to prevent reuse/leakage
-
             await client.revoke_chat_invite_link(update.chat.id, update.invite_link.invite_link)
-
         except Exception:
-
             pass
+
+    # 2. If the bot itself was added as an administrator to a channel
+    try:
+        new_member = getattr(update, "new_chat_member", None)
+        if not new_member:
+            return
+
+        user = getattr(new_member, "user", None)
+        me = getattr(client, "me", None)
+        if not me:
+            try: me = await client.get_me()
+            except Exception: me = None
+
+        if user and me and user.id == me.id:
+            chat = update.chat
+            if not chat or getattr(chat, "type", None) not in (enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP):
+                return
+
+            status = getattr(new_member, "status", None)
+            if status in (enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER):
+                chat_id = chat.id
+                chat_title = chat.title or str(chat_id)
+                chat_uname = chat.username
+
+                from datetime import datetime, timezone
+                now_utc = datetime.now(timezone.utc)
+
+                # A. Auto-register channel in premium_channels
+                await db.db.premium_channels.update_one(
+                    {"channel_id": chat_id},
+                    {"$set": {
+                        "channel_id": chat_id,
+                        "name": chat_title,
+                        "type": "delivery",
+                        "username": chat_uname,
+                        "added_by_bot": me.username or me.id,
+                        "updated_at": now_utc
+                    }},
+                    upsert=True
+                )
+                logger.info(f"[AutoChannel] Bot @{me.username} added as Admin to '{chat_title}' ({chat_id}). Auto-registered in premium_channels!")
+
+                # B. Auto-search for matching story in premium_stories
+                clean_title = re.sub(r'^(?:📽️|🎬|🎥|📺|🍿)?\s*(?:show|title|name)\s*:\s*', '', chat_title, flags=re.I).strip()
+                strip_emojis = ["🎬", "📽️", "🎥", "📺", "🍿", "📹", "🔹", "🔸", "▫️", "▪️", "▶️", "👉", "✨", "🔥", "⚡", "🌟", "👑", "💎"]
+                for emo in strip_emojis:
+                    if clean_title.startswith(emo): clean_title = clean_title[len(emo):].strip()
+                    if clean_title.endswith(emo): clean_title = clean_title[:-len(emo)].strip()
+                clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+                norm_key = re.sub(r'[^a-zA-Z0-9]', '', clean_title.lower())
+
+                query = {
+                    "$or": [
+                        {"clean_title": norm_key},
+                        {"title": {"$regex": f"^{re.escape(clean_title)}$", "$options": "i"}},
+                        {"story_name_en": {"$regex": f"^{re.escape(clean_title)}$", "$options": "i"}},
+                        {"story_name_hi": {"$regex": f"^{re.escape(clean_title)}$", "$options": "i"}}
+                    ]
+                }
+                matching_story = await db.db.premium_stories.find_one(query)
+                if matching_story:
+                    await db.db.premium_stories.update_one(
+                        {"_id": matching_story["_id"]},
+                        {
+                            "$set": {
+                                "channel_id": chat_id,
+                                "delivery_channel_id": chat_id
+                            },
+                            "$addToSet": {
+                                "channel_pool": chat_id
+                            }
+                        }
+                    )
+                    st_name = matching_story.get("title") or matching_story.get("story_name_en") or "Story"
+                    logger.info(f"[AutoChannel] 🎉 Successfully auto-linked Channel '{chat_title}' (ID: {chat_id}) with Story '{st_name}'!")
+    except Exception as e:
+        logger.warning(f"[AutoChannel] Error in _process_chat_member admin detector: {e}")
 
 
 
