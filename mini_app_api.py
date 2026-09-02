@@ -504,6 +504,39 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Arya Premium Mini App API", lifespan=lifespan)
 
+# Synchronous module-level pre-initialization for app.state.db
+try:
+    from AryaPremium.database import db as _init_db
+    app.state.db = _init_db
+except (ImportError, ModuleNotFoundError):
+    try:
+        from database import db as _init_db
+        app.state.db = _init_db
+    except Exception:
+        pass
+
+@app.middleware("http")
+async def ensure_db_middleware(request: Request, call_next):
+    req_db = getattr(request.app.state, "db", None)
+    if not req_db or getattr(req_db, "db", None) is None:
+        try:
+            from AryaPremium.database import db as _mid_db
+            if _mid_db and hasattr(_mid_db, "connect") and not getattr(_mid_db, "client", None):
+                await _mid_db.connect()
+            request.app.state.db = _mid_db
+            app.state.db = _mid_db
+        except (ImportError, ModuleNotFoundError):
+            try:
+                from database import db as _mid_db
+                if _mid_db and hasattr(_mid_db, "connect") and not getattr(_mid_db, "client", None):
+                    await _mid_db.connect()
+                request.app.state.db = _mid_db
+                app.state.db = _mid_db
+            except Exception:
+                pass
+    response = await call_next(request)
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
