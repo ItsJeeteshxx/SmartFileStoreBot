@@ -6831,8 +6831,8 @@ async def fetch_processed_buyers_data(arya_db):
                 final_payments.append(g)
 
             # ── Smart Payment Deduplication Pass ──
-            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or 'CASHFREE' + 'UPI' or multi-story cart duplicates).
-            # Groups payments by (canonical_story_signature, date_day) per user and keeps 1 clean canonical payment record!
+            # Fixes duplicate entries in Admin Panel (e.g. 'UPI_MANUAL' + 'UPI' or cross-collection duplicates).
+            # Groups payments by (story_part_signature) per user and keeps 1 clean canonical payment record!
             dedup_payments = {}
             specific_gateways = ("CASHFREE", "CASHFREE_UPI", "UPI_MANUAL", "UPI_MANUAL_MINIAPP", "RAZORPAY", "OXAPAY", "DODO_PAYMENTS", "PAYU", "PAYTM")
 
@@ -6842,29 +6842,38 @@ async def fetch_processed_buyers_data(arya_db):
                 p_ref = str(p_item.get("reference") or "").strip().upper()
                 p_oid = str(p_item.get("order_id") or "").strip().upper()
 
-                # Calculate canonical story signature for single & multi-story cart orders
-                s_ids = p_item.get("story_ids", [])
-                if not s_ids and p_item.get("story_id"):
-                    s_ids = [p_item.get("story_id")]
-                
-                s_canons = sorted(list(set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])))
-                if s_canons:
-                    s_signature = "-".join(s_canons)
+                # Calculate canonical story + part signature for single & multi-story cart orders
+                parts = []
+                if p_item.get("items") and isinstance(p_item["items"], list):
+                    for itm in p_item["items"]:
+                        raw_sid = str(itm.get("story_id") or itm.get("id") or "")
+                        can_sid = sid_to_canonical.get(raw_sid, raw_sid)
+                        p_id = str(itm.get("part_id") or "FULL").strip()
+                        parts.append(f"{can_sid}::{p_id}")
+                elif p_item.get("part_id"):
+                    raw_sid = str(p_item.get("story_id") or "")
+                    can_sid = sid_to_canonical.get(raw_sid, raw_sid)
+                    parts.append(f"{can_sid}::{p_item['part_id']}")
                 else:
-                    s_key = str(p_item.get("story_name") or "story").strip().lower()
-                    s_signature = sid_to_canonical.get(s_key, s_key)
+                    s_ids = p_item.get("story_ids", [])
+                    if not s_ids and p_item.get("story_id"):
+                        s_ids = [p_item.get("story_id")]
+                    for sid in s_ids:
+                        can_sid = sid_to_canonical.get(str(sid), str(sid))
+                        parts.append(f"{can_sid}::FULL")
 
-                # Determine deduplication key:
-                # 1. Primary: Structured Order ID (starts with AM-, AB-, ORD-, CF-, PAY-)
-                #    Order ID is generated once per checkout attempt and shared across orders, premium_purchases, & premium_checkout.
-                # 2. Secondary: Transaction reference (UTR / payment_id) if valid (len >= 6).
-                # 3. Fallback: Group by (story_signature, date_day) for this buyer.
-                if p_oid and any(p_oid.startswith(prefix) for prefix in ("AM-", "AB-", "ORD-", "CF-", "PAY-")):
-                    uniq_key = f"oid_{p_oid}"
-                elif p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
+                s_signature = "-".join(sorted(parts)) if parts else str(p_item.get("story_name") or "story").strip().lower()
+
+                # Deduplication key:
+                # 1. Primary: Transaction reference (UTR / payment_id) if valid (len >= 6).
+                # 2. Secondary: If genuine external gateway order ID (starts with CF-, ORD-, PAY-, RAZOR-)
+                # 3. Default: Group by exact story & parts signature for this user!
+                if p_ref and len(p_ref) >= 6 and not p_ref.startswith("UID_") and not p_ref.startswith("SINGLE_"):
                     uniq_key = f"ref_{p_ref}"
+                elif p_oid and any(p_oid.startswith(prefix) for prefix in ("CF-", "ORD-", "PAY-", "RAZOR-")):
+                    uniq_key = f"oid_{p_oid}"
                 else:
-                    uniq_key = f"story_{s_signature}_{p_date}"
+                    uniq_key = f"story_{s_signature}"
 
                 if uniq_key not in dedup_payments:
                     dedup_payments[uniq_key] = p_item
@@ -6877,16 +6886,7 @@ async def fetch_processed_buyers_data(arya_db):
                         dedup_payments[uniq_key] = p_item
                         continue
 
-                    # 2. If both are paid (or same status):
-                    #    - Prefer multi-story aggregated order ("His Secret Fortune, Divine Flame Burst") over single-story fragments!
-                    e_story_count = len(existing.get("story_ids", []))
-                    p_story_count = len(p_item.get("story_ids", []))
-
-                    if p_story_count > e_story_count:
-                        dedup_payments[uniq_key] = p_item
-                        continue
-
-                    #    - Prefer specific gateway method ("CASHFREE", "UPI_MANUAL") over generic "UPI"
+                    # 2. Prefer specific gateway method ("CASHFREE", "UPI_MANUAL") over generic "UPI"
                     m_existing = str(existing.get("method", "")).upper()
                     m_new = str(p_item.get("method", "")).upper()
 
@@ -6900,60 +6900,7 @@ async def fetch_processed_buyers_data(arya_db):
                     if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
                         existing["order_id"] = p_item["order_id"]
 
-            # Second Pass: Same-Day Same-Story Merging per Buyer
-            # Guarantees that a user NEVER gets duplicate paid orders for the exact same story/cart on the same day.
-            merged_payments = {}
-            for p_item in list(dedup_payments.values()):
-                p_date = str(p_item.get("date") or "")[:10]
-                p_status = str(p_item.get("status", "")).lower()
-                s_ids = p_item.get("story_ids", [])
-                if not s_ids and p_item.get("story_id"):
-                    s_ids = [p_item.get("story_id")]
-
-                s_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in s_ids if sid])
-                is_multi = len(s_canons) > 1
-                
-                # Check if there is already a multi-story order on the same date that contains these story IDs
-                already_covered = False
-                if not is_multi and s_canons:
-                    single_sid = next(iter(s_canons))
-                    for m_key, m_item in merged_payments.items():
-                        m_date = str(m_item.get("date") or "")[:10]
-                        m_ids = m_item.get("story_ids", [])
-                        if not m_ids and m_item.get("story_id"):
-                            m_ids = [m_item.get("story_id")]
-                        m_canons = set([sid_to_canonical.get(str(sid), str(sid)) for sid in m_ids if sid])
-                        
-                        if m_date == p_date and len(m_canons) > 1 and single_sid in m_canons:
-                            already_covered = True
-                            m_new = str(p_item.get("method", "")).upper()
-                            if any(g in m_new for g in specific_gateways) and not any(g in str(m_item.get("method", "")).upper() for g in specific_gateways):
-                                m_item["method"] = m_new
-                            break
-
-                if not already_covered:
-                    m_key = f"{p_date}_{','.join(sorted(list(s_canons)))}" if s_canons else f"{p_date}_{p_item.get('order_id')}"
-                    if m_key not in merged_payments:
-                        merged_payments[m_key] = p_item
-                    else:
-                        existing = merged_payments[m_key]
-                        e_status = str(existing.get("status", "")).lower()
-
-                        if p_status in ("paid", "approved", "delivered", "completed", "success") and e_status not in ("paid", "approved", "delivered", "completed", "success"):
-                            merged_payments[m_key] = p_item
-                        else:
-                            # Merge fields
-                            m_existing = str(existing.get("method", "")).upper()
-                            m_new = str(p_item.get("method", "")).upper()
-                            if any(g in m_new for g in specific_gateways) and not any(g in m_existing for g in specific_gateways):
-                                existing["method"] = m_new
-                                if p_item.get("source"): existing["source"] = p_item["source"]
-                            if p_item.get("reference") and not existing.get("reference"):
-                                existing["reference"] = p_item["reference"]
-                            if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
-                                existing["order_id"] = p_item["order_id"]
-
-            final_payments = list(merged_payments.values())
+            final_payments = list(dedup_payments.values())
             data["payments"] = final_payments
             payments = final_payments
 
