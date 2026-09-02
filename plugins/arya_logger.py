@@ -202,8 +202,8 @@ async def log_ban(
     text = (
         f"<b>🚫 SILENT BAN — Abuse Detected</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>User:</b> <a href='tg://user?id={user_id}'>{_esc(user_name)}</a>  "
-        f"[<code>{user_id}</code>]\n"
+        f"<b>User:</b> <a href='tg://openmessage?user_id={user_id}'>{_esc(user_name)}</a>  "
+        f"[<a href='tg://openmessage?user_id={user_id}'><code>{user_id}</code></a>]\n"
         f"<b>Strike:</b> {strike_count} (auto-ban on strike {strike_count})\n"
         f"<b>Reason:</b> {_esc(reason)}\n"
         f"<b>Detected by:</b> {_esc(bot_name)} (<code>{bot_id}</code>)\n"
@@ -228,8 +228,8 @@ async def log_warn(
     text = (
         f"<b>⚠️ ABUSE WARNING — Strike {strike_count}/{max_strikes}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>User:</b> <a href='tg://user?id={user_id}'>{_esc(user_name)}</a>  "
-        f"[<code>{user_id}</code>]\n"
+        f"<b>User:</b> <a href='tg://openmessage?user_id={user_id}'>{_esc(user_name)}</a>  "
+        f"[<a href='tg://openmessage?user_id={user_id}'><code>{user_id}</code></a>]\n"
         f"<b>Strike:</b> {strike_count} of {max_strikes} before ban\n"
         f"<b>Detected by:</b> {_esc(bot_name)} (<code>{bot_id}</code>)\n"
         f"<b>Time:</b> <code>{ts}</code>\n"
@@ -251,8 +251,8 @@ async def log_new_user(
     text = (
         f"<b>👤 New User</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>User:</b> <a href='tg://user?id={user_id}'>{_esc(user_name)}</a>  "
-        f"[<code>{user_id}</code>]\n"
+        f"<b>User:</b> <a href='tg://openmessage?user_id={user_id}'>{_esc(user_name)}</a>  "
+        f"[<a href='tg://openmessage?user_id={user_id}'><code>{user_id}</code></a>]\n"
         f"<b>Bot:</b> {_esc(bot_name)} (<code>{bot_id}</code>)\n"
         f"<b>Time:</b> <code>{ts}</code>"
     )
@@ -477,8 +477,8 @@ async def log_pass_purchased(
     text = (
         f"<blockquote><b>UNLIMITED ACCESS PASS PURCHASED</b>\n"
         f"────────────────────\n"
-        f"<b>Name:</b> {_esc(user_name)}\n"
-        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Name:</b> <a href='tg://openmessage?user_id={user_id}'>{_esc(user_name)}</a>\n"
+        f"<b>User ID:</b> <a href='tg://openmessage?user_id={user_id}'><code>{user_id}</code></a>\n"
         f"<b>Plan:</b> {plan_display} Unlimited Access\n"
         f"<b>Amount:</b> ₹{amount:.2f}\n"
         f"<b>Gateway:</b> {_esc(gateway)}\n"
@@ -520,8 +520,8 @@ async def log_rate_limit_reached(
     text = (
         f"<blockquote><b>RATE LIMIT REACHED</b>\n"
         f"────────────────────\n"
-        f"<b>Name:</b> {_esc(user_name)}\n"
-        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Name:</b> <a href='tg://openmessage?user_id={user_id}'>{_esc(user_name)}</a>\n"
+        f"<b>User ID:</b> <a href='tg://openmessage?user_id={user_id}'><code>{user_id}</code></a>\n"
         f"<b>Username:</b> {uname_str}\n"
         f"<b>Deliveries Accessed:</b> <code>{hits_count} / {max_limit}</code>\n"
         f"<b>Window:</b> <code>{window_str}</code>\n"

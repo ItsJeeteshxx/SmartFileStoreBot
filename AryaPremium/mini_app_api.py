@@ -12131,12 +12131,12 @@ async def trigger_payment_log_from_order(order: dict):
             return name
 
         full_name = escape_html(clean_name(user_first_name, user_last_name))
-        tg_link = f"tg://user?id={tg_id}"
+        open_msg_link = f"tg://openmessage?user_id={tg_id}"
 
         if cleaned_username:
-            user_display = f'<a href="{tg_link}">{full_name}</a> (@{escape_html(cleaned_username)})'
+            user_display = f'<a href="{open_msg_link}">{full_name}</a> (@{escape_html(cleaned_username)})'
         else:
-            user_display = f'<a href="{tg_link}">{full_name}</a>'
+            user_display = f'<a href="{open_msg_link}">{full_name}</a>'
 
         # Join story names with parts and episode ranges
         story_names = []
@@ -12240,7 +12240,7 @@ async def trigger_payment_log_from_order(order: dict):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Order ID:</b> <code>{order.get('order_id') or 'N/A'}</code>\n"
             f"<b>❖ User:</b> {user_display}\n"
-            f"<b>❖ Telegram ID:</b> <code>{tg_id}</code>\n"
+            f"<b>❖ Telegram ID:</b> <a href=\"{open_msg_link}\"><code>{tg_id}</code></a>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Story:</b> {story_names_str}\n"
             f"<b>❖ Amount Paid:</b> ₹{amount}\n"
