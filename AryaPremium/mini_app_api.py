@@ -6897,10 +6897,29 @@ async def fetch_processed_buyers_data(arya_db):
                     if p_item.get("reference") and not existing.get("reference"):
                         existing["reference"] = p_item["reference"]
 
-                    if p_item.get("order_id") and not str(p_item.get("order_id")).startswith("uid_") and str(existing.get("order_id")).startswith("uid_"):
-                        existing["order_id"] = p_item["order_id"]
+            # ── Phantom Full-Story Filter ──
+            # If a user purchased specific parts of a story (e.g. Shoorveer Part 1, Divine System Part 1/2),
+            # any auto-created 'Full Story' audit duplicate for that same story is dropped so only their true part orders appear!
+            part_purchased_canons = set()
+            for p in list(dedup_payments.values()):
+                s_ids = p.get("story_ids") or ([p.get("story_id")] if p.get("story_id") else [])
+                has_part = bool(p.get("part_id")) or any(bool(itm.get("part_id")) for itm in p.get("items", [])) or ("(Part" in str(p.get("story_name", "")))
+                if has_part:
+                    for sid in s_ids:
+                        can = sid_to_canonical.get(str(sid), str(sid))
+                        part_purchased_canons.add(can)
 
-            final_payments = list(dedup_payments.values())
+            cleaned_payments = []
+            for p in list(dedup_payments.values()):
+                s_ids = p.get("story_ids") or ([p.get("story_id")] if p.get("story_id") else [])
+                has_part = bool(p.get("part_id")) or any(bool(itm.get("part_id")) for itm in p.get("items", [])) or ("(Part" in str(p.get("story_name", "")))
+                if not has_part and len(s_ids) == 1:
+                    can = sid_to_canonical.get(str(s_ids[0]), str(s_ids[0]))
+                    if can in part_purchased_canons:
+                        continue
+                cleaned_payments.append(p)
+
+            final_payments = cleaned_payments
             data["payments"] = final_payments
             payments = final_payments
 
@@ -12397,14 +12416,16 @@ async def record_purchased_stories(order: dict):
             
         # Only record full story purchases in premium_purchases table
         full_story_sids = set()
-        if order.get("items"):
+        if order.get("items") and isinstance(order["items"], list):
             for itm in order["items"]:
-                if itm.get("is_full", True) and not itm.get("part_id"):
+                if itm.get("is_full", True) and not itm.get("part_id") and not itm.get("part_name"):
                     sid_clean = str(itm.get("story_id") or itm.get("id") or "").strip()
                     if sid_clean:
                         full_story_sids.add(sid_clean)
-        else:
+        elif not order.get("part_id") and not order.get("part_name"):
             full_story_sids = set(str(s).strip() for s in story_ids if str(s).strip())
+        else:
+            full_story_sids = set()
 
         if not full_story_sids:
             # All items were specific parts, securely tracked in orders collection
