@@ -1,5 +1,6 @@
 import asyncio
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait, RPCError
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 
 # ── Shared waiting futures store ──

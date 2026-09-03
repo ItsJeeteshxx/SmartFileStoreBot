@@ -60,7 +60,16 @@ async def clean_all_stories(force_full_scan: bool = False, ongoing_only: bool = 
         query = {"$or": [{"status": {"$in": ["Ongoing", "ongoing", "ONGOING"]}}, {"parts.badge": "ongoing"}, {"parts.is_ongoing": True}]}
     elif target_story:
         import re
-        query = {"$or": [{"story_name_en": {"$regex": target_story, "$options": "i"}}, {"story_name": {"$regex": target_story, "$options": "i"}}, {"title": {"$regex": target_story, "$options": "i"}}]}
+        clean_target = target_story.strip()
+        escaped_pattern = re.escape(clean_target)
+        query = {
+            "$or": [
+                {"story_name_en": {"$regex": escaped_pattern, "$options": "i"}},
+                {"story_name": {"$regex": escaped_pattern, "$options": "i"}},
+                {"title": {"$regex": escaped_pattern, "$options": "i"}},
+                {"clean_title": {"$regex": re.sub(r'[^a-zA-Z0-9]', '', clean_target.lower()), "$options": "i"}}
+            ]
+        }
 
     stories = await db.db.premium_stories.find(query).sort("_id", -1).to_list(length=None)
     print(f"\n📚 Stories to Inspect: {len(stories)}\n")
@@ -93,6 +102,7 @@ async def clean_all_stories(force_full_scan: bool = False, ongoing_only: bool = 
         raw_range_len = (end_id - start_id) + 1
         is_already_clean = (
             not force_full_scan
+            and not target_story
             and isinstance(valid_file_ids, list)
             and len(valid_file_ids) > 0
             and max(valid_file_ids) >= end_id
