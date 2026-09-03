@@ -170,29 +170,27 @@ Thank you.</blockquote>"""
 
 async def check_and_update_single_story(client: Client, story: dict, db) -> bool:
     """
-    Original global ongoing monitor logic extended for ongoing parts:
-    - Finds channel latest message ID via get_chat_history
-    - Advances end_id to fetch_end
+    Checks Telegram source channel for new messages using peer resolution + get_messages:
+    - Resolves channel peer with get_chat
+    - Scans next chunk of message IDs with get_messages (Bots CANNOT call get_chat_history)
     - Extracts episode number from file_name / audio title / caption
     - Updates story end_id and episodes in DB
     - Synchronizes ongoing part in parts list
     """
     story_id = str(story.get("_id", ""))
     story_name = story.get("story_name_en") or story.get("story_name") or story.get("title") or "Story"
-    source_id = story.get("source") or story.get("source_channel") or story.get("channel_id")
+    raw_source = story.get("source") or story.get("source_channel") or story.get("channel_id")
 
-    if not source_id:
+    if not raw_source:
         return False
 
+    source_id = raw_source
     try:
         source_id = int(source_id)
-    except (ValueError, TypeError):
+        if source_id > 0 and len(str(source_id)) >= 9:
+            source_id = int(f"-100{source_id}")
+    except Exception:
         pass
-
-    # 1. Determine base end_id: max between story.end_id and any parts end_id
-    story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
-    parts_end_ids = [int(p.get("end_id") or 0) for p in (story.get("parts") or []) if p.get("end_id")]
-    end_id = max([story_end_id] + parts_end_ids + [0])
 
     # Find client to query source channel (try bot or market_clients fallback)
     clients_to_try = [client] if client else []
@@ -204,67 +202,50 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
     except Exception:
         pass
 
-    channel_last_id = 0
     active_client = None
-
+    # 1. Resolve peer first to avoid 'Peer id invalid'
     for cli in clients_to_try:
         try:
-            async for last_msg in cli.get_chat_history(source_id, limit=1):
-                channel_last_id = last_msg.id
-                active_client = cli
-                break
-            if channel_last_id > 0:
-                break
-        except Exception as e:
-            logger.debug(f"[Premium Monitor] Could not get history for {source_id} via {getattr(cli, 'name', 'bot')}: {e}")
+            await cli.get_chat(source_id)
+            active_client = cli
+            break
+        except Exception:
             continue
 
-    if channel_last_id == 0 or not active_client:
+    if not active_client:
         return False
 
-    # 2. Fast-forward if end_id is missing or 0
-    if end_id == 0:
-        end_id = max(0, channel_last_id - 100)
+    # 2. Determine base end_id
+    story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
+    parts_end_ids = [int(p.get("end_id") or 0) for p in (story.get("parts") or []) if p.get("end_id")]
+    end_id = max([story_end_id] + parts_end_ids + [0])
 
-    # 3. Check if there are actually any new messages to process
-    if channel_last_id <= end_id:
-        # No new messages in channel
-        if story_id in _PENDING_NOTIFICATIONS:
-            pending_info = _PENDING_NOTIFICATIONS[story_id]
-            if pending_info["end_id"] == end_id and active_client:
-                await send_announcement(active_client, pending_info)
-                logger.info(f"[Premium Monitor] Sent delayed announcement for '{pending_info['story_name']}'")
-                del _PENDING_NOTIFICATIONS[story_id]
-        return False
-
-    # 4. Fetch the next chunk of messages (up to 100)
-    fetch_end = min(end_id + 100, channel_last_id)
-    ids_to_fetch = list(range(end_id + 1, fetch_end + 1))
-
+    # 3. Fetch batch of next message IDs using get_messages (Bots CANNOT call get_chat_history)
+    ids_to_fetch = list(range(end_id + 1, end_id + 150))
     try:
         msgs = await active_client.get_messages(source_id, ids_to_fetch)
     except FloodWait as fw:
         await asyncio.sleep(fw.value)
         return False
     except Exception as e:
-        logger.warning(f"[Premium Monitor] Error fetching msgs for channel {source_id}: {e}")
+        logger.debug(f"[Premium Monitor] Error fetching msgs for {source_id}: {e}")
         return False
 
     highest_ep_num = -1
-    last_audio_id = -1
+    last_found_id = -1
     new_audio_ids = []
 
     for msg in msgs:
         if not msg or msg.empty:
             continue
 
+        if msg.id > last_found_id:
+            last_found_id = msg.id
+
         if not msg.audio and not msg.document and not msg.voice:
             continue
 
-        if msg.id > last_audio_id:
-            last_audio_id = msg.id
         new_audio_ids.append(msg.id)
-
         fname = getattr(msg.audio or msg.document or msg.voice, "file_name", "")
         caption = msg.caption or ""
         title = getattr(msg.audio, "title", "") if msg.audio else ""
@@ -273,10 +254,12 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
         if ep_num and ep_num > highest_ep_num:
             highest_ep_num = ep_num
 
-    # We advance end_id to fetch_end because we bounded it by channel_last_id
-    new_end_id = fetch_end
+    if last_found_id <= end_id:
+        return False
 
-    # 5. Update DB immediately
+    new_end_id = last_found_id
+
+    # 4. Update DB immediately
     update_data = {
         "end_id": new_end_id,
         "end_message_id": new_end_id
@@ -290,7 +273,7 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
         update_data["valid_file_ids"] = sorted(list(set(existing_val_ids + new_audio_ids)))
         update_data["file_count"] = len(update_data["valid_file_ids"])
 
-    # 6. Synchronize ongoing part in parts list if configured
+    # 5. Synchronize ongoing part in parts list
     raw_parts = story.get("parts") or story.get("story_parts") or []
     if isinstance(raw_parts, list) and len(raw_parts) > 0:
         updated_parts = []
@@ -339,6 +322,25 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
         f"end_id: {new_end_id}, "
         f"episodes: {highest_ep_num if highest_ep_num > -1 else 'unchanged'}"
     )
+
+    # Mark as pending for delayed announcement ONLY if we found audio episodes
+    if highest_ep_num > -1:
+        _PENDING_NOTIFICATIONS[story_id] = {
+            "story_id": story_id,
+            "end_id": new_end_id,
+            "highest_ep_num": highest_ep_num,
+            "story_name": story_name
+        }
+    else:
+        if story_id in _PENDING_NOTIFICATIONS:
+            _PENDING_NOTIFICATIONS[story_id]["end_id"] = new_end_id
+
+    # Clear Mini App API cache immediately
+    try:
+        import mini_app_api
+        mini_app_api._stories_cache = None
+    except Exception:
+        pass
 
     # Mark as pending for delayed announcement ONLY if we found audio episodes
     if highest_ep_num > -1:

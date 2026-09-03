@@ -3,13 +3,13 @@ import sys
 import asyncio
 import logging
 
-# Setup import paths
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.getcwd())
 
 from database import db
 from config import Config
 from pyrogram import Client
+from pyrogram.errors import FloodWait, RPCError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("OngoingTester")
@@ -17,15 +17,9 @@ logger = logging.getLogger("OngoingTester")
 
 async def run_live_test():
     print("=" * 90)
-    print("🔍 ARYA ONGOING STORY LIVE MONITOR — DIRECT TERMINAL TESTER & SYNC")
+    print("🔍 ARYA ONGOING STORY LIVE MONITOR — FIXED BOT GET_MESSAGES SCANNER")
     print("=" * 90)
-    print(f"📁 Directory: {os.getcwd()}")
-    db_name = getattr(Config, "DATABASE_NAME", "Unknown")
-    db_url = getattr(Config, "DATABASE_URL", "Unknown")
-    host = db_url.split('@')[-1] if '@' in db_url else 'localhost'
-    print(f"🗄️ Database : {db_name} ({host})\n")
 
-    # Connect Mgmt Bot
     mgmt_bot = Client(
         name="mgmt_bot_test",
         api_id=Config.API_ID,
@@ -34,16 +28,16 @@ async def run_live_test():
         in_memory=True
     )
 
-    print("📡 Connecting Telegram Bot to verify channel permissions...")
+    print("📡 Connecting Telegram Bot...")
     try:
         await mgmt_bot.start()
         me = await mgmt_bot.get_me()
-        print(f"✅ Successfully connected as @{me.username} (ID: {me.id})\n")
+        print(f"✅ Connected as @{me.username} (ID: {me.id})\n")
     except Exception as e:
         print(f"❌ Failed to connect Bot: {e}")
         return
 
-    # Query ongoing stories
+    # Find all ongoing stories
     query = {
         "$or": [
             {"status": {"$in": ["Ongoing", "ongoing", "ONGOING"]}},
@@ -56,7 +50,7 @@ async def run_live_test():
     }
 
     stories = await db.db.premium_stories.find(query).to_list(length=None)
-    print(f"📋 Found {len(stories)} ongoing stories in MongoDB:\n")
+    print(f"📋 Checking {len(stories)} ongoing stories in MongoDB:\n")
 
     for idx, s in enumerate(stories, 1):
         s_id = str(s.get("_id"))
@@ -66,18 +60,9 @@ async def run_live_test():
         current_episodes = s.get("episodes") or "0"
         parts = s.get("parts") or []
 
-        print(f"[{idx}] Story: '{s_title}' (ID: {s_id})")
-        print(f"    • Source Channel in DB : {raw_source}")
-        print(f"    • Current End ID in DB  : {current_end_id}")
-        print(f"    • Current Episodes in DB: {current_episodes}")
-        print(f"    • Parts configured      : {len(parts)}")
-
         if not raw_source:
-            print("    ❌ FAILED: No source channel ID configured in story!")
-            print("-" * 90)
             continue
 
-        # Format channel ID
         source_id = raw_source
         try:
             source_id = int(source_id)
@@ -86,53 +71,128 @@ async def run_live_test():
         except Exception:
             pass
 
-        print(f"    • Formatted Source ID   : {source_id}")
+        print(f"[{idx}] Story: '{s_title}' (ID: {s_id})")
+        print(f"    • Channel: {source_id} | DB End ID: {current_end_id} | DB Episodes: {current_episodes} | Parts: {len(parts)}")
 
-        # Test channel access
-        channel_last_id = 0
+        # 1. Resolve peer first to avoid 'Peer id invalid'
         try:
-            async for last_msg in mgmt_bot.get_chat_history(source_id, limit=1):
-                channel_last_id = last_msg.id
-                break
-            print(f"    • Real Telegram Channel Last Msg ID: {channel_last_id}")
+            chat = await mgmt_bot.get_chat(source_id)
+            print(f"    • Channel Resolved: '{chat.title}'")
         except Exception as e:
-            print(f"    ❌ TELEGRAM ERROR accessing channel {source_id}: {type(e).__name__} - {e}")
-            print("       (Note: The bot must be an Admin/Member in this private source channel to read messages!)")
+            print(f"    ❌ Cannot access channel {source_id}: {type(e).__name__} - {e}")
+            print("       (Add @aryamgmtbot as Admin to this channel to monitor new episodes!)")
             print("-" * 90)
             continue
 
-        # Check if new messages exist and update
+        # 2. Determine base end_id
         try:
-            from plugins.premium_live_monitor import check_and_update_single_story
-            updated = await check_and_update_single_story(mgmt_bot, s, db)
-            if updated:
-                # Re-fetch from DB to verify updated values
-                refetched = await db.db.premium_stories.find_one({"_id": s["_id"]})
-                new_end = refetched.get("end_id")
-                new_eps = refetched.get("episodes")
-                print(f"    🟢 SUCCESS: Story updated in DB!")
-                print(f"       -> New End ID  : {new_end} (was {current_end_id})")
-                print(f"       -> New Episodes: {new_eps} (was {current_episodes})")
-                new_parts = refetched.get("parts") or []
-                for p in new_parts:
-                    if p.get("is_ongoing") or str(p.get("badge", "")).lower() == "ongoing":
-                        print(f"       -> Ongoing Part '{p.get('name')}' Updated: Episodes '{p.get('episodes')}', End ID '{p.get('end_id')}'")
-            else:
-                if channel_last_id <= int(current_end_id or 0):
-                    print(f"    ⚪ UP TO DATE: Channel has no newer messages (Channel: {channel_last_id} <= DB: {current_end_id}).")
-                else:
-                    print(f"    ⚠️ Messages {current_end_id}..{channel_last_id} scanned, but no audio messages with episode tags were found.")
+            end_id = int(current_end_id)
+        except ValueError:
+            end_id = 0
+
+        parts_end_ids = [int(p.get("end_id") or 0) for p in parts if p.get("end_id")]
+        if parts_end_ids:
+            end_id = max(end_id, max(parts_end_ids))
+
+        # 3. Fetch batch of next message IDs using bot.get_messages
+        ids_to_fetch = list(range(end_id + 1, end_id + 150))
+        print(f"    • Scanning Message IDs: {end_id + 1} to {end_id + 150}...")
+
+        try:
+            msgs = await mgmt_bot.get_messages(source_id, ids_to_fetch)
+        except FloodWait as fw:
+            await asyncio.sleep(fw.value)
+            msgs = await mgmt_bot.get_messages(source_id, ids_to_fetch)
         except Exception as ex:
-            print(f"    ❌ Error during sync: {ex}")
+            print(f"    ❌ Error fetching messages: {ex}")
+            print("-" * 90)
+            continue
+
+        new_audio_count = 0
+        last_found_id = -1
+        highest_ep = -1
+
+        import re
+        for msg in msgs:
+            if not msg or msg.empty:
+                continue
+
+            if msg.id > last_found_id:
+                last_found_id = msg.id
+
+            if not msg.audio and not msg.document and not msg.voice:
+                continue
+
+            new_audio_count += 1
+            fname = getattr(msg.audio or msg.document or msg.voice, "file_name", "")
+            caption = msg.caption or ""
+            title = getattr(msg.audio, "title", "") if msg.audio else ""
+
+            # Extract episode
+            text = f"{fname} {title} {caption}".strip()
+            m = re.search(r'(?:[eE]p(?:isode)?|[eE]pisode|[eE]p|\b[eE]\b|एपिसोड|कड़ी|kadi|ch(?:apter)?|अध्याय)[\.\-\s_:#]*(\d+)', text, re.IGNORECASE)
+            if m:
+                ep_val = int(m.group(1))
+                if ep_val > highest_ep:
+                    highest_ep = ep_val
+            else:
+                nums = re.findall(r'\b\d+\b', text)
+                if nums:
+                    valid_nums = [int(n) for n in nums if int(n) < 50000]
+                    if valid_nums and valid_nums[-1] > highest_ep:
+                        highest_ep = valid_nums[-1]
+
+        if last_found_id > end_id:
+            new_end_id = last_found_id
+            new_eps = str(highest_ep) if highest_ep > -1 else current_episodes
+
+            update_data = {
+                "end_id": new_end_id,
+                "end_message_id": new_end_id,
+            }
+            if highest_ep > -1:
+                update_data["episodes"] = new_eps
+
+            # Update parts
+            if parts:
+                updated_parts = []
+                found_ong = False
+                for p_idx, p in enumerate(parts):
+                    p_c = dict(p)
+                    b_val = str(p_c.get("badge") or p_c.get("badge_type") or "").lower()
+                    is_ong = bool(p_c.get("is_ongoing") or b_val == "ongoing")
+                    is_last = (p_idx == len(parts) - 1)
+                    if is_ong or (not found_ong and is_last and str(s.get("status", "")).lower() == "ongoing"):
+                        found_ong = True
+                        p_c["end_id"] = new_end_id
+                        p_c["is_ongoing"] = True
+                        p_c["badge"] = "ongoing"
+                        if highest_ep > -1:
+                            curr_p_eps = str(p_c.get("episodes") or "").strip()
+                            m_p = re.search(r"(\d+)", curr_p_eps)
+                            if m_p:
+                                start_ep = int(m_p.group(1))
+                                p_c["episodes"] = f"{start_ep}-{highest_ep}"
+                            else:
+                                p_c["episodes"] = str(highest_ep)
+                    updated_parts.append(p_c)
+                update_data["parts"] = updated_parts
+
+            await db.db.premium_stories.update_one({"_id": s["_id"]}, {"$set": update_data})
+            print(f"    🟢 SUCCESS! Found {new_audio_count} new audio files!")
+            print(f"       -> End ID updated: {current_end_id} -> {new_end_id}")
+            print(f"       -> Episodes updated: {current_episodes} -> {new_eps}")
+            if parts:
+                for p in update_data.get("parts", []):
+                    if p.get("is_ongoing"):
+                        print(f"       -> Ongoing Part '{p.get('name')}' Updated: Episodes '{p.get('episodes')}', End ID '{p.get('end_id')}'")
+        else:
+            print(f"    ⚪ Up to date: No new messages found after ID {end_id}.")
 
         print("-" * 90)
 
-    try:
-        await mgmt_bot.stop()
-    except Exception:
-        pass
-
-    print("\n✅ Ongoing monitor test and sync complete!")
+    await mgmt_bot.stop()
+    print("✅ Scan & Sync completed!")
     print("=" * 90)
 
 
