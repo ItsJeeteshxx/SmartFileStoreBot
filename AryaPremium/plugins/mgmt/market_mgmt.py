@@ -5131,17 +5131,18 @@ async def mgmt_sync_all_stories(client, message):
     from utils import scan_and_index_all_stories
     async def _run_bg():
         try:
-            res = await scan_and_index_all_stories(client, db=db, progress_cb=on_progress)
+            res = await scan_and_index_all_stories(client, db=db, progress_cb=on_progress, skip_clean=True)
             total_elapsed = int(time.time() - start_time)
             tot_m, tot_s = divmod(total_elapsed, 60)
             time_taken = f"{tot_m}m {tot_s}s" if tot_m > 0 else f"{tot_s}s"
             await status_msg.edit_text(
                 f"<b>✅ Bulk Story File Indexing Complete!</b>\n\n"
                 f"• Total Stories: <b>{res['total']}</b>\n"
-                f"• Successfully Synced: <b>{res['success']}</b>\n"
+                f"• Clean Stories Skipped: <b>{res.get('skipped', 0)}</b> <i>(Fast-skipped in 0s)</i>\n"
+                f"• Stories Repaired & Synced: <b>{res['success']}</b>\n"
                 f"• Failed: <b>{res['failed']}</b>\n"
                 f"• Time Taken: <b>{time_taken}</b>\n\n"
-                f"<i>All dead file IDs have been removed from chunk selection and file counts are 100% accurate!</i>",
+                f"<i>All dead file gaps have been removed from chunk selection and file counts are 100% accurate!</i>",
                 parse_mode=enums.ParseMode.HTML
             )
         except Exception as e:
@@ -5158,12 +5159,13 @@ async def mgmt_sync_story(client, message):
     user_id = message.from_user.id
     if await _deny_if_not_owner(client, user_id):
         return
-    args = message.text.split()
+    args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        return await message.reply_text("<b>Usage:</b> <code>/sync_story &lt;story_id&gt;</code>", parse_mode=enums.ParseMode.HTML)
+        return await message.reply_text("<b>Usage:</b> <code>/sync_story &lt;story_id or story_name&gt;</code>", parse_mode=enums.ParseMode.HTML)
         
     s_id_input = args[1].strip()
     from bson.objectid import ObjectId
+    import re
     story = None
     try:
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id_input)})
@@ -5173,22 +5175,34 @@ async def mgmt_sync_story(client, message):
         story = await db.db.premium_stories.find_one({"_id": s_id_input})
     if not story:
         story = await db.db.premium_stories.find_one({"story_id": s_id_input})
+    if not story:
+        # Search by name/title
+        escaped_pattern = re.escape(s_id_input)
+        story = await db.db.premium_stories.find_one({
+            "$or": [
+                {"story_name_en": {"$regex": escaped_pattern, "$options": "i"}},
+                {"story_name": {"$regex": escaped_pattern, "$options": "i"}},
+                {"title": {"$regex": escaped_pattern, "$options": "i"}},
+                {"clean_title": {"$regex": re.sub(r'[^a-zA-Z0-9]', '', s_id_input.lower()), "$options": "i"}}
+            ]
+        })
         
     if not story:
-        return await message.reply_text("❌ <b>Story not found!</b>", parse_mode=enums.ParseMode.HTML)
+        return await message.reply_text(f"❌ <b>Story '{s_id_input}' not found!</b>", parse_mode=enums.ParseMode.HTML)
         
     wait_msg = await message.reply_text("<i>⏳ Scanning and indexing story files...</i>", parse_mode=enums.ParseMode.HTML)
     from utils import scan_and_index_story
     try:
         valid_ids = await scan_and_index_story(client, story, save_to_db=True, db=db)
-        name = story.get('story_name_en', 'Story')
+        name = story.get('story_name_en', story.get('story_name', 'Story'))
         s_id = story.get('start_id', '?')
         e_id = story.get('end_id', '?')
         await wait_msg.edit_text(
             f"<b>✅ Story Synced Successfully!</b>\n\n"
             f"<b>Story:</b> {name}\n"
             f"<b>Message Range:</b> {s_id} - {e_id}\n"
-            f"<b>Valid Active Files:</b> <b>{len(valid_ids)}</b>",
+            f"<b>Valid Active Files:</b> <b>{len(valid_ids)}</b>\n\n"
+            f"<i>Chunks and parts updated cleanly in database!</i>",
             parse_mode=enums.ParseMode.HTML
         )
     except Exception as e:

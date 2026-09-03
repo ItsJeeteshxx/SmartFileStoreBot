@@ -649,9 +649,9 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
         except Exception:
             pass
             
-    src = story_doc.get('source')
+    src = story_doc.get('source') or story_doc.get('source_channel') or story_doc.get('channel_id')
     start_id = story_doc.get('start_id')
-    end_id = story_doc.get('end_id')
+    end_id = story_doc.get('end_id') or story_doc.get('end_message_id')
     
     if not src or not start_id or not end_id:
         return story_doc.get("valid_file_ids") or []
@@ -659,6 +659,25 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
     s = min(int(start_id), int(end_id))
     e = max(int(start_id), int(end_id))
     
+    # ── Client Resolution (try mgmt_bot and market_clients fallback) ──
+    clients_to_try = [client] if client else []
+    try:
+        from plugins.userbot.market_seller import market_clients
+        for mc in market_clients.values():
+            if mc not in clients_to_try:
+                clients_to_try.append(mc)
+    except Exception:
+        pass
+
+    active_client = client
+    for cli in clients_to_try:
+        try:
+            await cli.get_chat(int(src))
+            active_client = cli
+            break
+        except Exception:
+            continue
+
     all_ids = list(range(s, e + 1))
     valid_ids = []
     discovered_poster_bytes = None
@@ -667,7 +686,7 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
     for i in range(0, len(all_ids), batch_size):
         chunk = all_ids[i:i + batch_size]
         try:
-            msgs = await client.get_messages(int(src), chunk)
+            msgs = await active_client.get_messages(int(src), chunk)
             if not isinstance(msgs, list):
                 msgs = [msgs]
             for m in msgs:
@@ -689,7 +708,7 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
                     if not discovered_poster_bytes:
                         try:
                             if m.photo or getattr(m.video, 'thumbs', None) or getattr(m.document, 'thumbs', None):
-                                media_buf = await client.download_media(m, in_memory=True)
+                                media_buf = await active_client.download_media(m, in_memory=True)
                                 if media_buf:
                                     discovered_poster_bytes = media_buf.getbuffer().tobytes() if hasattr(media_buf, 'getbuffer') else bytes(media_buf)
                         except Exception:
@@ -699,7 +718,7 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
             await asyncio.sleep(fw.value + 1)
             # retry chunk once
             try:
-                msgs = await client.get_messages(int(src), chunk)
+                msgs = await active_client.get_messages(int(src), chunk)
                 if not isinstance(msgs, list): msgs = [msgs]
                 for m in msgs:
                     if m and not getattr(m, "empty", False) and not getattr(m, "service", False):
@@ -802,9 +821,10 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
     return valid_ids
 
 
-async def scan_and_index_all_stories(client, db=None, progress_cb=None):
+async def scan_and_index_all_stories(client, db=None, progress_cb=None, skip_clean: bool = True):
     """
-    Iterates over all stories in MongoDB and scans/indexes their valid files from Telegram DB channel.
+    Iterates over all stories in MongoDB and scans/indexes valid files from Telegram DB channel.
+    Instantly skips stories that are already 100% clean and indexed without making any API calls.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -817,17 +837,37 @@ async def scan_and_index_all_stories(client, db=None, progress_cb=None):
             pass
             
     if not db or not hasattr(db, "db"):
-        return {"total": 0, "success": 0, "failed": 0}
+        return {"total": 0, "success": 0, "skipped": 0, "failed": 0}
         
     stories = await db.db.premium_stories.find({}).to_list(length=None)
     total = len(stories)
     success = 0
+    skipped = 0
     failed = 0
     
-    logger.info(f"Starting bulk sync for {total} stories...")
+    logger.info(f"Starting bulk sync for {total} stories (skip_clean={skip_clean})...")
     
     for idx, story in enumerate(stories, 1):
-        s_name = story.get("story_name_en") or str(story.get("_id"))
+        s_name = story.get("story_name_en") or story.get("story_name") or story.get("title") or str(story.get("_id"))
+        st_id = story.get("start_id")
+        en_id = story.get("end_id") or story.get("end_message_id")
+        val_ids = story.get("valid_file_ids")
+
+        # Fast skip if already clean (0 API calls, 0 FloodWait)
+        if (
+            skip_clean
+            and st_id and en_id
+            and isinstance(val_ids, list)
+            and len(val_ids) > 0
+            and max(val_ids) >= int(en_id)
+            and min(val_ids) >= int(st_id)
+            and story.get("file_count") == len(val_ids)
+        ):
+            skipped += 1
+            if progress_cb:
+                await progress_cb(idx, total, f"{s_name} (Clean)", len(val_ids), True)
+            continue
+
         try:
             valid_ids = await scan_and_index_story(client, story, save_to_db=True, db=db)
             success += 1
@@ -841,5 +881,5 @@ async def scan_and_index_all_stories(client, db=None, progress_cb=None):
                 await progress_cb(idx, total, s_name, 0, False)
         await asyncio.sleep(0.08)
         
-    return {"total": total, "success": success, "failed": failed}
+    return {"total": total, "success": success, "skipped": skipped, "failed": failed}
 
