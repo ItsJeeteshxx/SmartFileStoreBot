@@ -291,6 +291,53 @@ async def main():
     except Exception as e:
         logger.warning(f"Could not start Auto Delivery Queue Worker: {e}")
 
+    # Start Weekly Self-Healing Dead File & Index Cleaner Worker
+    async def _weekly_dead_file_cleaner_task():
+        await asyncio.sleep(60) # Wait 1 min after boot
+        while True:
+            try:
+                from utils import scan_and_index_story
+                logger.info("[AutoCleaner] Running periodic dead file & index validation...")
+                stories = await db.db.premium_stories.find({}).to_list(length=None)
+                for s in stories:
+                    raw_src = s.get("source") or s.get("source_channel") or s.get("channel_id")
+                    st_id = s.get("start_id")
+                    en_id = s.get("end_id") or s.get("end_message_id")
+                    val_ids = s.get("valid_file_ids")
+                    if not raw_src or not st_id or not en_id:
+                        continue
+                    try:
+                        src_id = int(raw_src)
+                        if src_id > 0 and len(str(src_id)) >= 9:
+                            src_id = int(f"-100{src_id}")
+                        st_id, en_id = int(st_id), int(en_id)
+                    except Exception:
+                        continue
+
+                    # Fast-skip clean stories in 0.0001s
+                    if isinstance(val_ids, list) and len(val_ids) > 0 and max(val_ids) >= en_id and min(val_ids) >= st_id and s.get("file_count") == len(val_ids):
+                        continue
+
+                    # Find active bot to repair
+                    target_cli = None
+                    for c in [mgmt_bot] + list(market_clients.values()):
+                        try:
+                            await c.get_chat(src_id)
+                            target_cli = c
+                            break
+                        except Exception:
+                            continue
+                    if target_cli:
+                        await scan_and_index_story(target_cli, s, save_to_db=True, db=db)
+                        await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"[AutoCleaner] Error during auto-clean: {e}")
+            # Run every 7 days (7 * 24 * 3600 seconds)
+            await asyncio.sleep(7 * 24 * 3600)
+
+    if 'mgmt_bot' in locals():
+        asyncio.create_task(_weekly_dead_file_cleaner_task())
+
     # Keep bots running
     await idle()
 

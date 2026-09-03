@@ -3234,8 +3234,14 @@ async def _process_start(client, message):
         if story.get("valid_file_ids"):
             if part_info and start_id and end_id:
                 valid_file_ids = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
+                if valid_file_ids and end_id > max(valid_file_ids):
+                    missing_tail = [m for m in range(max(valid_file_ids) + 1, end_id + 1)]
+                    valid_file_ids = sorted(list(set(valid_file_ids + missing_tail)))
             else:
                 valid_file_ids = story["valid_file_ids"]
+                if valid_file_ids and end_id and int(end_id) > max(valid_file_ids):
+                    missing_tail = [m for m in range(max(valid_file_ids) + 1, int(end_id) + 1)]
+                    valid_file_ids = sorted(list(set(valid_file_ids + missing_tail)))
         elif start_id and end_id:
             valid_file_ids = list(range(int(start_id), int(end_id) + 1))
 
@@ -4125,8 +4131,14 @@ async def _process_text(client, message):
             if story.get("valid_file_ids"):
                 if part_info and start_id and end_id:
                     valid_list = [mid for mid in story["valid_file_ids"] if start_id <= mid <= end_id]
+                    if valid_list and end_id > max(valid_list):
+                        missing_tail = [m for m in range(max(valid_list) + 1, end_id + 1)]
+                        valid_list = sorted(list(set(valid_list + missing_tail)))
                 else:
                     valid_list = story["valid_file_ids"]
+                    if valid_list and end_id and int(end_id) > max(valid_list):
+                        missing_tail = [m for m in range(max(valid_list) + 1, int(end_id) + 1)]
+                        valid_list = sorted(list(set(valid_list + missing_tail)))
             elif start_id and end_id:
                 valid_list = list(range(int(start_id), int(end_id) + 1))
 
