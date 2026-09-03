@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("DeadFileCleaner")
 
 
-async def clean_all_stories(force_full_scan: bool = False):
+async def clean_all_stories(force_full_scan: bool = False, ongoing_only: bool = False, target_story: str = None):
     print("=" * 90)
     print("🧹 ARYA PREMIUM — AUTOMATIC DEAD FILE CLEANER & CHUNK REPAIR ENGINE")
     print("=" * 90)
@@ -55,8 +55,15 @@ async def clean_all_stories(force_full_scan: bool = False):
         pass
 
     # 2. Query stories
-    stories = await db.db.premium_stories.find({}).sort("_id", -1).to_list(length=None)
-    print(f"\n📚 Total Stories in Database: {len(stories)}\n")
+    query = {}
+    if ongoing_only:
+        query = {"$or": [{"status": {"$in": ["Ongoing", "ongoing", "ONGOING"]}}, {"parts.badge": "ongoing"}, {"parts.is_ongoing": True}]}
+    elif target_story:
+        import re
+        query = {"$or": [{"story_name_en": {"$regex": target_story, "$options": "i"}}, {"story_name": {"$regex": target_story, "$options": "i"}}, {"title": {"$regex": target_story, "$options": "i"}}]}
+
+    stories = await db.db.premium_stories.find(query).sort("_id", -1).to_list(length=None)
+    print(f"\n📚 Stories to Inspect: {len(stories)}\n")
 
     repaired_count = 0
     skipped_count = 0
@@ -137,4 +144,13 @@ async def clean_all_stories(force_full_scan: bool = False):
 
 if __name__ == "__main__":
     force = "--force" in sys.argv or "-f" in sys.argv
-    asyncio.run(clean_all_stories(force_full_scan=force))
+    ongoing = "--ongoing" in sys.argv or "-o" in sys.argv
+    story_arg = None
+    if "--story" in sys.argv:
+        try:
+            s_idx = sys.argv.index("--story")
+            if s_idx + 1 < len(sys.argv):
+                story_arg = sys.argv[s_idx + 1]
+        except Exception:
+            pass
+    asyncio.run(clean_all_stories(force_full_scan=force, ongoing_only=ongoing, target_story=story_arg))

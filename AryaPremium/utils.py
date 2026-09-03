@@ -693,10 +693,22 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
                                     discovered_poster_bytes = media_buf.getbuffer().tobytes() if hasattr(media_buf, 'getbuffer') else bytes(media_buf)
                         except Exception:
                             pass
+        except FloodWait as fw:
+            logger.info(f"FloodWait hit during scan in {src}: sleeping {fw.value}s")
+            await asyncio.sleep(fw.value + 1)
+            # retry chunk once
+            try:
+                msgs = await client.get_messages(int(src), chunk)
+                if not isinstance(msgs, list): msgs = [msgs]
+                for m in msgs:
+                    if m and not getattr(m, "empty", False) and not getattr(m, "service", False):
+                        if getattr(m, "document", None) or getattr(m, "video", None) or getattr(m, "audio", None) or getattr(m, "voice", None) or getattr(m, "photo", None) or getattr(m, "text", None):
+                            valid_ids.append(m.id)
+            except Exception: pass
         except Exception as err:
             logger.warning(f"Scan batch {chunk[0]}-{chunk[-1]} in {src} failed: {err}")
             await asyncio.sleep(0.5)
-        await asyncio.sleep(0.04) # pause to prevent Telegram flood wait
+        await asyncio.sleep(0.35) # safe pause to avoid Telegram FloodWait
         
     valid_ids = sorted(list(set(valid_ids)))
 
