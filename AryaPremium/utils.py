@@ -789,12 +789,14 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
         "valid_file_ids": valid_ids,
         "file_count": len(valid_ids),
     }
-    if "poster_url" in story_doc and story_doc["poster_url"]:
-        updates["poster_url"] = story_doc["poster_url"]
-        updates["banner_url"] = story_doc["banner_url"]
-        updates["image"] = story_doc["image"]
-        updates["cover"] = story_doc["cover"]
-        updates["r2_migrated"] = True
+    p_url = story_doc.get("poster_url") or story_doc.get("image") or story_doc.get("cover") or story_doc.get("banner_url")
+    if p_url:
+        updates["poster_url"] = story_doc.get("poster_url") or p_url
+        updates["banner_url"] = story_doc.get("banner_url") or p_url
+        updates["image"] = story_doc.get("image") or p_url
+        updates["cover"] = story_doc.get("cover") or p_url
+        if "r2.dev" in str(p_url) or "r2.cloudflarestorage" in str(p_url):
+            updates["r2_migrated"] = True
     if updated_parts:
         updates["parts"] = updated_parts
         
