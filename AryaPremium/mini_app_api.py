@@ -3369,6 +3369,21 @@ async def send_receipt_telegram(payload: dict):
                 logger.error(f"Telegram sendDocument failed: {error_desc}")
                 raise HTTPException(status_code=500, detail=f"Telegram API Error: {error_desc}")
                 
+        # Log accurate receipt delivery event in Core Logs
+        try:
+            from utils import log_arya_event
+            bot_doc = await arya_db.db.premium_bots.find_one({"token": token})
+            b_id = bot_doc.get("id") if bot_doc else None
+            asyncio.create_task(log_arya_event(
+                event_type="RECEIPT DELIVERED",
+                user_id=int(telegram_id),
+                user_info={"bot_id": b_id},
+                details=f"User requested order receipt for Order ID: <code>{order_id}</code>. Document sent to chat on Telegram.",
+                bot_id=b_id
+            ))
+        except Exception:
+            pass
+
         return {"success": True, "message": "Receipt sent to Telegram chat!"}
     except Exception as e:
         logger.error(f"Failed to send receipt via Telegram: {e}", exc_info=True)

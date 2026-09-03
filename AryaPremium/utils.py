@@ -407,6 +407,23 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             except Exception:
                 pass
 
+        # Auto-resolve user profile from DB if name or username is missing/generic
+        if hasattr(db, "db") and db.db is not None and user_id:
+            try:
+                user_doc = await db.db.users.find_one({"$or": [{"id": int(user_id)}, {"telegram_id": int(user_id)}, {"id": str(user_id)}]})
+                if user_doc:
+                    db_first = user_doc.get("first_name") or user_doc.get("name") or ""
+                    db_last = user_doc.get("last_name") or ""
+                    db_uname = user_doc.get("username") or ""
+                    if not user_first_name or str(user_first_name).strip().lower() in ("user", "unknown", "none", ""):
+                        user_first_name = db_first
+                    if not user_last_name:
+                        user_last_name = db_last
+                    if not username:
+                        username = db_uname
+            except Exception:
+                pass
+
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
@@ -494,6 +511,22 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
         return
 
     try:
+        # Auto-resolve user profile from DB if name or username is missing/generic
+        if hasattr(db, "db") and db.db is not None and user_id:
+            try:
+                user_doc = await db.db.users.find_one({"$or": [{"id": int(user_id)}, {"telegram_id": int(user_id)}, {"id": str(user_id)}]})
+                if user_doc:
+                    db_first = user_doc.get("first_name") or user_doc.get("name") or ""
+                    db_last = user_doc.get("last_name") or ""
+                    db_uname = user_doc.get("username") or ""
+                    if not user_first_name or str(user_first_name).strip().lower() in ("user", "unknown", "none", ""):
+                        user_first_name = db_first
+                    if not user_last_name:
+                        user_last_name = db_last
+                    if not username:
+                        username = db_uname
+            except Exception:
+                pass
         from datetime import datetime, timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
         time_str = datetime.now(ist).strftime('%d %b %Y, %I:%M %p IST')
@@ -542,6 +575,20 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
 
     channel_id = None
     target_bot_id = bot_id or (user_info or {}).get("bot_id")
+
+    # ── Guard: A bot must NEVER be logged as a user in Core Logs ──
+    if target_bot_id and user_id and int(user_id) == int(target_bot_id):
+        return
+    if (user_info or {}).get("is_bot"):
+        return
+    if hasattr(db, "db") and db.db is not None and user_id:
+        try:
+            bot_match = await db.db.premium_bots.find_one({"id": int(user_id)})
+            if bot_match:
+                return
+        except Exception:
+            pass
+
     if not target_bot_id and bot_username and hasattr(db, "db") and db.db is not None:
         try:
             b_clean = bot_username.lstrip("@").strip()
@@ -551,10 +598,12 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         except Exception:
             pass
 
+    store_bot_uname = ""
     if target_bot_id and hasattr(db, "db") and db.db is not None:
         try:
             bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
             if bot_doc:
+                store_bot_uname = bot_doc.get("username", "")
                 custom_ch = (bot_doc.get("config") or {}).get("log_channel")
                 if custom_ch:
                     channel_id = custom_ch
@@ -576,6 +625,41 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         username = (user_info or {}).get("username", "")
         user_first_name = (user_info or {}).get("first_name", "")
         user_last_name = (user_info or {}).get("last_name", "")
+        joined_date_val = (user_info or {}).get("joined_date")
+
+        # ── Automatically Resolve Real User Profile from MongoDB ──
+        if hasattr(db, "db") and db.db is not None and user_id:
+            try:
+                user_doc = await db.db.users.find_one({
+                    "$or": [{"id": int(user_id)}, {"telegram_id": int(user_id)}, {"id": str(user_id)}]
+                })
+                if user_doc:
+                    db_first = user_doc.get("first_name") or user_doc.get("name") or ""
+                    db_last = user_doc.get("last_name") or ""
+                    db_uname = user_doc.get("username") or ""
+                    if not user_first_name or str(user_first_name).strip().lower() in ("user", "unknown", "none", ""):
+                        user_first_name = db_first
+                    if not user_last_name:
+                        user_last_name = db_last
+                    if not username:
+                        username = db_uname
+                    if not joined_date_val:
+                        joined_date_val = user_doc.get("joined_date") or user_doc.get("created_at")
+
+                # Secondary fallback to orders collection if still missing
+                if not user_first_name or str(user_first_name).strip().lower() in ("user", "unknown", "none", ""):
+                    ord_doc = await db.db.orders.find_one(
+                        {"$or": [{"user_id": int(user_id)}, {"user_id": str(user_id)}, {"telegram_id": int(user_id)}]},
+                        sort=[("created_at", -1)]
+                    )
+                    if ord_doc:
+                        user_first_name = ord_doc.get("first_name") or ord_doc.get("name") or ord_doc.get("customer_name") or ""
+                        if not user_last_name:
+                            user_last_name = ord_doc.get("last_name") or ""
+                        if not username:
+                            username = ord_doc.get("username") or ""
+            except Exception:
+                pass
 
         def clean_username(uname: str) -> str:
             if not uname or str(uname).strip().lower() in ("", "unknown", "none", "@unknown", "@none"):
@@ -595,15 +679,23 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
         tg_link = f"tg://user?id={user_id}"
         user_display = f'<a href="{tg_link}">{full_name_esc}</a> (@{escape_html(cleaned_username)})' if cleaned_username else f'<a href="{tg_link}">{full_name_esc}</a>'
 
-        joined = (user_info or {}).get("joined_date", time_str)
-        if isinstance(joined, datetime):
+        joined = joined_date_val or time_str
+        if isinstance(joined, (int, float)):
+            try:
+                joined = datetime.fromtimestamp(joined, ist).strftime('%d %b %Y, %I:%M %p IST')
+            except Exception:
+                joined = time_str
+        elif isinstance(joined, datetime):
             joined = joined.astimezone(ist).strftime('%d %b %Y, %I:%M %p IST')
-        elif not isinstance(joined, str):
+        elif not isinstance(joined, str) or not joined.strip():
             joined = "N/A"
+
+        bot_line = f"<b>Store Bot:</b> @{store_bot_uname}\n" if store_bot_uname else ""
 
         text = (
             f"<b>🛡️ ARYA CORE LOG | {event_type}</b>\n"
             f"────────────────────\n"
+            f"{bot_line}"
             f"<b>User:</b> {user_display}\n"
             f"<b>Telegram ID:</b> <code>{user_id}</code>\n"
             f"<b>Joined:</b> {joined}\n"

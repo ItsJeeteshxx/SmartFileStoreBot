@@ -218,12 +218,12 @@ async def main():
             cli.add_handler(MessageHandler(_premium_ban_interceptor, filters.private), group=-999)
             cli.add_handler(CallbackQueryHandler(_premium_ban_interceptor, filters.all), group=-999)
 
-            # ── Register all normal handlers ──────────────────────────────────
-            cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private))
-            cli.add_handler(MessageHandler(_process_my_stories, filters.command(["mystories", "stories"]) & filters.private))
+            # ── Register all normal handlers (incoming user messages only) ──
+            cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private & filters.incoming & ~filters.me))
+            cli.add_handler(MessageHandler(_process_my_stories, filters.command(["mystories", "stories"]) & filters.private & filters.incoming & ~filters.me))
             # Media handler (feedback + screenshot) — must come before _process_screenshot
-            cli.add_handler(MessageHandler(_process_media, (filters.photo | filters.video | filters.animation | filters.document | filters.voice | filters.audio) & filters.private))
-            cli.add_handler(MessageHandler(_process_text, filters.text & filters.private))
+            cli.add_handler(MessageHandler(_process_media, (filters.photo | filters.video | filters.animation | filters.document | filters.voice | filters.audio) & filters.private & filters.incoming & ~filters.me))
+            cli.add_handler(MessageHandler(_process_text, filters.text & filters.private & filters.incoming & ~filters.me))
             cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
             cli.add_handler(ChatMemberUpdatedHandler(_process_chat_member))
             cli.add_handler(InlineQueryHandler(_process_inline_query))

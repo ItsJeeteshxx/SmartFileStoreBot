@@ -2994,50 +2994,41 @@ async def _process_start(client, message):
 
     
 
+    ui = {
+        "first_name": getattr(message.from_user, "first_name", ""),
+        "last_name": getattr(message.from_user, "last_name", ""),
+        "username": getattr(message.from_user, "username", ""),
+        "bot_id": client.me.id
+    }
+    bot_ref = f"@{client.me.username}" if client.me.username else client.me.first_name
     is_new = await db.db.users.count_documents({"id": int(user_id)}) == 0
 
+    from utils import log_arya_event
+    args = message.command
+    arg_payload = args[1].strip() if len(args) > 1 and args[1] else ""
+    arg_p = f"#{arg_payload}" if arg_payload else ""
+
     if is_new:
-
-        from utils import log_arya_event
-
         asyncio.create_task(log_arya_event(
-
             event_type="NEW USER JOIN",
-
             user_id=user_id,
-
-            user_info={"first_name": message.from_user.first_name, "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id},
-
-            details="User started the Premium Store bot for the first time.",
+            user_info=ui,
+            details=f"New user started the store bot <b>{bot_ref}</b> for the first time." + (f"\nPayload: <code>{arg_payload}</code>" if arg_payload else ""),
             bot_id=client.me.id
-
         ))
-
-        
+    else:
+        asyncio.create_task(log_arya_event(
+            event_type="BOT STARTED",
+            user_id=user_id,
+            user_info=ui,
+            details=f"User started the store bot <b>{bot_ref}</b>." + (f"\nPayload: <code>{arg_payload}</code>" if arg_payload else ""),
+            bot_id=client.me.id
+        ))
 
     user = await db.get_user(user_id, from_user=message.from_user, bot_id=client.me.id)
 
     # Track which delivery bots this user has started
-
     await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"bot_ids": client.me.id}}, upsert=True)
-
-    
-
-    args = message.command
-
-    arg_p = f"#{args[1]}" if len(args) > 1 and args[1] else ""
-
-    if len(args) > 1 and args[1]:
-
-        from utils import log_arya_event
-
-        asyncio.create_task(log_arya_event(
-            "START LINK CLICKED",
-            user_id,
-            {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id},
-            f"User clicked start link with payload: {args[1]}",
-            bot_id=client.me.id
-        ))
 
 
 
@@ -3722,16 +3713,15 @@ async def _submit_feedback(client, message, user_id: int, user: dict, lang: str,
 
 
 async def _process_media(client, message):
-
     """Handles photo/video/animation/document messages. Routes media feedback to _submit_feedback."""
+    if not message or not message.from_user:
+        return
+    if getattr(message, "outgoing", False) or getattr(message.from_user, "is_bot", False) or message.from_user.id == client.me.id:
+        return
 
     user_id = message.from_user.id
-
     user = await db.get_user(user_id, from_user=message.from_user)
-
     lang = user.get('lang', 'en')
-
-
 
     # If user is in feedback_pending state, route to feedback system
     if user.get("state") == "feedback_pending":
@@ -3758,11 +3748,14 @@ async def _process_media(client, message):
         await _submit_feedback(client, message, user_id, user, lang, content_type=content_type, text=caption)
         return
 
-
-
-    # Otherwise, fall through to screenshot handler (for UPI payment screenshots)
-
-    await _process_screenshot(client, message)
+    # Only route photos to screenshot processor IF user actually has a pending checkout waiting for screenshot
+    if message.photo:
+        checkout = await db.db.premium_checkout.find_one(
+            {"user_id": user_id, "bot_id": client.me.id, "status": "waiting_screenshot"}
+        )
+        if checkout:
+            await _process_screenshot(client, message, checkout=checkout)
+            return
 
 
 
@@ -5523,7 +5516,7 @@ async def _process_callback(client, query):
 
         elif cmd == "main_close": act = "Clicked Close Button"
 
-        elif cmd == "main_marketplace": act = "Opened Marketplace"
+        elif cmd == "main_marketplace": act = f"Opened Marketplace on @{client.me.username}"
 
         elif cmd.startswith("my_reqs_"): act = "Checked My Requests"
 
@@ -5545,7 +5538,7 @@ async def _process_callback(client, query):
 
         elif cmd == "upi2_done": act = f"Clicked Payment Done for Direct UPI (Story ID {data[2] if len(data)>2 else ''})"
 
-        if act: asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, act))
+        if act: asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, act, bot_id=client.me.id))
 
     except Exception: pass
 
@@ -8753,48 +8746,54 @@ async def _process_callback(client, query):
 
 # ─────────────────────────────────────────────────────────────────
 
-async def _process_screenshot(client, message):
-
-    try:
-
-        from utils import log_arya_event
-
-        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id}
-        asyncio.create_task(log_arya_event("PAYMENT SCREENSHOT", message.from_user.id, ui, "User uploaded a payment screenshot.", bot_id=client.me.id))
-
-    except Exception: pass
-
-
+async def _process_screenshot(client, message, checkout=None):
+    if not message or not message.from_user:
+        return
+    if getattr(message, "outgoing", False) or getattr(message.from_user, "is_bot", False) or message.from_user.id == client.me.id:
+        return
+    if not message.photo:
+        return
 
     user_id = message.from_user.id
-
     user = await db.get_user(user_id, from_user=message.from_user)
-
     lang = user.get('lang', 'en')
 
-
-
-    checkout = await db.db.premium_checkout.find_one(
-
-        {"user_id": user_id, "bot_id": client.me.id, "status": "waiting_screenshot"}
-
-    )
-
-    if not checkout: return
-
-
+    if not checkout:
+        checkout = await db.db.premium_checkout.find_one(
+            {"user_id": user_id, "bot_id": client.me.id, "status": "waiting_screenshot"}
+        )
+    if not checkout:
+        return
 
     # Fake Detection
-
     p = message.photo
-
     if p.file_size < 50000:
-
         return await message.reply_text("❌ <b>Invalid Screenshot!</b>\n\nThe image is too small. Please send a clear, full payment screenshot.", quote=True)
 
     if p.height < p.width:
-
         return await message.reply_text("❌ <b>Invalid Screenshot!</b>\n\nPlease send a portrait-mode screenshot (not landscape).", quote=True)
+
+    # Log verified payment screenshot with complete order details
+    try:
+        from utils import log_arya_event
+        ui = {
+            "first_name": getattr(message.from_user, "first_name", ""),
+            "last_name": getattr(message.from_user, "last_name", ""),
+            "username": getattr(message.from_user, "username", ""),
+            "bot_id": client.me.id
+        }
+        s_name = checkout.get("story_name") or checkout.get("story_name_en") or "Story"
+        amt = checkout.get("amount") or 0
+        o_id = checkout.get("order_id") or str(checkout.get("_id", ""))
+        asyncio.create_task(log_arya_event(
+            "PAYMENT SCREENSHOT",
+            message.from_user.id,
+            ui,
+            f"User uploaded payment screenshot for: <b>{s_name}</b>\nAmount: ₹{amt}\nOrder ID: <code>{o_id}</code>",
+            bot_id=client.me.id
+        ))
+    except Exception:
+        pass
 
 
 
@@ -8989,15 +8988,27 @@ async def _process_screenshot(client, message):
 # ─────────────────────────────────────────────────────────────────
 
 async def dispatch_delivery_choice(client, user_id, story, part_info=None):
-    try:
-        from utils import log_arya_event
-        p_extra = f" (Part: {part_info.get('name')})" if part_info else ""
-        asyncio.create_task(log_arya_event("DELIVERY REQUEST", user_id, {"first_name": "User", "last_name": "", "username": ""}, f"User requested delivery options for story: {story.get('story_name_en', 'Unknown')}{p_extra}"))
-    except Exception: pass
-
     user = await db.get_user(user_id)
     lang = user.get('lang', 'en')
     story_id_str = str(story['_id'])
+
+    try:
+        from utils import log_arya_event
+        p_extra = f" (Part: {part_info.get('name')})" if part_info else ""
+        ui = {
+            "first_name": user.get("first_name", ""),
+            "last_name": user.get("last_name", ""),
+            "username": user.get("username", ""),
+            "bot_id": client.me.id
+        }
+        asyncio.create_task(log_arya_event(
+            "DELIVERY REQUEST",
+            user_id,
+            ui,
+            f"User requested delivery options for story: {story.get('story_name_en', 'Unknown')}{p_extra}",
+            bot_id=client.me.id
+        ))
+    except Exception: pass
 
     used_channels = user.get("used_channels", [])
     mode = story.get("delivery_mode") or ("single" if story.get("channel_id") else "pool")

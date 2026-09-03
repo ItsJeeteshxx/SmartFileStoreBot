@@ -3181,10 +3181,10 @@ async def _add_store_bot_flow(client, user_id):
         from utils import setup_ask_router
         new_cli = Client(name=f"market_{me.id}", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=token, in_memory=False)
         setup_ask_router(new_cli)
-        new_cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private))
+        new_cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private & filters.incoming & ~filters.me))
         new_cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
-        new_cli.add_handler(MessageHandler(_process_screenshot, filters.photo & filters.private))
-        new_cli.add_handler(MessageHandler(_process_text, filters.text & filters.private))
+        new_cli.add_handler(MessageHandler(_process_screenshot, filters.photo & filters.private & filters.incoming & ~filters.me))
+        new_cli.add_handler(MessageHandler(_process_text, filters.text & filters.private & filters.incoming & ~filters.me))
         new_cli.add_handler(InlineQueryHandler(_process_inline_query))
         await new_cli.start()
         market_clients[str(me.id)] = new_cli
