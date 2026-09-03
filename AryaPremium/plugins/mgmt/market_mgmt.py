@@ -5085,7 +5085,7 @@ async def mgmt_sync_ongoing(client, message):
 
     try:
         from plugins.premium_live_monitor import check_and_update_all_ongoing_stories
-        await check_and_update_all_ongoing_stories(client)
+        res = await check_and_update_all_ongoing_stories(client)
         
         # Query updated ongoing stories summary
         stories = await db.db.premium_stories.find({
@@ -5097,21 +5097,30 @@ async def mgmt_sync_ongoing(client, message):
         }).to_list(length=None)
 
         summary_lines = []
-        for s in stories[:15]:
+        for s in stories[:20]:
             s_name = s.get("story_name_en") or s.get("story_name") or s.get("title") or "Story"
             eps = s.get("episodes") or "?"
             end_id = s.get("end_id") or s.get("end_message_id") or "?"
             ong_p_str = ""
-            for p in (s.get("parts") or []):
+            for idx, p in enumerate(s.get("parts") or []):
                 if str(p.get("badge") or "").lower() == "ongoing" or p.get("is_ongoing"):
-                    ong_p_str = f" [Part {p.get('part', '?')}: {p.get('episodes', '?')}]"
+                    p_num = p.get("part") or p.get("part_no") or p.get("part_number") or (idx + 1)
+                    ong_p_str = f" [Part {p_num}: {p.get('episodes', '?')}]"
                     break
             summary_lines.append(f"• <b>{s_name}</b>: {eps} Eps (End: {end_id}){ong_p_str}")
 
+        updated_highlight = ""
+        if res.get("updated_count", 0) > 0:
+            updated_highlight = "<b>🆕 Newly Updated Stories:</b>\n" + "\n".join(
+                [f"✨ <b>{u['story_name']}</b>: End {u['old_end']} ➔ <b>{u['new_end']}</b> | Eps {u['old_eps']} ➔ <b>{u['new_eps']}</b>" for u in res.get("updated_stories", [])]
+            ) + "\n\n"
+
         text = (
             f"<b>✅ Ongoing Stories Sync Complete!</b>\n\n"
-            f"• Total Ongoing Stories Checked: <b>{len(stories)}</b>\n\n"
-            f"<b>📊 Latest Ongoing Status:</b>\n"
+            f"• Total Checked: <b>{res.get('total', len(stories))}</b>\n"
+            f"• Newly Updated: <b>{res.get('updated_count', 0)}</b>\n\n"
+            + updated_highlight
+            + f"<b>📊 Active Ongoing Stories ({len(stories)} total):</b>\n"
             + "\n".join(summary_lines)
             + f"\n\n<i>All new episodes and ongoing parts have been synchronized with MongoDB and Mini App!</i>"
         )
