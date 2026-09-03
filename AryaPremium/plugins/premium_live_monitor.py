@@ -192,8 +192,10 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> bool
     except Exception:
         pass
 
-    # Find client to query source channel (try bot or market_clients fallback)
+    # Find client to query source channel (try bot, main_bot, or market_clients fallback)
     clients_to_try = [client] if client else []
+    if getattr(db, "main_bot", None) and db.main_bot not in clients_to_try:
+        clients_to_try.append(db.main_bot)
     try:
         from plugins.userbot.market_seller import market_clients
         for mc in market_clients.values():

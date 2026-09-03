@@ -126,6 +126,23 @@ async def main():
     except Exception as e:
         logger.error(f"Failed to load mgmt_bot: {e}")
 
+    # ── 1.5 Load Main Forward Bot (if different) ──
+    if Config.BOT_TOKEN and Config.BOT_TOKEN != Config.MGMT_BOT_TOKEN:
+        try:
+            from pyrogram import Client
+            main_fwd_bot = Client(
+                name="main_fwd_bot",
+                api_id=Config.API_ID,
+                api_hash=Config.API_HASH,
+                bot_token=Config.BOT_TOKEN,
+                in_memory=False
+            )
+            db.main_bot = main_fwd_bot
+            apps.append(main_fwd_bot)
+            logger.info("✅ Main Forward Bot registered for channel monitor & delivery fallback")
+        except Exception as e:
+            logger.warning(f"Could not load main_fwd_bot: {e}")
+
     # ── 2. Load Store Bots ──
     try:
         from plugins.userbot.market_seller import market_clients, _process_start, _process_screenshot, _process_callback, _process_text, _process_media, _process_my_stories, _process_chat_member, _process_inline_query
