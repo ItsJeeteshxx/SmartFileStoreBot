@@ -13414,11 +13414,17 @@ async def serve_spa(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("ws/"):
         raise HTTPException(status_code=404, detail="API endpoint not found")
     
-    curr_dist = get_dist_dir()
+    # ── Path Traversal & Malicious Probe Filter ──
+    bad_patterns = ["..", ".env", "etc/", "proc/", "root/", "bin/", "home/", ".git", ".ssh", ".aws", ".bash", ".zsh", "wallet", "Anchor.toml", "passwd", "shadow"]
+    if any(p in full_path for p in bad_patterns):
+        raise HTTPException(status_code=404, detail="Not Found")
 
-    # Check if target static file exists in dist
-    target_file = os.path.join(curr_dist, full_path)
-    if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
+    curr_dist = get_dist_dir()
+    curr_dist_abs = os.path.abspath(curr_dist)
+
+    # Check if target static file exists strictly within dist
+    target_file = os.path.abspath(os.path.join(curr_dist, full_path))
+    if target_file.startswith(curr_dist_abs) and os.path.exists(target_file) and os.path.isfile(target_file):
         headers = {}
         if full_path.startswith("assets/"):
             headers["Cache-Control"] = "public, max-age=31536000, immutable"
@@ -13443,7 +13449,6 @@ async def serve_spa(full_path: str):
             except Exception:
                 return FileResponse(alt_file, headers=no_cache_hdrs)
     
-    from fastapi.responses import HTMLResponse
     return HTMLResponse(
         content="""<!DOCTYPE html>
 <html>

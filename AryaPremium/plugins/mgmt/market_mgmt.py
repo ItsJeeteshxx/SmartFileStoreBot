@@ -5077,15 +5077,18 @@ async def mgmt_sync_ongoing(client, message):
     if await _deny_if_not_owner(client, user_id):
         return
 
+    full_mode = bool(len(message.command) > 1 and "full" in message.command[1].lower())
+    mode_str = " (Full Resync Mode)" if full_mode else ""
+
     wait_msg = await message.reply_text(
-        "<b>🚀 Initializing Ongoing Stories & Parts Sync...</b>\n\n"
+        f"<b>🚀 Initializing Ongoing Stories & Parts Sync{mode_str}...</b>\n\n"
         "<i>Scanning channel messages for all active ongoing stories and updating episode ranges & parts in real-time...</i>",
         parse_mode=enums.ParseMode.HTML
     )
 
     try:
         from plugins.premium_live_monitor import check_and_update_all_ongoing_stories
-        res = await check_and_update_all_ongoing_stories(client)
+        res = await check_and_update_all_ongoing_stories(client, full_scan=full_mode)
         
         # Query updated ongoing stories summary
         stories = await db.db.premium_stories.find({
@@ -5116,7 +5119,7 @@ async def mgmt_sync_ongoing(client, message):
             ) + "\n\n"
 
         text = (
-            f"<b>✅ Ongoing Stories Sync Complete!</b>\n\n"
+            f"<b>✅ Ongoing Stories Sync Complete!{mode_str}</b>\n\n"
             f"• Total Checked: <b>{res.get('total', len(stories))}</b>\n"
             f"• Newly Updated: <b>{res.get('updated_count', 0)}</b>\n\n"
             + updated_highlight
@@ -5138,12 +5141,7 @@ async def mgmt_sync_all_stories(client, message):
     import time
     start_time = time.time()
     last_edit_time = 0
-
-    status_msg = await message.reply_text(
-        "<b>🔄 Initializing Bulk Story File Indexing...</b>\n\n"
-        "<i>Scanning channel messages for all stories in background. Updates will be shown live here.</i>",
-        parse_mode=enums.ParseMode.HTML
-    )
+    status_msg = await message.reply_text("<b>🚀 Initializing Bulk Story File Indexing...</b>\n\n<i>Analyzing database stories...</i>", parse_mode=enums.ParseMode.HTML)
     
     async def on_progress(idx, total, name, valid_count, ok):
         nonlocal last_edit_time
@@ -5249,15 +5247,26 @@ async def mgmt_sync_story(client, message):
         return await message.reply_text(f"❌ <b>Story '{s_id_input}' not found!</b>", parse_mode=enums.ParseMode.HTML)
         
     wait_msg = await message.reply_text("<i>⏳ Scanning and indexing story files...</i>", parse_mode=enums.ParseMode.HTML)
+    
+    # 1. Run live channel scan
+    try:
+        from plugins.premium_live_monitor import check_and_update_single_story
+        await check_and_update_single_story(client, story, db, full_scan=True)
+        story = await db.db.premium_stories.find_one({"_id": story["_id"]}) or story
+    except Exception:
+        pass
+
     from utils import scan_and_index_story
     try:
         valid_ids = await scan_and_index_story(client, story, save_to_db=True, db=db)
         name = story.get('story_name_en', story.get('story_name', 'Story'))
         s_id = story.get('start_id', '?')
         e_id = story.get('end_id', '?')
+        eps = story.get('episodes', '?')
         await wait_msg.edit_text(
             f"<b>✅ Story Synced Successfully!</b>\n\n"
             f"<b>Story:</b> {name}\n"
+            f"<b>Episodes:</b> <b>{eps}</b>\n"
             f"<b>Message Range:</b> {s_id} - {e_id}\n"
             f"<b>Valid Active Files:</b> <b>{len(valid_ids)}</b>\n\n"
             f"<i>Chunks and parts updated cleanly in database!</i>",

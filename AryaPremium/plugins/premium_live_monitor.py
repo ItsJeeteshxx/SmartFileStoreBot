@@ -20,9 +20,12 @@ async def _extract_episode_number(file_name: str, caption: str, title: str = "")
     if file_name:
         fname, _ = os.path.splitext(file_name)
 
-    text = f"{fname} {title or ''} {caption or ''}".strip()
-    if not text:
+    raw_text = f"{fname} {title or ''} {caption or ''}".strip()
+    if not raw_text:
         return None
+
+    # Replace underscores with spaces so regex word boundaries work on K_For_King_925
+    text = raw_text.replace('_', ' ')
 
     # 1. Match explicit episode labels: Ep 123, Episode 123, EP-123, एपिसोड 123, कड़ी 123, Ch 123, Chapter 123
     match = re.search(r'(?:[eE]p(?:isode)?|[eE]p|\b[eE]\b|एपिसोड|कड़ी|kadi|ch(?:apter)?|अध्याय)[\.\-\s_:#]*(\d+)', text, re.IGNORECASE)
@@ -37,7 +40,7 @@ async def _extract_episode_number(file_name: str, caption: str, title: str = "")
     # 3. Match numbers in parentheses/brackets e.g. (1065) or [1065] (exclude 4-digit years)
     for m in re.finditer(r'[\(\[\{](\d+)[\)\]\}]', text):
         val = int(m.group(1))
-        if val not in [2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027]:
+        if val not in [2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027, 2028]:
             return val
 
     # 4. Fallback: match standalone numbers, filtering out known bitrates, years, resolutions
@@ -170,11 +173,11 @@ Thank you.</blockquote>"""
     except Exception as e:
         logger.error(f"[Premium Monitor] Error dispatching ongoing update DMs: {e}")
 
-async def check_and_update_single_story(client: Client, story: dict, db) -> dict:
+async def check_and_update_single_story(client: Client, story: dict, db, full_scan: bool = False) -> dict:
     """
     Checks Telegram source channel for new messages using peer resolution + multi-batch scan:
     - Resolves channel peer with get_chat
-    - Scans forward in batches of 150 IDs to find all new audio messages
+    - Scans forward in batches of 150 IDs to find all new audio messages / audio documents
     - Extracts episode number from file_name / audio title / caption
     - Never decreases episode count or end_id
     - Synchronizes ongoing part in parts list
@@ -218,6 +221,7 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> dict
 
     # 2. Determine current base end_id and current episodes
     story_end_id = int(story.get("end_id") or story.get("end_message_id") or 0)
+    story_start_id = int(story.get("start_id") or 1)
     parts_end_ids = [int(p.get("end_id") or 0) for p in (story.get("parts") or []) if p.get("end_id")]
     base_end_id = max([story_end_id] + parts_end_ids + [0])
 
@@ -225,14 +229,20 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> dict
     m_cur = re.search(r"\d+", curr_eps_raw)
     curr_eps_num = int(m_cur.group(0)) if m_cur else 0
 
-    # 3. Scan forward in batches of 150 IDs (up to 1500 messages ahead)
-    scan_cursor = base_end_id + 1
+    # If full scan requested, start from start_id; else look slightly back to catch any edge messages
+    if full_scan:
+        scan_cursor = max(1, story_start_id)
+        max_scan = base_end_id + 3000
+    else:
+        scan_cursor = max(1, base_end_id - 15)
+        max_scan = base_end_id + 2000
+
     consecutive_empty = 0
     highest_ep_num = curr_eps_num
     last_found_media_id = base_end_id
     all_new_audio_ids = []
 
-    while consecutive_empty < 2 and scan_cursor <= base_end_id + 1500:
+    while consecutive_empty < 3 and scan_cursor <= max_scan:
         ids_to_fetch = list(range(scan_cursor, scan_cursor + 150))
         try:
             msgs = await active_client.get_messages(source_id, ids_to_fetch)
@@ -249,16 +259,28 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> dict
                 continue
             batch_had_any_msg = True
 
-            # Check if this is an audio file or audio document
-            is_audio = bool(msg.audio or msg.voice or (msg.document and getattr(msg.document, "mime_type", "").startswith("audio/")))
+            # Check if this is an audio file or audio document (mp3, m4a, etc.)
+            is_audio = False
+            media_obj = None
+            if msg.audio or msg.voice:
+                is_audio = True
+                media_obj = msg.audio or msg.voice
+            elif msg.document:
+                doc = msg.document
+                mime = str(getattr(doc, "mime_type", "") or "").lower()
+                fn = str(getattr(doc, "file_name", "") or "").lower()
+                if mime.startswith("audio/") or fn.endswith((".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".opus", ".mp4", ".mkv", ".m4b")):
+                    is_audio = True
+                    media_obj = doc
+
             if is_audio:
                 all_new_audio_ids.append(msg.id)
                 if msg.id > last_found_media_id:
                     last_found_media_id = msg.id
 
-                fname = getattr(msg.audio or msg.document or msg.voice, "file_name", "")
-                caption = msg.caption or ""
-                title = getattr(msg.audio, "title", "") if msg.audio else ""
+                fname = getattr(media_obj, "file_name", "") or ""
+                caption = msg.caption or msg.text or ""
+                title = getattr(msg.audio, "title", "") if msg.audio else (getattr(msg.document, "file_name", "") if msg.document else "")
 
                 ep_num = await _extract_episode_number(fname, caption, title)
                 if ep_num and ep_num > highest_ep_num:
@@ -271,12 +293,17 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> dict
 
         scan_cursor += 150
 
-    # If no new media found, nothing to update
-    if last_found_media_id <= base_end_id and highest_ep_num <= curr_eps_num:
+    # If no new media found and counts didn't change, nothing to update
+    if last_found_media_id <= base_end_id and highest_ep_num <= curr_eps_num and not full_scan:
         return {"updated": False, "reason": "up_to_date"}
 
     new_end_id = max(base_end_id, last_found_media_id)
     final_episodes = max(curr_eps_num, highest_ep_num)
+    if final_episodes == curr_eps_num and len(all_new_audio_ids) > 0 and not full_scan:
+        # If new audio was found above old end_id, increment count
+        new_above_old = [mid for mid in all_new_audio_ids if mid > base_end_id]
+        if new_above_old:
+            final_episodes = max(curr_eps_num, curr_eps_num + len(new_above_old))
 
     # 4. Update DB immediately
     update_data = {
@@ -366,7 +393,7 @@ async def check_and_update_single_story(client: Client, story: dict, db) -> dict
         "new_eps": final_episodes
     }
 
-async def check_and_update_all_ongoing_stories(bot: Client = None):
+async def check_and_update_all_ongoing_stories(bot: Client = None, full_scan: bool = False):
     """Scans and updates all ongoing stories across connected channels."""
     from database import db
     query = {
@@ -381,12 +408,12 @@ async def check_and_update_all_ongoing_stories(bot: Client = None):
         "source": {"$exists": True, "$ne": None, "$ne": ""}
     }
     stories = await db.db.premium_stories.find(query).to_list(length=None)
-    logger.info(f"[Premium Monitor] Found {len(stories)} ongoing stories to check...")
+    logger.info(f"[Premium Monitor] Found {len(stories)} ongoing stories to check (full_scan={full_scan})...")
 
     updated_list = []
     for story in stories:
         try:
-            res = await check_and_update_single_story(bot, story, db)
+            res = await check_and_update_single_story(bot, story, db, full_scan=full_scan)
             if res.get("updated"):
                 updated_list.append(res)
         except Exception as e:
