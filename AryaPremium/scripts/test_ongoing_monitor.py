@@ -23,39 +23,21 @@ async def run_live_test():
 
     all_clients: list[Client] = []
 
-    # 1. Connect Main Arya Forward Bot (BOT_TOKEN)
-    if Config.BOT_TOKEN:
-        main_bot = Client(
-            name="main_bot_test",
-            api_id=Config.API_ID,
-            api_hash=Config.API_HASH,
-            bot_token=Config.BOT_TOKEN,
-            in_memory=True
-        )
-        try:
-            await main_bot.start()
-            me = await main_bot.get_me()
-            print(f"✅ Connected Main Forward Bot (BOT_TOKEN): @{me.username} (ID: {me.id})")
-            all_clients.append(main_bot)
-        except Exception as e:
-            print(f"⚠️ Could not connect Main Forward Bot: {e}")
-
-    # 2. Connect Management Bot (MGMT_BOT_TOKEN) if different
-    if Config.MGMT_BOT_TOKEN and Config.MGMT_BOT_TOKEN != Config.BOT_TOKEN:
-        mgmt_bot = Client(
-            name="mgmt_bot_test",
-            api_id=Config.API_ID,
-            api_hash=Config.API_HASH,
-            bot_token=Config.MGMT_BOT_TOKEN,
-            in_memory=True
-        )
-        try:
-            await mgmt_bot.start()
-            me = await mgmt_bot.get_me()
-            print(f"✅ Connected Management Bot (MGMT_BOT_TOKEN): @{me.username} (ID: {me.id})")
-            all_clients.append(mgmt_bot)
-        except Exception as e:
-            print(f"⚠️ Could not connect Management Bot: {e}")
+    # 1. Connect Management Bot (MGMT_BOT_TOKEN)
+    mgmt_bot = Client(
+        name="mgmt_bot_test",
+        api_id=Config.API_ID,
+        api_hash=Config.API_HASH,
+        bot_token=Config.MGMT_BOT_TOKEN,
+        in_memory=True
+    )
+    try:
+        await mgmt_bot.start()
+        me = await mgmt_bot.get_me()
+        print(f"✅ Connected Management Bot: @{me.username} (ID: {me.id})")
+        all_clients.append(mgmt_bot)
+    except Exception as e:
+        print(f"⚠️ Could not connect Management Bot: {e}")
 
     # 2. Connect All Store Bots from MongoDB
     try:
