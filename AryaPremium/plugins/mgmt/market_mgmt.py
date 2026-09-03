@@ -5071,6 +5071,55 @@ async def _msg_all_buyers_flow(client, admin_id: int):
     except Exception as e:
         await client.send_message(admin_id, f"❌ Error during broadcast: {e}", parse_mode=enums.ParseMode.HTML)
 
+@Client.on_message(filters.command(["sync_ongoing", "sync_ongoing_stories", "ongoing_sync"]) & filters.private)
+async def mgmt_sync_ongoing(client, message):
+    user_id = message.from_user.id
+    if await _deny_if_not_owner(client, user_id):
+        return
+
+    wait_msg = await message.reply_text(
+        "<b>🚀 Initializing Ongoing Stories & Parts Sync...</b>\n\n"
+        "<i>Scanning channel messages for all active ongoing stories and updating episode ranges & parts in real-time...</i>",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+    try:
+        from plugins.premium_live_monitor import check_and_update_all_ongoing_stories
+        await check_and_update_all_ongoing_stories(client)
+        
+        # Query updated ongoing stories summary
+        stories = await db.db.premium_stories.find({
+            "$or": [
+                {"status": {"$in": ["Ongoing", "ongoing", "ONGOING"]}},
+                {"parts.badge": "ongoing"},
+                {"parts.is_ongoing": True}
+            ]
+        }).to_list(length=None)
+
+        summary_lines = []
+        for s in stories[:15]:
+            s_name = s.get("story_name_en") or s.get("story_name") or s.get("title") or "Story"
+            eps = s.get("episodes") or "?"
+            end_id = s.get("end_id") or s.get("end_message_id") or "?"
+            ong_p_str = ""
+            for p in (s.get("parts") or []):
+                if str(p.get("badge") or "").lower() == "ongoing" or p.get("is_ongoing"):
+                    ong_p_str = f" [Part {p.get('part', '?')}: {p.get('episodes', '?')}]"
+                    break
+            summary_lines.append(f"• <b>{s_name}</b>: {eps} Eps (End: {end_id}){ong_p_str}")
+
+        text = (
+            f"<b>✅ Ongoing Stories Sync Complete!</b>\n\n"
+            f"• Total Ongoing Stories Checked: <b>{len(stories)}</b>\n\n"
+            f"<b>📊 Latest Ongoing Status:</b>\n"
+            + "\n".join(summary_lines)
+            + f"\n\n<i>All new episodes and ongoing parts have been synchronized with MongoDB and Mini App!</i>"
+        )
+        await wait_msg.edit_text(text, parse_mode=enums.ParseMode.HTML)
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ <b>Error syncing ongoing stories:</b> {e}", parse_mode=enums.ParseMode.HTML)
+
+
 @Client.on_message(filters.command(["sync_all_stories", "sync_stories"]) & filters.private)
 async def mgmt_sync_all_stories(client, message):
     user_id = message.from_user.id
