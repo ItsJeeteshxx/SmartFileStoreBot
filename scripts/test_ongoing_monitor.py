@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import logging
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.getcwd())
@@ -9,7 +10,7 @@ sys.path.insert(0, os.getcwd())
 from database import db
 from config import Config
 from pyrogram import Client
-from pyrogram.errors import FloodWait, RPCError
+from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("OngoingTester")
@@ -17,9 +18,12 @@ logger = logging.getLogger("OngoingTester")
 
 async def run_live_test():
     print("=" * 90)
-    print("🔍 ARYA ONGOING STORY LIVE MONITOR — FIXED BOT GET_MESSAGES SCANNER")
+    print("🔍 ARYA ONGOING STORY LIVE MONITOR — MULTI-BOT SCANNER & SYNC")
     print("=" * 90)
 
+    all_clients: list[Client] = []
+
+    # 1. Connect Mgmt Bot
     mgmt_bot = Client(
         name="mgmt_bot_test",
         api_id=Config.API_ID,
@@ -27,17 +31,42 @@ async def run_live_test():
         bot_token=Config.MGMT_BOT_TOKEN,
         in_memory=True
     )
-
-    print("📡 Connecting Telegram Bot...")
+    print("📡 Connecting Telegram Bots...")
     try:
         await mgmt_bot.start()
         me = await mgmt_bot.get_me()
-        print(f"✅ Connected as @{me.username} (ID: {me.id})\n")
+        print(f"✅ Connected Management Bot: @{me.username} (ID: {me.id})")
+        all_clients.append(mgmt_bot)
     except Exception as e:
-        print(f"❌ Failed to connect Bot: {e}")
-        return
+        print(f"⚠️ Could not connect Management Bot: {e}")
 
-    # Find all ongoing stories
+    # 2. Connect All Store Bots from MongoDB
+    try:
+        store_bots_docs = await db.db.premium_bots.find({"status": {"$ne": "inactive"}}).to_list(length=None)
+        print(f"📦 Found {len(store_bots_docs)} Store Bots in MongoDB:")
+        for b in store_bots_docs:
+            tok = b.get("bot_token") or b.get("token")
+            uname = b.get("bot_username") or b.get("username")
+            if tok and tok != getattr(Config, "MGMT_BOT_TOKEN", ""):
+                cli = Client(
+                    name=f"bot_{uname or 'store'}",
+                    api_id=Config.API_ID,
+                    api_hash=Config.API_HASH,
+                    bot_token=tok,
+                    in_memory=True
+                )
+                try:
+                    await cli.start()
+                    all_clients.append(cli)
+                    print(f"  ✅ Connected Store Bot: @{uname}")
+                except Exception as e:
+                    print(f"  ⚠️ Failed to connect Store Bot @{uname}: {e}")
+    except Exception as e:
+        print(f"⚠️ Error querying store bots: {e}")
+
+    print(f"\n🚀 Total Active Bot Clients: {len(all_clients)}")
+
+    # 3. Find all ongoing stories
     query = {
         "$or": [
             {"status": {"$in": ["Ongoing", "ongoing", "ONGOING"]}},
@@ -51,6 +80,10 @@ async def run_live_test():
 
     stories = await db.db.premium_stories.find(query).to_list(length=None)
     print(f"📋 Checking {len(stories)} ongoing stories in MongoDB:\n")
+
+    updated_count = 0
+    up_to_date_count = 0
+    no_access_count = 0
 
     for idx, s in enumerate(stories, 1):
         s_id = str(s.get("_id"))
@@ -74,17 +107,25 @@ async def run_live_test():
         print(f"[{idx}] Story: '{s_title}' (ID: {s_id})")
         print(f"    • Channel: {source_id} | DB End ID: {current_end_id} | DB Episodes: {current_episodes} | Parts: {len(parts)}")
 
-        # 1. Resolve peer first to avoid 'Peer id invalid'
-        try:
-            chat = await mgmt_bot.get_chat(source_id)
-            print(f"    • Channel Resolved: '{chat.title}'")
-        except Exception as e:
-            print(f"    ❌ Cannot access channel {source_id}: {type(e).__name__} - {e}")
-            print("       (Add @aryamgmtbot as Admin to this channel to monitor new episodes!)")
+        # Try to resolve channel using ANY available bot client
+        active_client = None
+        for cli in all_clients:
+            try:
+                chat = await cli.get_chat(source_id)
+                active_client = cli
+                print(f"    • Channel Resolved via @{cli.me.username}: '{chat.title}'")
+                break
+            except Exception:
+                continue
+
+        if not active_client:
+            print(f"    ❌ Cannot access channel {source_id}")
+            print("       (Add any of your bots as Admin to this channel to monitor new episodes!)")
             print("-" * 90)
+            no_access_count += 1
             continue
 
-        # 2. Determine base end_id
+        # Determine base end_id
         try:
             end_id = int(current_end_id)
         except ValueError:
@@ -94,15 +135,15 @@ async def run_live_test():
         if parts_end_ids:
             end_id = max(end_id, max(parts_end_ids))
 
-        # 3. Fetch batch of next message IDs using bot.get_messages
+        # Fetch batch of next message IDs using get_messages
         ids_to_fetch = list(range(end_id + 1, end_id + 150))
         print(f"    • Scanning Message IDs: {end_id + 1} to {end_id + 150}...")
 
         try:
-            msgs = await mgmt_bot.get_messages(source_id, ids_to_fetch)
+            msgs = await active_client.get_messages(source_id, ids_to_fetch)
         except FloodWait as fw:
             await asyncio.sleep(fw.value)
-            msgs = await mgmt_bot.get_messages(source_id, ids_to_fetch)
+            msgs = await active_client.get_messages(source_id, ids_to_fetch)
         except Exception as ex:
             print(f"    ❌ Error fetching messages: {ex}")
             print("-" * 90)
@@ -112,7 +153,6 @@ async def run_live_test():
         last_found_id = -1
         highest_ep = -1
 
-        import re
         for msg in msgs:
             if not msg or msg.empty:
                 continue
@@ -186,13 +226,24 @@ async def run_live_test():
                 for p in update_data.get("parts", []):
                     if p.get("is_ongoing"):
                         print(f"       -> Ongoing Part '{p.get('name')}' Updated: Episodes '{p.get('episodes')}', End ID '{p.get('end_id')}'")
+            updated_count += 1
         else:
             print(f"    ⚪ Up to date: No new messages found after ID {end_id}.")
+            up_to_date_count += 1
 
         print("-" * 90)
 
-    await mgmt_bot.stop()
-    print("✅ Scan & Sync completed!")
+    for cli in all_clients:
+        try:
+            await cli.stop()
+        except Exception:
+            pass
+
+    print("\n" + "=" * 90)
+    print("📊 SCAN SUMMARY:")
+    print(f"  🟢 Stories Updated with New Episodes : {updated_count}")
+    print(f"  ⚪ Stories Already Up To Date        : {up_to_date_count}")
+    print(f"  ❌ Channels Missing Bot Admin Access : {no_access_count}")
     print("=" * 90)
 
 
