@@ -1662,7 +1662,6 @@ async def settings_query(bot, query):
     rl_cfg = await db.get_delivery_rate_limit_config()
     cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
     pro_prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
-    premium_prices = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
     hidden_plans = rl_cfg.get('hidden_plans', [])
     if not isinstance(hidden_plans, list):
         hidden_plans = []
@@ -1670,34 +1669,31 @@ async def settings_query(bot, query):
     from database import format_pricing_summary
     basic_summary = format_pricing_summary(cur_prices)
     pro_summary = format_pricing_summary(pro_prices)
-    prem_summary = format_pricing_summary(premium_prices)
     hidden_str = ", ".join(hidden_plans) if hidden_plans else "None (All Visible)"
 
     text = (
         f'<emoji id="5904462880941545555">💰</emoji> <b>Pricing & Plans Management</b>\n'
         f"────────────────────\n"
-        f'<emoji id="5415825426633202840">⚡</emoji> <b>Basic Plans (Standard):</b>\n'
+        f'<emoji id="5415825426633202840">⚡</emoji> <b>Basic Plans (Standard Pass):</b>\n'
         f"<code>{basic_summary}</code>\n\n"
-        f'<emoji id="6007983438294949171">💎</emoji> <b>Pro Plans (No FSub + No Promo Ads):</b>\n'
+        f'<emoji id="6007983438294949171">💎</emoji> <b>Pro Plans (No FSub + Zero Extra Ads):</b>\n'
         f"<code>{pro_summary}</code>\n\n"
-        f'<emoji id="6156730271858169904">👑</emoji> <b>Premium Plans (Pro + Storyfi/Arya Perks):</b>\n'
-        f"<code>{prem_summary}</code>\n\n"
+        f'<emoji id="6156730271858169904">👑</emoji> <b>Premium:</b>\n'
+        f"<i>Storyfi Bot & Arya Mini App Direct Links (No pass plans)</i>\n\n"
         f'<emoji id="6034898821517940846">👁</emoji> <b>Hidden Plans:</b> <code>{hidden_str}</code>\n'
         f"────────────────────\n"
-        f"<i>Select an option below to update pricing for a tier or toggle plan visibility.</i>"
+        f"<i>Select an option below to update pricing for Basic or Pro tier, or toggle plan visibility.</i>"
     )
 
     buttons = [
         [InlineKeyboardButton("⚡ Edit Basic Plans", callback_data="settings#sb_rl_edit_prices_basic")],
         [InlineKeyboardButton("💎 Edit Pro Plans", callback_data="settings#sb_rl_edit_prices_pro")],
-        [InlineKeyboardButton("👑 Edit Premium Plans", callback_data="settings#sb_rl_edit_prices_premium")],
         [InlineKeyboardButton("👁 Manage Plan Visibility", callback_data="settings#sb_rl_toggle_plans_menu")],
         [InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")],
     ]
     api_buttons = [
         [{"text": "Edit Basic Plans", "callback_data": "settings#sb_rl_edit_prices_basic", "icon_custom_emoji_id": "5415825426633202840"}],
         [{"text": "Edit Pro Plans", "callback_data": "settings#sb_rl_edit_prices_pro", "icon_custom_emoji_id": "6007983438294949171"}],
-        [{"text": "Edit Premium Plans", "callback_data": "settings#sb_rl_edit_prices_premium", "icon_custom_emoji_id": "6156730271858169904"}],
         [{"text": "Manage Plan Visibility", "callback_data": "settings#sb_rl_toggle_plans_menu", "icon_custom_emoji_id": "6034898821517940846"}],
         [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
     ]
@@ -1715,7 +1711,7 @@ async def settings_query(bot, query):
         except Exception:
             pass
 
-  elif type in ("sb_rl_edit_prices_basic", "sb_rl_edit_prices_pro", "sb_rl_edit_prices_premium"):
+  elif type in ("sb_rl_edit_prices_basic", "sb_rl_edit_prices_pro"):
     await query.message.delete()
     from database import parse_pricing_input, format_pricing_summary
     rl_cfg = await db.get_delivery_rate_limit_config()
@@ -1724,11 +1720,6 @@ async def settings_query(bot, query):
         tier_icon = '<emoji id="6007983438294949171">💎</emoji>'
         field_key = "pro_prices"
         cur_p = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
-    elif type == "sb_rl_edit_prices_premium":
-        tier_title = "Premium"
-        tier_icon = '<emoji id="6156730271858169904">👑</emoji>'
-        field_key = "premium_prices"
-        cur_p = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
     else:
         tier_title = "Basic"
         tier_icon = '<emoji id="5415825426633202840">⚡</emoji>'
@@ -1778,14 +1769,13 @@ async def settings_query(bot, query):
     rl_cfg = await db.get_delivery_rate_limit_config()
     cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
     pro_prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
-    premium_prices = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
     hidden_plans = rl_cfg.get('hidden_plans', [])
     if not isinstance(hidden_plans, list):
         hidden_plans = []
 
     # Get all distinct plan keys preserving order
     all_keys = []
-    for k in list(cur_prices.keys()) + list(pro_prices.keys()) + list(premium_prices.keys()):
+    for k in list(cur_prices.keys()) + list(pro_prices.keys()):
         if k not in all_keys:
             all_keys.append(k)
 
@@ -1806,7 +1796,7 @@ async def settings_query(bot, query):
         f"────────────────────\n"
         f"Tap any plan duration below to toggle it between <b>Active</b> and <b>Hidden</b>.\n\n"
         f"• <b>Active:</b> Shown to users during checkout.\n"
-        f"• <b>Hidden:</b> Hidden from users across all tiers (Basic, Pro, Premium).\n"
+        f"• <b>Hidden:</b> Hidden from users during checkout.\n"
         f"────────────────────"
     )
     from plugins.share_bot import send_or_edit_with_custom_icons

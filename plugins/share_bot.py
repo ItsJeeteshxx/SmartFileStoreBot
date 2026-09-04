@@ -3748,17 +3748,15 @@ async def _process_pass_callback(client, query):
                     f"• <b>कोई Force Subscribe नहीं:</b> चैनल जॉइन करने की कोई बाध्यता नहीं!\n"
                     f"• <b>कोई एक्स्ट्रा या प्रमोशनल मैसेज नहीं:</b> सिर्फ जरूरी ऑटो-डिलीट नोटिस।\n"
                     f"• 24/7 असीमित एक्सेस बिना किसी रुकावट के।\n\n"
-                    f'<emoji id="6156730271858169904">👑</emoji> <b>Premium पास:</b>\n'
-                    f"• <b>सभी Pro फायदे शामिल</b> (No FSub + No Extra Ads)।\n"
-                    f"• <b>Storyfi Bot</b> और <b>Arya Premium</b> इंटीग्रेशन।\n"
-                    f"• Forward Allowed, Download Allowed, No Ads।\n"
-                    f"• लाइफटाइम एक्सेस (T&C Apply), मल्टीपल पेमेंट ऑप्शन्स, इंस्टेंट वेरिफिकेशन।\n\n"
+                    f'<emoji id="6156730271858169904">👑</emoji> <b>Arya Premium & Storyfi:</b>\n'
+                    f"• Storyfi Bot या Arya Premium से स्टोरी खरीदने पर विशेष लाभ:\n"
+                    f"• Forward Allowed, Download Allowed, No Ads, Lifetime Access (T&C Apply)।\n\n"
                     f"──────────────────────\n"
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा प्लान टियर चुनें:</b>'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा विकल्प चुनें:</b>'
                 )
                 lbl_b = "Basic पास"
                 lbl_p = "Pro पास (No FSub)"
-                lbl_prem = "Premium पास"
+                lbl_prem = "Arya Premium & Storyfi"
             else:
                 methods_text = (
                     f'<emoji id="6007983438294949171">💎</emoji> <b>Pass Subscription Tiers</b> <emoji id="6041919344995209164">❤️</emoji>\n'
@@ -3770,17 +3768,15 @@ async def _process_pass_callback(client, query):
                     f"• <b>No Force Subscribe Required:</b> Skip joining channels completely!\n"
                     f"• <b>Zero Extra Ads / Promo Messages:</b> Only essential auto-delete notice.\n"
                     f"• 24/7 unlimited access with instant delivery.\n\n"
-                    f'<emoji id="6156730271858169904">👑</emoji> <b>Premium Pass:</b>\n'
-                    f"• Includes <b>all Pro benefits</b> (No FSub + Zero Extra Ads).\n"
-                    f"• <b>Storyfi Bot</b> & <b>Arya Premium</b> integration.\n"
-                    f"• Forward Allowed, Download Allowed, No Ads.\n"
-                    f"• Lifetime Access (T&C Apply), Multiple Payment Options, Instant Verification.\n\n"
+                    f'<emoji id="6156730271858169904">👑</emoji> <b>Arya Premium & Storyfi:</b>\n'
+                    f"• Exclusive perks when buying stories from Storyfi Bot or Arya Premium:\n"
+                    f"• Forward Allowed, Download Allowed, No Ads, Lifetime Access (T&C Apply).\n\n"
                     f"──────────────────────\n"
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass tier below:</b>'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired option below:</b>'
                 )
                 lbl_b = "Basic Pass"
                 lbl_p = "Pro Pass (No FSub)"
-                lbl_prem = "Premium Pass"
+                lbl_prem = "Arya Premium & Storyfi"
 
             methods_buttons = [
                 [InlineKeyboardButton(f"⚡ {lbl_b}", callback_data="pass#tier_basic")],
@@ -3947,122 +3943,125 @@ async def _process_pass_callback(client, query):
         if tier not in ('basic', 'pro', 'premium'):
             tier = 'basic'
 
-        rl_cfg = await db.get_delivery_rate_limit_config()
-        v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
-        hidden_plans = rl_cfg.get('hidden_plans', [])
-        if not isinstance(hidden_plans, list):
-            hidden_plans = []
-
-        if tier == 'pro':
-            prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
-            tier_header = '<emoji id="6007983438294949171">💎</emoji> <b>Pro Pass Subscription</b>'
-        elif tier == 'premium':
-            prices = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
-            tier_header = '<emoji id="6156730271858169904">👑</emoji> <b>Premium Pass Subscription</b>'
-        else:
-            prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
-            tier_header = '<emoji id="5415825426633202840">⚡</emoji> <b>Basic Pass Subscription</b>'
-
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
+        back_lbl = "← वापस" if is_hi else "← Back"
 
-        # Filter out hidden plans
-        plan_buttons = []
-        plan_api_kb = []
-        for idx, (dur_key, price) in enumerate(prices.items()):
-            if dur_key in hidden_plans:
-                continue
-            p_val = int(price) if float(price).is_integer() else price
-            label = format_plan_button_label(dur_key, p_val, lang=user_lang)
-            emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
-            cb = f"pass#upibuy_{dur_key}_{p_val}_{tier}" if v2_gw == 'upi' else f"pass#cfbuy_{dur_key}_{p_val}_{tier}"
-            plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
-            plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
-
-        # For Premium tier, add Storyfi Bot & Arya Premium direct buttons
         if tier == 'premium':
             storyfi_url = "https://t.me/StoryfiBot"
             arya_prem_url = "https://t.me/UseAryaBot/apminibyarya"
-            plan_buttons.append([
-                InlineKeyboardButton("🤖 Storyfi Bot", url=storyfi_url),
-                InlineKeyboardButton("💎 Arya Premium", url=arya_prem_url)
-            ])
-            plan_api_kb.append([
-                {"text": "Storyfi Bot", "url": storyfi_url, "icon_custom_emoji_id": "6032594876506312598"},
-                {"text": "Arya Premium", "url": arya_prem_url, "icon_custom_emoji_id": "6007983438294949171"}
-            ])
 
-        back_lbl = "← वापस" if is_hi else "← Back"
-        plan_buttons.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
-        plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
-
-        if tier == 'premium':
             if is_hi:
                 tier_text = (
-                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f'<emoji id="6156730271858169904">👑</emoji> <b>Arya Premium & Storyfi Bot</b> <emoji id="6041919344995209164">❤️</emoji>\n'
                     f"──────────────────────\n\n"
-                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Premium पास के विशेष फायदे:</b>\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई Force Subscribe नहीं:</b> चैनल जॉइन करने की आवश्यकता नहीं।\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई अतिरिक्त / प्रमोशनल एड्स नहीं:</b> 100% क्लीन एक्सपीरियंस।\n'
-                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Forward Allowed:</b> कहानियों को कहीं भी फॉरवर्ड करें।\n'
-                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Download Allowed:</b> ऑफलाइन सुनने के लिए डाउनलोड करें।\n'
-                    f'• <emoji id="6007983438294949171">💎</emoji> <b>Storyfi Bot & Arya Premium एक्सेस।</b>\n'
-                    f'• <emoji id="5805331990618053402">⚡️</emoji> लाइफटाइम एक्सेस (T&C Apply), मल्टीपल पेमेंट ऑप्शन्स, 24/7 बिना किसी देरी के डिलीवरी।\n\n'
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना प्रीमियम प्लान चुनें:</b>'
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Storyfi Bot या Arya Premium से स्टोरी खरीदने पर मिलने वाले विशेष फायदे:</b>\n\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Forward Allowed:</b> आप ऑडियो फाइल्स को कहीं भी फॉरवर्ड कर सकते हैं।\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Download Allowed:</b> ऑफलाइन सुनने के लिए ऑडियो फाइल्स सीधे डाउनलोड करें।\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Ads:</b> कोई एड्स या प्रमोशनल मैसेज नहीं, 100% क्लीन एक्सपीरियंस।\n'
+                    f'• <emoji id="6007983438294949171">💎</emoji> <b>Lifetime Access:</b> एक बार स्टोरी खरीदने पर हमेशा के लिए एक्सेस (T&C Apply)।\n'
+                    f'• <emoji id="6019224342666157570">💳</emoji> <b>Multiple Payment Options:</b> UPI, Cards, Netbanking और सभी पेमेंट मोड्स उपलब्ध।\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>24/7 Easy Access:</b> कभी भी, कहीं भी बिना किसी रुकावट के तुरंत एक्सेस।\n'
+                    f'• <emoji id="5415825426633202840">⚡️</emoji> <b>No Delay:</b> पेमेंट वेरिफिकेशन और डिलीवरी में कोई देरी नहीं।\n\n'
+                    f"──────────────────────\n"
+                    f'👇 <b>नीचे दिए गए बटन से Storyfi Bot या Arya Premium ओपन करें:</b>'
                 )
             else:
                 tier_text = (
-                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f'<emoji id="6156730271858169904">👑</emoji> <b>Arya Premium & Storyfi Bot</b> <emoji id="6041919344995209164">❤️</emoji>\n'
                     f"──────────────────────\n\n"
-                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Premium Pass Exclusive Perks:</b>\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Force Subscribe Required:</b> Bypass channel joins completely.\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Ads & Zero Extra Messages:</b> 100% clean experience.\n'
-                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Forward Allowed:</b> Forward audio files anywhere.\n'
-                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Download Allowed:</b> Download stories for offline listening.\n'
-                    f'• <emoji id="6007983438294949171">💎</emoji> <b>Storyfi Bot & Arya Premium Access.</b>\n'
-                    f'• <emoji id="5805331990618053402">⚡️</emoji> Lifetime Access (T&C Apply), Multiple Payment Options, 24/7 Access, Instant Delivery & Verification.\n\n'
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Premium plan below:</b>'
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Exclusive benefits when you purchase a story from Storyfi Bot or Arya Premium:</b>\n\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Forward Allowed:</b> Forward audio story messages to anyone or any channel.\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Download Allowed:</b> Download audio files directly for offline listening.\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Ads:</b> 100% clean experience with zero ads or promotions.\n'
+                    f'• <emoji id="6007983438294949171">💎</emoji> <b>Lifetime Access:</b> Buy once and get permanent story access (T&C Apply).\n'
+                    f'• <emoji id="6019224342666157570">💳</emoji> <b>Multiple Payment Options:</b> UPI, Cards, Netbanking and more supported.\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>24/7 Easy Access:</b> Instant listening access anytime without delay.\n'
+                    f'• <emoji id="5415825426633202840">⚡️</emoji> <b>No Delay:</b> Instant delivery and automated payment verification.\n\n'
+                    f"──────────────────────\n"
+                    f'👇 <b>Open Storyfi Bot or Arya Premium Mini App below:</b>'
                 )
-        elif tier == 'pro':
-            if is_hi:
-                tier_text = (
-                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
-                    f"──────────────────────\n\n"
-                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Pro पास के फायदे:</b>\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई Force Subscribe नहीं:</b> आपको कोई भी चैनल जॉइन करने की आवश्यकता नहीं है!\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई अतिरिक्त / प्रमोशनल एड्स नहीं:</b> केवल आवश्यक ऑटो-डिलीट नोटिस भेजा जाएगा।\n'
-                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>अनलिमिटेड एक्सेस:</b> बिना किसी कूलडाउन के तुरंत कहानियां सुनें।\n\n'
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना Pro प्लान चुनें:</b>'
-                )
-            else:
-                tier_text = (
-                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
-                    f"──────────────────────\n\n"
-                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Pro Pass Benefits:</b>\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Force Subscribe Required:</b> You never need to join any required channels!\n'
-                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Extra / Promo Messages:</b> Zero advertising clutter, only essential auto-delete notice.\n'
-                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>Unlimited Access:</b> Instant delivery 24/7 without cooldowns.\n\n'
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pro plan below:</b>'
-                )
+
+            plan_buttons = [
+                [InlineKeyboardButton("🤖 Storyfi Bot", url=storyfi_url)],
+                [InlineKeyboardButton("💎 Arya Premium", url=arya_prem_url)],
+                [InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")]
+            ]
+            plan_api_kb = [
+                [{"text": "Storyfi Bot", "url": storyfi_url, "icon_custom_emoji_id": "6032594876506312598"}],
+                [{"text": "Arya Premium", "url": arya_prem_url, "icon_custom_emoji_id": "6007983438294949171"}],
+                [{"text": back_lbl, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "5807651380332076999"}]
+            ]
         else:
-            if is_hi:
-                tier_text = (
-                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
-                    f"──────────────────────\n\n"
-                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Basic पास के फायदे:</b>\n'
-                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>अनलिमिटेड एक्सेस:</b> बिना किसी कूलडाउन के सभी कहानियां लगातार सुनें।\n'
-                    f'• <emoji id="6120635817674149717">✅</emoji> <b>फ़ास्ट डिलीवरी:</b> 100% क्लीन डिलीवरी एक्सपीरियंस।\n\n'
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना Basic प्लान चुनें:</b>'
-                )
+            rl_cfg = await db.get_delivery_rate_limit_config()
+            v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
+            hidden_plans = rl_cfg.get('hidden_plans', [])
+            if not isinstance(hidden_plans, list):
+                hidden_plans = []
+
+            if tier == 'pro':
+                prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
+                tier_header = '<emoji id="6007983438294949171">💎</emoji> <b>Pro Pass Subscription</b>'
             else:
-                tier_text = (
-                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
-                    f"──────────────────────\n\n"
-                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Basic Pass Benefits:</b>\n'
-                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>Unlimited Access:</b> Listen to all stories continuously without cooldowns.\n'
-                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Fast Delivery:</b> Clean and seamless experience.\n\n'
-                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Basic plan below:</b>'
-                )
+                prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+                tier_header = '<emoji id="5415825426633202840">⚡</emoji> <b>Basic Pass Subscription</b>'
+
+            # Filter out hidden plans
+            plan_buttons = []
+            plan_api_kb = []
+            for idx, (dur_key, price) in enumerate(prices.items()):
+                if dur_key in hidden_plans:
+                    continue
+                p_val = int(price) if float(price).is_integer() else price
+                label = format_plan_button_label(dur_key, p_val, lang=user_lang)
+                emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+                cb = f"pass#upibuy_{dur_key}_{p_val}_{tier}" if v2_gw == 'upi' else f"pass#cfbuy_{dur_key}_{p_val}_{tier}"
+                plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+                plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
+
+            plan_buttons.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
+            plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "5807651380332076999"}])
+
+            if tier == 'pro':
+                if is_hi:
+                    tier_text = (
+                        f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                        f"──────────────────────\n\n"
+                        f'<emoji id="5881806211195605908">⭐️</emoji> <b>Pro पास के फायदे:</b>\n'
+                        f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई Force Subscribe नहीं:</b> आपको कोई भी चैनल जॉइन करने की आवश्यकता नहीं है!\n'
+                        f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई अतिरिक्त / प्रमोशनल एड्स नहीं:</b> केवल आवश्यक ऑटो-डिलीट नोटिस भेजा जाएगा।\n'
+                        f'• <emoji id="5805331990618053402">⚡️</emoji> <b>अनलिमिटेड एक्सेस:</b> बिना किसी कूलडाउन के तुरंत कहानियां सुनें।\n\n'
+                        f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना Pro प्लान चुनें:</b>'
+                    )
+                else:
+                    tier_text = (
+                        f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                        f"──────────────────────\n\n"
+                        f'<emoji id="5881806211195605908">⭐️</emoji> <b>Pro Pass Benefits:</b>\n'
+                        f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Force Subscribe Required:</b> You never need to join any required channels!\n'
+                        f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Extra / Promo Messages:</b> Zero advertising clutter, only essential auto-delete notice.\n'
+                        f'• <emoji id="5805331990618053402">⚡️</emoji> <b>Unlimited Access:</b> Instant delivery 24/7 without cooldowns.\n\n'
+                        f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pro plan below:</b>'
+                    )
+            else:
+                if is_hi:
+                    tier_text = (
+                        f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                        f"──────────────────────\n\n"
+                        f'<emoji id="5881806211195605908">⭐️</emoji> <b>Basic पास के फायदे:</b>\n'
+                        f'• <emoji id="5805331990618053402">⚡️</emoji> <b>अनलिमिटेड एक्सेस:</b> बिना किसी कूलडाउन के सभी कहानियां लगातार सुनें।\n'
+                        f'• <emoji id="6120635817674149717">✅</emoji> <b>फ़ास्ट डिलीवरी:</b> 100% क्लीन डिलीवरी एक्सपीरियंस।\n\n'
+                        f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना Basic प्लान चुनें:</b>'
+                    )
+                else:
+                    tier_text = (
+                        f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                        f"──────────────────────\n\n"
+                        f'<emoji id="5881806211195605908">⭐️</emoji> <b>Basic Pass Benefits:</b>\n'
+                        f'• <emoji id="5805331990618053402">⚡️</emoji> <b>Unlimited Access:</b> Listen to all stories continuously without cooldowns.\n'
+                        f'• <emoji id="6120635817674149717">✅</emoji> <b>Fast Delivery:</b> Clean and seamless experience.\n\n'
+                        f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Basic plan below:</b>'
+                    )
 
         if getattr(query.message, "photo", None):
             try: await query.message.delete()
