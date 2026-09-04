@@ -368,6 +368,17 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
     from pyrogram.errors import UserNotParticipant, PeerIdInvalid, ChannelInvalid
     now = time.time()
     
+    # Pro / Premium Pass users bypass Force Subscribe completely
+    try:
+        from database import db
+        user_pass = await db.get_user_unlimited_pass(user_id)
+        if user_pass and user_pass.get('active'):
+            pass_tier = str(user_pass.get('tier', 'basic')).lower()
+            if pass_tier in ('pro', 'premium'):
+                return []
+    except Exception:
+        pass
+    
     async def _check_single(ch):
         chat_id = ch.get('chat_id')
         if not chat_id:
@@ -1210,6 +1221,9 @@ async def _process_start(client, message):
         user_pass = await db.get_user_unlimited_pass(user_id)
         if user_pass.get('active', False):
             show_don = False
+            # Pro and Premium tier passes also suppress promotional ads ("Baki delete message ke alwa extra message bhi nahi aayenge")
+            if str(user_pass.get('tier', 'basic')).lower() in ('pro', 'premium'):
+                show_ad = False
 
         if show_ad:
             custom_ad_text = await db.get_share_bot_text(bot_id, "premium_ad_text")
@@ -2560,14 +2574,17 @@ async def _poll_upi_payment(
                     gateway="Pay Via UPI (INR)"
                 )
 
-                # Activate user pass in database with Telegram user name
+                # Activate user pass in database with Telegram user name and tier
                 _cancel_cooldown_reminders(user_id)
+                order_doc_paid = await db.pass_orders.find_one({'order_id': order_id})
+                tier_val = (order_doc_paid.get('tier') or 'basic') if order_doc_paid else 'basic'
                 await db.activate_user_unlimited_pass(
                     user_id=user_id,
                     duration_seconds=dur_sec,
                     order_id=order_id,
                     amount=dyn_amount,
                     user_name=tg_user_name,
+                    tier=tier_val,
                     gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
                 )
 
@@ -3267,7 +3284,8 @@ async def start_pass_cashfree_auto_verifier(
                     _active_order_reminders[f"done_{task_key}"] = True
                     b_id = getattr(getattr(client, "me", None), "id", None)
                     b_uname = getattr(getattr(client, "me", None), "username", "")
-                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount)
+                    tier_val = (claimed.get('tier') or 'basic') if isinstance(claimed, dict) else 'basic'
+                    new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount, tier=tier_val)
                     
                     import datetime
                     try:
@@ -3688,6 +3706,9 @@ async def _process_pass_callback(client, query):
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
         uiver = rl_cfg.get('pass_ui_version', 'v1')
+        hidden_plans = rl_cfg.get('hidden_plans', [])
+        if not isinstance(hidden_plans, list):
+            hidden_plans = []
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
 
@@ -3714,7 +3735,77 @@ async def _process_pass_callback(client, query):
             lbl_help = "Help"
             lbl_close = "Close"
 
-        if uiver == 'v2':
+        if uiver == 'v3':
+            # V3 (Tiered Flow: Basic, Pro, Premium Selection)
+            if is_hi:
+                methods_text = (
+                    f'<emoji id="6007983438294949171">💎</emoji> <b>पास सब्सक्रिप्शन टियर्स</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5415825426633202840">⚡</emoji> <b>Basic पास:</b>\n'
+                    f"• बिना किसी कूलडाउन के असीमित कहानियां तुरंत सुनें।\n"
+                    f"• क्लीन और फ़ास्ट डिलीवरी एक्सपीरियंस।\n\n"
+                    f'<emoji id="6007983438294949171">💎</emoji> <b>Pro पास:</b>\n'
+                    f"• <b>कोई Force Subscribe नहीं:</b> चैनल जॉइन करने की कोई बाध्यता नहीं!\n"
+                    f"• <b>कोई एक्स्ट्रा या प्रमोशनल मैसेज नहीं:</b> सिर्फ जरूरी ऑटो-डिलीट नोटिस।\n"
+                    f"• 24/7 असीमित एक्सेस बिना किसी रुकावट के।\n\n"
+                    f'<emoji id="6156730271858169904">👑</emoji> <b>Premium पास:</b>\n'
+                    f"• <b>सभी Pro फायदे शामिल</b> (No FSub + No Extra Ads)।\n"
+                    f"• <b>Storyfi Bot</b> और <b>Arya Premium</b> इंटीग्रेशन।\n"
+                    f"• Forward Allowed, Download Allowed, No Ads।\n"
+                    f"• लाइफटाइम एक्सेस (T&C Apply), मल्टीपल पेमेंट ऑप्शन्स, इंस्टेंट वेरिफिकेशन।\n\n"
+                    f"──────────────────────\n"
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा प्लान टियर चुनें:</b>'
+                )
+                lbl_b = "Basic पास"
+                lbl_p = "Pro पास (No FSub)"
+                lbl_prem = "Premium पास"
+            else:
+                methods_text = (
+                    f'<emoji id="6007983438294949171">💎</emoji> <b>Pass Subscription Tiers</b> <emoji id="6041919344995209164">❤️</emoji>\n'
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5415825426633202840">⚡</emoji> <b>Basic Pass:</b>\n'
+                    f"• Unlimited story access without any cooldown.\n"
+                    f"• Clean and high-speed delivery experience.\n\n"
+                    f'<emoji id="6007983438294949171">💎</emoji> <b>Pro Pass:</b>\n'
+                    f"• <b>No Force Subscribe Required:</b> Skip joining channels completely!\n"
+                    f"• <b>Zero Extra Ads / Promo Messages:</b> Only essential auto-delete notice.\n"
+                    f"• 24/7 unlimited access with instant delivery.\n\n"
+                    f'<emoji id="6156730271858169904">👑</emoji> <b>Premium Pass:</b>\n'
+                    f"• Includes <b>all Pro benefits</b> (No FSub + Zero Extra Ads).\n"
+                    f"• <b>Storyfi Bot</b> & <b>Arya Premium</b> integration.\n"
+                    f"• Forward Allowed, Download Allowed, No Ads.\n"
+                    f"• Lifetime Access (T&C Apply), Multiple Payment Options, Instant Verification.\n\n"
+                    f"──────────────────────\n"
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass tier below:</b>'
+                )
+                lbl_b = "Basic Pass"
+                lbl_p = "Pro Pass (No FSub)"
+                lbl_prem = "Premium Pass"
+
+            methods_buttons = [
+                [InlineKeyboardButton(f"⚡ {lbl_b}", callback_data="pass#tier_basic")],
+                [InlineKeyboardButton(f"💎 {lbl_p}", callback_data="pass#tier_pro")],
+                [InlineKeyboardButton(f"👑 {lbl_prem}", callback_data="pass#tier_premium")],
+                [InlineKeyboardButton(f"📜 {lbl_txns}", callback_data="pass#my_transactions")],
+                [
+                    InlineKeyboardButton(f"📖 {lbl_help}", callback_data="pass#guide_menu"),
+                    InlineKeyboardButton(" ", callback_data="pass#lang_menu"),
+                    InlineKeyboardButton(lbl_close, callback_data="pass#close")
+                ]
+            ]
+            methods_api_kb = [
+                [{"text": lbl_b, "callback_data": "pass#tier_basic", "icon_custom_emoji_id": "5415825426633202840"}],
+                [{"text": lbl_p, "callback_data": "pass#tier_pro", "icon_custom_emoji_id": "6007983438294949171"}],
+                [{"text": lbl_prem, "callback_data": "pass#tier_premium", "icon_custom_emoji_id": "6156730271858169904"}],
+                [{"text": lbl_txns, "callback_data": "pass#my_transactions", "icon_custom_emoji_id": "6035297458907519073"}],
+                [
+                    {"text": lbl_help, "callback_data": "pass#guide_menu", "icon_custom_emoji_id": "6019130940012370273"},
+                    {"text": " ", "callback_data": "pass#lang_menu", "icon_custom_emoji_id": "6030768072296502910"},
+                    {"text": lbl_close, "callback_data": "pass#close", "icon_custom_emoji_id": "5807651380332076999"}
+                ]
+            ]
+
+        elif uiver == 'v2':
             # V2 (Single Gateway Flow - Cashfree or UPI based on settings):
             v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
             v2_prompt = '<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना पसंदीदा पास प्लान चुनें:</b>' if is_hi else '<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pass plan below:</b>'
@@ -3727,6 +3818,8 @@ async def _process_pass_callback(client, query):
             plan_buttons = []
             plan_api_kb = []
             for idx, (dur_key, price) in enumerate(prices.items()):
+                if dur_key in hidden_plans:
+                    continue
                 p_val = int(price) if float(price).is_integer() else price
                 label = format_plan_button_label(dur_key, p_val, lang=user_lang)
                 emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
@@ -3755,6 +3848,8 @@ async def _process_pass_callback(client, query):
             # Pass Benefits + Available Plans Text + Select preferred method + Gateway Buttons
             plan_lines = []
             for idx, (dur_key, price) in enumerate(prices.items()):
+                if dur_key in hidden_plans:
+                    continue
                 dur_str = str(dur_key).lower().strip()
                 if dur_str.endswith('mo'):
                     num = dur_str[:-2]
@@ -3847,15 +3942,164 @@ async def _process_pass_callback(client, query):
             if not sent_ok:
                 await query.message.edit_text(methods_text, reply_markup=methods_kb)
 
+    elif data.startswith("pass#tier_"):
+        tier = data.replace("pass#tier_", "").strip().lower()
+        if tier not in ('basic', 'pro', 'premium'):
+            tier = 'basic'
+
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        v2_gw = rl_cfg.get('v2_gateway', 'cashfree')
+        hidden_plans = rl_cfg.get('hidden_plans', [])
+        if not isinstance(hidden_plans, list):
+            hidden_plans = []
+
+        if tier == 'pro':
+            prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
+            tier_header = '<emoji id="6007983438294949171">💎</emoji> <b>Pro Pass Subscription</b>'
+        elif tier == 'premium':
+            prices = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
+            tier_header = '<emoji id="6156730271858169904">👑</emoji> <b>Premium Pass Subscription</b>'
+        else:
+            prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+            tier_header = '<emoji id="5415825426633202840">⚡</emoji> <b>Basic Pass Subscription</b>'
+
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
+        # Filter out hidden plans
+        plan_buttons = []
+        plan_api_kb = []
+        for idx, (dur_key, price) in enumerate(prices.items()):
+            if dur_key in hidden_plans:
+                continue
+            p_val = int(price) if float(price).is_integer() else price
+            label = format_plan_button_label(dur_key, p_val, lang=user_lang)
+            emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
+            cb = f"pass#upibuy_{dur_key}_{p_val}_{tier}" if v2_gw == 'upi' else f"pass#cfbuy_{dur_key}_{p_val}_{tier}"
+            plan_buttons.append([InlineKeyboardButton(label, callback_data=cb)])
+            plan_api_kb.append([{"text": label, "callback_data": cb, "icon_custom_emoji_id": emoji_id}])
+
+        # For Premium tier, add Storyfi Bot & Arya Premium direct buttons
+        if tier == 'premium':
+            storyfi_url = "https://t.me/StoryfiBot"
+            arya_prem_url = "https://t.me/UseAryaBot/apminibyarya"
+            plan_buttons.append([
+                InlineKeyboardButton("🤖 Storyfi Bot", url=storyfi_url),
+                InlineKeyboardButton("💎 Arya Premium", url=arya_prem_url)
+            ])
+            plan_api_kb.append([
+                {"text": "Storyfi Bot", "url": storyfi_url, "icon_custom_emoji_id": "6032594876506312598"},
+                {"text": "Arya Premium", "url": arya_prem_url, "icon_custom_emoji_id": "6007983438294949171"}
+            ])
+
+        back_lbl = "← वापस" if is_hi else "← Back"
+        plan_buttons.append([InlineKeyboardButton(back_lbl, callback_data="pass#unlock_menu")])
+        plan_api_kb.append([{"text": back_lbl, "callback_data": "pass#unlock_menu"}])
+
+        if tier == 'premium':
+            if is_hi:
+                tier_text = (
+                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Premium पास के विशेष फायदे:</b>\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई Force Subscribe नहीं:</b> चैनल जॉइन करने की आवश्यकता नहीं।\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई अतिरिक्त / प्रमोशनल एड्स नहीं:</b> 100% क्लीन एक्सपीरियंस।\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Forward Allowed:</b> कहानियों को कहीं भी फॉरवर्ड करें।\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Download Allowed:</b> ऑफलाइन सुनने के लिए डाउनलोड करें।\n'
+                    f'• <emoji id="6007983438294949171">💎</emoji> <b>Storyfi Bot & Arya Premium एक्सेस।</b>\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> लाइफटाइम एक्सेस (T&C Apply), मल्टीपल पेमेंट ऑप्शन्स, 24/7 बिना किसी देरी के डिलीवरी।\n\n'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना प्रीमियम प्लान चुनें:</b>'
+                )
+            else:
+                tier_text = (
+                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Premium Pass Exclusive Perks:</b>\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Force Subscribe Required:</b> Bypass channel joins completely.\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Ads & Zero Extra Messages:</b> 100% clean experience.\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Forward Allowed:</b> Forward audio files anywhere.\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Download Allowed:</b> Download stories for offline listening.\n'
+                    f'• <emoji id="6007983438294949171">💎</emoji> <b>Storyfi Bot & Arya Premium Access.</b>\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> Lifetime Access (T&C Apply), Multiple Payment Options, 24/7 Access, Instant Delivery & Verification.\n\n'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Premium plan below:</b>'
+                )
+        elif tier == 'pro':
+            if is_hi:
+                tier_text = (
+                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Pro पास के फायदे:</b>\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई Force Subscribe नहीं:</b> आपको कोई भी चैनल जॉइन करने की आवश्यकता नहीं है!\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>कोई अतिरिक्त / प्रमोशनल एड्स नहीं:</b> केवल आवश्यक ऑटो-डिलीट नोटिस भेजा जाएगा।\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>अनलिमिटेड एक्सेस:</b> बिना किसी कूलडाउन के तुरंत कहानियां सुनें।\n\n'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना Pro प्लान चुनें:</b>'
+                )
+            else:
+                tier_text = (
+                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Pro Pass Benefits:</b>\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Force Subscribe Required:</b> You never need to join any required channels!\n'
+                    f'• <emoji id="5774077015388852135">🚫</emoji> <b>No Extra / Promo Messages:</b> Zero advertising clutter, only essential auto-delete notice.\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>Unlimited Access:</b> Instant delivery 24/7 without cooldowns.\n\n'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Pro plan below:</b>'
+                )
+        else:
+            if is_hi:
+                tier_text = (
+                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Basic पास के फायदे:</b>\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>अनलिमिटेड एक्सेस:</b> बिना किसी कूलडाउन के सभी कहानियां लगातार सुनें।\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>फ़ास्ट डिलीवरी:</b> 100% क्लीन डिलीवरी एक्सपीरियंस।\n\n'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>नीचे अपना Basic प्लान चुनें:</b>'
+                )
+            else:
+                tier_text = (
+                    f"{tier_header} <emoji id=\"6041919344995209164\">❤️</emoji>\n"
+                    f"──────────────────────\n\n"
+                    f'<emoji id="5881806211195605908">⭐️</emoji> <b>Basic Pass Benefits:</b>\n'
+                    f'• <emoji id="5805331990618053402">⚡️</emoji> <b>Unlimited Access:</b> Listen to all stories continuously without cooldowns.\n'
+                    f'• <emoji id="6120635817674149717">✅</emoji> <b>Fast Delivery:</b> Clean and seamless experience.\n\n'
+                    f'<emoji id="6019224342666157570">💳</emoji> <b>Select your desired Basic plan below:</b>'
+                )
+
+        if getattr(query.message, "photo", None):
+            try: await query.message.delete()
+            except Exception: pass
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=tier_text,
+                inline_keyboard=plan_api_kb
+            )
+            if not sent_ok:
+                await client.send_message(chat_id=query.message.chat.id, text=tier_text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+        else:
+            sent_ok = await send_or_edit_with_custom_icons(
+                client=client,
+                chat_id=query.message.chat.id,
+                text=tier_text,
+                inline_keyboard=plan_api_kb,
+                message_id=query.message.id
+            )
+            if not sent_ok:
+                await query.message.edit_text(tier_text, reply_markup=InlineKeyboardMarkup(plan_buttons))
+
     elif data == "pass#method_cashfree":
         rl_cfg = await db.get_delivery_rate_limit_config()
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+        hidden_plans = rl_cfg.get('hidden_plans', [])
+        if not isinstance(hidden_plans, list):
+            hidden_plans = []
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
         
         plan_buttons = []
         plan_api_kb = []
         for idx, (dur_key, price) in enumerate(prices.items()):
+            if dur_key in hidden_plans:
+                continue
             p_val = int(price) if float(price).is_integer() else price
             label = format_plan_button_label(dur_key, p_val, lang=user_lang)
             emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
@@ -3908,12 +4152,17 @@ async def _process_pass_callback(client, query):
         if not rl_cfg.get('upi_enabled', True):
             return await query.answer("⚠️ Pay Via UPI is currently disabled by administrator.", show_alert=True)
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+        hidden_plans = rl_cfg.get('hidden_plans', [])
+        if not isinstance(hidden_plans, list):
+            hidden_plans = []
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
         
         plan_buttons = []
         plan_api_kb = []
         for idx, (dur_key, price) in enumerate(prices.items()):
+            if dur_key in hidden_plans:
+                continue
             p_val = int(price) if float(price).is_integer() else price
             label = format_plan_button_label(dur_key, p_val, lang=user_lang)
             emoji_id, _ = PLAN_CUSTOM_EMOJIS[idx % len(PLAN_CUSTOM_EMOJIS)]
@@ -3967,12 +4216,17 @@ async def _process_pass_callback(client, query):
             return await query.answer("⚠️ Crypto payments are currently disabled by administrator.", show_alert=True)
 
         prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+        hidden_plans = rl_cfg.get('hidden_plans', [])
+        if not isinstance(hidden_plans, list):
+            hidden_plans = []
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
         
         plan_buttons = []
         plan_api_kb = []
         for idx, (dur_key, price) in enumerate(prices.items()):
+            if dur_key in hidden_plans:
+                continue
             p_val = int(price) if float(price).is_integer() else price
             usd_val = round(float(price) / 92.0, 2)
             # OxaPay minimum is $0.50 USD (0.50 USDT = ₹46 INR)
@@ -4243,6 +4497,7 @@ async def _process_pass_callback(client, query):
         parts = data.split("_")
         dur_key = parts[1]
         amount = float(parts[2])
+        tier = parts[3] if len(parts) > 3 else 'basic'
 
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
@@ -4317,6 +4572,7 @@ async def _process_pass_callback(client, query):
             'amount': dyn_amount,
             'base_amount': base_amt,
             'order_id': order_id,
+            'tier': tier,
             'ts': time.time()
         }
 
@@ -4327,8 +4583,10 @@ async def _process_pass_callback(client, query):
                 'user_id': user_id,
                 'user_name': user_name,
                 'plan': dur_key,
+                'duration': dur_key,
                 'amount': dyn_amount,
                 'base_amount': base_amt,
+                'tier': tier,
                 'gateway': 'Pay Via UPI (INR)',
                 'status': 'PENDING',
                 'created_at': time.time(),
@@ -4346,14 +4604,20 @@ async def _process_pass_callback(client, query):
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
         uiver = rl_cfg.get('pass_ui_version', 'v1')
-        back_cb = "pass#unlock_menu" if uiver == 'v2' else "pass#method_upi"
+        if uiver == 'v3':
+            back_cb = f"pass#tier_{tier}"
+        elif uiver == 'v2':
+            back_cb = "pass#unlock_menu"
+        else:
+            back_cb = "pass#method_upi"
 
         if is_hi:
             plan_name = format_plan_name_friendly(dur_key, lang='hi')
+            tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
             caption = (
                 '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI पेमेंट ऑर्डर बनाया गया!</b>\n\n'
                 "──────────────────────\n"
-                f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास\n"
+                f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास{tier_badge}\n"
                 f"• <b>भुगतान की सटीक राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
                 f"• <b>UPI ID:</b> <code>{raw_upi}</code> (कॉपी करने के लिए टैप करें)\n"
                 f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
@@ -4365,13 +4629,15 @@ async def _process_pass_callback(client, query):
                 "जैसे ही आपका पेमेंट प्राप्त होगा, आपका अनलिमिटेड पास तुरंत सक्रिय हो जाएगा!"
             )
             btn_status = "पेमेंट स्टेटस चेक करें"
+            btn_switch_cf = "⚡ Cashfree से भुगतान करें"
             btn_back = "← वापस"
         else:
             plan_name = format_plan_name_friendly(dur_key, lang='en')
+            tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
             caption = (
                 '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
                 "──────────────────────\n"
-                f"• <b>Plan:</b> {plan_name} Unlimited Access Pass\n"
+                f"• <b>Plan:</b> {plan_name} Unlimited Access Pass{tier_badge}\n"
                 f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
                 f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
                 f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
@@ -4383,14 +4649,17 @@ async def _process_pass_callback(client, query):
                 "Your unlimited access pass will activate automatically as soon as payment is detected!"
             )
             btn_status = "Check Payment Status"
+            btn_switch_cf = "⚡ Instead Pay with Cashfree"
             btn_back = "← Back"
 
         photo_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
+            [InlineKeyboardButton(btn_switch_cf, callback_data=f"pass#switch_cf_{order_id}")],
             [InlineKeyboardButton(btn_back, callback_data=back_cb)]
         ])
         photo_api_kb = [
             [{"text": btn_status, "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_switch_cf, "callback_data": f"pass#switch_cf_{order_id}", "icon_custom_emoji_id": "5283232570660634549"}],
             [{"text": btn_back, "callback_data": back_cb}]
         ]
 
@@ -4498,12 +4767,14 @@ async def _process_pass_callback(client, query):
                 gateway="Pay Via UPI (INR)"
             )
             _cancel_cooldown_reminders(user_id)
+            tier_val = (order_doc_paid.get('tier') or 'basic') if order_doc_paid else 'basic'
             await db.activate_user_unlimited_pass(
                 user_id=user_id,
                 duration_seconds=dur_sec,
                 order_id=order_id,
                 amount=dyn_amount,
                 user_name=tg_user_name,
+                tier=tier_val,
                 gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
             )
             await db.pass_orders.update_one(
@@ -4890,6 +5161,7 @@ async def _process_pass_callback(client, query):
         parts = data.split("_")
         dur_key = parts[1]
         amount = float(parts[2])
+        tier = parts[3] if len(parts) > 3 else 'basic'
 
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
@@ -4918,7 +5190,7 @@ async def _process_pass_callback(client, query):
         from plugins.cashfree_helper import create_cashfree_pass_order
         b_id = getattr(getattr(client, "me", None), "id", None)
         b_uname = getattr(getattr(client, "me", None), "username", "")
-        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount, bot_id=b_id, bot_username=b_uname)
+        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount, bot_id=b_id, bot_username=b_uname, tier=tier)
 
         if not res.get("success"):
             err_text = res.get('error', 'Failed to generate payment link')
@@ -4937,13 +5209,23 @@ async def _process_pass_callback(client, query):
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
 
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+        if uiver == 'v3':
+            back_cb = f"pass#tier_{tier}"
+        elif uiver == 'v2':
+            back_cb = "pass#unlock_menu"
+        else:
+            back_cb = "pass#method_cashfree"
+
         if is_hi:
+            tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
             inv_text = (
                 f'<emoji id="5920332557466997677">⚡</emoji> <b>पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n'
                 f"──────────────────────\n"
                 f"<b>नाम:</b> {user_name}\n"
                 f"<b>यूजर आईडी:</b> <code>{user_id}</code>\n"
-                f"<b>प्लान:</b> {dur_verbose.title()} अनलिमिटेड डिलीवरी पास\n"
+                f"<b>प्लान:</b> {dur_verbose.title()} अनलिमिटेड डिलीवरी पास{tier_badge}\n"
                 f"<b>राशि:</b> ₹{amount:.2f}\n"
                 f"<b>ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
                 f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>महत्वपूर्ण निर्देश / Browser Tip:</b>\n"
@@ -4953,15 +5235,17 @@ async def _process_pass_callback(client, query):
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
+            btn_switch_upi = "💳 UPI (QR) से भुगतान करें"
             btn_cancel_lbl = "Cancel your order"
             btn_back_lbl = "← Back"
         else:
+            tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
             inv_text = (
                 f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n'
                 f"──────────────────────\n"
                 f"<b>Name:</b> {user_name}\n"
                 f"<b>User ID:</b> <code>{user_id}</code>\n"
-                f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass\n"
+                f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass{tier_badge}\n"
                 f"<b>Amount:</b> ₹{amount:.2f}\n"
                 f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
                 f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Important Instructions / Browser Tip:</b>\n"
@@ -4971,20 +5255,23 @@ async def _process_pass_callback(client, query):
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
+            btn_switch_upi = "💳 Instead Pay with UPI (QR)"
             btn_cancel_lbl = "Cancel your order"
             btn_back_lbl = "← Back"
 
         inv_api_kb = [
             [{"text": btn_pay_lbl, "url": checkout_pay_link, "icon_custom_emoji_id": "5807527002374151568"}],
             [{"text": btn_verify_lbl, "callback_data": f"pass#verify_{order_id}_{dur_key}_{amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_switch_upi, "callback_data": f"pass#switch_upi_{order_id}", "icon_custom_emoji_id": "5766975922620076409"}],
             [{"text": btn_cancel_lbl, "callback_data": f"pass#cancel_{order_id}", "icon_custom_emoji_id": "5774077015388852135"}],
-            [{"text": btn_back_lbl, "callback_data": "pass#unlock_menu"}]
+            [{"text": btn_back_lbl, "callback_data": back_cb}]
         ]
         inv_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(btn_pay_lbl, url=checkout_pay_link)],
             [InlineKeyboardButton(btn_verify_lbl, callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
+            [InlineKeyboardButton(btn_switch_upi, callback_data=f"pass#switch_upi_{order_id}")],
             [InlineKeyboardButton(btn_cancel_lbl, callback_data=f"pass#cancel_{order_id}")],
-            [InlineKeyboardButton(btn_back_lbl, callback_data="pass#unlock_menu")]
+            [InlineKeyboardButton(btn_back_lbl, callback_data=back_cb)]
         ])
         sent_ok = await send_or_edit_with_custom_icons(
             client=client,
@@ -5046,7 +5333,8 @@ async def _process_pass_callback(client, query):
                 _cancel_cooldown_reminders(user_id)
                 b_id = getattr(getattr(client, "me", None), "id", None)
                 b_uname = getattr(getattr(client, "me", None), "username", "")
-                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount)
+                tier_val = (claimed.get('tier') or 'basic') if isinstance(claimed, dict) else 'basic'
+                new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount, tier=tier_val)
                 
                 import datetime
                 try:
@@ -5119,6 +5407,278 @@ async def _process_pass_callback(client, query):
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
         await query.message.edit_text("पेमेंट इनवॉइस कैंसिल कर दिया गया।" if is_hi else "Payment invoice cancelled.")
+
+    elif data.startswith("pass#switch_cf_"):
+        order_id = data.replace("pass#switch_cf_", "").strip()
+        order_doc = await db.get_pass_order(order_id)
+        if not order_doc:
+            return await query.answer("⚠️ Order not found or expired!", show_alert=True)
+        if order_doc.get("status") == "PAID":
+            return await query.answer("✅ This order has already been paid and activated!", show_alert=True)
+
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+        
+        from plugins.cashfree_helper import get_cashfree_credentials, create_cashfree_pass_order
+        creds = await get_cashfree_credentials()
+        if not creds["configured"]:
+            return await query.answer("⚠️ Cashfree is currently not configured by administrator.", show_alert=True)
+
+        dur_key = order_doc.get("duration") or order_doc.get("plan") or "1d"
+        base_amt = float(order_doc.get("base_amount") or order_doc.get("amount") or 15)
+        tier = order_doc.get("tier", "basic")
+        b_id = getattr(getattr(client, "me", None), "id", None)
+        b_uname = getattr(getattr(client, "me", None), "username", "")
+
+        checkout_pay_link = order_doc.get("checkout_pay_link")
+        if not checkout_pay_link:
+            res = await create_cashfree_pass_order(
+                user_id=user_id,
+                user_name=order_doc.get("user_name", query.from_user.first_name if query.from_user else "User"),
+                duration=dur_key,
+                amount=base_amt,
+                bot_id=b_id,
+                bot_username=b_uname,
+                order_id=order_id,
+                tier=tier
+            )
+            if not res.get("success"):
+                return await query.answer(f"❌ Failed to switch to Cashfree: {res.get('error')}", show_alert=True)
+            checkout_pay_link = res["checkout_pay_link"]
+
+        # Delete the UPI QR photo message cleanly
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        from database import parse_duration_to_seconds, format_duration_verbose
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        dur_verbose = format_duration_verbose(dur_sec)
+        user_name = order_doc.get("user_name", query.from_user.first_name if query.from_user else "User")
+        p_label = int(base_amt) if float(base_amt).is_integer() else base_amt
+
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+        if uiver == 'v3':
+            back_cb = f"pass#tier_{tier}"
+        elif uiver == 'v2':
+            back_cb = "pass#unlock_menu"
+        else:
+            back_cb = "pass#method_cashfree"
+
+        if is_hi:
+            tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
+            inv_text = (
+                f'<emoji id="5920332557466997677">⚡</emoji> <b>पेमेंट इनवॉइस — अनलिमिटेड डिलीवरी पास</b>\n'
+                f"──────────────────────\n"
+                f"<b>नाम:</b> {user_name}\n"
+                f"<b>यूजर आईडी:</b> <code>{user_id}</code>\n"
+                f"<b>प्लान:</b> {dur_verbose.title()} अनलिमिटेड डिलीवरी पास{tier_badge}\n"
+                f"<b>राशि:</b> ₹{base_amt:.2f}\n"
+                f"<b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
+                f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>महत्वपूर्ण निर्देश / ब्राउज़र टिप:</b>\n"
+                f"• UPI, कार्ड्स या नेटबैंकिंग से पेमेंट करने के लिए नीचे <b>Pay Now</b> पर टैप करें।\n"
+                f"• <b>टिप:</b> यदि टेलीग्राम ब्राउज़र में UPI ऐप्स न खुलें, तो <b>Pay Now</b> बटन का लिंक कॉपी करके <b>Chrome / Safari</b> में खोलें।\n"
+                f"• भुगतान के बाद तुरंत सक्रिय करने के लिए <b>वेरीफाई पेमेंट</b> पर टैप करें!</blockquote>"
+            )
+            btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
+            btn_verify_lbl = "Verify Payment"
+            btn_switch_upi = "💳 UPI (QR) से भुगतान करें"
+            btn_cancel_lbl = "Cancel your order"
+            btn_back_lbl = "← Back"
+        else:
+            tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
+            inv_text = (
+                f'<emoji id="5920332557466997677">⚡</emoji> <b>Payment Invoice — Unlimited Delivery Pass</b>\n'
+                f"──────────────────────\n"
+                f"<b>Name:</b> {user_name}\n"
+                f"<b>User ID:</b> <code>{user_id}</code>\n"
+                f"<b>Plan:</b> {dur_verbose.title()} Unlimited Delivery Pass{tier_badge}\n"
+                f"<b>Amount:</b> ₹{base_amt:.2f}\n"
+                f"<b>Order ID:</b> <code>{order_id}</code>\n\n"
+                f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Important Instructions / Browser Tip:</b>\n"
+                f"• Tap <b>Pay Now</b> below to complete payment via UPI, Cards, or NetBanking.\n"
+                f"• <b>Tip:</b> If UPI apps do not trigger inside Telegram, copy the <b>Pay Now</b> link and open it in <b>Chrome / Safari / Default Browser</b>.\n"
+                f"• After payment, tap <b>Verify Payment</b> to activate immediately!</blockquote>"
+            )
+            btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
+            btn_verify_lbl = "Verify Payment"
+            btn_switch_upi = "💳 Instead Pay with UPI (QR)"
+            btn_cancel_lbl = "Cancel your order"
+            btn_back_lbl = "← Back"
+
+        inv_api_kb = [
+            [{"text": btn_pay_lbl, "url": checkout_pay_link, "icon_custom_emoji_id": "5807527002374151568"}],
+            [{"text": btn_verify_lbl, "callback_data": f"pass#verify_{order_id}_{dur_key}_{base_amt}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_switch_upi, "callback_data": f"pass#switch_upi_{order_id}", "icon_custom_emoji_id": "5766975922620076409"}],
+            [{"text": btn_cancel_lbl, "callback_data": f"pass#cancel_{order_id}", "icon_custom_emoji_id": "5774077015388852135"}],
+            [{"text": btn_back_lbl, "callback_data": back_cb}]
+        ]
+        inv_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(btn_pay_lbl, url=checkout_pay_link)],
+            [InlineKeyboardButton(btn_verify_lbl, callback_data=f"pass#verify_{order_id}_{dur_key}_{base_amt}")],
+            [InlineKeyboardButton(btn_switch_upi, callback_data=f"pass#switch_upi_{order_id}")],
+            [InlineKeyboardButton(btn_cancel_lbl, callback_data=f"pass#cancel_{order_id}")],
+            [InlineKeyboardButton(btn_back_lbl, callback_data=back_cb)]
+        ])
+
+        sent_ok = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=query.message.chat.id,
+            text=inv_text,
+            inline_keyboard=inv_api_kb
+        )
+        if not sent_ok:
+            await client.send_message(chat_id=query.message.chat.id, text=inv_text, reply_markup=inv_kb)
+
+        asyncio.create_task(start_pass_cashfree_auto_verifier(
+            client=client,
+            user_id=user_id,
+            user_name=user_name,
+            order_id=order_id,
+            dur_key=dur_key,
+            amount=base_amt,
+            dur_verbose=dur_verbose
+        ))
+
+    elif data.startswith("pass#switch_upi_"):
+        order_id = data.replace("pass#switch_upi_", "").strip()
+        order_doc = await db.get_pass_order(order_id)
+        if not order_doc:
+            return await query.answer("⚠️ Order not found or expired!", show_alert=True)
+        if order_doc.get("status") == "PAID":
+            return await query.answer("✅ This order has already been paid and activated!", show_alert=True)
+
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        from config import Config
+        raw_upi = str(rl_cfg.get("upi_id") or getattr(Config, "UPI_ID", "") or os.environ.get("UPI_ID", "") or "").strip()
+        payee_name = str(rl_cfg.get("upi_name") or "Arya Delivery Pass").strip()
+        if not raw_upi:
+            return await query.answer("⚠️ UPI is currently not configured by administrator.", show_alert=True)
+
+        dur_key = order_doc.get("duration") or order_doc.get("plan") or "1d"
+        base_amt = float(order_doc.get("base_amount") or order_doc.get("amount") or 15)
+        tier = order_doc.get("tier", "basic")
+        user_lang = await db.get_language(user_id)
+        is_hi = bool(user_lang == 'hi')
+
+        # Check existing dynamic amount or generate new one
+        dyn_amount = order_doc.get("dyn_amount")
+        if not dyn_amount:
+            dyn_amount = await generate_unique_dynamic_upi_amount(base_amt)
+            await db.pass_orders.update_one(
+                {'order_id': order_id},
+                {'$set': {'dyn_amount': dyn_amount, 'base_amount': base_amt, 'gateway': 'Pay Via UPI (INR)'}}
+            )
+
+        _pending_utr_users[user_id] = {
+            'dur_key': dur_key,
+            'amount': dyn_amount,
+            'base_amount': base_amt,
+            'order_id': order_id,
+            'tier': tier,
+            'ts': time.time()
+        }
+
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+        if uiver == 'v3':
+            back_cb = f"pass#tier_{tier}"
+        elif uiver == 'v2':
+            back_cb = "pass#unlock_menu"
+        else:
+            back_cb = "pass#method_upi"
+
+        from database import parse_duration_to_seconds, format_plan_name_friendly
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+
+        if is_hi:
+            plan_name = format_plan_name_friendly(dur_key, lang='hi')
+            tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
+            caption = (
+                '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI पेमेंट ऑर्डर स्विच किया गया!</b>\n\n'
+                "──────────────────────\n"
+                f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास{tier_badge}\n"
+                f"• <b>भुगतान की सटीक राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                f"• <b>UPI ID:</b> <code>{raw_upi}</code> (कॉपी करने के लिए टैप करें)\n"
+                f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
+                '<emoji id="5807800879553715710">📲</emoji> <b>भुगतान निर्देश:</b>\n'
+                "1. ऊपर दिए गए QR कोड को स्कैन करें या सीधे UPI ID पर पेमेंट करें।\n"
+                f"2. बिल्कुल सटीक <b>₹{dyn_amount:.2f}</b> का भुगतान करें (पैसे कम या ज्यादा न करें)।\n"
+                "3. <b>ऑटोमैटिक वेरिफिकेशन:</b> पेमेंट करने के 5-15 सेकंड में सिस्टम ऑटोमैटिकली पास एक्टिवेट कर देगा।\n\n"
+                '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (10 मिनट के लिए वैध)'
+            )
+            btn_status = "पेमेंट स्टेटस चेक करें"
+            btn_switch_cf = "⚡ Cashfree से भुगतान करें"
+            btn_back = "← वापस"
+        else:
+            plan_name = format_plan_name_friendly(dur_key, lang='en')
+            tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
+            caption = (
+                '<emoji id="5766975922620076409">⚡️</emoji> <b>Switched to UPI Payment Order!</b>\n\n'
+                "──────────────────────\n"
+                f"• <b>Plan:</b> {plan_name} Unlimited Access Pass{tier_badge}\n"
+                f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
+                f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+                "1. Scan the QR code above or pay directly to the UPI ID.\n"
+                f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
+                "3. <b>Zero Hassle:</b> Our automated system verifies payment within 5-15 seconds.\n\n"
+                '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 10 Minutes)'
+            )
+            btn_status = "Check Payment Status"
+            btn_switch_cf = "⚡ Instead Pay with Cashfree"
+            btn_back = "← Back"
+
+        photo_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
+            [InlineKeyboardButton(btn_switch_cf, callback_data=f"pass#switch_cf_{order_id}")],
+            [InlineKeyboardButton(btn_back, callback_data=back_cb)]
+        ])
+        photo_api_kb = [
+            [{"text": btn_status, "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+            [{"text": btn_switch_cf, "callback_data": f"pass#switch_cf_{order_id}", "icon_custom_emoji_id": "5283232570660634549"}],
+            [{"text": btn_back, "callback_data": back_cb}]
+        ]
+
+        qr_buf = generate_upi_qr_bytes(raw_upi, dyn_amount, payee_name, order_id)
+        qr_bytes = qr_buf.getvalue()
+
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        sent_res = await send_or_edit_with_custom_icons(
+            client=client,
+            chat_id=query.message.chat.id,
+            text=caption,
+            inline_keyboard=photo_api_kb,
+            photo_bytes=qr_bytes
+        )
+        sent_msg_id = sent_res.get("message_id") if isinstance(sent_res, dict) else None
+        if not sent_res:
+            sent_msg = await client.send_photo(
+                chat_id=query.message.chat.id,
+                photo=qr_buf,
+                caption=caption,
+                reply_markup=photo_kb
+            )
+            sent_msg_id = sent_msg.id if sent_msg else None
+
+        dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+        asyncio.create_task(_poll_upi_payment(
+            client=client,
+            user_id=user_id,
+            order_id=order_id,
+            dyn_amount=dyn_amount,
+            dur_key=dur_key,
+            count=str(dur_sec // 86400),
+            unit="Days",
+            message_id=sent_msg_id,
+            chat_id=query.message.chat.id
+        ))
 
 
     elif data == "pass#back":

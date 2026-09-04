@@ -1236,7 +1236,12 @@ async def settings_query(bot, query):
     oxa_status = '<emoji id="6120635817674149717">✅</emoji> Active' if oxa_val else '<emoji id="5970055887774028039">🔴</emoji> Not Set'
 
     uiver = rl_cfg.get('pass_ui_version', 'v1')
-    uiver_str = '<emoji id="5766975922620076409">💳</emoji> V1' if uiver == 'v1' else '<emoji id="5264895611517300926">⚡</emoji> V2'
+    if uiver == 'v1':
+        uiver_str = '<emoji id="5766975922620076409">💳</emoji> V1'
+    elif uiver == 'v2':
+        uiver_str = '<emoji id="5264895611517300926">⚡</emoji> V2'
+    else:
+        uiver_str = '<emoji id="6007983438294949171">💎</emoji> V3 (Tiered)'
 
     buttons = [
         [InlineKeyboardButton(toggle_lbl_fb, callback_data="settings#sb_rl_toggle")],
@@ -1306,11 +1311,13 @@ async def settings_query(bot, query):
 
     v1_selected = (uiver == 'v1')
     v2_selected = (uiver == 'v2')
+    v3_selected = (uiver == 'v3')
     v2_cf_sel = (v2_gw == 'cashfree')
     v2_upi_sel = (v2_gw == 'upi')
 
     btn_v1_fb = "✅ V1 (Multi Gateway)" if v1_selected else "V1 (Multi Gateway)"
-    btn_v2_fb = "✅ V2 - Available Selected Payment Method" if v2_selected else "V2 - Available Selected Payment Method"
+    btn_v2_fb = "✅ V2 (Single Gateway)" if v2_selected else "V2 (Single Gateway)"
+    btn_v3_fb = "✅ V3 (Tiered: Basic / Pro / Premium)" if v3_selected else "V3 (Tiered: Basic / Pro / Premium)"
 
     btn_v2_cf_fb = "✅ Cashfree" if v2_cf_sel else "Cashfree"
     btn_v2_upi_fb = "✅ Pay Via UPI" if v2_upi_sel else "Pay Via UPI"
@@ -1318,7 +1325,8 @@ async def settings_query(bot, query):
     uiver_buttons = [
         [InlineKeyboardButton(btn_v1_fb, callback_data="settings#sb_rl_set_v1")],
         [InlineKeyboardButton(btn_v2_fb, callback_data="settings#sb_rl_set_v2")],
-        [InlineKeyboardButton("⚙️ Select V2 Default Gateway:", callback_data="settings#sb_rl_uiver_menu")],
+        [InlineKeyboardButton(btn_v3_fb, callback_data="settings#sb_rl_set_v3")],
+        [InlineKeyboardButton("⚙️ Select Default Gateway (V2/V3):", callback_data="settings#sb_rl_uiver_menu")],
         [
             InlineKeyboardButton(btn_v2_cf_fb, callback_data="settings#sb_rl_set_v2_cf"),
             InlineKeyboardButton(btn_v2_upi_fb, callback_data="settings#sb_rl_set_v2_upi")
@@ -1327,25 +1335,29 @@ async def settings_query(bot, query):
     ]
     uiver_api_buttons = [
         [{"text": "V1 (Multi Gateway)", "callback_data": "settings#sb_rl_set_v1", "icon_custom_emoji_id": "6120635817674149717" if v1_selected else "5766975922620076409"}],
-        [{"text": "V2 - Available Selected Payment Method", "callback_data": "settings#sb_rl_set_v2", "icon_custom_emoji_id": "6120635817674149717" if v2_selected else "6129805465476929485"}],
-        [{"text": "Select V2 Default Gateway:", "callback_data": "settings#sb_rl_uiver_menu", "icon_custom_emoji_id": "6021582331251268218"}],
+        [{"text": "V2 (Single Gateway)", "callback_data": "settings#sb_rl_set_v2", "icon_custom_emoji_id": "6120635817674149717" if v2_selected else "6129805465476929485"}],
+        [{"text": "V3 (Tiered: Basic / Pro / Premium)", "callback_data": "settings#sb_rl_set_v3", "icon_custom_emoji_id": "6120635817674149717" if v3_selected else "6007983438294949171"}],
+        [{"text": "Select Default Gateway (V2/V3):", "callback_data": "settings#sb_rl_uiver_menu", "icon_custom_emoji_id": "6021582331251268218"}],
         [
             {"text": "Cashfree", "callback_data": "settings#sb_rl_set_v2_cf", "icon_custom_emoji_id": "6120635817674149717" if v2_cf_sel else "6129805465476929485"},
             {"text": "Pay Via UPI", "callback_data": "settings#sb_rl_set_v2_upi", "icon_custom_emoji_id": "6120635817674149717" if v2_upi_sel else "6030410254276106984"}
         ],
         [{"text": "Back", "callback_data": "settings#sb_ratelimit"}]
     ]
+    active_lbl = 'V1 (Multi Gateway)' if uiver == 'v1' else ('V2 (Single Gateway)' if uiver == 'v2' else 'V3 (Tiered: Basic / Pro / Premium)')
     uiver_text = (
         f'<emoji id="6007983438294949171">💎</emoji> <b>Cheakout Version</b>\n'
         f"────────────────────\n"
-        f"<b>Active Pass UI:</b> <code>{'V1 (Multi Gateway)' if uiver == 'v1' else 'V2 - Available Selected Payment Method'}</code>\n"
-        f"<b>V2 Default Gateway:</b> {v2_gw_str}\n"
+        f"<b>Active Pass UI:</b> <code>{active_lbl}</code>\n"
+        f"<b>Default Gateway (V2/V3):</b> {v2_gw_str}\n"
         f"────────────────────\n"
         f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How each version works:</b>\n\n"
         f"• <b>Version 1 (Multi Gateway):</b>\n"
-        f"  User sees all payment methods (UPI Dynamic QR, Cashfree Checkout & Crypto). User chooses their gateway first, then views and selects the plan.\n\n"
+        f"  User sees all gateways first, then selects plan duration.\n\n"
         f"• <b>Version 2 (Single Gateway):</b>\n"
-        f"  Direct 1-screen experience without any payment method selection page. Plan buttons immediately launch the chosen default gateway ({v2_gw_str}).</blockquote>"
+        f"  Direct 1-screen plan buttons immediately launching default gateway ({v2_gw_str}).\n\n"
+        f"• <b>Version 3 (Tiered: Basic / Pro / Premium):</b>\n"
+        f"  User chooses tier (Basic, Pro with No FSub, Premium with Storyfi/Arya perks) then selects plan with instant gateway and payment switcher.</blockquote>"
     )
     from plugins.share_bot import send_or_edit_with_custom_icons
     sent_ok = await send_or_edit_with_custom_icons(
@@ -1379,10 +1391,19 @@ async def settings_query(bot, query):
     query.data = "settings#sb_rl_uiver_menu"
     return await settings_query(bot, query)
 
+  elif type == "sb_rl_set_v3":
+    await db.set_delivery_rate_limit_config(pass_ui_version='v3')
+    try:
+        await query.answer("✅ Pass UI Version set to: V3 (Tiered: Basic / Pro / Premium)!", show_alert=True)
+    except Exception:
+        pass
+    query.data = "settings#sb_rl_uiver_menu"
+    return await settings_query(bot, query)
+
   elif type == "sb_rl_set_v2_cf":
     await db.set_delivery_rate_limit_config(v2_gateway='cashfree')
     try:
-        await query.answer("✅ V2 Gateway set to: Cashfree!", show_alert=True)
+        await query.answer("✅ Default Gateway set to: Cashfree!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1391,7 +1412,7 @@ async def settings_query(bot, query):
   elif type == "sb_rl_set_v2_upi":
     await db.set_delivery_rate_limit_config(v2_gateway='upi')
     try:
-        await query.answer("✅ V2 Gateway set to: Pay Via UPI!", show_alert=True)
+        await query.answer("✅ Default Gateway set to: Pay Via UPI!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1400,9 +1421,11 @@ async def settings_query(bot, query):
   elif type == "sb_rl_toggle_uiver":
     rl_cfg = await db.get_delivery_rate_limit_config()
     cur_ver = rl_cfg.get('pass_ui_version', 'v1')
-    new_ver = 'v2' if cur_ver == 'v1' else 'v1'
+    if cur_ver == 'v1': new_ver = 'v2'
+    elif cur_ver == 'v2': new_ver = 'v3'
+    else: new_ver = 'v1'
     await db.set_delivery_rate_limit_config(pass_ui_version=new_ver)
-    ver_name = "V2 (Single Gateway Direct Flow)" if new_ver == 'v2' else "V1 (Multi-Gateway Flow)"
+    ver_name = "V3 (Tiered Plans)" if new_ver == 'v3' else ("V2 (Single Gateway)" if new_ver == 'v2' else "V1 (Multi-Gateway)")
     try:
         await query.answer(f"Pass UI Version switched to: {ver_name}!", show_alert=True)
     except Exception:
@@ -1417,7 +1440,7 @@ async def settings_query(bot, query):
     await db.set_delivery_rate_limit_config(v2_gateway=new_gw)
     gw_name = "💳 Pay Via UPI (Direct QR)" if new_gw == 'upi' else "⚡ Cashfree (Direct Checkout)"
     try:
-        await query.answer(f"Pass UI V2 Gateway set to: {gw_name}!", show_alert=True)
+        await query.answer(f"Default Gateway set to: {gw_name}!", show_alert=True)
     except Exception:
         pass
     query.data = "settings#sb_rl_uiver_menu"
@@ -1636,14 +1659,86 @@ async def settings_query(bot, query):
         )
 
   elif type == "sb_rl_pricing":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+    pro_prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
+    premium_prices = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
+    hidden_plans = rl_cfg.get('hidden_plans', [])
+    if not isinstance(hidden_plans, list):
+        hidden_plans = []
+
+    from database import format_pricing_summary
+    basic_summary = format_pricing_summary(cur_prices)
+    pro_summary = format_pricing_summary(pro_prices)
+    prem_summary = format_pricing_summary(premium_prices)
+    hidden_str = ", ".join(hidden_plans) if hidden_plans else "None (All Visible)"
+
+    text = (
+        f'<emoji id="5904462880941545555">💰</emoji> <b>Pricing & Plans Management</b>\n'
+        f"────────────────────\n"
+        f'<emoji id="5415825426633202840">⚡</emoji> <b>Basic Plans (Standard):</b>\n'
+        f"<code>{basic_summary}</code>\n\n"
+        f'<emoji id="6007983438294949171">💎</emoji> <b>Pro Plans (No FSub + No Promo Ads):</b>\n'
+        f"<code>{pro_summary}</code>\n\n"
+        f'<emoji id="6156730271858169904">👑</emoji> <b>Premium Plans (Pro + Storyfi/Arya Perks):</b>\n'
+        f"<code>{prem_summary}</code>\n\n"
+        f'<emoji id="6034898821517940846">👁</emoji> <b>Hidden Plans:</b> <code>{hidden_str}</code>\n'
+        f"────────────────────\n"
+        f"<i>Select an option below to update pricing for a tier or toggle plan visibility.</i>"
+    )
+
+    buttons = [
+        [InlineKeyboardButton("⚡ Edit Basic Plans", callback_data="settings#sb_rl_edit_prices_basic")],
+        [InlineKeyboardButton("💎 Edit Pro Plans", callback_data="settings#sb_rl_edit_prices_pro")],
+        [InlineKeyboardButton("👑 Edit Premium Plans", callback_data="settings#sb_rl_edit_prices_premium")],
+        [InlineKeyboardButton("👁 Manage Plan Visibility", callback_data="settings#sb_rl_toggle_plans_menu")],
+        [InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")],
+    ]
+    api_buttons = [
+        [{"text": "Edit Basic Plans", "callback_data": "settings#sb_rl_edit_prices_basic", "icon_custom_emoji_id": "5415825426633202840"}],
+        [{"text": "Edit Pro Plans", "callback_data": "settings#sb_rl_edit_prices_pro", "icon_custom_emoji_id": "6007983438294949171"}],
+        [{"text": "Edit Premium Plans", "callback_data": "settings#sb_rl_edit_prices_premium", "icon_custom_emoji_id": "6156730271858169904"}],
+        [{"text": "Manage Plan Visibility", "callback_data": "settings#sb_rl_toggle_plans_menu", "icon_custom_emoji_id": "6034898821517940846"}],
+        [{"text": "Back", "callback_data": "settings#sb_ratelimit"}],
+    ]
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
+
+  elif type in ("sb_rl_edit_prices_basic", "sb_rl_edit_prices_pro", "sb_rl_edit_prices_premium"):
     await query.message.delete()
     from database import parse_pricing_input, format_pricing_summary
     rl_cfg = await db.get_delivery_rate_limit_config()
-    cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
-    cur_summary = format_pricing_summary(cur_prices)
+    if type == "sb_rl_edit_prices_pro":
+        tier_title = "Pro"
+        tier_icon = '<emoji id="6007983438294949171">💎</emoji>'
+        field_key = "pro_prices"
+        cur_p = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
+    elif type == "sb_rl_edit_prices_premium":
+        tier_title = "Premium"
+        tier_icon = '<emoji id="6156730271858169904">👑</emoji>'
+        field_key = "premium_prices"
+        cur_p = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
+    else:
+        tier_title = "Basic"
+        tier_icon = '<emoji id="5415825426633202840">⚡</emoji>'
+        field_key = "prices"
+        cur_p = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+
+    cur_summary = format_pricing_summary(cur_p)
     ask = await bot.send_message(
         user_id,
-        '<emoji id="5904462880941545555">💰</emoji> <b>Pricing & Plans</b>\n\n'
+        f"{tier_icon} <b>Configure {tier_title} Pricing & Plans</b>\n\n"
         f"<b>Current Plans:</b> <code>{cur_summary}</code>\n\n"
         "You can configure custom pass plans in <b>minutes, hours, or days</b> with prices!\n\n"
         "<b>Examples:</b>\n"
@@ -1658,25 +1753,93 @@ async def settings_query(bot, query):
             await resp.delete()
             return await ask.edit_text(
                 "<i>Cancelled.</i>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_pricing")]])
             )
         txt = (resp.text or '').strip()
         new_prices = parse_pricing_input(txt)
-        await db.set_delivery_rate_limit_config(prices=new_prices)
+        update_kw = {field_key: new_prices}
+        await db.set_delivery_rate_limit_config(**update_kw)
         await resp.delete()
         new_summary = format_pricing_summary(new_prices)
         await ask.edit_text(
-            f"✅ <b>Pricing updated successfully!</b>\n\n<b>New Plans:</b> <code>{new_summary}</code>",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")]])
+            f"✅ <b>{tier_title} Pricing updated successfully!</b>\n\n<b>New Plans:</b> <code>{new_summary}</code>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="settings#sb_rl_pricing")]])
         )
     except Exception as e:
         await ask.edit_text(
             f"❌ Invalid format: {e}\n\nPlease send plans like: <code>30m:10 1d:15 3d:30 7d:50</code> or <code>15 30 50</code>",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Retry", callback_data="settings#sb_rl_pricing"),
-                InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")
+                InlineKeyboardButton("Retry", callback_data=f"settings#{type}"),
+                InlineKeyboardButton("Back", callback_data="settings#sb_rl_pricing")
             ]])
         )
+
+  elif type == "sb_rl_toggle_plans_menu":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_prices = rl_cfg.get('prices', {'1d': 15, '3d': 30, '7d': 55, '1mo': 250, '6mo': 1199})
+    pro_prices = rl_cfg.get('pro_prices', {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799})
+    premium_prices = rl_cfg.get('premium_prices', {'1d': 40, '3d': 80, '7d': 150, '1mo': 599, '6mo': 2499})
+    hidden_plans = rl_cfg.get('hidden_plans', [])
+    if not isinstance(hidden_plans, list):
+        hidden_plans = []
+
+    # Get all distinct plan keys preserving order
+    all_keys = []
+    for k in list(cur_prices.keys()) + list(pro_prices.keys()) + list(premium_prices.keys()):
+        if k not in all_keys:
+            all_keys.append(k)
+
+    buttons = []
+    api_buttons = []
+    for k in all_keys:
+        is_hidden = k in hidden_plans
+        status_text = "❌ Hidden" if is_hidden else "✅ Active"
+        icon_id = "5970055887774028039" if is_hidden else "6120635817674149717"
+        buttons.append([InlineKeyboardButton(f"{k.upper()} — {status_text}", callback_data=f"settings#sb_rl_togplan_{k}")])
+        api_buttons.append([{"text": f"{k.upper()} — {status_text}", "callback_data": f"settings#sb_rl_togplan_{k}", "icon_custom_emoji_id": icon_id}])
+
+    buttons.append([InlineKeyboardButton("Back", callback_data="settings#sb_rl_pricing")])
+    api_buttons.append([{"text": "Back", "callback_data": "settings#sb_rl_pricing"}])
+
+    text = (
+        f'<emoji id="6034898821517940846">👁</emoji> <b>Manage Plan Visibility</b>\n'
+        f"────────────────────\n"
+        f"Tap any plan duration below to toggle it between <b>Active</b> and <b>Hidden</b>.\n\n"
+        f"• <b>Active:</b> Shown to users during checkout.\n"
+        f"• <b>Hidden:</b> Hidden from users across all tiers (Basic, Pro, Premium).\n"
+        f"────────────────────"
+    )
+    from plugins.share_bot import send_or_edit_with_custom_icons
+    sent_ok = await send_or_edit_with_custom_icons(
+        client=bot,
+        chat_id=query.message.chat.id,
+        text=text,
+        inline_keyboard=api_buttons,
+        message_id=query.message.id
+    )
+    if not sent_ok:
+        try:
+            await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            pass
+
+  elif type.startswith("sb_rl_togplan_"):
+    plan_key = type.replace("sb_rl_togplan_", "").strip()
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    hidden_plans = list(rl_cfg.get('hidden_plans', []))
+    if plan_key in hidden_plans:
+        hidden_plans.remove(plan_key)
+        alert_msg = f"✅ Plan {plan_key.upper()} is now Active!"
+    else:
+        hidden_plans.append(plan_key)
+        alert_msg = f"❌ Plan {plan_key.upper()} is now Hidden!"
+    await db.set_delivery_rate_limit_config(hidden_plans=hidden_plans)
+    try:
+        await query.answer(alert_msg, show_alert=False)
+    except Exception:
+        pass
+    query.data = "settings#sb_rl_toggle_plans_menu"
+    return await settings_query(bot, query)
 
   elif type == "sb_rl_payment_menu":
     rl_cfg = await db.get_delivery_rate_limit_config()

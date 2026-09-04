@@ -1685,7 +1685,10 @@ class Database:
             'oxapay_enabled': True,
             'upi_enabled': True,
             'pass_ui_version': 'v1',
-            'v2_gateway': 'cashfree'
+            'v2_gateway': 'cashfree',
+            'pro_prices': {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799},
+            'premium_prices': {'1d': 49, '3d': 99, '7d': 179, '1mo': 699, '6mo': 2999},
+            'hidden_plans': []
         }
         if not doc:
             return defaults
@@ -1697,6 +1700,14 @@ class Database:
         p = res.get('prices')
         if not isinstance(p, dict) or not p:
             res['prices'] = defaults['prices']
+        pp = res.get('pro_prices')
+        if not isinstance(pp, dict) or not pp:
+            res['pro_prices'] = defaults['pro_prices']
+        pmp = res.get('premium_prices')
+        if not isinstance(pmp, dict) or not pmp:
+            res['premium_prices'] = defaults['premium_prices']
+        if not isinstance(res.get('hidden_plans'), list):
+            res['hidden_plans'] = []
         # Ensure window_seconds is properly initialized and synced
         if 'window_seconds' not in doc and 'window_hours' in doc:
             res['window_seconds'] = int(float(doc['window_hours']) * 3600)
@@ -1713,7 +1724,7 @@ class Database:
             'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key',
             'cashfree_env', 'upi_id', 'upi_name', 'gmail_user', 'gmail_app_password',
             'oxapay_key', 'oxapay_env', 'oxapay_enabled', 'upi_enabled', 'pass_ui_version',
-            'v2_gateway'
+            'v2_gateway', 'pro_prices', 'premium_prices', 'hidden_plans'
         }
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
@@ -1925,13 +1936,14 @@ class Database:
             'time_left_str': time_left_str,
             'bot_id': doc.get('bot_id') if doc else None,
             'bot_username': doc.get('bot_username') if doc else None,
-            'user_name': doc.get('user_name') if doc else ""
+            'user_name': doc.get('user_name') if doc else "",
+            'tier': str(doc.get('tier', 'basic')).lower().strip() if doc else "basic"
         }
 
-    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = "", bot_id: int = None, bot_username: str = "", plan_key: str = "", plan_name: str = "", amount: float = 0.0, savings: float = 0.0):
-        """Set or update unlimited pass expiry and optional plan details."""
+    async def set_user_unlimited_pass(self, user_id: int, expiry_timestamp: float, user_name: str = "", bot_id: int = None, bot_username: str = "", plan_key: str = "", plan_name: str = "", amount: float = 0.0, savings: float = 0.0, tier: str = "basic"):
+        """Set or update unlimited pass expiry, tier, and optional plan details."""
         import time
-        doc = {'expires_at': float(expiry_timestamp), 'updated_at': time.time()}
+        doc = {'expires_at': float(expiry_timestamp), 'updated_at': time.time(), 'tier': str(tier or 'basic').lower().strip()}
         if user_name:
             doc['user_name'] = str(user_name).strip()
         if bot_id:
@@ -1952,7 +1964,7 @@ class Database:
             upsert=True
         )
 
-    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "", bot_id: int = None, bot_username: str = "", plan_key: str = "", plan_name: str = "", amount: float = 0.0, savings: float = 0.0) -> float:
+    async def grant_user_unlimited_pass(self, user_id: int, duration, user_name: str = "", bot_id: int = None, bot_username: str = "", plan_key: str = "", plan_name: str = "", amount: float = 0.0, savings: float = 0.0, tier: str = "basic") -> float:
         """Extend or activate unlimited pass for specified duration (days int or duration str like '30m', '2h', '7d') and return new expiry."""
         import time
         if isinstance(duration, (int, float)) and duration < 1000:
@@ -1980,6 +1992,12 @@ class Database:
         new_expiry = base_time + duration_seconds
         b_id = bot_id or cur.get('bot_id')
         b_uname = bot_username or cur.get('bot_username')
+        
+        # Determine effective tier (preserve higher tier if active)
+        cur_tier = cur.get('tier', 'basic') if cur.get('active') else 'basic'
+        TIER_RANKS = {'basic': 1, 'pro': 2, 'premium': 3}
+        effective_tier = tier if TIER_RANKS.get(tier, 1) >= TIER_RANKS.get(cur_tier, 1) else cur_tier
+
         await self.set_user_unlimited_pass(
             user_id=user_id,
             expiry_timestamp=new_expiry,
@@ -1989,13 +2007,14 @@ class Database:
             plan_key=p_key,
             plan_name=p_name,
             amount=amount,
-            savings=savings
+            savings=savings,
+            tier=effective_tier
         )
         return new_expiry
 
-    async def activate_user_unlimited_pass(self, user_id: int, duration_seconds: float, order_id: str = "", amount: float = 0.0, gateway: str = "", user_name: str = "") -> float:
+    async def activate_user_unlimited_pass(self, user_id: int, duration_seconds: float, order_id: str = "", amount: float = 0.0, gateway: str = "", user_name: str = "", tier: str = "basic") -> float:
         """Helper to activate or extend user pass by duration seconds."""
-        return await self.grant_user_unlimited_pass(user_id=user_id, duration=duration_seconds, user_name=user_name)
+        return await self.grant_user_unlimited_pass(user_id=user_id, duration=duration_seconds, user_name=user_name, tier=tier)
 
     async def reduce_user_unlimited_pass(self, user_id: int, duration) -> float:
         """Reduce user's unlimited pass by specified duration (days int or duration str like '1d', '3h', '30m')."""
@@ -2031,7 +2050,10 @@ class Database:
 
     async def create_pass_order(self, order_dict: dict):
         """Save a pending pass order."""
-        await self.pass_orders.insert_one(order_dict)
+        if 'order_id' in order_dict:
+            await self.pass_orders.update_one({'order_id': order_dict['order_id']}, {'$set': order_dict}, upsert=True)
+        else:
+            await self.pass_orders.insert_one(order_dict)
 
     async def get_pass_order(self, order_id: str) -> dict:
         """Fetch a pass order by order_id."""

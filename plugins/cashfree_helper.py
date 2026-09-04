@@ -63,7 +63,7 @@ async def get_cashfree_credentials() -> dict:
     }
 
 
-async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str, amount: float, bot_id: int = None, bot_username: str = "") -> dict:
+async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str, amount: float, bot_id: int = None, bot_username: str = "", order_id: str = None, tier: str = "basic") -> dict:
     """
     Create a Cashfree PG order for an Unlimited Delivery Pass.
     Returns dictionary with order_id, payment_session_id, and checkout_pay_link.
@@ -83,8 +83,9 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str
 
     clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', str(user_name or "User")).strip()
     customer_name = clean_name[:40] if clean_name else "User"
-    order_num = await db.get_next_pass_order_number()
-    order_id = f"PASS-{user_id}-{dur_tag}-{order_num}"
+    if not order_id:
+        order_num = await db.get_next_pass_order_number()
+        order_id = f"PASS-{user_id}-{dur_tag}-{order_num}"
 
     payload = {
         "order_id": order_id,
@@ -140,9 +141,12 @@ async def create_cashfree_pass_order(user_id: int, user_name: str, duration: str
                     "bot_id": int(bot_id) if bot_id else None,
                     "bot_username": str(bot_username) if bot_username else "",
                     "duration": dur_str,
+                    "plan": dur_str,
                     "duration_seconds": dur_sec,
                     "days": round(dur_sec / 86400.0, 2),
                     "amount": float(amount),
+                    "tier": tier,
+                    "gateway": "Cashfree PG",
                     "status": "PENDING",
                     "checkout_pay_link": checkout_pay_link,
                     "created_at": time.time()
