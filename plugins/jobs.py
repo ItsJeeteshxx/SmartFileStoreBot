@@ -1802,11 +1802,12 @@ async def _run_job(job_id: str, user_id: int):
                             _fn_key = _fn_raw.strip().lower()
 
                 # Deduplication Guard (Only active when skip_dupes is True or in current live session batch)
+                uniq_id = _get_unique_id(msg) if skip_dupes else None
+                _ep_nums_l = _extract_ep_nums_from_msg(msg)
+
                 if skip_dupes:
                     seen_names_db = fresh.get("seen_file_names") or []
                     seen_ids_db = fresh.get("seen_file_ids") or []
-                    uniq_id = _get_unique_id(msg)
-                    _ep_nums_l = _extract_ep_nums_from_msg(msg)
                     _ep_hit_l = bool(_ep_nums_l and _ep_nums_l & _dest_ep_cache.get(job_id, set()))
                     
                     if _ep_hit_l or (uniq_id and uniq_id in seen_ids_db) or (_fn_key and (_fn_key in _live_fn_seen or _fn_key in seen_names_db)):
