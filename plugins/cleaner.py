@@ -261,6 +261,8 @@ async def _build_cl_info(job: dict) -> str:
         f"  🎯 <b>Target:</b> {job.get('target_title','?')}",
         f"  ⚡ <b>Engine:</b> Stable Turbo v4",
     ]
+    sk_mids = job.get("skipped_mids") or []
+    if sk_mids: lines.append(f"  ⏭ <b>Skipped:</b> {len(sk_mids)} files (Corrupt/0 B)")
     if eta_str: lines.append(eta_str)
     if err: lines.append(f"\n  ⚠️ <b>Error:</b> <code>{err[:200]}</code>")
     lines.append(f"\n  <i>Refreshed: {_ist_now().strftime('%I:%M %p IST')}</i>")
@@ -838,11 +840,31 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 fsize = getattr(m_obj, 'file_size', 0) or 0
                 dl_timeout = max(1800, fsize // (30 * 1024)) # ~30 KB/s min speed threshold
 
+                # If Telegram metadata indicates file_size is 0 B, it is an empty stub / corrupted file
+                if fsize == 0 and (m.audio or m.video or m.document or m.voice):
+                    logger.warning(f"[Cleaner {job_id}] mid={m.id}: Telegram media file_size is 0 B — skipping empty stub")
+                    if _bot:
+                        try:
+                            asyncio.create_task(_bot.send_message(
+                                uid,
+                                f"⚠️ <b>Cleaner Notice:</b> Message <code>mid={m.id}</code> was skipped because its Telegram file size is 0 B (empty/corrupted). Continuing with remaining files."
+                            ))
+                        except Exception: pass
+                    try:
+                        _sk_list = job.get("skipped_mids") or []
+                        if m.id not in _sk_list:
+                            _sk_list.append(m.id)
+                        job["skipped_mids"] = _sk_list
+                        asyncio.create_task(_cl_update_job(job_id, {"skipped_mids": _sk_list}))
+                    except Exception: pass
+                    continue
+
                 dp = None
                 last_err = None
                 skipped = False
                 attempt = 1
-                while attempt <= 3:
+                max_attempts = 4
+                while attempt <= max_attempts:
                     try:
                         # Heal/ensure client is alive before downloading
                         if attempt > 1 or not _is_connected(client):
@@ -850,6 +872,30 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 client = await _ensure_alive(client)
                                 await asyncio.sleep(2)
                             except Exception: pass
+
+                        # On retry (attempt > 1), re-fetch fresh message object directly from Telegram
+                        # to refresh stale file_reference and CDN routing tokens.
+                        if attempt > 1:
+                            try:
+                                if hasattr(client, 'get_messages'):
+                                    fresh_m = await client.get_messages(from_ch, m.id)
+                                    if isinstance(fresh_m, list):
+                                        fresh_m = fresh_m[0] if fresh_m else None
+                                    if fresh_m and not fresh_m.empty:
+                                        fresh_obj = fresh_m.audio or fresh_m.voice or fresh_m.document or fresh_m.video or fresh_m.photo
+                                        if fresh_obj:
+                                            m = fresh_m
+                                            m_obj = fresh_obj
+                                            orig_fn = getattr(m_obj, 'file_name', '') or ''
+                                            ext = (os.path.splitext(orig_fn)[1]
+                                                   or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
+                                            ipath = os.path.abspath(os.path.join(temp.DOWNLOAD_DIR, f"temp_cl_in_{job_id}_{m.id}{ext}"))
+                                            logger.info(f"[Cleaner {job_id}] mid={m.id}: Successfully refreshed message object (attempt {attempt})")
+                            except Exception as _fe:
+                                logger.warning(f"[Cleaner {job_id}] mid={m.id}: Message refresh attempt {attempt} failed: {_fe}")
+
+                        # Delete any leftover/0-byte file before attempting download
+                        await _remove_file_async(ipath)
 
                         async with _cl_dl_sem:
                             # We don't need client._network_lock for downloading media
@@ -903,10 +949,38 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             skipped = True
                             break
 
-                        if attempt < 3:
-                            await asyncio.sleep(5)
+                        # On download failure or 0 B, also try rotating client from worker pool
+                        try:
+                            alt = _CLIENT.get_idle_client()
+                            if alt and alt != client and _is_connected(alt):
+                                client = alt
+                                logger.info(f"[Cleaner {job_id}] Switched to idle worker client on retry for mid={m.id}")
+                        except Exception: pass
+
+                        if attempt < max_attempts:
+                            await asyncio.sleep(3)
                             attempt += 1
                         else:
+                            # If all attempts failed specifically because downloaded file is 0 B
+                            # (Telegram CDN returned empty stream or corrupt file), skip it to avoid freezing the job
+                            if "0 B" in str(e):
+                                logger.warning(f"[Cleaner {job_id}] mid={m.id}: Downloaded file size is 0 B after {max_attempts} attempts — skipping corrupt file to avoid deadlock")
+                                skipped = True
+                                try:
+                                    _sk_list = job.get("skipped_mids") or []
+                                    if m.id not in _sk_list:
+                                        _sk_list.append(m.id)
+                                    job["skipped_mids"] = _sk_list
+                                    asyncio.create_task(_cl_update_job(job_id, {"skipped_mids": _sk_list}))
+                                except Exception: pass
+                                if _bot:
+                                    try:
+                                        asyncio.create_task(_bot.send_message(
+                                            uid,
+                                            f"⚠️ <b>Cleaner Notice:</b> Message <code>mid={m.id}</code> was skipped because the file size is 0 B (empty or corrupted on Telegram). Continuing with next episode."
+                                        ))
+                                    except Exception: pass
+                                break
                             break
 
                 # If the file was deleted/expired/skipped
@@ -914,7 +988,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     continue
 
                 # Raise the last error if all attempts failed
-                raise Exception(f"Download failed after 3 attempts: {last_err}")
+                raise Exception(f"Download failed after {max_attempts} attempts: {last_err}")
 
             return None  # no more messages in range
 
@@ -949,11 +1023,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     try:
                         fail_kb = InlineKeyboardMarkup([[
                             InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#resume#{job_id}"),
+                            InlineKeyboardButton("⏭ Sᴋɪᴘ & Rᴇsᴜᴍᴇ", callback_data=f"cl#skip#{job_id}"),
                             InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
                         ]])
                         await _bot.send_message(uid,
                             f"<b>⏸ Cleaner Job Paused!</b>\n\n"
-                            f"<i>Job paused instantly due to an error. No files were skipped. Fix the issue and resume.</i>\n\n"
+                            f"<i>Job paused instantly due to an error. Resume or skip problematic file.</i>\n\n"
                             f"<b>🧹 Name:</b> {base_name}\n"
                             f"<b>📁 Done:</b> {done} files\n"
                             f"<b>❌ Last Error:</b> <code>{err_msg}</code>",
@@ -988,11 +1063,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             try:
                                 fail_kb = InlineKeyboardMarkup([[
                                     InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#resume#{job_id}"),
+                                    InlineKeyboardButton("⏭ Sᴋɪᴘ & Rᴇsᴜᴍᴇ", callback_data=f"cl#skip#{job_id}"),
                                     InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
                                 ]])
                                 await _bot.send_message(uid,
                                     f"<b>⏸ Cleaner Job Paused!</b>\n\n"
-                                    f"<i>Upload failed — connection dropped mid-transfer. Job paused at last safe position. Resume to continue.</i>\n\n"
+                                    f"<i>Upload failed — connection dropped mid-transfer. Resume or skip.</i>\n\n"
                                     f"<b>🧹 Name:</b> {base_name}\n"
                                     f"<b>📁 Done:</b> {done} files\n"
                                     f"<b>❌ Error:</b> <code>{err_msg}</code>",
@@ -1600,11 +1676,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     try:
                         fail_kb = InlineKeyboardMarkup([[
                             InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#resume#{job_id}"),
+                            InlineKeyboardButton("⏭ Sᴋɪᴘ & Rᴇsᴜᴍᴇ", callback_data=f"cl#skip#{job_id}"),
                             InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
                         ]])
                         await _bot.send_message(uid,
                             f"<b>⏸ Cleaner Job Paused!</b>\n\n"
-                            f"<i>Job paused instantly during processing. Fix the issue and resume.</i>\n\n"
+                            f"<i>Job paused instantly during processing. Resume or skip problematic file.</i>\n\n"
                             f"<b>🧹 Name:</b> {base_name}\n"
                             f"<b>📁 Done:</b> {done} files\n"
                             f"<b>❌ Last Error:</b> <code>{err_msg}</code>",
@@ -1872,6 +1949,7 @@ async def _cl_callbacks(bot, update: CallbackQuery):
                 kb.append([InlineKeyboardButton("⚡ Fᴏʀᴄᴇ Aᴄᴛɪᴠᴀᴛᴇ", callback_data=f"cl#force_ask#{jid}")])
         elif st == "paused":
             kb.append([InlineKeyboardButton("▶️ Rᴇsᴜᴍᴇ", callback_data=f"cl#resume#{jid}"),
+                       InlineKeyboardButton("⏭ Sᴋɪᴘ & Rᴇsᴜᴍᴇ", callback_data=f"cl#skip#{jid}"),
                        InlineKeyboardButton("⏹ Sᴛᴏᴘ",    callback_data=f"cl#stop#{jid}")])
         elif st in ("failed", "stopped"):
             kb.append([InlineKeyboardButton("🔁 Rᴇsᴇᴛ & Rᴇsᴛᴀʀᴛ", callback_data=f"cl#reset#{jid}"),
@@ -1897,6 +1975,31 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         old = _cl_tasks.get(jid)
         if old and not old.done(): old.cancel()
         _cl_tasks[jid] = asyncio.create_task(_cl_run_job(jid, _cl_bot_ref.get(jid) or bot))
+        update.data = f"cl#view#{jid}"; return await _cl_callbacks(bot, update)
+
+    elif action == "skip":
+        jid = data[2]
+        job = await _cl_get_job(jid)
+        if not job: return await update.answer("Job not found.", show_alert=True)
+        cur_mid = job.get("current_msg_id", job.get("start_id", 1))
+        new_mid = cur_mid + 1
+        sk_list = job.get("skipped_mids") or []
+        if cur_mid not in sk_list:
+            sk_list.append(cur_mid)
+        await _cl_update_job(jid, {
+            "status": "running",
+            "current_msg_id": new_mid,
+            "error": "",
+            "skipped_mids": sk_list
+        })
+        if jid not in _cl_paused: _cl_paused[jid] = asyncio.Event()
+        _cl_paused[jid].set()
+        old = _cl_tasks.get(jid)
+        if old and not old.done(): old.cancel()
+        _cl_tasks[jid] = asyncio.create_task(_cl_run_job(jid, _cl_bot_ref.get(jid) or bot))
+        try:
+            await update.answer(f"Skipped mid={cur_mid} ⏭ Resuming from mid={new_mid}...", show_alert=True)
+        except Exception: pass
         update.data = f"cl#view#{jid}"; return await _cl_callbacks(bot, update)
 
     elif action == "force_ask":
