@@ -11564,6 +11564,7 @@ async def get_admin_settings(request: Request, telegram_id: str):
                 "mini_app_enabled": cfg.get("mini_app_enabled", True),
                 "tnc_enabled": cfg.get("tnc_enabled", True),
                 "support_feedback_enabled": cfg.get("support_feedback_enabled", True),
+                "hide_support_feedback": cfg.get("hide_support_feedback", not cfg.get("support_feedback_enabled", True)),
                 "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
                 "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
                 "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
@@ -11636,6 +11637,14 @@ async def update_admin_settings(payload: dict):
             update_fields["mini_app_enabled"] = bool(payload["mini_app_enabled"])
         if "tnc_enabled" in payload:
             update_fields["tnc_enabled"] = bool(payload["tnc_enabled"])
+        if "support_feedback_enabled" in payload:
+            val = bool(payload["support_feedback_enabled"])
+            update_fields["support_feedback_enabled"] = val
+            update_fields["hide_support_feedback"] = not val
+        if "hide_support_feedback" in payload:
+            val = bool(payload["hide_support_feedback"])
+            update_fields["hide_support_feedback"] = val
+            update_fields["support_feedback_enabled"] = not val
         if "razorpay_fee_percent" in payload:
             update_fields["razorpay_fee_percent"] = float(payload["razorpay_fee_percent"])
         if "razorpay_fee_enabled" in payload:
@@ -11987,6 +11996,7 @@ async def get_public_settings():
             "mini_app_enabled": cfg.get("mini_app_enabled", True),
             "tnc_enabled": cfg.get("tnc_enabled", True),
             "support_feedback_enabled": cfg.get("support_feedback_enabled", True),
+            "hide_support_feedback": cfg.get("hide_support_feedback", not cfg.get("support_feedback_enabled", True)),
             "razorpay_fee_percent": cfg.get("razorpay_fee_percent", 2.36),
             "razorpay_fee_enabled": cfg.get("razorpay_fee_enabled", True),
             "platform_fee_amount": cfg.get("platform_fee_amount", 5.0),
