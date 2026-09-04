@@ -4628,7 +4628,7 @@ async def _process_pass_callback(client, query):
                 "जैसे ही आपका पेमेंट प्राप्त होगा, आपका अनलिमिटेड पास तुरंत सक्रिय हो जाएगा!"
             )
             btn_status = "पेमेंट स्टेटस चेक करें"
-            btn_switch_cf = "⚡ Cashfree से भुगतान करें"
+            btn_switch_cf = "Cashfree से भुगतान करें"
             btn_back = "← वापस"
         else:
             plan_name = format_plan_name_friendly(dur_key, lang='en')
@@ -4648,12 +4648,12 @@ async def _process_pass_callback(client, query):
                 "Your unlimited access pass will activate automatically as soon as payment is detected!"
             )
             btn_status = "Check Payment Status"
-            btn_switch_cf = "⚡ Instead Pay with Cashfree"
+            btn_switch_cf = "Instead Pay with Cashfree"
             btn_back = "← Back"
 
         photo_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
-            [InlineKeyboardButton(btn_switch_cf, callback_data=f"pass#switch_cf_{order_id}")],
+            [InlineKeyboardButton(f"⚡ {btn_switch_cf}", callback_data=f"pass#switch_cf_{order_id}")],
             [InlineKeyboardButton(btn_back, callback_data=back_cb)]
         ])
         photo_api_kb = [
@@ -5234,7 +5234,7 @@ async def _process_pass_callback(client, query):
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
-            btn_switch_upi = "💳 UPI (QR) से भुगतान करें"
+            btn_switch_upi = "UPI (QR) से भुगतान करें"
             btn_cancel_lbl = "Cancel your order"
             btn_back_lbl = "← Back"
         else:
@@ -5254,7 +5254,7 @@ async def _process_pass_callback(client, query):
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
-            btn_switch_upi = "💳 Instead Pay with UPI (QR)"
+            btn_switch_upi = "Instead Pay with UPI (QR)"
             btn_cancel_lbl = "Cancel your order"
             btn_back_lbl = "← Back"
 
@@ -5268,7 +5268,7 @@ async def _process_pass_callback(client, query):
         inv_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(btn_pay_lbl, url=checkout_pay_link)],
             [InlineKeyboardButton(btn_verify_lbl, callback_data=f"pass#verify_{order_id}_{dur_key}_{amount}")],
-            [InlineKeyboardButton(btn_switch_upi, callback_data=f"pass#switch_upi_{order_id}")],
+            [InlineKeyboardButton(f"💳 {btn_switch_upi}", callback_data=f"pass#switch_upi_{order_id}")],
             [InlineKeyboardButton(btn_cancel_lbl, callback_data=f"pass#cancel_{order_id}")],
             [InlineKeyboardButton(btn_back_lbl, callback_data=back_cb)]
         ])
@@ -5483,7 +5483,7 @@ async def _process_pass_callback(client, query):
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
-            btn_switch_upi = "💳 UPI (QR) से भुगतान करें"
+            btn_switch_upi = "UPI (QR) से भुगतान करें"
             btn_cancel_lbl = "Cancel your order"
             btn_back_lbl = "← Back"
         else:
@@ -5503,7 +5503,7 @@ async def _process_pass_callback(client, query):
             )
             btn_pay_lbl = f"Pay Now ( ₹{p_label} )"
             btn_verify_lbl = "Verify Payment"
-            btn_switch_upi = "💳 Instead Pay with UPI (QR)"
+            btn_switch_upi = "Instead Pay with UPI (QR)"
             btn_cancel_lbl = "Cancel your order"
             btn_back_lbl = "← Back"
 
@@ -5517,7 +5517,7 @@ async def _process_pass_callback(client, query):
         inv_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(btn_pay_lbl, url=checkout_pay_link)],
             [InlineKeyboardButton(btn_verify_lbl, callback_data=f"pass#verify_{order_id}_{dur_key}_{base_amt}")],
-            [InlineKeyboardButton(btn_switch_upi, callback_data=f"pass#switch_upi_{order_id}")],
+            [InlineKeyboardButton(f"💳 {btn_switch_upi}", callback_data=f"pass#switch_upi_{order_id}")],
             [InlineKeyboardButton(btn_cancel_lbl, callback_data=f"pass#cancel_{order_id}")],
             [InlineKeyboardButton(btn_back_lbl, callback_data=back_cb)]
         ])
@@ -5608,7 +5608,7 @@ async def _process_pass_callback(client, query):
                 '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (10 मिनट के लिए वैध)'
             )
             btn_status = "पेमेंट स्टेटस चेक करें"
-            btn_switch_cf = "⚡ Cashfree से भुगतान करें"
+            btn_switch_cf = "Cashfree से भुगतान करें"
             btn_back = "← वापस"
         else:
             plan_name = format_plan_name_friendly(dur_key, lang='en')
@@ -5627,12 +5627,12 @@ async def _process_pass_callback(client, query):
                 '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 10 Minutes)'
             )
             btn_status = "Check Payment Status"
-            btn_switch_cf = "⚡ Instead Pay with Cashfree"
+            btn_switch_cf = "Instead Pay with Cashfree"
             btn_back = "← Back"
 
         photo_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
-            [InlineKeyboardButton(btn_switch_cf, callback_data=f"pass#switch_cf_{order_id}")],
+            [InlineKeyboardButton(f"⚡ {btn_switch_cf}", callback_data=f"pass#switch_cf_{order_id}")],
             [InlineKeyboardButton(btn_back, callback_data=back_cb)]
         ])
         photo_api_kb = [
