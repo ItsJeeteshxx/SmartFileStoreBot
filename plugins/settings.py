@@ -4907,6 +4907,127 @@ async def settings_query(bot, query):
       query.data = f"settings#sb_fsub_{b_id}"
       return await settings_query(bot, query)
 
+  elif type.startswith("sb_fsub_add_"):
+      b_id = type.split("sb_fsub_add_")[1]
+      fsub_chs = await db.get_bot_fsub_channels(b_id)
+      if len(fsub_chs) >= 6:
+          return await query.answer("Maximum 6 channels supported.", show_alert=True)
+      await query.message.delete()
+      try:
+          ask = await bot.send_message(
+              user_id,
+              "<b>Send the Channel/Group ID or @username</b>\n"
+              "Example: <code>-1001234567890</code> or <code>@mychannel</code>\n\n"
+              "<i>Tip: You can also forward any message from your private channel here!</i>\n\n"
+              "/cancel to abort"
+          )
+          resp = await bot.listen(chat_id=user_id, timeout=120)
+          if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+              try: await resp.delete()
+              except Exception: pass
+              return await ask.edit_text(
+                  "<i>Process Cancelled Successfully!</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
+              )
+          
+          if resp.forward_from_chat:
+              raw_id_int = resp.forward_from_chat.id
+          else:
+              raw_id = (resp.text or "").strip()
+              if "t.me/" in raw_id or "http" in raw_id:
+                  try: await resp.delete()
+                  except Exception: pass
+                  return await ask.edit_text(
+                      "<b>‣  Invalid Input!</b>\n\nPlease send the Channel ID (e.g. <code>-100...</code>) or a public username (<code>@mychannel</code>), <b>NOT an invite link</b>.\n\n"
+                      "<i>Tip: If it's a private channel, simply forward any message from that channel to me!</i>",
+                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
+                  )
+              try:
+                  raw_id_int = int(raw_id)
+              except ValueError:
+                  raw_id_int = raw_id
+                  
+          try: await resp.delete()
+          except Exception: pass
+          
+          from plugins.share_bot import share_clients
+          dlvr_client = share_clients.get(str(b_id))
+          
+          ch_obj = None
+          try:
+              ch_obj = await bot.get_chat(raw_id_int)
+          except Exception:
+              if dlvr_client:
+                  try:
+                      ch_obj = await dlvr_client.get_chat(raw_id_int)
+                  except Exception:
+                      pass
+          
+          if not ch_obj:
+              return await ask.edit_text(
+                  "<b>‣  Cannot access this channel.</b>\n\n"
+                  "Make sure:\n"
+                  "• The <b>Main Bot</b> or the <b>Delivery Bot</b> is an <b>admin</b> in this channel\n"
+                  "• You send the ID (not @username) for private channels\n\n"
+                  "<i>Format: <code>-1001234567890</code></i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
+              )
+          
+          invite = ""
+          try:
+              invite = await bot.export_chat_invite_link(ch_obj.id)
+          except Exception:
+              if dlvr_client:
+                  try:
+                      invite = await dlvr_client.export_chat_invite_link(ch_obj.id)
+                  except Exception:
+                      pass
+              if not invite:
+                  invite = getattr(ch_obj, 'invite_link', '') or ''
+
+          ah = 0
+          try:
+              peer = await bot.resolve_peer(ch_obj.id)
+              ah = getattr(peer, 'access_hash', 0)
+          except Exception:
+              if dlvr_client:
+                  try:
+                      peer = await dlvr_client.resolve_peer(ch_obj.id)
+                      ah = getattr(peer, 'access_hash', 0)
+                  except Exception: pass
+
+          ch_str_id = str(ch_obj.id)
+          if any(str(c.get('chat_id')) == ch_str_id for c in fsub_chs):
+              return await ask.edit_text(
+                  f"<b>Channel <code>{ch_obj.title}</code> is already in Force Subscribe list!</b>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
+              )
+
+          fsub_chs.append({
+              'chat_id':     ch_str_id,
+              'title':       ch_obj.title or ch_obj.username or ch_str_id,
+              'invite_link': invite,
+              'join_request': False,
+              'access_hash': ah,
+          })
+          await db.set_bot_fsub_channels(b_id, fsub_chs)
+          await ask.edit_text(
+              f"<b>»  Added: {ch_obj.title}</b>\n"
+              f"<i>Use 'JR' button to toggle join-request mode for this channel.</i>",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
+          )
+      except asyncio.TimeoutError:
+          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
+          except Exception: pass
+
+  elif type.startswith("sb_fsub_msg_"):
+      b_id = type.split("sb_fsub_msg_")[1]
+      await _sb_set_text_flow(bot, user_id, query, b_id, "fsub_msg",
+          "Force-Subscribe Message",
+          "Send the message to display when a user is not subscribed.\n"
+          "Use <code>{first_name}</code>, <code>{full_name}</code>, <code>{mention}</code> as placeholders.",
+          f"settings#sb_fsub_{b_id}")
+
   elif type == "sb_logs_channel":
       logs_cfg = await db.get_logs_config()
 
