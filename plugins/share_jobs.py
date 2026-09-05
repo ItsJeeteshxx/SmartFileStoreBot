@@ -1510,76 +1510,114 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         # Use the rebuilt buckets (with real batch_size) if available, else fall back
         _buckets_to_use = buckets_final if 'buckets_final' in locals() else buckets
 
-        # Calculate split for Dual Share Bots
+        # Prepare Dual Share Bots distribution (randomized across all valid buttons)
         valid_buckets = [b for b in _buckets_to_use if b[2]]
         total_valid = len(valid_buckets)
-        split_idx = (total_valid + 1) // 2 if bot2_usr else total_valid
+        if bot2_usr and total_valid > 0:
+            import random
+            b1_target = (total_valid + 1) // 2
+            b2_target = total_valid - b1_target
+            bot_assignments = [1] * b1_target + [2] * b2_target
+            random.shuffle(bot_assignments)
+        else:
+            bot_assignments = [1] * total_valid
 
-        b_idx = 0
-        for b_s, b_e, mids in _buckets_to_use:
-            if not mids:
-                continue
-            uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-            await db.save_share_link(
-                uuid_str, mids, source_chat_id,
-                protect=protect, access_hash=db_access_hash
-            )
-
-            # Decide which bot delivers this link
-            if bot2_usr and b_idx >= split_idx:
-                current_bot_usr = bot2_usr
-                bot_num = 2
+        # --- PREPARE SHORTENER CONFIGURATION ---
+        short_choice = sj.get('shortener')
+        shortener_api_key = None
+        shortener_domain = None
+        if short_choice:
+            apis = await db.get_shortener_apis()
+            if short_choice == "arolinks":
+                shortener_api_key = apis.get("arolinks")
+                shortener_domain = "arolinks.com"
+            elif short_choice == "urlshortx":
+                shortener_api_key = apis.get("urlshortx")
+                shortener_domain = "urlshortx.io"
             else:
-                current_bot_usr = bot_usr
-                bot_num = 1
-            b_idx += 1
+                shortener_api_key = apis.get(short_choice)
+                shortener_domain = short_choice if "." in short_choice else f"{short_choice}.com"
 
-            # ── Log batch link creation ───────────────────────────────────────
-            try:
-                import asyncio as _aio
-                import plugins.arya_logger as _alog
-                _aio.create_task(_alog.log_batch_link(
-                    uuid=uuid_str,
-                    source_chat=source_chat_id,
-                    msg_ids=mids,
-                    story=story,
-                    ep_range=f"{b_s}–{b_e}",
-                ))
-            except Exception:
-                pass
-            # ──────────────────────────────────────────────────────────────────
-            url = f"https://t.me/{current_bot_usr}?start={uuid_str}"
+        import aiohttp
+        import urllib.parse
 
-            # --- APPLY SHORTENER ---
-            short_choice = sj.get('shortener')
-            if short_choice:
-                apis = await db.get_shortener_apis()
-                api_key = apis.get("arolinks") if short_choice == "arolinks" else apis.get("urlshortx")
-                if api_key:
+        async def _shorten_url_func(session, target_url, domain, api_key, retries=3):
+            if not domain or not api_key:
+                return target_url
+            encoded = urllib.parse.quote(target_url, safe='')
+            api_endpoint = f"https://{domain}/api?api={api_key}&url={encoded}"
+            for att in range(retries):
+                try:
+                    async with session.get(api_endpoint, timeout=aiohttp.ClientTimeout(total=12)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json(content_type=None)
+                            if isinstance(data, dict) and data.get("status") == "success" and data.get("shortenedUrl"):
+                                return data["shortenedUrl"]
+                            elif isinstance(data, dict) and data.get("message"):
+                                logger.warning(f"[Shortener] {domain} error: {data.get('message')}")
+                except Exception as ex:
+                    logger.warning(f"[Shortener] Attempt {att + 1}/{retries} failed for {domain}: {ex}")
+                if att < retries - 1:
+                    await asyncio.sleep(0.4)
+            return target_url
+
+        http_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*"
+        }
+
+        async with aiohttp.ClientSession(headers=http_headers) as http_session:
+            b_idx = 0
+            for b_s, b_e, mids in _buckets_to_use:
+                if not mids:
+                    continue
+                uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
+                await db.save_share_link(
+                    uuid_str, mids, source_chat_id,
+                    protect=protect, access_hash=db_access_hash
+                )
+
+                # Decide which bot delivers this link based on randomized distribution
+                bot_num = bot_assignments[b_idx] if b_idx < len(bot_assignments) else 1
+                current_bot_usr = bot2_usr if bot_num == 2 else bot_usr
+                b_idx += 1
+
+                # ── Log batch link creation ───────────────────────────────────────
+                try:
+                    import asyncio as _aio
+                    import plugins.arya_logger as _alog
+                    _aio.create_task(_alog.log_batch_link(
+                        uuid=uuid_str,
+                        source_chat=source_chat_id,
+                        msg_ids=mids,
+                        story=story,
+                        ep_range=f"{b_s}–{b_e}",
+                    ))
+                except Exception:
+                    pass
+                # ──────────────────────────────────────────────────────────────────
+                raw_tg_url = f"https://t.me/{current_bot_usr}?start={uuid_str}"
+
+                # --- APPLY SHORTENER ---
+                if short_choice and shortener_api_key and shortener_domain:
+                    url = await _shorten_url_func(http_session, raw_tg_url, shortener_domain, shortener_api_key)
+                else:
+                    url = raw_tg_url
+
+                btn_text = str(b_s) if (b_s == b_e or batch_size == 1) else f"{b_s}–{b_e}"
+                raw_buttons.append({
+                    "btn":      InlineKeyboardButton(_sc(btn_text), url=url),
+                    "ep_start": b_s,
+                    "ep_end":   b_e,
+                    "bot_usr":  current_bot_usr,
+                    "bot_num":  bot_num,
+                })
+
+                if b_idx % 10 == 0 or b_idx == total_valid:
                     try:
-                        import aiohttp
-                        headers = {
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Accept": "application/json, text/plain, */*"
-                        }
-                        async with aiohttp.ClientSession(headers=headers) as session:
-                            domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.io"
-                            api_url = f"https://{domain}/api?api={api_key}&url={url}"
-                            async with session.get(api_url, timeout=10) as resp:
-                                data = await resp.json()
-                                if data.get("status") == "success" and "shortenedUrl" in data:
-                                    url = data["shortenedUrl"]
-                    except Exception as e:
-                        logger.error(f"Error shortening url: {e}")
-                        
-            btn_text = str(b_s) if (b_s == b_e or batch_size == 1) else f"{b_s}–{b_e}"
-            raw_buttons.append({
-                "btn":      InlineKeyboardButton(_sc(btn_text), url=url),
-                "ep_start": b_s,
-                "ep_end":   b_e,
-                "bot_usr":  current_bot_usr,
-                "bot_num":  bot_num,
-            })
+                        await safe_edit(f"<i>»  Generating & shortening links ({b_idx}/{total_valid})...</i>")
+                    except Exception:
+                        pass
 
         # Calculate unparseable count for the display report (removed per user request)
         added_msg_ids = set()
@@ -1651,26 +1689,9 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             url = f"https://t.me/{bot_usr}?start={uuid_str}"
 
             # Shorten URL
-            short_choice = sj.get('shortener')
-            if short_choice:
-                apis = await db.get_shortener_apis()
-                api_key = apis.get("arolinks") if short_choice == "arolinks" else apis.get("urlshortx")
-                if api_key:
-                    try:
-                        import aiohttp
-                        headers = {
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Accept": "application/json, text/plain, */*"
-                        }
-                        async with aiohttp.ClientSession(headers=headers) as session:
-                            domain = "arolinks.com" if short_choice == "arolinks" else "urlshortx.io"
-                            api_url = f"https://{domain}/api?api={api_key}&url={url}"
-                            async with session.get(api_url, timeout=10) as resp:
-                                data = await resp.json()
-                                if data.get("status") == "success" and "shortenedUrl" in data:
-                                    url = data["shortenedUrl"]
-                    except Exception as e:
-                        logger.error(f"Error shortening url: {e}")
+            if short_choice and shortener_api_key and shortener_domain:
+                async with aiohttp.ClientSession(headers=http_headers) as missing_session:
+                    url = await _shorten_url_func(missing_session, url, shortener_domain, shortener_api_key)
 
             # Build list of hyperlinked episodes pointing to the same single URL
             formatted_list = [f"<a href='{url}'>{lbl}</a>" for lbl in ep_strs]
