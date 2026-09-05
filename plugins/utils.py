@@ -214,9 +214,27 @@ async def ask_channel_picker(bot, user_id: int, prompt: str,
         for i in range(0, len(visible), 2):
             pair = visible[i:i+2]
             rows.append([KeyboardButton(c["title"]) for c in pair])
+
+        cancel_btn = KeyboardButton("⛔ Cancel")
+        undo_btn = None
+        other_opts = []
         if extra_options:
-            rows.append([KeyboardButton(o) for o in extra_options])
-        rows.append([KeyboardButton("⛔ Cancel")])
+            for o in extra_options:
+                o_str = str(o)
+                o_lower = o_str.lower()
+                if "undo" in o_lower or "uɴᴅᴏ" in o_lower or "↩️" in o_str:
+                    undo_btn = KeyboardButton(o)
+                else:
+                    other_opts.append(KeyboardButton(o))
+
+        if other_opts:
+            for i in range(0, len(other_opts), 2):
+                rows.append(other_opts[i:i+2])
+
+        if undo_btn:
+            rows.append([undo_btn, cancel_btn])
+        else:
+            rows.append([cancel_btn])
         return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
 
     def _prompt_text(ch_list, is_filtered=False, query=""):
@@ -521,3 +539,28 @@ def get_natural_sort_key(msg):
         
     # Fallback: keep original database order (msg.id)
     return (1, msg.id, msg.id)
+
+
+async def get_fresh_message(client, chat_id, message_id: int):
+    """Safely re-fetches a message from Telegram with a brand-new, valid file_reference.
+    Handles DMs/bots (via get_chat_history offset) and channels (via get_messages)."""
+    if not client or not chat_id or not message_id:
+        return None
+    try:
+        # Check if chat is a user/bot DM (positive integer)
+        if isinstance(chat_id, int) and chat_id > 0:
+            async for m in client.get_chat_history(chat_id, limit=3, offset_id=message_id + 1):
+                if m and m.id == message_id:
+                    return m
+            # Fallback direct get_messages for DM
+            m = await client.get_messages(chat_id, message_id)
+            if m and not m.empty and getattr(m, 'chat', None) and m.chat.id == chat_id:
+                return m
+        else:
+            m = await client.get_messages(chat_id, message_id)
+            if m and not m.empty:
+                return m
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"get_fresh_message error for {chat_id}:{message_id} - {e}")
+    return None

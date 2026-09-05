@@ -351,7 +351,23 @@ async def _mj_forward(
                 err = str(exc).upper()
                 if any(x in err for x in ["PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN", "USER_BANNED", "CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED"]):
                     raise ValueError(f"Fatal Chat Error: {exc}")
-                if "RESTRICTED" in err or "PROTECTED" in err:
+
+                # Refresh on file reference expiry
+                if any(x in err for x in ["FILE_REFERENCE", "FILEREF", "MEDIA_EMPTY"]):
+                    from plugins.utils import get_fresh_message
+                    try:
+                        fresh_m = await get_fresh_message(client, msg.chat.id, msg.id)
+                        if fresh_m:
+                            msg = fresh_m
+                            try:
+                                await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
+                                return True, None, False
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                if any(x in err for x in ["RESTRICTED", "PROTECTED", "FILE_REFERENCE", "FILEREF", "MEDIA_EMPTY", "FILE_ID_INVALID"]):
                     # Try copy → forward fallback once for protected content
                     try:
                         await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
@@ -385,10 +401,20 @@ async def _mj_forward(
                                         logger.warning(f"[MultiJob _send_one] Download attempt {_dl_try + 1}/3 produced 0 B for msg {msg.id}. Retrying...")
                                         await asyncio.sleep(2)
                                 except FloodWait as fw:
+                                    logger.warning(f"[MultiJob _send_one] Download FloodWait {fw.value}s for msg {msg.id}")
                                     await asyncio.sleep(fw.value + 2)
+                                    try: client = await _mj_ensure_client_alive(client)
+                                    except Exception: pass
                                 except Exception as dl_e:
                                     err_dl = str(dl_e).upper()
-                                    if any(x in err_dl for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                                    if "FILE_REFERENCE" in err_dl or "FILEREF" in err_dl:
+                                        from plugins.utils import get_fresh_message
+                                        try:
+                                            fresh_m = await get_fresh_message(client, msg.chat.id, msg.id)
+                                            if fresh_m:
+                                                msg = fresh_m
+                                        except Exception: pass
+                                    if any(x in err_dl for x in ("FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
                                         logger.warning(f"[MultiJob _send_one] Permanent download error for msg {msg.id}: {dl_e}")
                                         return False, str(dl_e), True
                                     
@@ -419,7 +445,10 @@ async def _mj_forward(
                                     uploaded = True
                                     break
                                 except FloodWait as fw:
+                                    logger.warning(f"[MultiJob _send_one] Upload FloodWait {fw.value}s to {chat}")
                                     await asyncio.sleep(fw.value + 2)
+                                    try: client = await _mj_ensure_client_alive(client)
+                                    except Exception: pass
                                 except Exception as ul_e:
                                     err_ul = str(ul_e).upper()
                                     if any(x in err_ul for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY", "FILE SIZE EQUALS TO 0")):
@@ -436,6 +465,7 @@ async def _mj_forward(
                             import os
                             await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(fp)) if fp and os.path.exists(str(fp)) else 0)
                             if os.path.exists(fp): os.remove(fp)
+                            return True, None, False
                         else:
                             await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
                         return True, None, False
@@ -450,13 +480,15 @@ async def _mj_forward(
                 # If transient, try to heal before retrying
                 is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED", "PING", "FLOOD"))
                 
-                # For transient errors, retry up to 30 attempts
-                if _send_attempt >= 29:
-                    logger.warning(f"[MultiJob _send_one] All retries exhausted for msg {msg.id} to {chat}: {exc}")
-                    if is_transient:
-                        raise ConnectionError(f"Transient error persisted after 30 retries: {exc}")
+                # For transient errors, retry up to 5 attempts (not 30, which wasted 39 minutes!)
+                if _send_attempt >= 4 or not is_transient:
+                    logger.warning(f"[MultiJob _send_one] Forward failed for msg {msg.id} to {chat}: {exc}")
+                    if is_transient and _send_attempt >= 4:
+                        raise ConnectionError(f"Transient error persisted: {exc}")
                     return False, str(exc), False
-                await asyncio.sleep(5 * (_send_attempt + 1))
+                await asyncio.sleep(3)
+                try: client = await _mj_ensure_client_alive(client)
+                except Exception: pass
                 continue
 
     success1, err1, skip1 = await _send_one(to_chat, thread_id)
@@ -748,14 +780,44 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 await mark_msg_processed(msg.id, is_checkpoint=True)
 
                 client = await _mj_ensure_client_alive(client)
-                success = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                   to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
+
+                # Preemptively fetch fresh message reference if job has been running > 5m or idx >= 20
+                if msg.media and ((time.time() - mj_start_time) > 300 or idx >= 20):
+                    from plugins.utils import get_fresh_message
+                    try:
+                        fresh_m = await get_fresh_message(client, from_chat, msg.id)
+                        if fresh_m:
+                            msg = fresh_m
+                    except Exception:
+                        pass
+
+                success = False
+                err = None
+                skip = False
+                try:
+                    success, err, skip = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                                       to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
+                except FloodWait as fw:
+                    logger.warning(f"[MultiJob {job_id}] DM loop FloodWait {fw.value}s for msg {msg.id}")
+                    await asyncio.sleep(fw.value + 2)
+                    try: client = await _mj_ensure_client_alive(client)
+                    except Exception: pass
+                    try:
+                        success, err, skip = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                                           to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
+                    except Exception as fw_e:
+                        success = False
+                        err = str(fw_e)
+                except Exception as dm_fwd_err:
+                    logger.warning(f"[MultiJob {job_id}] DM forward exception for msg {msg.id}: {dm_fwd_err}")
+                    success = False
+                    err = str(dm_fwd_err)
                 
                 await mark_msg_processed(msg.id)
                 if success:
                     await _mj_inc(job_id, 1)
                 else:
-                    logger.warning(f"[MultiJob {job_id}] DM: Forward of msg {msg.id} failed — advancing past")
+                    logger.warning(f"[MultiJob {job_id}] DM: Forward of msg {msg.id} failed ({err}) — advancing past")
 
                 now_mj = time.time()
                 if mj_prog_msg_id and (now_mj - mj_last_prog_update) >= 10:
@@ -1670,20 +1732,31 @@ async def _mj_ask_dest(bot, user_id: int, channels: list, step_label: str, optio
     return picked['chat_id'], picked['title'], False
 
 
-async def _mj_ask_topic(bot, user_id: int, dest_label: str) -> int | None:
+async def _mj_ask_topic(bot, user_id: int, dest_label: str, undo_btn: bool = False) -> int | None | str:
     """Ask for optional topic thread ID."""
+    from pyrogram.types import KeyboardButton, ReplyKeyboardMarkup
+    CANCEL_BTN = KeyboardButton("⛔ Cᴀɴᴄᴇʟ")
+    UNDO_BTN   = KeyboardButton("↩️ Uɴᴅᴏ")
+    rows = [[KeyboardButton("0 (No Topic)")]]
+    if undo_btn:
+        rows.append([UNDO_BTN, CANCEL_BTN])
+    else:
+        rows.append([CANCEL_BTN])
     r = await _mj_ask(bot, user_id,
         f"<b>Topic Thread for {dest_label} (Optional)</b>\n\n"
         "• Send the <b>Thread ID</b> if you want to post inside a specific group topic\n"
         "• Send <b>0</b> to post in the main chat\n\n"
         "<i>Find Thread ID: open topic in Telegram Web → number after <code>/topics/</code> in URL</i>",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("0 (No Topic)")], [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]],
+            rows,
             resize_keyboard=True, one_time_keyboard=True
         ))
-    t = r.text.strip()
-    if "/cancel" in t:
-        return None
+    t = r.text.strip() if r and r.text else "0"
+    t_lower = t.lower()
+    if "/cancel" in t_lower or "⛔" in t or "cᴀɴᴄᴇʟ" in t_lower:
+        return "cancelled"
+    if "/undo" in t_lower or "↩️" in t or "uɴᴅᴏ" in t_lower:
+        return "undo"
     if t.isdigit() and int(t) > 0:
         return int(t)
     return None
@@ -1699,8 +1772,8 @@ async def _create_mj_flow(bot, user_id: int):
     CANCEL_BTN = KeyboardButton("⛔ Cᴀɴᴄᴇʟ")
     UNDO_BTN   = KeyboardButton("↩️ Uɴᴅᴏ")
 
-    def _cancel(txt): return txt.strip().startswith("/cancel") or "⛔" in txt or "Cᴀɴᴄᴇʟ" in txt
-    def _undo(txt):   return txt.strip().startswith("/undo") or "↩️" in txt or "Uɴᴅᴏ" in txt
+    def _cancel(txt): return False if not txt else txt.strip().startswith("/cancel") or "⛔" in txt or "Cᴀɴᴄᴇʟ" in txt
+    def _undo(txt):   return False if not txt else txt.strip().startswith("/undo") or "↩️" in txt or "Uɴᴅᴏ" in txt
 
     # ── Step 1: Name ──────────────────────────────────────────────
     name_r = await _mj_ask(bot, user_id,
@@ -1728,7 +1801,7 @@ async def _create_mj_flow(bot, user_id: int):
         return f"{kind}: {name} [{a['id']}]"
 
     acc_btns = [[KeyboardButton(_acc_label(a))] for a in accounts]
-    acc_btns.append([CANCEL_BTN])
+    acc_btns.append([UNDO_BTN, CANCEL_BTN])
 
     acc_r = await _mj_ask(bot, user_id,
         "<b>Create Multi Job — Step 2/6</b>\n\n"
@@ -1745,6 +1818,18 @@ async def _create_mj_flow(bot, user_id: int):
 
     if _cancel(acc_r.text):
         return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(acc_r.text):
+        name_r = await _mj_ask(bot, user_id,
+            "<b>Create Multi Job — Step 1/6</b>\n\n"
+            "Send a <b>name</b> for this job, or press <b>Default</b>.",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("Default")], [CANCEL_BTN]],
+                resize_keyboard=True, one_time_keyboard=True))
+        if _cancel(name_r.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        job_name = name_r.text.strip()[:100]
+        if job_name.lower() == "default":
+            job_name = None
 
     acc_id = None
     if "[" in acc_r.text and "]" in acc_r.text:
@@ -1916,7 +2001,7 @@ async def _create_mj_flow(bot, user_id: int):
             range_r2 = await _mj_ask(bot, user_id,
                 "<b>↩️ Redo — Step 5/6: Message Range</b>\n\nWhich messages should be copied?",
                 reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("ALL")], [CANCEL_BTN]],
+                    [[KeyboardButton("ALL")], [UNDO_BTN, CANCEL_BTN]],
                     resize_keyboard=True, one_time_keyboard=True))
             if _cancel(range_r2.text):
                 return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())

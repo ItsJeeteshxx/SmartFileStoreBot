@@ -291,13 +291,20 @@ async def _ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 3
         raise
 
 
-async def _ask_topic(bot, user_id: int, dest_label: str) -> int | None:
+async def _ask_topic(bot, user_id: int, dest_label: str, undo_btn: bool = False) -> int | None | str:
     """Ask user for an optional topic thread ID (for group topics).
-    Returns the thread ID as int, or None if not needed.
-    NOTE: This was the cause of Live Job step 3/7 silently hanging —
-    the function was called but never defined here.
+    Returns the thread ID as int, None for 0/no topic, 'cancelled' if cancelled, 'undo' if undo pressed.
     """
     from pyrogram.types import KeyboardButton, ReplyKeyboardMarkup
+    CANCEL_BTN = KeyboardButton("⛔ Cᴀɴᴄᴇʟ")
+    UNDO_BTN   = KeyboardButton("↩️ Uɴᴅᴏ")
+
+    rows = [[KeyboardButton("0 (No Topic)")]]
+    if undo_btn:
+        rows.append([UNDO_BTN, CANCEL_BTN])
+    else:
+        rows.append([CANCEL_BTN])
+
     r = await _ask(bot, user_id,
         f"<b>Topic Thread for {dest_label} (Optional)</b>\n\n"
         "• Send the <b>Thread ID</b> if you want to post inside a specific group topic\n"
@@ -305,12 +312,15 @@ async def _ask_topic(bot, user_id: int, dest_label: str) -> int | None:
         "<i>To find Thread ID: open the topic in Telegram Web → look at the number after "
         "<code>/topics/</code> in the URL.</i>",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("0 (No Topic)")], [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]],
+            rows,
             resize_keyboard=True, one_time_keyboard=True
         ))
     t = r.text.strip() if r and r.text else "0"
-    if "/cancel" in t.lower() or "⛔" in t:
-        return None
+    t_lower = t.lower()
+    if "/cancel" in t_lower or "⛔" in t or "cᴀɴᴄᴇʟ" in t_lower:
+        return "cancelled"
+    if "/undo" in t_lower or "↩️" in t or "uɴᴅᴏ" in t_lower:
+        return "undo"
     if t.lstrip("-").isdigit() and int(t) > 0:
         return int(t)
     return None
@@ -692,7 +702,8 @@ async def _forward_message(
 
         #  Attempt 1: copy_message 
         is_restricted = False
-        for attempt in range(3):
+        attempt = 0
+        while attempt < 3:
             try:
                 if not hasattr(client, '_network_lock'):
                     client._network_lock = asyncio.Lock()
@@ -717,7 +728,10 @@ async def _forward_message(
                             await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
                 return True
             except FloodWait as fw:
+                logger.warning(f"[LiveJob _send_one] FloodWait {fw.value}s to {chat} — waiting...")
                 await asyncio.sleep(fw.value + 2)
+                try: client = await _lj_ensure_client_alive(client)
+                except Exception: pass
                 continue
             except Exception as e:
                 err = str(e).upper()
@@ -725,13 +739,37 @@ async def _forward_message(
                 if any(x in err for x in ["PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN", "USER_BANNED", "CHANNEL_PRIVATE", "CHAT_ADMIN_REQUIRED"]):
                     raise ValueError(f"Fatal Chat Error: {e}")
 
-                if "RESTRICTED" in err or "PROTECTED" in err or "FALLBACK" in err:
+                if any(x in err for x in ["FILE_REFERENCE", "FILEREF", "MEDIA_EMPTY"]):
+                    # Try refreshing message with fresh file_reference
+                    try:
+                        from plugins.utils import get_fresh_message
+                        fresh_m = await get_fresh_message(client, msg.chat.id if msg.chat else from_chat, msg.id)
+                        if fresh_m:
+                            msg = fresh_m
+                            try:
+                                if not hasattr(client, '_network_lock'):
+                                    client._network_lock = asyncio.Lock()
+                                async with client._network_lock:
+                                    await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
+                                return True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    is_restricted = True
+                    break
+
+                if any(x in err for x in ["RESTRICTED", "PROTECTED", "FALLBACK"]):
                     is_restricted = True
                     break
                 if "TIMEOUT" in err or "CONNECTION" in err or "BROKEN PIPE" in err or "ERRNO 32" in err:
+                    attempt += 1
                     await asyncio.sleep(5)
+                    try: client = await _lj_ensure_client_alive(client)
+                    except Exception: pass
                     continue 
-                if attempt < 2:
+                attempt += 1
+                if attempt < 3:
                     await asyncio.sleep(2)
                     continue
                 return False
@@ -740,7 +778,8 @@ async def _forward_message(
             return False
 
         #  Attempt 2: download + re-upload 
-        for attempt in range(5):
+        attempt = 0
+        while attempt < 5:
             try:
                 fp = None
                 media_obj = getattr(msg, msg.media.value, None) if msg.media else None
@@ -749,7 +788,8 @@ async def _forward_message(
                     safe_name = f"downloads/{msg.id}_{original_name}" if original_name else f"downloads/{msg.id}"
                     
                     # Internal retry for download
-                    for dl_attempt in range(5):
+                    dl_attempt = 0
+                    while dl_attempt < 5:
                         try:
                             # We don't need client._network_lock for download_media since it's a read-only transport call.
                             fp = await client.download_media(msg, file_name=safe_name)
@@ -757,12 +797,27 @@ async def _forward_message(
                                 await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                                 break
                         except FloodWait as fw:
+                            logger.warning(f"[LiveJob download] FloodWait {fw.value}s for msg {msg.id}")
                             await asyncio.sleep(fw.value + 2)
+                            try: client = await _lj_ensure_client_alive(client)
+                            except Exception: pass
+                            continue
                         except Exception as dl_e:
-                            if "TIMEOUT" in str(dl_e).upper() or "CONNECTION" in str(dl_e).upper() or "BROKEN PIPE" in str(dl_e).upper() or "ERRNO 32" in str(dl_e).upper():
+                            dl_err = str(dl_e).upper()
+                            if "FILE_REFERENCE" in dl_err or "FILEREF" in dl_err:
+                                try:
+                                    from plugins.utils import get_fresh_message
+                                    fresh_m = await get_fresh_message(client, msg.chat.id if msg.chat else from_chat, msg.id)
+                                    if fresh_m: msg = fresh_m
+                                except Exception: pass
+                            if "TIMEOUT" in dl_err or "CONNECTION" in dl_err or "BROKEN PIPE" in dl_err or "ERRNO 32" in dl_err:
+                                dl_attempt += 1
                                 await asyncio.sleep(5)
+                                try: client = await _lj_ensure_client_alive(client)
+                                except Exception: pass
                                 continue
-                            if dl_attempt < 4:
+                            dl_attempt += 1
+                            if dl_attempt < 5:
                                 await asyncio.sleep(3)
                                 continue
                             break
@@ -795,14 +850,21 @@ async def _forward_message(
                         await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)
                     return True
             except FloodWait as fw:
+                logger.warning(f"[LiveJob upload] FloodWait {fw.value}s to {chat}")
                 await asyncio.sleep(fw.value + 2)
+                try: client = await _lj_ensure_client_alive(client)
+                except Exception: pass
                 continue
             except Exception as e2:
                 f_err = str(e2).upper()
                 if "TIMEOUT" in f_err or "CONNECTION" in f_err or "BROKEN PIPE" in f_err or "ERRNO 32" in f_err:
+                    attempt += 1
                     await asyncio.sleep(5)
+                    try: client = await _lj_ensure_client_alive(client)
+                    except Exception: pass
                     continue 
-                if attempt < 4:
+                attempt += 1
+                if attempt < 5:
                     await asyncio.sleep(3)
                     continue
                 return False
@@ -1189,19 +1251,32 @@ async def _run_job(job_id: str, user_id: int):
                             await mark_msg_processed(msg.id)
                             continue
 
-                    try:
-                        success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                               to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                        if success:
-                            await _inc_forwarded(job_id, 1, forward_type='batch')
-                    except FloodWait as fw:
-                        await asyncio.sleep(fw.value + 1)
-                        success = False
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.debug(f"[Job {job_id}] DM batch fwd error {msg.id}: {e}")
-                        success = False
+                    success = False
+                    fw_retries = 0
+                    while fw_retries < 10:
+                        try:
+                            success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                                                   to_thread, to_chat_2, to_thread_2, replacements, remove_links)
+                            break
+                        except FloodWait as fw:
+                            fw_retries += 1
+                            logger.warning(f"[Job {job_id}] DM batch FloodWait {fw.value}s for msg {msg.id} (retry {fw_retries}/10)")
+                            await asyncio.sleep(fw.value + 2)
+                            try: client = await _lj_ensure_client_alive(client, acc=acc)
+                            except Exception: pass
+                            continue
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            logger.debug(f"[Job {job_id}] DM batch fwd error {msg.id}: {e}")
+                            success = False
+                            break
+
+                    if success:
+                        await _inc_forwarded(job_id, 1, forward_type='batch')
+                    elif fw_retries >= 10:
+                        logger.warning(f"[Job {job_id}] DM batch msg {msg.id} delayed by heavy FloodWait — will retry")
+                        continue
 
                     upd = {}
                     if success:
@@ -1426,19 +1501,32 @@ async def _run_job(job_id: str, user_id: int):
                          await mark_msg_processed(msg.id)
                          continue
 
-                 try:
-                     success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                            to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                     if success:
-                         await _inc_forwarded(job_id, 1, forward_type='batch')
-                 except FloodWait as fw:
-                     await asyncio.sleep(fw.value + 1)
-                     success = False
-                 except asyncio.CancelledError:
-                     raise
-                 except Exception as e:
-                     logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
-                     success = False
+                 success = False
+                 fw_retries = 0
+                 while fw_retries < 10:
+                     try:
+                         success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                                                to_thread, to_chat_2, to_thread_2, replacements, remove_links)
+                         break
+                     except FloodWait as fw:
+                         fw_retries += 1
+                         logger.warning(f"[Job {job_id}] Batch FloodWait {fw.value}s for msg {msg.id} (retry {fw_retries}/10)")
+                         await asyncio.sleep(fw.value + 2)
+                         try: client = await _lj_ensure_client_alive(client, acc=acc)
+                         except Exception: pass
+                         continue
+                     except asyncio.CancelledError:
+                         raise
+                     except Exception as e:
+                         logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
+                         success = False
+                         break
+
+                 if success:
+                     await _inc_forwarded(job_id, 1, forward_type='batch')
+                 elif fw_retries >= 10:
+                     logger.warning(f"[Job {job_id}] Batch msg {msg.id} delayed by heavy FloodWait — will retry")
+                     continue
 
                  upd = {}
                  if success:
@@ -1844,29 +1932,43 @@ async def _run_job(job_id: str, user_id: int):
                             except Exception: pass
                 
                 success = False
-                try:
-                    success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                           to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                    if success:
-                        await _inc_forwarded(job_id, 1, forward_type='live')
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value + 1)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    fwd_err = str(e)
-                    fwd_up = fwd_err.upper()
-                    is_conn_err = any(k in fwd_up for k in (
-                        "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
-                        "CONNECTION", "BROKEN PIPE", "ERRNO 32", "TIMEOUT", "RESET"
-                    ))
-                    if is_conn_err:
-                        logger.warning(f"[Job {job_id}] Connection error during forward: {fwd_err}. Healing...")
-                        try:
-                            client = await _lj_ensure_client_alive(client, acc=acc)
+                fw_retries = 0
+                while fw_retries < 10:
+                    try:
+                        success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                                               to_thread, to_chat_2, to_thread_2, replacements, remove_links)
+                        break
+                    except FloodWait as fw:
+                        fw_retries += 1
+                        logger.warning(f"[Job {job_id}] Live forward FloodWait {fw.value}s for msg {msg.id} (retry {fw_retries}/10)")
+                        await asyncio.sleep(fw.value + 2)
+                        try: client = await _lj_ensure_client_alive(client, acc=acc)
                         except Exception: pass
-                    else:
-                        logger.debug(f"[Job {job_id}] Forward error: {fwd_err}")
+                        continue
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        fwd_err = str(e)
+                        fwd_up = fwd_err.upper()
+                        is_conn_err = any(k in fwd_up for k in (
+                            "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
+                            "CONNECTION", "BROKEN PIPE", "ERRNO 32", "TIMEOUT", "RESET"
+                        ))
+                        if is_conn_err:
+                            logger.warning(f"[Job {job_id}] Connection error during forward: {fwd_err}. Healing...")
+                            try:
+                                client = await _lj_ensure_client_alive(client, acc=acc)
+                            except Exception: pass
+                        else:
+                            logger.debug(f"[Job {job_id}] Forward error: {fwd_err}")
+                        success = False
+                        break
+
+                if success:
+                    await _inc_forwarded(job_id, 1, forward_type='live')
+                elif fw_retries >= 10:
+                    logger.warning(f"[Job {job_id}] Msg {msg.id} delayed by heavy FloodWait — will retry on next poll")
+                    continue
 
                 last_seen = max(last_seen, msg.id)
                 upd = {"last_seen_id": last_seen}
@@ -2792,7 +2894,7 @@ async def _create_job_flow(bot, user_id: int):
         return f"{kind}: {name} [{a['id']}]"
 
     acc_btns = [[KeyboardButton(_acc_label(a))] for a in accounts]
-    acc_btns.append([CANCEL_BTN])
+    acc_btns.append([UNDO_BTN, CANCEL_BTN])
 
     acc_r = await _ask(bot, user_id,
         "<b>»  Create Live Job — Step 2/7</b>\n\n"
@@ -2809,6 +2911,16 @@ async def _create_job_flow(bot, user_id: int):
 
     if _cancel(acc_r.text):
         return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(acc_r.text):
+        name_r = await _ask(bot, user_id,
+            "<b>»  Create Live Job — Step 1/7</b>\n\n"
+            "Send a <b>name</b> for this job, or press <b>Default</b>.",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Default")], [CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
+        if _cancel(name_r.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        job_name = name_r.text.strip()[:100]
+        if job_name.lower() == "default":
+            job_name = None
 
     acc_id = None
     if "[" in acc_r.text and "]" in acc_r.text:
@@ -2908,7 +3020,7 @@ async def _create_job_flow(bot, user_id: int):
             # redo source step
             src_r2 = await _ask(bot, user_id,
                 "<b>↩️ Redo — Step 3/7: Source Chat</b>\n\nSend source chat again:",
-                reply_markup=ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
+                reply_markup=ReplyKeyboardMarkup([[UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
             if _cancel(src_r2.text):
                 return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
             from_chat_raw = src_r2.text.strip()
@@ -2925,7 +3037,7 @@ async def _create_job_flow(bot, user_id: int):
             return
         break
 
-    to_thread = await _ask_topic(bot, user_id, "Primary Destination")
+    to_thread = await _ask_topic(bot, user_id, "Primary Destination", undo_btn=True)
     if to_thread == "cancelled":
         return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
@@ -2992,7 +3104,7 @@ async def _create_job_flow(bot, user_id: int):
                     "<b>↩️ Redo — Step 5/8: Batch Mode</b>\n\nON or OFF?",
                     reply_markup=ReplyKeyboardMarkup(
                         [[KeyboardButton("✅ ON (Copy old messages first)")],
-                         [KeyboardButton("❌ OFF (Live only)")], [CANCEL_BTN]],
+                         [KeyboardButton("❌ OFF (Live only)")], [UNDO_BTN, CANCEL_BTN]],
                         resize_keyboard=True, one_time_keyboard=True))
                 if _cancel(batch_r2.text):
                     return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
@@ -3038,7 +3150,7 @@ async def _create_job_flow(bot, user_id: int):
         batch_r3 = await _ask(bot, user_id,
             "<b>↩️ Redo — Step 5/8: Batch Mode</b>\n\nON or OFF?",
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("✅ ON")], [KeyboardButton("❌ OFF")], [CANCEL_BTN]],
+                [[KeyboardButton("✅ ON")], [KeyboardButton("❌ OFF")], [UNDO_BTN, CANCEL_BTN]],
                 resize_keyboard=True, one_time_keyboard=True))
         if _cancel(batch_r3.text):
             return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
@@ -3053,7 +3165,7 @@ async def _create_job_flow(bot, user_id: int):
                     [KeyboardButton("2 minutes (120s)")],
                     [KeyboardButton("5 minutes (300s)")],
                     [KeyboardButton("❌ No minimum (0s)")],
-                    [CANCEL_BTN],
+                    [UNDO_BTN, CANCEL_BTN],
                 ],
                 resize_keyboard=True, one_time_keyboard=True
             ))
@@ -3085,12 +3197,34 @@ async def _create_job_flow(bot, user_id: int):
                 [KeyboardButton("500 MB")],
                 [KeyboardButton("1000 MB (1 GB)")],
                 [KeyboardButton("2000 MB (2 GB)")],
-                [CANCEL_BTN],
+                [UNDO_BTN, CANCEL_BTN],
             ],
             resize_keyboard=True, one_time_keyboard=True
         ))
     if _cancel(_st7b.text):
         return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(_st7b.text):
+        _st7a = await _ask(bot, user_id,
+            "<b>↩️ Redo — Step 6/8: Minimum Duration Filter</b>\n\nSelect or type custom seconds:",
+            reply_markup=ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("✅ 50 seconds (Recommended)")],
+                    [KeyboardButton("1 minute (60s)")],
+                    [KeyboardButton("2 minutes (120s)")],
+                    [KeyboardButton("5 minutes (300s)")],
+                    [KeyboardButton("❌ No minimum (0s)")],
+                    [UNDO_BTN, CANCEL_BTN],
+                ],
+                resize_keyboard=True, one_time_keyboard=True
+            ))
+        if _cancel(_st7a.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        _t7a = (_st7a.text or "").strip()
+        if _t7a in _min_preset_map:
+            min_duration_s = _min_preset_map[_t7a]
+        else:
+            try: min_duration_s = max(0, int(_t7a.split()[0]))
+            except: min_duration_s = 50
     _sz_preset_map = {
         "❌ No size limit (Recommended)": 0,
         "500 MB": 500,
@@ -3131,7 +3265,7 @@ async def _create_job_flow(bot, user_id: int):
                 "<b>↩️ Redo — Step 6/8: Size / Duration Limits</b>\n\n"
                 "Format: max_mb : max_seconds : min_seconds (or 0 for none):",
                 reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("0 (No limit)")], [CANCEL_BTN]],
+                    [[KeyboardButton("0 (No limit)")], [UNDO_BTN, CANCEL_BTN]],
                     resize_keyboard=True, one_time_keyboard=True))
             if _cancel(limit_r2.text):
                 return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
@@ -3175,7 +3309,7 @@ async def _create_job_flow(bot, user_id: int):
                 "ON or OFF?",
                 reply_markup=ReplyKeyboardMarkup(
                     [[KeyboardButton("✅ YES (Skip duplicates)")],
-                     [KeyboardButton("❌ NO (Allow duplicates)")], [CANCEL_BTN]],
+                     [KeyboardButton("❌ NO (Allow duplicates)")], [UNDO_BTN, CANCEL_BTN]],
                     resize_keyboard=True, one_time_keyboard=True))
             if _cancel(dupe_r2.text):
                 return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
