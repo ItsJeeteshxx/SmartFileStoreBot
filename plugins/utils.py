@@ -278,8 +278,15 @@ async def ask_channel_picker(bot, user_id: int, prompt: str,
             return None
 
         # Extra options (e.g. Undo, Skip)
-        if extra_options and text in extra_options:
-            return text
+        if extra_options:
+            if text in extra_options:
+                return text
+            for opt in extra_options:
+                opt_str = str(opt)
+                if any(u in text.lower() for u in ['undo', 'uɴᴅᴏ', '↩️']) and any(u in opt_str.lower() for u in ['undo', 'uɴᴅᴏ', '↩️']):
+                    return opt
+                if text.lower() == opt_str.lower():
+                    return opt
 
         # Exact button match (user tapped a channel button)
         exact = next((c for c in current_list if c["title"] == text), None)
