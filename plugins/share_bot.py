@@ -2684,7 +2684,8 @@ async def _poll_upi_payment(
                         order_id=order_id,
                         expiry_ts=time.time() + dur_sec,
                         log_channel=log_ch,
-                        gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]"
+                        gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]",
+                        tier=tier_val
                     ))
                 except Exception as l_err:
                     logger.debug(f"Payment log dispatch error: {l_err}")
@@ -2783,11 +2784,12 @@ async def _handle_share_bot_utr_message(client, message):
     if res.get("success"):
         pending_info = _pending_utr_users.pop(user_id, {})
         order_id = pending_info.get('order_id') or f"PASS-{user_id}-1D-1"
+        tier_val = (pending_info.get('tier') or 'basic').lower().strip()
         await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
         _cancel_cooldown_reminders(user_id)
         b_id = getattr(getattr(client, "me", None), "id", None)
         b_uname = getattr(getattr(client, "me", None), "username", "")
-        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=expected_amount)
+        new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=expected_amount, tier=tier_val)
 
         from database import format_duration_verbose, parse_duration_to_seconds
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -2803,9 +2805,10 @@ async def _handle_share_bot_utr_message(client, message):
             exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
         u_name = message.from_user.first_name or "User"
+        tier_badge = "👑 Pro" if tier_val == 'pro' else ("💎 Premium" if tier_val == 'premium' else "⚡ Basic")
         success_text = (
             f'<emoji id="5224607267797606837">🎉</emoji> <b>UPI Payment Verified Successfully!</b>\n\n'
-            f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+            f"Hey <b>{u_name}</b>, your <b>{dur_verbose.title()} {tier_badge} Unlimited Pass</b> is now ACTIVE!\n\n"
             f"• <b>UTR / Ref No:</b> <code>{utr}</code>\n"
             f"• <b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
             f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
@@ -2825,7 +2828,8 @@ async def _handle_share_bot_utr_message(client, message):
             order_id=order_id,
             expiry_ts=new_expiry,
             log_channel=log_ch,
-            gateway="UPI (Gmail Auto)"
+            gateway="UPI (Gmail Auto)",
+            tier=tier_val
         ))
     elif res.get("amount_mismatch"):
         m_amt = res.get("mismatched_amount")
@@ -3336,7 +3340,8 @@ async def start_pass_cashfree_auto_verifier(
                         order_id=order_id,
                         expiry_ts=new_expiry,
                         log_channel=log_ch,
-                        gateway="Cashfree PG (Auto-Verified)"
+                        gateway="Cashfree PG (Auto-Verified)",
+                        tier=tier_val
                     ))
                 break
         except asyncio.CancelledError:
@@ -4900,11 +4905,12 @@ async def _process_pass_callback(client, query):
         if res.get("success"):
             pending = _pending_utr_users.pop(user_id, {})
             order_id = pending.get('order_id') or f"UPI_{user_id}_{int(time.time())}"
+            tier_val = (pending.get('tier') or 'basic').lower().strip()
             await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
             _cancel_cooldown_reminders(user_id)
             b_id = getattr(getattr(client, "me", None), "id", None)
             b_uname = getattr(getattr(client, "me", None), "username", "")
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=expected_amount)
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=u_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=expected_amount, tier=tier_val)
             
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -4919,9 +4925,10 @@ async def _process_pass_callback(client, query):
             except Exception:
                 exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
+            tier_badge = "👑 Pro" if tier_val == 'pro' else ("💎 Premium" if tier_val == 'premium' else "⚡ Basic")
             success_text = (
                 f'<emoji id="5224607267797606837">🎉</emoji> <b>UPI Payment Verified Successfully!</b>\n\n'
-                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} Unlimited Access Pass</b> is now ACTIVE!\n\n"
+                f"Hey <b>{user_name}</b>, your <b>{dur_verbose.title()} {tier_badge} Unlimited Pass</b> is now ACTIVE!\n\n"
                 f"<b>UTR / RRN:</b> <code>{utr}</code>\n"
                 f"<b>Amount Verified:</b> ₹{expected_amount:.2f}\n"
                 f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
@@ -4941,7 +4948,8 @@ async def _process_pass_callback(client, query):
                 order_id=order_id,
                 expiry_ts=new_expiry,
                 log_channel=log_ch,
-                gateway="UPI (Gmail Auto)"
+                gateway="UPI (Gmail Auto)",
+                tier=tier_val
             ))
         elif res.get("amount_mismatch"):
             m_amt = res.get("mismatched_amount")
@@ -5101,7 +5109,9 @@ async def _process_pass_callback(client, query):
 
         if v_res.get("paid"):
             _cancel_cooldown_reminders(user_id)
+            order_doc_paid = None
             try:
+                order_doc_paid = await db.pass_orders.find_one({"$or": [{"order_id": order_id}, {"track_id": track_id}]})
                 await db.pass_orders.update_one(
                     {"$or": [{"order_id": order_id}, {"track_id": track_id}]},
                     {"$set": {"status": "PAID", "paid_at": time.time()}}
@@ -5110,7 +5120,8 @@ async def _process_pass_callback(client, query):
                 pass
             b_id = getattr(getattr(client, "me", None), "id", None)
             b_uname = getattr(getattr(client, "me", None), "username", "")
-            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key)
+            tier_val = (order_doc_paid.get('tier') or 'basic').lower().strip() if order_doc_paid else 'basic'
+            new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, tier=tier_val)
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
             dur_verbose = format_duration_verbose(dur_sec)
@@ -5157,7 +5168,8 @@ async def _process_pass_callback(client, query):
                 order_id=order_id,
                 expiry_ts=new_expiry,
                 log_channel=log_ch,
-                gateway="Crypto (OxaPay)"
+                gateway="Crypto (OxaPay)",
+                tier=tier_val
             ))
         else:
             await query.answer(
@@ -5376,7 +5388,8 @@ async def _process_pass_callback(client, query):
                     order_id=order_id,
                     expiry_ts=new_expiry,
                     log_channel=log_ch,
-                    gateway="Cashfree PG"
+                    gateway="Cashfree PG",
+                    tier=tier_val
                 ))
             else:
                 # Already claimed (e.g. by auto-verifier or earlier tap). DO NOT ADD EXTRA DURATION!

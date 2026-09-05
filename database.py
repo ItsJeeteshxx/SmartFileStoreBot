@@ -2078,11 +2078,13 @@ class Database:
                 continue
 
             plan_val = o.get('duration_key') or o.get('plan') or o.get('duration') or '1d'
+            tier_val = str(o.get('tier') or 'basic').lower().strip()
 
             results.append({
                 'id': oid,
                 'amount': float(o.get('amount', 0.0)),
                 'plan': str(plan_val),
+                'tier': tier_val,
                 'status': final_status,
                 'time': c_time,
                 'gateway': gw_display
@@ -2092,11 +2094,13 @@ class Database:
             oid = u.get('order_id') or f"UPI_{user_id}_{int(u.get('used_at', 0))}"
             if oid not in seen_order_ids:
                 seen_order_ids.add(oid)
+                u_tier = str(u.get('tier') or 'basic').lower().strip()
                 results.append({
                     'id': oid,
                     'utr': u.get('utr', ''),
                     'amount': float(u.get('amount', 0.0)),
                     'plan': str(u.get('plan') or '1d'),
+                    'tier': u_tier,
                     'status': 'PAID',
                     'time': float(u.get('used_at', 0)),
                     'gateway': "Manual UPI"
@@ -2230,6 +2234,16 @@ class Database:
         """Helper to activate or extend user pass by duration seconds."""
         return await self.grant_user_unlimited_pass(user_id=user_id, duration=duration_seconds, user_name=user_name, tier=tier)
 
+    async def set_user_pass_tier(self, user_id: int, tier: str) -> bool:
+        """Update only the pass tier for a user."""
+        import time
+        tier_clean = str(tier or 'basic').lower().strip()
+        res = await self.unlimited_passes.update_one(
+            {'user_id': int(user_id)},
+            {'$set': {'tier': tier_clean, 'updated_at': time.time()}}
+        )
+        return res.modified_count > 0
+
     async def reduce_user_unlimited_pass(self, user_id: int, duration) -> float:
         """Reduce user's unlimited pass by specified duration (days int or duration str like '1d', '3h', '30m')."""
         import time
@@ -2322,10 +2336,12 @@ class Database:
             uid = int(uid)
             exp = float(doc.get('expires_at', 0))
             u_name = doc.get('user_name', '')
+            tier = str(doc.get('tier') or 'basic').lower().strip()
             users_map[uid] = {
                 'user_id': uid,
                 'name': u_name,
                 'expires_at': exp,
+                'tier': tier,
                 'updated_at': float(doc.get('updated_at', exp))
             }
 
@@ -2336,11 +2352,13 @@ class Database:
                 continue
             uid = int(uid)
             u_name = doc.get('user_name', '')
+            tier = str(doc.get('tier') or 'basic').lower().strip()
             if uid not in users_map:
                 users_map[uid] = {
                     'user_id': uid,
                     'name': u_name,
                     'expires_at': 0.0,
+                    'tier': tier,
                     'updated_at': float(doc.get('used_at', 0))
                 }
             elif not users_map[uid]['name'] and u_name:
@@ -2353,15 +2371,23 @@ class Database:
                 continue
             uid = int(uid)
             u_name = doc.get('user_name') or doc.get('customer_name', '')
+            tier = str(doc.get('tier') or 'basic').lower().strip()
             if uid not in users_map:
                 users_map[uid] = {
                     'user_id': uid,
                     'name': u_name,
                     'expires_at': 0.0,
+                    'tier': tier,
                     'updated_at': float(doc.get('paid_at') or doc.get('created_at', 0))
                 }
-            elif not users_map[uid]['name'] and u_name:
-                users_map[uid]['name'] = u_name
+            else:
+                if not users_map[uid]['name'] and u_name:
+                    users_map[uid]['name'] = u_name
+                # Promote tier if pass order has pro or premium
+                TIER_RANKS = {'basic': 1, 'pro': 2, 'premium': 3}
+                cur_t = users_map[uid].get('tier', 'basic')
+                if TIER_RANKS.get(tier, 1) > TIER_RANKS.get(cur_t, 1):
+                    users_map[uid]['tier'] = tier
 
         # Priority: ALWAYS resolve Telegram user names for ALL customer IDs from Telegram users collection (self.col)
         all_uids = list(users_map.keys())
@@ -2380,6 +2406,7 @@ class Database:
         for uid, data in users_map.items():
             name = data.get('name') or f"User {uid}"
             data['name'] = str(name)[:25]
+            data['tier'] = str(data.get('tier') or 'basic').lower().strip()
 
             exp = data['expires_at']
             active = bool(exp > now)

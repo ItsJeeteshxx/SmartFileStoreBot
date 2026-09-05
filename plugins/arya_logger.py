@@ -457,7 +457,8 @@ async def log_pass_purchased(
     expiry_ts: float = 0.0,
     log_channel: Optional[int] = None,
     gateway: str = "Cashfree PG",
-    days: int = 1
+    days: int = 1,
+    tier: str = "basic"
 ) -> None:
     """Log when a user purchases an Unlimited Delivery Pass in Quoteblock format."""
     now_str = _ist_str()
@@ -473,12 +474,20 @@ async def log_pass_purchased(
         exp_str = datetime.datetime.fromtimestamp(expiry_ts).strftime('%d-%m-%Y %I:%M %p')
 
     plan_display = duration_str if duration_str else (f"{days} Day(s)" if str(days).isdigit() else str(days))
+    t_clean = str(tier or 'basic').strip().lower()
+    if t_clean == 'pro':
+        tier_display = "👑 PRO PASS"
+    elif t_clean == 'premium':
+        tier_display = "💎 PREMIUM PASS"
+    else:
+        tier_display = "⚡ BASIC PASS"
 
     text = (
         f"<blockquote><b>UNLIMITED ACCESS PASS PURCHASED</b>\n"
         f"────────────────────\n"
         f"<b>Name:</b> {_esc(user_name)}\n"
         f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Tier:</b> <b>{tier_display}</b>\n"
         f"<b>Plan:</b> {plan_display} Unlimited Access\n"
         f"<b>Amount:</b> ₹{amount:.2f}\n"
         f"<b>Gateway:</b> {_esc(gateway)}\n"

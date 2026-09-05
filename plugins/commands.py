@@ -661,16 +661,25 @@ async def cmd_grant_pass(client, message):
     args = message.text.split()
     if len(args) < 3:
         return await message.reply_text(
-            "<b>Usage:</b> <code>/grantpass &lt;user_id&gt; &lt;duration&gt;</code>\n\n"
+            "<b>Usage:</b> <code>/grantpass &lt;user_id&gt; &lt;duration&gt; [basic|pro|premium]</code>\n\n"
             "<b>Examples:</b>\n"
-            "• <code>/grantpass 12345678 30m</code> (30 Minutes Pass)\n"
-            "• <code>/grantpass 12345678 2h</code> (2 Hours Pass)\n"
-            "• <code>/grantpass 12345678 7d</code> or <code>/grantpass 12345678 7</code> (7 Days Pass)"
+            "• <code>/grantpass 12345678 7d pro</code> (7 Days Pro Pass)\n"
+            "• <code>/grantpass 12345678 30m basic</code> (30 Minutes Basic Pass)\n"
+            "• <code>/grantpass 12345678 1mo premium</code> (1 Month Premium Pass)"
         )
     try:
         target_uid = int(args[1])
         dur_input = args[2].strip()
-        new_expiry = await db.grant_user_unlimited_pass(target_uid, dur_input)
+        tier_input = "basic"
+        if len(args) > 3:
+            raw_t = args[3].lower().strip()
+            if raw_t in ("pro", "p"):
+                tier_input = "pro"
+            elif raw_t in ("premium", "prem"):
+                tier_input = "premium"
+            else:
+                tier_input = "basic"
+        new_expiry = await db.grant_user_unlimited_pass(target_uid, dur_input, tier=tier_input)
     except Exception:
         return await message.reply_text("❌ Invalid User ID or Duration format (e.g. <code>30m</code>, <code>2h</code>, <code>7d</code>).")
 
@@ -684,9 +693,11 @@ async def cmd_grant_pass(client, message):
         exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
     pass_data = await db.get_user_unlimited_pass(target_uid)
+    tier_label = "👑 PRO PASS" if tier_input == 'pro' else ("💎 PREMIUM PASS" if tier_input == 'premium' else "⚡ BASIC PASS")
     await message.reply_text(
         f"✅ <b>Unlimited Pass Granted!</b>\n\n"
         f"<b>User ID:</b> <code>{target_uid}</code>\n"
+        f"<b>Tier:</b> <b>{tier_label}</b>\n"
         f"<b>Time Left:</b> <code>{pass_data.get('time_left_str', dur_input)}</code>\n"
         f"<b>Expires At:</b> <code>{exp_str}</code>"
     )
