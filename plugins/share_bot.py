@@ -547,6 +547,8 @@ async def _fsub_record_jr(client, request):
     req_user_id = request.from_user.id  # integer
 
     for ch in fsub_chs:
+        if not ch.get('is_active', True):
+            continue
         ch_id = ch.get('chat_id')
         # Normalize for comparison
         try:
@@ -840,21 +842,19 @@ async def _process_start(client, message):
                     ))
                     return
 
-    # 2. Force-Subscribe check (per-bot fsub)
-    fsub_channels = await db.get_bot_fsub_channels(bot_id) if bot_id else []
-    if not fsub_channels:
-        fsub_channels = await db.get_share_fsub_channels()  # fallback global
+    # 2. Force-Subscribe check (per-bot fsub with rotation & active filtering)
+    fsub_channels = await db.get_effective_bot_fsub_channels(bot_id)
 
     if fsub_channels:
         not_joined = await check_all_subscriptions(client, user_id, fsub_channels, bot_id)
         if not_joined:
             f_buttons = []
             channel_num = 1
-            _ordinal_sfx = ['ꜱᴛ','ɴᴅ','ʀᴅ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ']
+            _ordinal_sfx = ['ꜱᴛ','ɴᴅ','ʀᴅ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ']
             for ch in not_joined:
                 invite  = ch.get('invite_link', '')
                 is_jr   = ch.get('join_request', False)
-                sfx = _ordinal_sfx[min(channel_num - 1, 7)]
+                sfx = _ordinal_sfx[min(channel_num - 1, len(_ordinal_sfx) - 1)]
                 label = f"{channel_num}{sfx} Cʜᴀɴɴᴇʟ"
                 channel_num += 1
                 if invite:
@@ -1896,10 +1896,8 @@ async def _process_fsub_check(client, query):
     bot_id = str(client.me.id) if client.me else None
     user_id = query.from_user.id
     
-    # 2. Re-check FSub
-    fsub_channels = await db.get_bot_fsub_channels(bot_id) if bot_id else []
-    if not fsub_channels:
-        fsub_channels = await db.get_share_fsub_channels()
+    # 2. Re-check FSub (per-bot fsub with rotation & active filtering)
+    fsub_channels = await db.get_effective_bot_fsub_channels(bot_id)
         
     not_joined = []
     if fsub_channels:

@@ -398,6 +398,69 @@ class Database:
     async def set_bot_fsub_channels(self, bot_id: str, channels: list):
         await self._set_bot_cfg(bot_id, fsub_channels=channels)
 
+    async def get_bot_fsub_rotation(self, bot_id: str) -> dict:
+        """Return FSub rotation and visible count config for a delivery bot."""
+        cfg = await self._bot_cfg(bot_id)
+        return {
+            "show_count": int(cfg.get("fsub_show_count") or 0),
+            "interval": int(cfg.get("fsub_rotate_interval") or 0),
+            "start_time": float(cfg.get("fsub_rotate_start_time") or 0.0),
+        }
+
+    async def set_bot_fsub_rotation(self, bot_id: str, show_count: int = None, interval: int = None, start_time: float = None):
+        """Save FSub rotation and visible count config for a delivery bot."""
+        updates = {}
+        if show_count is not None:
+            updates["fsub_show_count"] = max(0, int(show_count))
+        if interval is not None:
+            updates["fsub_rotate_interval"] = max(0, int(interval))
+        if start_time is not None:
+            updates["fsub_rotate_start_time"] = float(start_time)
+        if updates:
+            await self._set_bot_cfg(bot_id, **updates)
+
+    async def get_effective_bot_fsub_channels(self, bot_id: str) -> list:
+        """
+        Returns the list of currently effective/visible FSub channels for this delivery bot,
+        accounting for:
+        1. Only ACTIVE channels (is_active: True). Inactive channels are skipped.
+        2. show_count (limits how many channels are displayed to users).
+        3. rotation_interval (rotates the visible channels cyclically based on elapsed time).
+        """
+        import time
+        channels = await self.get_bot_fsub_channels(bot_id) if bot_id else []
+        if not channels:
+            channels = await self.get_share_fsub_channels()
+
+        # 1. Filter only active channels
+        active_chs = [ch for ch in channels if ch.get('is_active', True)]
+        if not active_chs:
+            return []
+
+        if not bot_id:
+            return active_chs
+
+        cfg = await self._bot_cfg(bot_id)
+        show_count = int(cfg.get('fsub_show_count') or 0)
+        interval = int(cfg.get('fsub_rotate_interval') or 0)
+
+        # If show_count is not set or >= total active, all active channels are shown
+        if show_count <= 0 or show_count >= len(active_chs):
+            return active_chs
+
+        # If rotation is enabled with interval > 0 seconds
+        if interval > 0:
+            start_time = float(cfg.get('fsub_rotate_start_time') or 0.0)
+            now = time.time()
+            elapsed = max(0.0, now - start_time)
+            cycle = int(elapsed // interval)
+            total = len(active_chs)
+            offset = (cycle * show_count) % total
+            return [active_chs[(offset + i) % total] for i in range(show_count)]
+        else:
+            # Static subset (first show_count active channels)
+            return active_chs[:show_count]
+
     # Per-bot Custom Buttons
     async def get_share_bot_buttons(self, bot_id: str) -> list:
         return (await self._bot_cfg(bot_id)).get('custom_buttons', [])

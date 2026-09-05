@@ -4952,9 +4952,16 @@ async def settings_query(bot, query):
       return await settings_query(bot, query)
 
   #  Per-bot Force-Subscribe 
-  elif type.startswith("sb_fsub_") and not any(type.startswith(f"sb_fsub_{p}_") for p in ['add', 'jr', 'del', 'msg']):
+  elif type.startswith("sb_fsub_") and not any(type.startswith(f"sb_fsub_{p}_") for p in ['add', 'jr', 'del', 'msg', 'act', 'show', 'setshow', 'rot', 'setrot', 'rotcustom']):
       b_id = type.split("sb_fsub_")[1]
       fsub_chs = await db.get_bot_fsub_channels(b_id)
+      rot_cfg = await db.get_bot_fsub_rotation(b_id)
+      show_count = rot_cfg.get("show_count", 0)
+      interval = rot_cfg.get("interval", 0)
+      start_time = rot_cfg.get("start_time", 0.0)
+
+      effective_chs = await db.get_effective_bot_fsub_channels(b_id)
+      effective_ids = {str(c.get('chat_id')) for c in effective_chs}
       
       # Validate channels in parallel
       async def _get_ch_err(ch):
@@ -4970,40 +4977,101 @@ async def settings_query(bot, query):
       import asyncio
       errs = await asyncio.gather(*[_get_ch_err(ch) for ch in fsub_chs])
 
+      def _fmt_interval(secs):
+          if not secs or secs <= 0:
+              return "OFF (Disabled)"
+          days = secs // 86400
+          rem = secs % 86400
+          hours = rem // 3600
+          mins = (rem % 3600) // 60
+          parts = []
+          if days > 0: parts.append(f"{days}d")
+          if hours > 0: parts.append(f"{hours}h")
+          if mins > 0: parts.append(f"{mins}m")
+          return " ".join(parts) if parts else f"{secs}s"
+
+      interval_str = _fmt_interval(interval)
+      show_str = f"{show_count} Channels" if show_count > 0 else "All Active Channels"
+
       lines = []
       btns  = []
       api_btns = []
+      active_count = 0
       for i, ch in enumerate(fsub_chs):
+          is_act = ch.get('is_active', True)
+          if is_act:
+              active_count += 1
+          act_badge = "✅ Active" if is_act else "❌ Inactive"
+          is_vis = str(ch.get('chat_id')) in effective_ids
+          vis_badge = " [👀 Visible Now]" if (is_act and is_vis and (show_count > 0 or interval > 0)) else ""
           jr_lbl = " [JR]" if ch.get('join_request') else ""
           err_lbl = errs[i]
-          lines.append(f'<emoji id="5807800879553715710">📌</emoji> <b>Channel {i+1}:-</b> <code>{ch.get("title","?")}</code>{jr_lbl}{err_lbl}')
+          lines.append(f'<emoji id="5807800879553715710">📌</emoji> <b>Channel {i+1}:-</b> <code>{ch.get("title","?")}</code> ({act_badge}){jr_lbl}{vis_badge}{err_lbl}')
+          
+          act_btn = f"✅ Act #{i+1}" if is_act else f"❌ Off #{i+1}"
           btns.append([
+              InlineKeyboardButton(act_btn, callback_data=f"settings#sb_fsub_act_{b_id}_{i}"),
               InlineKeyboardButton(f"JR #{i+1}",  callback_data=f"settings#sb_fsub_jr_{b_id}_{i}"),
               InlineKeyboardButton(f"Delete #{i+1}", callback_data=f"settings#sb_fsub_del_{b_id}_{i}"),
           ])
           api_btns.append([
+              {"text": act_btn, "callback_data": f"settings#sb_fsub_act_{b_id}_{i}"},
               {"text": f"JR #{i+1}", "callback_data": f"settings#sb_fsub_jr_{b_id}_{i}", "icon_custom_emoji_id": "5766975922620076409"},
               {"text": f"Delete #{i+1}", "callback_data": f"settings#sb_fsub_del_{b_id}_{i}", "icon_custom_emoji_id": "6030400221232501136"},
           ])
       ch_list = "\n".join(lines) if lines else "<i>None configured.</i>"
       
-      if len(fsub_chs) < 6:
-          btns.append([InlineKeyboardButton("➕ Add Channel", callback_data=f"settings#sb_fsub_add_{b_id}")])
-          api_btns.append([{"text": "Add Channel", "callback_data": f"settings#sb_fsub_add_{b_id}", "icon_custom_emoji_id": "5807642902066634351"}])
+      next_rot_str = "None"
+      if interval > 0 and show_count > 0 and active_count > show_count:
+          import time
+          now_ts = time.time()
+          elapsed = max(0.0, now_ts - start_time)
+          current_cycle = int(elapsed // interval)
+          next_rot_ts = start_time + (current_cycle + 1) * interval
+          rem_secs = max(0, int(next_rot_ts - now_ts))
+          next_rot_str = _fmt_interval(rem_secs)
+
+      if len(fsub_chs) < 12:
+          btns.append([InlineKeyboardButton(f"➕ Add Channel ({len(fsub_chs)}/12)", callback_data=f"settings#sb_fsub_add_{b_id}")])
+          api_btns.append([{"text": f"Add Channel ({len(fsub_chs)}/12)", "callback_data": f"settings#sb_fsub_add_{b_id}", "icon_custom_emoji_id": "5807642902066634351"}])
+
+      btns.append([
+          InlineKeyboardButton(f"🔢 Visible: {show_str}", callback_data=f"settings#sb_fsub_show_{b_id}"),
+          InlineKeyboardButton(f"🔄 Rotation: {interval_str}", callback_data=f"settings#sb_fsub_rot_{b_id}")
+      ])
+      api_btns.append([
+          {"text": f"Visible: {show_str}", "callback_data": f"settings#sb_fsub_show_{b_id}"},
+          {"text": f"Rotation: {interval_str}", "callback_data": f"settings#sb_fsub_rot_{b_id}"}
+      ])
+
       btns.append([InlineKeyboardButton("✍️ Set Fsub Msg", callback_data=f"settings#sb_fsub_msg_{b_id}")])
       api_btns.append([{"text": "Set Fsub Msg", "callback_data": f"settings#sb_fsub_msg_{b_id}", "icon_custom_emoji_id": "5766915217552315762"}])
       btns.append([InlineKeyboardButton("Back", callback_data=f"settings#sb_view_{b_id}")])
       api_btns.append([{"text": "Back", "callback_data": f"settings#sb_view_{b_id}"}])
 
       text = (
-          f'<emoji id="6021738534916854774">📢</emoji> <b>Force Subscribe</b>\n'
+          f'<emoji id="6021738534916854774">📢</emoji> <b>Force Subscribe Setup</b>\n'
           f"────────────────────\n"
-          f"<b>Connected Channels:</b>\n"
+          f"<b>Connected Channels ({len(fsub_chs)}/12):</b>\n"
           f"{ch_list}\n"
           f"────────────────────\n"
+          f"⚙️ <b>Rotation & Display Settings:</b>\n"
+          f"• <b>Visible to Users:</b> <code>{show_str}</code>\n"
+          f"• <b>Active Channels:</b> <code>{active_count} of {len(fsub_chs)} active</code>\n"
+          f"• <b>Rotation Interval:</b> <code>{interval_str}</code>\n"
+      )
+      if interval > 0 and show_count > 0 and active_count > show_count:
+          text += (
+              f"• <b>Currently Visible:</b> <code>{len(effective_chs)} channels</code>\n"
+              f"• <b>Next Rotation in:</b> <code>{next_rot_str}</code>\n"
+          )
+      text += (
+          f"────────────────────\n"
           f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Info:</b>\n"
-          f"Users must join ALL listed channels to receive files from this bot.\n"
-          f"[JR] = Join Request mode enabled.</blockquote>"
+          f"• Tap <b>Act #</b> to toggle Active/Inactive. Inactive channels are NEVER asked.\n"
+          f"• Tap <b>Visible</b> to set how many channels are shown at once.\n"
+          f"• Tap <b>Rotation</b> to cycle visible channels (Mins, Hours, Days).\n"
+          f"• [JR] = Join Request mode enabled.</blockquote>"
       )
 
       from plugins.share_bot import send_or_edit_with_custom_icons
@@ -5019,6 +5087,182 @@ async def settings_query(bot, query):
               await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
           except Exception:
               pass
+
+  elif type.startswith("sb_fsub_act_"):
+      rest = type[len("sb_fsub_act_"):]
+      last_under = rest.rfind("_")
+      b_id = rest[:last_under]; idx = int(rest[last_under+1:])
+      fsub_chs = await db.get_bot_fsub_channels(b_id)
+      if 0 <= idx < len(fsub_chs):
+          current_act = fsub_chs[idx].get('is_active', True)
+          fsub_chs[idx]['is_active'] = not current_act
+          await db.set_bot_fsub_channels(b_id, fsub_chs)
+          status_msg = "Activated (ON) ✅" if not current_act else "Deactivated (OFF) ❌"
+          await query.answer(f"Channel #{idx+1}: {status_msg}")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_fsub_show_"):
+      b_id = type.split("sb_fsub_show_")[1]
+      rot_cfg = await db.get_bot_fsub_rotation(b_id)
+      curr_show = rot_cfg.get("show_count", 0)
+
+      text = (
+          f"<b>🔢 Set Visible Channels Count</b>\n\n"
+          f"Current Setting: <b>{f'{curr_show} Channels' if curr_show else 'All Active Channels'}</b>\n\n"
+          f"Select how many channels should be shown to users at a time.\n"
+          f"<i>(e.g., if you have 12 channels and choose 4, users will only see 4 channels at a time. "
+          f"If rotation is enabled, the bot automatically rotates to the next batch after the time interval.)</i>"
+      )
+      btns = [
+          [InlineKeyboardButton("All Active Channels (Default)", callback_data=f"settings#sb_fsub_setshow_{b_id}_0")],
+          [
+              InlineKeyboardButton("1", callback_data=f"settings#sb_fsub_setshow_{b_id}_1"),
+              InlineKeyboardButton("2", callback_data=f"settings#sb_fsub_setshow_{b_id}_2"),
+              InlineKeyboardButton("3", callback_data=f"settings#sb_fsub_setshow_{b_id}_3"),
+              InlineKeyboardButton("4", callback_data=f"settings#sb_fsub_setshow_{b_id}_4"),
+          ],
+          [
+              InlineKeyboardButton("5", callback_data=f"settings#sb_fsub_setshow_{b_id}_5"),
+              InlineKeyboardButton("6", callback_data=f"settings#sb_fsub_setshow_{b_id}_6"),
+              InlineKeyboardButton("7", callback_data=f"settings#sb_fsub_setshow_{b_id}_7"),
+              InlineKeyboardButton("8", callback_data=f"settings#sb_fsub_setshow_{b_id}_8"),
+          ],
+          [
+              InlineKeyboardButton("9", callback_data=f"settings#sb_fsub_setshow_{b_id}_9"),
+              InlineKeyboardButton("10", callback_data=f"settings#sb_fsub_setshow_{b_id}_10"),
+              InlineKeyboardButton("11", callback_data=f"settings#sb_fsub_setshow_{b_id}_11"),
+              InlineKeyboardButton("12", callback_data=f"settings#sb_fsub_setshow_{b_id}_12"),
+          ],
+          [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]
+      ]
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+
+  elif type.startswith("sb_fsub_setshow_"):
+      rest = type[len("sb_fsub_setshow_"):]
+      last_under = rest.rfind("_")
+      b_id = rest[:last_under]; val = int(rest[last_under+1:])
+      import time
+      await db.set_bot_fsub_rotation(b_id, show_count=val, start_time=time.time())
+      lbl = f"{val} Channels" if val > 0 else "All Active Channels"
+      await query.answer(f"Visible count set to: {lbl}")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_fsub_rot_"):
+      b_id = type.split("sb_fsub_rot_")[1]
+      rot_cfg = await db.get_bot_fsub_rotation(b_id)
+      curr_int = rot_cfg.get("interval", 0)
+
+      def _fmt_i(secs):
+          if not secs or secs <= 0: return "OFF (Disabled)"
+          d = secs // 86400; rem = secs % 86400
+          h = rem // 3600; m = (rem % 3600) // 60
+          p = []
+          if d > 0: p.append(f"{d}d")
+          if h > 0: p.append(f"{h}h")
+          if m > 0: p.append(f"{m}m")
+          return " ".join(p) if p else f"{secs}s"
+
+      text = (
+          f"<b>🔄 Dynamic FSub Rotation Interval</b>\n\n"
+          f"Current Interval: <b>{_fmt_i(curr_int)}</b>\n\n"
+          f"Select how frequently the visible channels should rotate to the next batch:\n\n"
+          f"<i>You can choose a quick preset below or enter a custom duration (e.g. <code>45m</code>, <code>8h</code>, <code>5d</code>).</i>"
+      )
+      btns = [
+          [
+              InlineKeyboardButton("⏱️ 30 Mins", callback_data=f"settings#sb_fsub_setrot_{b_id}_1800"),
+              InlineKeyboardButton("⏱️ 1 Hour", callback_data=f"settings#sb_fsub_setrot_{b_id}_3600"),
+          ],
+          [
+              InlineKeyboardButton("⏱️ 6 Hours", callback_data=f"settings#sb_fsub_setrot_{b_id}_21600"),
+              InlineKeyboardButton("⏱️ 12 Hours", callback_data=f"settings#sb_fsub_setrot_{b_id}_43200"),
+          ],
+          [
+              InlineKeyboardButton("⏱️ 1 Day", callback_data=f"settings#sb_fsub_setrot_{b_id}_86400"),
+              InlineKeyboardButton("⏱️ 3 Days", callback_data=f"settings#sb_fsub_setrot_{b_id}_259200"),
+          ],
+          [
+              InlineKeyboardButton("⏱️ 5 Days", callback_data=f"settings#sb_fsub_setrot_{b_id}_432000"),
+              InlineKeyboardButton("⏱️ 7 Days", callback_data=f"settings#sb_fsub_setrot_{b_id}_604800"),
+          ],
+          [
+              InlineKeyboardButton("❌ Disable Rotation (OFF)", callback_data=f"settings#sb_fsub_setrot_{b_id}_0"),
+              InlineKeyboardButton("✏️ Custom Time", callback_data=f"settings#sb_fsub_rotcustom_{b_id}"),
+          ],
+          [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]
+      ]
+      await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+
+  elif type.startswith("sb_fsub_setrot_"):
+      rest = type[len("sb_fsub_setrot_"):]
+      last_under = rest.rfind("_")
+      b_id = rest[:last_under]; secs = int(rest[last_under+1:])
+      import time
+      await db.set_bot_fsub_rotation(b_id, interval=secs, start_time=time.time())
+      await query.answer("Rotation interval updated!")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_fsub_rotcustom_"):
+      b_id = type.split("sb_fsub_rotcustom_")[1]
+      await query.message.delete()
+      try:
+          ask = await bot.send_message(
+              user_id,
+              "<b>⏱️ Enter Custom Rotation Interval</b>\n\n"
+              "Send the duration using <code>m</code> (minutes), <code>h</code> (hours), or <code>d</code> (days).\n\n"
+              "<b>Examples:</b>\n"
+              "• <code>45m</code> (45 minutes)\n"
+              "• <code>8h</code> (8 hours)\n"
+              "• <code>5d</code> (5 days)\n"
+              "• <code>off</code> (disable rotation)\n\n"
+              "Send <code>/cancel</code> to abort."
+          )
+          resp = await bot.listen(chat_id=user_id, timeout=120)
+          if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
+              try: await resp.delete()
+              except Exception: pass
+              return await ask.edit_text(
+                  "<i>Process Cancelled!</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_rot_{b_id}")]])
+              )
+
+          raw = (resp.text or "").strip().lower()
+          try: await resp.delete()
+          except Exception: pass
+
+          import re, time
+          secs = 0
+          if raw in ("off", "0", "disable"):
+              secs = 0
+          else:
+              m_days = re.search(r'(\d+)\s*d', raw)
+              m_hrs  = re.search(r'(\d+)\s*h', raw)
+              m_mins = re.search(r'(\d+)\s*m', raw)
+              if not (m_days or m_hrs or m_mins):
+                  if raw.isdigit():
+                      secs = int(raw) * 3600
+                  else:
+                      return await ask.edit_text(
+                          "<b>‣ Invalid Format!</b>\n\nPlease use formats like <code>30m</code>, <code>6h</code>, or <code>5d</code>.",
+                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_rot_{b_id}")]])
+                      )
+              else:
+                  if m_days: secs += int(m_days.group(1)) * 86400
+                  if m_hrs:  secs += int(m_hrs.group(1)) * 3600
+                  if m_mins: secs += int(m_mins.group(1)) * 60
+
+          await db.set_bot_fsub_rotation(b_id, interval=secs, start_time=time.time())
+          await ask.edit_text(
+              f"✅ <b>Rotation interval set successfully!</b>\nNew interval: <code>{raw}</code> ({secs}s)",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Back to FSub", callback_data=f"settings#sb_fsub_{b_id}")]])
+          )
+      except asyncio.TimeoutError:
+          try: await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]]))
+          except Exception: pass
+
   elif type.startswith("sb_fsub_jr_"):
       rest = type[len("sb_fsub_jr_"):]
       # rest = "{b_id}_{idx}"
@@ -5063,8 +5307,8 @@ async def settings_query(bot, query):
   elif type.startswith("sb_fsub_add_"):
       b_id = type.split("sb_fsub_add_")[1]
       fsub_chs = await db.get_bot_fsub_channels(b_id)
-      if len(fsub_chs) >= 6:
-          return await query.answer("Maximum 6 channels supported.", show_alert=True)
+      if len(fsub_chs) >= 12:
+          return await query.answer("Maximum 12 channels supported.", show_alert=True)
       await query.message.delete()
       try:
           ask = await bot.send_message(
@@ -5162,11 +5406,12 @@ async def settings_query(bot, query):
               'invite_link': invite,
               'join_request': False,
               'access_hash': ah,
+              'is_active':   True,
           })
           await db.set_bot_fsub_channels(b_id, fsub_chs)
           await ask.edit_text(
               f"<b>»  Added: {ch_obj.title}</b>\n"
-              f"<i>Use 'JR' button to toggle join-request mode for this channel.</i>",
+              f"<i>Use 'JR' button to toggle join-request mode, or 'Act' to toggle active status for this channel.</i>",
               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fsub_{b_id}")]])
           )
       except asyncio.TimeoutError:
