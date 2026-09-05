@@ -2435,6 +2435,85 @@ class Database:
         results.sort(key=lambda x: (1 if x['active'] else 0, x['expires_at'], x['updated_at']), reverse=True)
         return results
 
+    async def get_pass_sales_analytics(self) -> dict:
+        """
+        Calculates pass subscription sales and revenue analytics:
+        - total_sales: total number of paid pass orders
+        - total_revenue: sum of amount for paid orders (INR)
+        - today_sales: number of paid pass orders today (IST)
+        - today_revenue: sum of amount for paid orders today (IST)
+        - basic_sales: count of basic tier passes sold
+        - pro_sales: count of pro tier passes sold
+        - prem_sales: count of premium tier passes sold
+        - gateway_stats: dict of {gateway_name: count}
+        """
+        import datetime
+        try:
+            import pytz
+            ist = pytz.timezone('Asia/Kolkata')
+            now_ist = datetime.datetime.now(ist)
+            midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        except Exception:
+            midnight_ist = (datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()) + (5.5 * 3600)
+
+        total_sales = 0
+        total_revenue = 0.0
+        today_sales = 0
+        today_revenue = 0.0
+        basic_sales = 0
+        pro_sales = 0
+        prem_sales = 0
+        gateway_stats = {}
+
+        try:
+            cursor = self.pass_orders.find({'status': 'PAID'})
+            async for doc in cursor:
+                total_sales += 1
+                amt = float(doc.get('amount') or 0.0)
+                total_revenue += amt
+
+                ts = float(doc.get('paid_at') or doc.get('created_at') or 0.0)
+                if ts >= midnight_ist:
+                    today_sales += 1
+                    today_revenue += amt
+
+                tier = str(doc.get('tier') or 'basic').lower().strip()
+                if tier == 'pro':
+                    pro_sales += 1
+                elif tier == 'premium':
+                    prem_sales += 1
+                else:
+                    basic_sales += 1
+
+                gw = str(doc.get('gateway') or 'Other').strip()
+                if 'upi' in gw.lower():
+                    gw_key = 'UPI'
+                elif 'cashfree' in gw.lower():
+                    gw_key = 'Cashfree'
+                elif 'crypto' in gw.lower() or 'oxapay' in gw.lower():
+                    gw_key = 'Crypto'
+                elif 'star' in gw.lower():
+                    gw_key = 'Telegram Stars'
+                elif 'manual' in gw.lower() or 'admin' in gw.lower():
+                    gw_key = 'Manual (Admin)'
+                else:
+                    gw_key = gw[:15]
+                gateway_stats[gw_key] = gateway_stats.get(gw_key, 0) + 1
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"[Database] Error in get_pass_sales_analytics: {e}")
+
+        return {
+            'total_sales': total_sales,
+            'total_revenue': total_revenue,
+            'today_sales': today_sales,
+            'today_revenue': today_revenue,
+            'basic_sales': basic_sales,
+            'pro_sales': pro_sales,
+            'prem_sales': prem_sales,
+            'gateway_stats': gateway_stats
+        }
+
     async def get_customer_full_details(self, user_id: int) -> dict:
         """Fetch customer profile, pass status, joined date, first buy date, language, and full transaction history."""
         user_id = int(user_id)

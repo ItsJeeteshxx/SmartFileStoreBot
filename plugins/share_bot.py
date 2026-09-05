@@ -254,6 +254,13 @@ def _get_welcome_text(user, bot_name, custom_wel=None, lang='en') -> str:
             f"<blockquote expandable>मैं एक फ़ाइल डिलीवरी बॉट हूँ। चैनल से किसी भी लिंक बटन पर टैप करें और मैं आपको फ़ाइलें सीधे यहाँ भेज दूंगा।</blockquote>\n"
             f"<blockquote expandable>अधिक जानकारी के लिए सहायता पर क्लिक करें।</blockquote>"
         )
+    if lang == 'hinglish':
+        return (
+            f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a><emoji id=\"6041919344995209164\">❣️</emoji></blockquote>\n"
+            f"<blockquote expandable><b>»  {bot_name} me aapka swagat hai!</b></blockquote>\n"
+            f"<blockquote expandable>Main ek file delivery bot hoon. Channel me kisi bhi link button par tap karein aur main files directly aapko yahan bhej dunga.</blockquote>\n"
+            f"<blockquote expandable>Aur jankari ke liye Help par click karein.</blockquote>"
+        )
     return (
         # Block 1: Greeting with first name only
         f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a><emoji id=\"6041919344995209164\">❣️</emoji></blockquote>\n"
@@ -283,6 +290,23 @@ def _get_help_text(user, lang='en') -> str:
             "<b>बॉट जानकारी:</b>\n"
             "➲  सभी डिलीवरी सुरक्षित और एन्क्रिप्टेड हैं\n"
             "➲  फ़ाइलें एक निश्चित समय के बाद ऑटो-डिलीट हो सकती हैं"
+        )
+    if lang == 'hinglish':
+        return (
+            _get_base_header(user) +
+            "<b>Help Menu</b>\n\n"
+            "Main ek file delivery bot hoon. Aap channel me diye gaye shareable links ka use karke files access kar sakte hain.\n\n"
+            "<b>Files kaise receive karein:</b>\n"
+            "➲  Channel open karein aur link button par tap karein\n"
+            "➲  Main files directly aapke DM me bhej dunga\n"
+            "➲  Agar force-subscribe on hai, to pehle required channel join karein\n"
+            "➲  Agar files delete ho jayein, to wahi button dobara tap karein\n\n"
+            "<b>Available Commands:</b>\n"
+            "➲  /start — bot start karein\n"
+            "➲  /help — help menu dekhein\n\n"
+            "<b>Bot Info:</b>\n"
+            "➲  Sabhi deliveries secure aur encrypted hain\n"
+            "➲  Files ek fixed time ke baad auto-delete ho sakti hain"
         )
     return _get_base_header(user) + _sc(
         "Help Menu\n\n"
@@ -792,6 +816,34 @@ async def _process_start(client, message):
                             [InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")],
                             [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
                         ])
+                    elif user_lang == 'hinglish':
+                        limit_text = (
+                            f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Over Ho Gayi Hai</b>\n\n'
+                            f'Aapne pichle <b>{win_verbose}</b> me <b>{len(hits)} / {max_limit} links</b> access kar liye hain. <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                            f'Sabhi users ke liye limit <b>{max_limit} links per {win_verbose}</b> set ki gayi hai.\n\n'
+                            f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown reset hone me time:</b> <code>{rem_time_str}</code>\n\n'
+                            f'Please baad me try karein ya niche se unlimited access unlock karein! <emoji id="6023566962624306038">👇</emoji>'
+                        )
+                        limit_api_kb = [
+                            [
+                                {
+                                    "text": "Unlimited Access Unlock Karein",
+                                    "callback_data": "pass#unlock_menu",
+                                    "icon_custom_emoji_id": "6030443364178992166"
+                                }
+                            ],
+                            [
+                                {
+                                    "text": "Buy This Story Only",
+                                    "url": story_buy_url,
+                                    "icon_custom_emoji_id": "6104800784354909891"
+                                }
+                            ]
+                        ]
+                        unlock_kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🔓 Unlimited Access Unlock Karein", callback_data="pass#unlock_menu")],
+                            [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
+                        ])
                     else:
                         limit_text = (
                             f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Reached</b>\n\n'
@@ -1268,42 +1320,44 @@ async def _send_welcome(client, message, bot_id: str = None):
     bot_about = bot_about or {}
     welcome_img = random.choice(bot_about.get('menu_image_ids', [])) if bot_about and bot_about.get('menu_image_ids') else None
 
-    lbl_prem = "Arya Premium" if not is_hi else "आर्या प्रीमियम"
-    lbl_help = _sc("Help") if not is_hi else "सहायता"
-    lbl_about = _sc("About") if not is_hi else "बारे में"
-    lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
-    lbl_settings = _sc("Settings") if not is_hi else "सेटिंग्स"
+    lbl_help = "सहायता" if is_hi else _sc("Help")
+    lbl_about = "बारे में" if is_hi else _sc("About")
+    lbl_pass = "पास सब्सक्रिप्शन" if is_hi else "Pass Subscription"
+    lbl_upd = "अपडेट चैनल" if is_hi else _sc("Update Channel")
+    lbl_settings = "सेटिंग्स" if is_hi else _sc("Settings")
 
     buttons = [
-        [
-            InlineKeyboardButton("»  " + _sc(lbl_prem), callback_data="sbd#premium"),
-        ],
         [
             InlineKeyboardButton(lbl_help, callback_data="sbd#help"),
             InlineKeyboardButton(lbl_about, callback_data="sbd#about"),
         ],
         [
-            InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
+            InlineKeyboardButton("👑 " + lbl_pass, callback_data="pass#unlock_menu"),
         ],
         [
-            InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings")
+            InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings"),
+            InlineKeyboardButton("Storyfi", callback_data="sbd#premium"),
+        ],
+        [
+            InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
         ]
     ]
     markup = InlineKeyboardMarkup(buttons)
 
     welcome_api_kb = [
         [
-            {"text": "»  " + _sc(lbl_prem), "callback_data": "sbd#premium"}
-        ],
-        [
             {"text": lbl_help, "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
             {"text": lbl_about, "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
         ],
         [
-            {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}
+            {"text": lbl_pass, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "6030443364178992166"}
         ],
         [
-            {"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+            {"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"},
+            {"text": "Storyfi", "callback_data": "sbd#premium", "icon_custom_emoji_id": "6104800784354909891"}
+        ],
+        [
+            {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}
         ]
     ]
 
@@ -1803,42 +1857,44 @@ async def _process_delivery_button(client, query):
         is_hi = bool(user_lang == 'hi')
         txt = _get_welcome_text(query.from_user, bot_name, custom_wel, lang=user_lang)
         
-        lbl_prem = "Arya Premium" if not is_hi else "आर्या प्रीमियम"
-        lbl_help = _sc("Help") if not is_hi else "सहायता"
-        lbl_about = _sc("About") if not is_hi else "बारे में"
-        lbl_upd = _sc("Update Channel") if not is_hi else "अपडेट चैनल"
-        lbl_settings = _sc("Settings") if not is_hi else "सेटिंग्स"
+        lbl_help = "सहायता" if is_hi else _sc("Help")
+        lbl_about = "बारे में" if is_hi else _sc("About")
+        lbl_pass = "पास सब्सक्रिप्शन" if is_hi else "Pass Subscription"
+        lbl_upd = "अपडेट चैनल" if is_hi else _sc("Update Channel")
+        lbl_settings = "सेटिंग्स" if is_hi else _sc("Settings")
 
         buttons = [
-            [
-                InlineKeyboardButton("»  " + _sc(lbl_prem), callback_data="sbd#premium"),
-            ],
             [
                 InlineKeyboardButton(lbl_help, callback_data="sbd#help"),
                 InlineKeyboardButton(lbl_about, callback_data="sbd#about"),
             ],
             [
-                InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
+                InlineKeyboardButton("👑 " + lbl_pass, callback_data="pass#unlock_menu"),
             ],
             [
-                InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings")
+                InlineKeyboardButton("⚙️ " + lbl_settings, callback_data="sbd#settings"),
+                InlineKeyboardButton("Storyfi", callback_data="sbd#premium"),
+            ],
+            [
+                InlineKeyboardButton(lbl_upd, url=UPDATE_LINK),
             ]
         ]
         markup = InlineKeyboardMarkup(buttons)
 
         welcome_api_kb = [
             [
-                {"text": "»  " + _sc(lbl_prem), "callback_data": "sbd#premium"}
-            ],
-            [
                 {"text": lbl_help, "callback_data": "sbd#help", "icon_custom_emoji_id": "6023911174188308145"},
                 {"text": lbl_about, "callback_data": "sbd#about", "icon_custom_emoji_id": "6021625933759257863"}
             ],
             [
-                {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}
+                {"text": lbl_pass, "callback_data": "pass#unlock_menu", "icon_custom_emoji_id": "6030443364178992166"}
             ],
             [
-                {"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"}
+                {"text": lbl_settings, "callback_data": "sbd#settings", "icon_custom_emoji_id": "6021637109264160908"},
+                {"text": "Storyfi", "callback_data": "sbd#premium", "icon_custom_emoji_id": "6104800784354909891"}
+            ],
+            [
+                {"text": lbl_upd, "url": UPDATE_LINK, "icon_custom_emoji_id": "6039422865189638057"}
             ]
         ]
         try:
@@ -2489,6 +2545,202 @@ async def schedule_rate_limit_reminders(
 
 # ── Unlimited Delivery Pass Callback Handlers ─────────────────────────────────
 _pending_utr_users: dict = {}  # {user_id: {'dur_key': str, 'amount': float, 'ts': float}}
+_pending_manual_upi_users: dict = {}  # {user_id: {'order_id': str, 'dur_key': str, 'amount': float, 'tier': str, 'checkout_version': str, 'ts': float}}
+
+
+async def _handle_share_bot_screenshot_message(client, message):
+    """
+    Captures payment screenshots uploaded by users in Delivery Bot when manual UPI mode is active.
+    Forwards photo and full user/order details to bot owners via Main Bot with [Approve | Decline] buttons.
+    """
+    if not message.from_user or not message.photo:
+        return
+    user_id = message.from_user.id
+    ban_status = await db.get_ban_status(user_id)
+    if ban_status.get('is_banned'):
+        _pending_manual_upi_users.pop(user_id, None)
+        return
+
+    # Check session in memory or DB
+    session = _pending_manual_upi_users.get(user_id)
+    if not session:
+        recent_order = await db.pass_orders.find_one(
+            {'user_id': user_id, 'status': 'WAITING_SCREENSHOT'},
+            sort=[('created_at', -1)]
+        )
+        if recent_order and (time.time() - recent_order.get('created_at', 0)) <= 600:
+            session = {
+                'order_id': recent_order.get('order_id'),
+                'dur_key': recent_order.get('plan') or recent_order.get('duration') or '1d',
+                'amount': float(recent_order.get('amount') or 0.0),
+                'tier': recent_order.get('tier') or 'basic',
+                'checkout_version': recent_order.get('checkout_version') or 'v1',
+                'ts': recent_order.get('created_at', time.time())
+            }
+
+    if not session:
+        return
+
+    try:
+        message.stop_propagation()
+    except Exception:
+        pass
+
+    # Check 5 minutes limit (300 seconds)
+    session_age = time.time() - session.get('ts', 0)
+    if session_age > 300:
+        _pending_manual_upi_users.pop(user_id, None)
+        user_lang = await db.get_language(user_id)
+        if user_lang == 'hi':
+            exp_text = "⚠️ <b>समय समाप्त!</b>\n\nस्क्रीनशॉट भेजने के लिए 5 मिनट की समय सीमा समाप्त हो चुकी है। कृपया नया पेमेंट ऑर्डर शुरू करें।"
+        elif user_lang == 'hinglish':
+            exp_text = "⚠️ <b>Time Out!</b>\n\nScreenshot bhejne ki 5 minute ki limit over ho chuki hai. Please new payment order shuru karein."
+        else:
+            exp_text = "⚠️ <b>Session Expired!</b>\n\nThe 5-minute time window to send your payment screenshot has expired. Please initiate a new order."
+        await message.reply_text(exp_text, quote=True)
+        return
+
+    order_id = session.get('order_id')
+    dur_key = session.get('dur_key', '1d')
+    amount = session.get('amount', 0.0)
+    tier_val = (session.get('tier') or 'basic').lower().strip()
+    cv_val = session.get('checkout_version') or 'v1'
+
+    # Remove from pending memory
+    _pending_manual_upi_users.pop(user_id, None)
+
+    sts_msg = await message.reply_text(
+        "🔄 <i>Screenshot received! Submitting to admin for instant verification... Please wait.</i>",
+        quote=True
+    )
+
+    # Download photo to local temp file so Main Bot can send cross-bot safely
+    import html, os
+    temp_file = None
+    try:
+        temp_file = await message.download()
+    except Exception as _dl_err:
+        logger.warning(f"Error downloading screenshot from user {user_id}: {_dl_err}")
+
+    # Prepare user details
+    u_first = message.from_user.first_name or ""
+    u_last = message.from_user.last_name or ""
+    u_name = f"{u_first} {u_last}".strip() or "Customer"
+    username = f"@{message.from_user.username}" if message.from_user.username else "None"
+    prof_link = f"https://t.me/{message.from_user.username}" if message.from_user.username else f"tg://openmessage?user_id={user_id}"
+
+    from database import format_duration_verbose, parse_duration_to_seconds
+    dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+    dur_verbose = format_duration_verbose(dur_sec)
+
+    tier_badge = "👑 Pro" if tier_val == 'pro' else ("💎 Premium" if tier_val == 'premium' else "⚡ Basic")
+    cv_display = cv_val.upper() if cv_val else "V1"
+
+    admin_caption = (
+        f'<emoji id="6021683099773966917">📸</emoji> <b>New UPI Payment Screenshot Received!</b>\n'
+        f"────────────────────────\n\n"
+        f'<emoji id="5904630315946611415">👤</emoji> <b>Customer Name:</b> {html.escape(u_name)}\n'
+        f'<emoji id="6021683099773966917">🆔</emoji> <b>User ID:</b> <code>{user_id}</code>\n'
+        f'<emoji id="6030768072296502910">🌐</emoji> <b>Username:</b> {username}\n'
+        f'<emoji id="6021344879689341042">🔗</emoji> <b>Profile Link:</b> <a href="{prof_link}">View TG Profile</a>\n\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Plan:</b> {dur_verbose.title()}\n'
+        f'<emoji id="5411359377904934337">🏷</emoji> <b>Plan Tier:</b> {tier_badge}\n'
+        f'<emoji id="6030443364178992166">💰</emoji> <b>Amount:</b> ₹{amount:.2f}\n'
+        f'<emoji id="5807800879553715710">🛒</emoji> <b>Checkout Version:</b> <code>{cv_display}</code>\n'
+        f'<emoji id="6023880246128810031">🆔</emoji> <b>Order ID:</b> <code>{order_id}</code>\n\n'
+        f"────────────────────────\n"
+        f"<i>Please verify the payment screenshot below and choose an action:</i>"
+    )
+
+    admin_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"admin_pass_approve_{order_id}"),
+            InlineKeyboardButton("❌ Decline", callback_data=f"admin_pass_decline_{order_id}")
+        ]
+    ])
+
+    from config import Config
+    import bot as _bot_mod
+    main_bot = getattr(_bot_mod, "BOT_INSTANCE", None)
+    if not (main_bot and getattr(main_bot, "is_connected", False)):
+        from plugins.arya_logger import _BOT_REF
+        if _BOT_REF:
+            main_bot = _BOT_REF
+
+    # Update order in DB to store bot_id for delivery response
+    b_id = getattr(getattr(client, "me", None), "id", None)
+    await db.pass_orders.update_one(
+        {'order_id': order_id},
+        {'$set': {'status': 'SUBMITTED', 'submitted_at': time.time(), 'bot_id': str(b_id) if b_id else None}}
+    )
+
+    sent_to_admin = False
+    for owner_id in Config.OWNER_IDS:
+        try:
+            if main_bot and getattr(main_bot, "is_connected", False) and temp_file:
+                await main_bot.send_photo(
+                    chat_id=owner_id,
+                    photo=temp_file,
+                    caption=admin_caption,
+                    reply_markup=admin_kb
+                )
+                sent_to_admin = True
+            else:
+                if temp_file:
+                    await client.send_photo(
+                        chat_id=owner_id,
+                        photo=temp_file,
+                        caption=admin_caption,
+                        reply_markup=admin_kb
+                    )
+                else:
+                    await message.forward(chat_id=owner_id)
+                    await client.send_message(
+                        chat_id=owner_id,
+                        text=admin_caption,
+                        reply_markup=admin_kb
+                    )
+                sent_to_admin = True
+        except Exception as _snd_err:
+            logger.warning(f"Failed to forward screenshot to owner {owner_id}: {_snd_err}")
+
+    # Cleanup temp file
+    if temp_file and os.path.exists(temp_file):
+        try:
+            os.remove(temp_file)
+        except Exception:
+            pass
+
+    user_lang = await db.get_language(user_id)
+    if user_lang == 'hi':
+        ack_text = (
+            f'<emoji id="5224607267797606837">✅</emoji> <b>स्क्रीनशॉट सफलतापूर्वक सबमिट हो गया!</b>\n\n'
+            f"आपका पेमेंट स्क्रीनशॉट एडमिन टीम को भेज दिया गया है। वेरीफाई होते ही आपका <b>{dur_verbose.title()} पास</b> सक्रिय कर दिया जाएगा।\n\n"
+            f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n"
+            f"• <b>राशि:</b> ₹{amount:.2f}\n\n"
+            f"<i>सामान्यतः इसमें 1-2 मिनट का समय लगता है। कृपया प्रतीक्षा करें!</i>"
+        )
+    elif user_lang == 'hinglish':
+        ack_text = (
+            f'<emoji id="5224607267797606837">✅</emoji> <b>Screenshot Successfully Submit Ho Gaya!</b>\n\n'
+            f"Aapka payment screenshot admin team ko bhej diya gaya hai. Verify hote hi aapka <b>{dur_verbose.title()} Pass</b> activate ho jayega.\n\n"
+            f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+            f"• <b>Amount:</b> ₹{amount:.2f}\n\n"
+            f"<i>Usually isme 1-2 minute lagte hain. Please wait karein!</i>"
+        )
+    else:
+        ack_text = (
+            f'<emoji id="5224607267797606837">✅</emoji> <b>Screenshot Successfully Submitted!</b>\n\n'
+            f"Your payment proof has been forwarded to the admin team for verification. Your <b>{dur_verbose.title()} Pass</b> will be activated immediately upon approval.\n\n"
+            f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+            f"• <b>Amount:</b> ₹{amount:.2f}\n\n"
+            f"<i>This typically takes 1-2 minutes. Thank you for your patience!</i>"
+        )
+    try:
+        await sts_msg.edit(ack_text)
+    except Exception:
+        await message.reply_text(ack_text, quote=True)
+
 
 
 
@@ -2578,6 +2830,7 @@ async def _poll_upi_payment(
                 _cancel_cooldown_reminders(user_id)
                 order_doc_paid = await db.pass_orders.find_one({'order_id': order_id})
                 tier_val = (order_doc_paid.get('tier') or 'basic') if order_doc_paid else 'basic'
+                cv_val = (order_doc_paid.get('checkout_version') or 'v1') if order_doc_paid else 'v1'
                 await db.activate_user_unlimited_pass(
                     user_id=user_id,
                     duration_seconds=dur_sec,
@@ -2685,7 +2938,8 @@ async def _poll_upi_payment(
                         expiry_ts=time.time() + dur_sec,
                         log_channel=log_ch,
                         gateway=f"Pay Via UPI (INR) [Auto Verified {extracted_utr}]",
-                        tier=tier_val
+                        tier=tier_val,
+                        checkout_version=cv_val
                     ))
                 except Exception as l_err:
                     logger.debug(f"Payment log dispatch error: {l_err}")
@@ -2785,6 +3039,7 @@ async def _handle_share_bot_utr_message(client, message):
         pending_info = _pending_utr_users.pop(user_id, {})
         order_id = pending_info.get('order_id') or f"PASS-{user_id}-1D-1"
         tier_val = (pending_info.get('tier') or 'basic').lower().strip()
+        cv_val = pending_info.get('checkout_version') or 'v1'
         await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
         _cancel_cooldown_reminders(user_id)
         b_id = getattr(getattr(client, "me", None), "id", None)
@@ -2829,7 +3084,8 @@ async def _handle_share_bot_utr_message(client, message):
             expiry_ts=new_expiry,
             log_channel=log_ch,
             gateway="UPI (Gmail Auto)",
-            tier=tier_val
+            tier=tier_val,
+            checkout_version=cv_val
         ))
     elif res.get("amount_mismatch"):
         m_amt = res.get("mismatched_amount")
@@ -3292,7 +3548,8 @@ async def start_pass_cashfree_auto_verifier(
                     _active_order_reminders[f"done_{task_key}"] = True
                     b_id = getattr(getattr(client, "me", None), "id", None)
                     b_uname = getattr(getattr(client, "me", None), "username", "")
-                    tier_val = (claimed.get('tier') or 'basic') if isinstance(claimed, dict) else 'basic'
+                    tier_val = (claimed.get('tier') or (order_doc.get('tier') if order_doc else 'basic') or 'basic') if isinstance(claimed, dict) else ((order_doc.get('tier') if order_doc else 'basic') or 'basic')
+                    cv_val = (claimed.get('checkout_version') or (order_doc.get('checkout_version') if order_doc else 'v1') or 'v1') if isinstance(claimed, dict) else ((order_doc.get('checkout_version') if order_doc else 'v1') or 'v1')
                     new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount, tier=tier_val)
                     
                     import datetime
@@ -3341,7 +3598,8 @@ async def start_pass_cashfree_auto_verifier(
                         expiry_ts=new_expiry,
                         log_channel=log_ch,
                         gateway="Cashfree PG (Auto-Verified)",
-                        tier=tier_val
+                        tier=tier_val,
+                        checkout_version=cv_val
                     ))
                 break
         except asyncio.CancelledError:
@@ -3557,8 +3815,18 @@ async def _process_pass_callback(client, query):
         return
 
     # Clear pending UTR session if user navigates to any other menu/back
-    if not data.startswith("pass#upibuy_") and not data.startswith("pass#upirecheck_"):
+    if not data.startswith("pass#upibuy_") and not data.startswith("pass#upirecheck_") and data != "pass#manual_ss_hint":
         _pending_utr_users.pop(user_id, None)
+
+    if data == "pass#manual_ss_hint":
+        user_lang = await db.get_language(user_id)
+        if user_lang == 'hi':
+            hint_txt = "📸 कृपया अपने पेमेंट ऐप से सफल भुगतान का स्क्रीनशॉट इसी चैट में फोटो के रूप में भेजें (5 मिनट के भीतर)!"
+        elif user_lang == 'hinglish':
+            hint_txt = "📸 Please payment complete hone ke baad payment ka screenshot isi chat me photo format me send karein (5 minute ke andar)!"
+        else:
+            hint_txt = "📸 Please send the payment confirmation screenshot directly as a photo in this chat within 5 minutes!"
+        return await query.answer(hint_txt, show_alert=True)
 
     if data == "pass#close":
         try:
@@ -3570,10 +3838,17 @@ async def _process_pass_callback(client, query):
                 pass
         return
 
-    if data in ("pass#setlang_hi", "pass#setlang_en"):
-        new_lang = "hi" if data == "pass#setlang_hi" else "en"
+    if data in ("pass#setlang_hi", "pass#setlang_en", "pass#setlang_hinglish"):
+        if data == "pass#setlang_hi":
+            new_lang = "hi"
+            alert_msg = "✅ भाषा बदलकर हिंदी कर दी गई है!"
+        elif data == "pass#setlang_hinglish":
+            new_lang = "hinglish"
+            alert_msg = "✅ Language switched to Hinglish (Mix)!"
+        else:
+            new_lang = "en"
+            alert_msg = "✅ Language switched to English!"
         await db.set_language(user_id, new_lang)
-        alert_msg = "✅ भाषा बदलकर हिंदी कर दी गई है!" if new_lang == "hi" else "✅ Language switched to English!"
         try:
             await query.answer(alert_msg, show_alert=True)
         except Exception:
@@ -3583,21 +3858,26 @@ async def _process_pass_callback(client, query):
     if data == "pass#lang_menu":
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
+        is_hinglish = bool(user_lang == 'hinglish')
+        is_en = bool(user_lang not in ('hi', 'hinglish'))
+        cur_lang_str = "🇮🇳 हिन्दी (Hindi)" if is_hi else ("🌐 Hinglish (Mix)" if is_hinglish else "🇬🇧 English")
         lang_text = (
             '<emoji id="6030768072296502910">🌐</emoji> <b>Select Language / भाषा चुनें</b>\n'
             "──────────────────────\n\n"
             "Please choose your preferred language for Delivery Bot & Pass Subscription:\n"
             "डिलीवरी बॉट और पास सब्सक्रिप्शन के लिए अपनी पसंदीदा भाषा चुनें:\n\n"
-            f"<b>Current Language:</b> {'🇮🇳 हिन्दी (Hindi)' if is_hi else '🇬🇧 English'}"
+            f"<b>Current Language:</b> {cur_lang_str}"
         )
         lang_buttons = [
             [InlineKeyboardButton("🇮🇳 हिन्दी (Hindi)" + ("  ✅" if is_hi else ""), callback_data="pass#setlang_hi")],
-            [InlineKeyboardButton("🇬🇧 English" + ("  ✅" if not is_hi else ""), callback_data="pass#setlang_en")],
+            [InlineKeyboardButton("🇬🇧 English" + ("  ✅" if is_en else ""), callback_data="pass#setlang_en")],
+            [InlineKeyboardButton("🌐 Hinglish ( Mix )" + ("  ✅" if is_hinglish else ""), callback_data="pass#setlang_hinglish")],
             [InlineKeyboardButton("← Back / वापस", callback_data="pass#unlock_menu")]
         ]
         lang_api_kb = [
             [{"text": "हिन्दी (Hindi)" + ("  ✅" if is_hi else ""), "callback_data": "pass#setlang_hi", "icon_custom_emoji_id": "5291933173674957761"}],
-            [{"text": "English" + ("  ✅" if not is_hi else ""), "callback_data": "pass#setlang_en", "icon_custom_emoji_id": "5293993521026453119"}],
+            [{"text": "English" + ("  ✅" if is_en else ""), "callback_data": "pass#setlang_en", "icon_custom_emoji_id": "5293993521026453119"}],
+            [{"text": "Hinglish ( Mix )" + ("  ✅" if is_hinglish else ""), "callback_data": "pass#setlang_hinglish", "icon_custom_emoji_id": "6106890681081403663"}],
             [{"text": "← Back / वापस", "callback_data": "pass#unlock_menu"}]
         ]
         if getattr(query.message, "photo", None):
@@ -4580,15 +4860,30 @@ async def _process_pass_callback(client, query):
                 reply_markup=err_kb
             )
 
-        # Register pending order session with dynamic amount and unified order ID
-        _pending_utr_users[user_id] = {
-            'dur_key': dur_key,
-            'amount': dyn_amount,
-            'base_amount': base_amt,
-            'order_id': order_id,
-            'tier': tier,
-            'ts': time.time()
-        }
+        is_manual_mode = bool(rl_cfg.get("upi_mode") == "manual")
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+
+        if is_manual_mode:
+            _pending_manual_upi_users[user_id] = {
+                'dur_key': dur_key,
+                'amount': dyn_amount,
+                'base_amount': base_amt,
+                'order_id': order_id,
+                'tier': tier,
+                'checkout_version': uiver,
+                'ts': time.time()
+            }
+        else:
+            # Register pending order session with dynamic amount and unified order ID
+            _pending_utr_users[user_id] = {
+                'dur_key': dur_key,
+                'amount': dyn_amount,
+                'base_amount': base_amt,
+                'order_id': order_id,
+                'tier': tier,
+                'checkout_version': uiver,
+                'ts': time.time()
+            }
 
         # Save order document to MongoDB
         try:
@@ -4601,8 +4896,9 @@ async def _process_pass_callback(client, query):
                 'amount': dyn_amount,
                 'base_amount': base_amt,
                 'tier': tier,
-                'gateway': 'Pay Via UPI (INR)',
-                'status': 'PENDING',
+                'checkout_version': uiver,
+                'gateway': 'Pay Via UPI (Manual Screenshot)' if is_manual_mode else 'Pay Via UPI (INR)',
+                'status': 'WAITING_SCREENSHOT' if is_manual_mode else 'PENDING',
                 'created_at': time.time(),
                 'expires_at': time.time() + 600
             })
@@ -4617,7 +4913,7 @@ async def _process_pass_callback(client, query):
 
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
-        uiver = rl_cfg.get('pass_ui_version', 'v1')
+        is_hinglish = bool(user_lang == 'hinglish')
         if uiver == 'v3':
             back_cb = f"pass#tier_{tier}"
         elif uiver == 'v2':
@@ -4625,57 +4921,147 @@ async def _process_pass_callback(client, query):
         else:
             back_cb = "pass#method_upi"
 
-        if is_hi:
-            plan_name = format_plan_name_friendly(dur_key, lang='hi')
-            tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
-            caption = (
-                '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI पेमेंट ऑर्डर बनाया गया!</b>\n\n'
-                "──────────────────────\n"
-                f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास{tier_badge}\n"
-                f"• <b>भुगतान की सटीक राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
-                f"• <b>UPI ID:</b> <code>{raw_upi}</code> (कॉपी करने के लिए टैप करें)\n"
-                f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
-                '<emoji id="5807800879553715710">📲</emoji> <b>भुगतान निर्देश:</b>\n'
-                "1. ऊपर दिए गए QR कोड को स्कैन करें या सीधे UPI ID पर पेमेंट करें।\n"
-                f"2. बिल्कुल सटीक <b>₹{dyn_amount:.2f}</b> का भुगतान करें (पैसे कम या ज्यादा न करें)।\n"
-                "3. <b>ऑटोमैटिक वेरिफिकेशन:</b> आपको UTR सबमिट करने की कोई आवश्यकता नहीं है! पेमेंट करने के 5-15 सेकंड में सिस्टम ऑटोमैटिकली पास एक्टिवेट कर देगा।\n\n"
-                '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (10 मिनट के लिए वैध)\n'
-                "जैसे ही आपका पेमेंट प्राप्त होगा, आपका अनलिमिटेड पास तुरंत सक्रिय हो जाएगा!"
-            )
-            btn_status = "पेमेंट स्टेटस चेक करें"
-            btn_switch_cf = "Cashfree से भुगतान करें"
-            btn_back = "← वापस"
-        else:
-            plan_name = format_plan_name_friendly(dur_key, lang='en')
-            tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
-            caption = (
-                '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
-                "──────────────────────\n"
-                f"• <b>Plan:</b> {plan_name} Unlimited Access Pass{tier_badge}\n"
-                f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
-                f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
-                f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
-                '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
-                "1. Scan the QR code above or pay directly to the UPI ID.\n"
-                f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
-                "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds.\n\n"
-                '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 10 Minutes)\n'
-                "Your unlimited access pass will activate automatically as soon as payment is detected!"
-            )
-            btn_status = "Check Payment Status"
-            btn_switch_cf = "Instead Pay with Cashfree"
-            btn_back = "← Back"
+        if is_manual_mode:
+            if is_hi:
+                plan_name = format_plan_name_friendly(dur_key, lang='hi')
+                tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
+                caption = (
+                    '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI पेमेंट ऑर्डर (मैन्युअल वेरिफिकेशन)</b>\n\n'
+                    "──────────────────────\n"
+                    f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास{tier_badge}\n"
+                    f"• <b>भुगतान की राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UPI ID:</b> <code>{raw_upi}</code> (कॉपी करने के लिए टैप करें)\n"
+                    f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
+                    '<emoji id="5807800879553715710">📲</emoji> <b>भुगतान निर्देश:</b>\n'
+                    "1. ऊपर दिए गए QR कोड को स्कैन करें या सीधे UPI ID पर पेमेंट करें।\n"
+                    f"2. भुगतान पूरा होने के बाद <b>5 मिनट के भीतर</b> पेमेंट का <b>स्क्रीनशॉट (Screenshot)</b> इसी चैट में फोटो के रूप में भेजें।\n"
+                    "3. स्क्रीनशॉट मिलते ही एडमिन द्वारा वेरीफाई करके आपका पास तुरंत एक्टिवेट कर दिया जाएगा!\n\n"
+                    '<emoji id="6034898821517940846">⏰</emoji> <b>स्क्रीनशॉट की प्रतीक्षा...</b> (5 मिनट के भीतर भेजें)'
+                )
+                btn_ss = "📸 स्क्रीनशॉट भेजें (5 मिनट में)"
+                btn_switch_cf = "Cashfree से भुगतान करें"
+                btn_back = "← वापस"
+            elif is_hinglish:
+                plan_name = format_plan_name_friendly(dur_key, lang='en')
+                tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
+                caption = (
+                    '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order (Manual Verification)</b>\n\n'
+                    "──────────────────────\n"
+                    f"• <b>Plan:</b> {plan_name} Unlimited Pass{tier_badge}\n"
+                    f"• <b>Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
+                    f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                    '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+                    "1. Upar diye gaye QR code ko scan karein ya direct UPI ID par payment karein.\n"
+                    f"2. Payment hone ke baad <b>5 minute ke andar</b> payment ka <b>Screenshot</b> isi chat me photo format me send karein.\n"
+                    "3. Admin dwara screenshot verify hote hi aapka Unlimited Pass turant activate ho jayega!\n\n"
+                    '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Screenshot...</b> (5 minute ke andar send karein)'
+                )
+                btn_ss = "📸 Screenshot Bhejein (5m)"
+                btn_switch_cf = "Cashfree se Pay Karein"
+                btn_back = "← Wapas"
+            else:
+                plan_name = format_plan_name_friendly(dur_key, lang='en')
+                tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
+                caption = (
+                    '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order (Manual Verification)</b>\n\n'
+                    "──────────────────────\n"
+                    f"• <b>Plan:</b> {plan_name} Unlimited Access Pass{tier_badge}\n"
+                    f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
+                    f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                    '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+                    "1. Scan the QR code above or pay directly to the UPI ID.\n"
+                    f"2. After making payment, please send the <b>Payment Screenshot within 5 minutes</b> in this chat.\n"
+                    "3. Our admin team will verify your screenshot and activate your pass immediately!\n\n"
+                    '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Screenshot...</b> (Submit within 5 minutes)'
+                )
+                btn_ss = "📸 Send Screenshot (in 5m)"
+                btn_switch_cf = "Instead Pay with Cashfree"
+                btn_back = "← Back"
 
-        photo_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
-            [InlineKeyboardButton(f"⚡ {btn_switch_cf}", callback_data=f"pass#switch_cf_{order_id}")],
-            [InlineKeyboardButton(btn_back, callback_data=back_cb)]
-        ])
-        photo_api_kb = [
-            [{"text": btn_status, "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
-            [{"text": btn_switch_cf, "callback_data": f"pass#switch_cf_{order_id}", "icon_custom_emoji_id": "5283232570660634549"}],
-            [{"text": btn_back, "callback_data": back_cb}]
-        ]
+            photo_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(btn_ss, callback_data="pass#manual_ss_hint")],
+                [InlineKeyboardButton(f"⚡ {btn_switch_cf}", callback_data=f"pass#switch_cf_{order_id}")],
+                [InlineKeyboardButton(btn_back, callback_data=back_cb)]
+            ])
+            photo_api_kb = [
+                [{"text": btn_ss, "callback_data": "pass#manual_ss_hint", "icon_custom_emoji_id": "5807492110059838726"}],
+                [{"text": btn_switch_cf, "callback_data": f"pass#switch_cf_{order_id}", "icon_custom_emoji_id": "5283232570660634549"}],
+                [{"text": btn_back, "callback_data": back_cb}]
+            ]
+        else:
+            if is_hi:
+                plan_name = format_plan_name_friendly(dur_key, lang='hi')
+                tier_badge = f" ({tier.title()} टियर)" if uiver == 'v3' else ""
+                caption = (
+                    '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI पेमेंट ऑर्डर बनाया गया!</b>\n\n'
+                    "──────────────────────\n"
+                    f"• <b>प्लान:</b> {plan_name} का अनलिमिटेड पास{tier_badge}\n"
+                    f"• <b>भुगतान की सटीक राशि:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UPI ID:</b> <code>{raw_upi}</code> (कॉपी करने के लिए टैप करें)\n"
+                    f"• <b>ऑर्डर ID:</b> <code>{order_id}</code>\n\n"
+                    '<emoji id="5807800879553715710">📲</emoji> <b>भुगतान निर्देश:</b>\n'
+                    "1. ऊपर दिए गए QR कोड को स्कैन करें या सीधे UPI ID पर पेमेंट करें।\n"
+                    f"2. बिल्कुल सटीक <b>₹{dyn_amount:.2f}</b> का भुगतान करें (पैसे कम या ज्यादा न करें)।\n"
+                    "3. <b>ऑटोमैटिक वेरिफिकेशन:</b> आपको UTR सबमिट करने की कोई आवश्यकता नहीं है! पेमेंट करने के 5-15 सेकंड में सिस्टम ऑटोमैटिकली पास एक्टिवेट कर देगा।\n\n"
+                    '<emoji id="6034898821517940846">⏰</emoji> <b>भुगतान की प्रतीक्षा में...</b> (10 मिनट के लिए वैध)\n'
+                    "जैसे ही आपका पेमेंट प्राप्त होगा, आपका अनलिमिटेड पास तुरंत सक्रिय हो जाएगा!"
+                )
+                btn_status = "पेमेंट स्टेटस चेक करें"
+                btn_switch_cf = "Cashfree से भुगतान करें"
+                btn_back = "← वापस"
+            elif is_hinglish:
+                plan_name = format_plan_name_friendly(dur_key, lang='en')
+                tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
+                caption = (
+                    '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
+                    "──────────────────────\n"
+                    f"• <b>Plan:</b> {plan_name} Unlimited Pass{tier_badge}\n"
+                    f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
+                    f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                    '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+                    "1. Scan the QR code above or pay directly to the UPI ID.\n"
+                    f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
+                    "3. <b>Zero Hassle:</b> UTR submit karne ki jarurat nahi hai! Payment ke 5-15 seconds me system automatically pass activate kar dega.\n\n"
+                    '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 10 Minutes)\n'
+                    "Payment detect hote hi aapka Unlimited Pass turant active ho jayega!"
+                )
+                btn_status = "Check Payment Status"
+                btn_switch_cf = "Cashfree se Pay Karein"
+                btn_back = "← Wapas"
+            else:
+                plan_name = format_plan_name_friendly(dur_key, lang='en')
+                tier_badge = f" ({tier.title()} Tier)" if uiver == 'v3' else ""
+                caption = (
+                    '<emoji id="5766975922620076409">⚡️</emoji> <b>UPI Payment Order Created!</b>\n\n'
+                    "──────────────────────\n"
+                    f"• <b>Plan:</b> {plan_name} Unlimited Access Pass{tier_badge}\n"
+                    f"• <b>Exact Amount to Pay:</b> <code>₹{dyn_amount:.2f}</code>\n"
+                    f"• <b>UPI ID:</b> <code>{raw_upi}</code> (Tap to Copy)\n"
+                    f"• <b>Order ID:</b> <code>{order_id}</code>\n\n"
+                    '<emoji id="5807800879553715710">📲</emoji> <b>Payment Instructions:</b>\n'
+                    "1. Scan the QR code above or pay directly to the UPI ID.\n"
+                    f"2. Pay EXACTLY <b>₹{dyn_amount:.2f}</b> (do not round off paise).\n"
+                    "3. <b>Zero Hassle:</b> You do NOT need to submit UTR! Our automated system verifies payment within 5-15 seconds.\n\n"
+                    '<emoji id="6034898821517940846">⏰</emoji> <b>Waiting for Payment...</b> (Valid for 10 Minutes)\n'
+                    "Your unlimited access pass will activate automatically as soon as payment is detected!"
+                )
+                btn_status = "Check Payment Status"
+                btn_switch_cf = "Instead Pay with Cashfree"
+                btn_back = "← Back"
+
+            photo_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🔄 {btn_status}", callback_data=f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}")],
+                [InlineKeyboardButton(f"⚡ {btn_switch_cf}", callback_data=f"pass#switch_cf_{order_id}")],
+                [InlineKeyboardButton(btn_back, callback_data=back_cb)]
+            ])
+            photo_api_kb = [
+                [{"text": btn_status, "callback_data": f"pass#upistatus_{order_id}_{dur_key}_{dyn_amount}", "icon_custom_emoji_id": "5807492110059838726"}],
+                [{"text": btn_switch_cf, "callback_data": f"pass#switch_cf_{order_id}", "icon_custom_emoji_id": "5283232570660634549"}],
+                [{"text": btn_back, "callback_data": back_cb}]
+            ]
 
         # Generate QR buffer with dynamic amount and unified order ID
         qr_buf = generate_upi_qr_bytes(raw_upi, dyn_amount, payee_name, order_id)
@@ -4704,18 +5090,19 @@ async def _process_pass_callback(client, query):
             )
             sent_msg_id = sent_msg.id if sent_msg else None
 
-        # Start real-time background polling for automated payment verification
-        asyncio.create_task(_poll_upi_payment(
-            client=client,
-            user_id=user_id,
-            order_id=order_id,
-            dyn_amount=dyn_amount,
-            dur_key=dur_key,
-            count=count,
-            unit=unit,
-            message_id=sent_msg_id,
-            chat_id=query.message.chat.id
-        ))
+        if not is_manual_mode:
+            # Start real-time background polling for automated payment verification
+            asyncio.create_task(_poll_upi_payment(
+                client=client,
+                user_id=user_id,
+                order_id=order_id,
+                dyn_amount=dyn_amount,
+                dur_key=dur_key,
+                count=count,
+                unit=unit,
+                message_id=sent_msg_id,
+                chat_id=query.message.chat.id
+            ))
 
         # Schedule automatic reminder under 5 minutes (3 mins) if payment not completed
         asyncio.create_task(schedule_pass_payment_reminder(
@@ -4906,6 +5293,7 @@ async def _process_pass_callback(client, query):
             pending = _pending_utr_users.pop(user_id, {})
             order_id = pending.get('order_id') or f"UPI_{user_id}_{int(time.time())}"
             tier_val = (pending.get('tier') or 'basic').lower().strip()
+            cv_val = pending.get('checkout_version') or 'v1'
             await db.mark_utr_used(utr, user_id, expected_amount, dur_key, user_name=u_name, order_id=order_id)
             _cancel_cooldown_reminders(user_id)
             b_id = getattr(getattr(client, "me", None), "id", None)
@@ -4949,7 +5337,8 @@ async def _process_pass_callback(client, query):
                 expiry_ts=new_expiry,
                 log_channel=log_ch,
                 gateway="UPI (Gmail Auto)",
-                tier=tier_val
+                tier=tier_val,
+                checkout_version=cv_val
             ))
         elif res.get("amount_mismatch"):
             m_amt = res.get("mismatched_amount")
@@ -5018,6 +5407,10 @@ async def _process_pass_callback(client, query):
         btn_cancel_lbl = "अपना ऑर्डर कैंसिल करें" if is_hi else "Cancel your order"
         btn_back_lbl = "← वापस" if is_hi else "← Back"
 
+        tier = parts[3] if len(parts) > 3 else "basic"
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
+
         # Save order document to MongoDB
         try:
             await db.pass_orders.insert_one({
@@ -5029,6 +5422,8 @@ async def _process_pass_callback(client, query):
                 'duration_key': dur_key,
                 'amount': amount_inr,
                 'amount_usd': amount_usd,
+                'tier': tier,
+                'checkout_version': uiver,
                 'gateway': 'Crypto ( Oxapay )',
                 'status': 'PENDING',
                 'created_at': time.time(),
@@ -5121,6 +5516,7 @@ async def _process_pass_callback(client, query):
             b_id = getattr(getattr(client, "me", None), "id", None)
             b_uname = getattr(getattr(client, "me", None), "username", "")
             tier_val = (order_doc_paid.get('tier') or 'basic').lower().strip() if order_doc_paid else 'basic'
+            cv_val = (order_doc_paid.get('checkout_version') or 'v1') if order_doc_paid else 'v1'
             new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, tier=tier_val)
             from database import format_duration_verbose, parse_duration_to_seconds
             dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
@@ -5169,7 +5565,8 @@ async def _process_pass_callback(client, query):
                 expiry_ts=new_expiry,
                 log_channel=log_ch,
                 gateway="Crypto (OxaPay)",
-                tier=tier_val
+                tier=tier_val,
+                checkout_version=cv_val
             ))
         else:
             await query.answer(
@@ -5211,7 +5608,7 @@ async def _process_pass_callback(client, query):
         from plugins.cashfree_helper import create_cashfree_pass_order
         b_id = getattr(getattr(client, "me", None), "id", None)
         b_uname = getattr(getattr(client, "me", None), "username", "")
-        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount, bot_id=b_id, bot_username=b_uname, tier=tier)
+        res = await create_cashfree_pass_order(user_id, user_name, dur_key, amount, bot_id=b_id, bot_username=b_uname, tier=tier, checkout_version=uiver)
 
         if not res.get("success"):
             err_text = res.get('error', 'Failed to generate payment link')
@@ -5355,6 +5752,7 @@ async def _process_pass_callback(client, query):
                 b_id = getattr(getattr(client, "me", None), "id", None)
                 b_uname = getattr(getattr(client, "me", None), "username", "")
                 tier_val = (claimed.get('tier') or 'basic') if isinstance(claimed, dict) else 'basic'
+                cv_val = (claimed.get('checkout_version') or 'v1') if isinstance(claimed, dict) else 'v1'
                 new_expiry = await db.grant_user_unlimited_pass(user_id, dur_key, user_name=user_name, bot_id=b_id, bot_username=b_uname, plan_key=dur_key, amount=amount, tier=tier_val)
                 
                 import datetime
@@ -5389,7 +5787,8 @@ async def _process_pass_callback(client, query):
                     expiry_ts=new_expiry,
                     log_channel=log_ch,
                     gateway="Cashfree PG",
-                    tier=tier_val
+                    tier=tier_val,
+                    checkout_version=cv_val
                 ))
             else:
                 # Already claimed (e.g. by auto-verifier or earlier tap). DO NOT ADD EXTRA DURATION!
@@ -5462,7 +5861,8 @@ async def _process_pass_callback(client, query):
                 bot_id=b_id,
                 bot_username=b_uname,
                 order_id=order_id,
-                tier=tier
+                tier=tier,
+                checkout_version=order_doc.get("checkout_version") or "v1"
             )
             if not res.get("success"):
                 return await query.answer(f"❌ Failed to switch to Cashfree: {res.get('error')}", show_alert=True)
@@ -5758,6 +6158,35 @@ async def _process_pass_callback(client, query):
             ]
             unlock_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔓 अनलिमिटेड एक्सेस अनलॉक करें", callback_data="pass#unlock_menu")],
+                [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
+            ])
+        elif user_lang == 'hinglish':
+            limit_text = (
+                f'<emoji id="6215133834149629990">⏳</emoji> <b>Rate Limit Over Ho Gayi Hai</b>\n\n'
+                f'Aapne pichle <b>{win_verbose}</b> me <b>{len(hits)} / {max_limit} links</b> access kar liye hain. <emoji id="6266794310671275367">🎬</emoji>\n\n'
+                f'Sabhi users ke liye limit <b>{max_limit} links per {win_verbose}</b> set ki gayi hai.\n\n'
+                f'<emoji id="6217487596486922033">⏰</emoji> <b>Cooldown reset hone me time:</b> <code>{rem_time_str}</code>\n\n'
+                f'Please baad me try karein ya niche se unlimited access unlock karein! <emoji id="6023566962624306038">👇</emoji>'
+            )
+            story_buy_url = "https://t.me/UseAryaBot/apminibyarya"
+            limit_api_kb = [
+                [
+                    {
+                        "text": "Unlimited Access Unlock Karein",
+                        "callback_data": "pass#unlock_menu",
+                        "icon_custom_emoji_id": "6030443364178992166"
+                    }
+                ],
+                [
+                    {
+                        "text": "Buy This Story Only",
+                        "url": story_buy_url,
+                        "icon_custom_emoji_id": "6104800784354909891"
+                    }
+                ]
+            ]
+            unlock_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔓 Unlimited Access Unlock Karein", callback_data="pass#unlock_menu")],
                 [InlineKeyboardButton("💎 Buy This Story Only", url=story_buy_url)]
             ])
         else:
@@ -6191,6 +6620,10 @@ def register_share_handlers(app: Client):
         safe_process_pass,
         filters.regex(r'^pass#')
     ))
+    app.add_handler(MessageHandler(
+        _handle_share_bot_screenshot_message,
+        filters.private & filters.photo
+    ), group=-1)
     app.add_handler(MessageHandler(
         _handle_share_bot_utr_message,
         filters.private & filters.text & ~filters.command(["start", "help", "about", "support", "updates", "broadcast", "premium", "norestrictions"])

@@ -1224,6 +1224,14 @@ async def settings_query(bot, query):
     all_custs    = await db.get_all_pass_customers()
     total_cust   = len(all_custs)
     active_cust  = sum(1 for c in all_custs if c.get('active'))
+    sales_stats  = await db.get_pass_sales_analytics()
+    tot_sales    = sales_stats.get('total_sales', 0)
+    tot_rev      = sales_stats.get('total_revenue', 0.0)
+    today_sales  = sales_stats.get('today_sales', 0)
+    today_rev    = sales_stats.get('today_revenue', 0.0)
+    b_sales      = sales_stats.get('basic_sales', 0)
+    p_sales      = sales_stats.get('pro_sales', 0)
+    prem_sales   = sales_stats.get('prem_sales', 0)
 
     upi_val = str(rl_cfg.get('upi_id') or getattr(Config, 'UPI_ID', '') or os.environ.get('UPI_ID', '') or '').strip()
     gmail_val = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
@@ -1285,6 +1293,12 @@ async def settings_query(bot, query):
         f'<emoji id="6023843687367190257">📋</emoji> <b>Purchase Logs:-</b> <code>{pass_log_str}</code>\n'
         f'<emoji id="6023985764885338464">⚠️</emoji> <b>Rate Limit Hit Logs:-</b> <code>{hit_log_str}</code>\n'
         f'<emoji id="6021435576513730578">👑</emoji> <b>Pass Plans:-</b> {pricing_str}\n'
+        f"────────────────────\n"
+        f'<emoji id="5904462880941545555">💰</emoji> <b>Pass Revenue & Sales Analytics:</b>\n'
+        f'<emoji id="5807800879553715710">📈</emoji> <b>Total Sales:</b> <code>{tot_sales} passes</code> | <b>Total Revenue:</b> <code>₹{tot_rev:.2f}</code>\n'
+        f'<emoji id="6034898821517940846">⏰</emoji> <b>Today\'s Sales:</b> <code>{today_sales} passes</code> | <b>Today\'s Revenue:</b> <code>₹{today_rev:.2f}</code>\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Tiers Sold:</b> ⚡ Basic: {b_sales} | 👑 Pro: {p_sales} | 💎 Premium: {prem_sales}\n'
+        f'<emoji id="6032594876506312598">👥</emoji> <b>Active Customers:</b> <code>{active_cust} / {total_cust}</code>\n'
         f"────────────────────\n"
         f'<emoji id="5904359114531675993">💳</emoji> <b>Gateways:-</b> UPI: {upi_status} | Cashfree: {cf_status} | OxaPay: {oxa_status}'
     )
@@ -1983,6 +1997,13 @@ async def settings_query(bot, query):
     gmail_user = str(rl_cfg.get('gmail_user') or getattr(Config, 'GMAIL_USER', '') or os.environ.get('GMAIL_USER', '') or '').strip()
     gmail_pass = str(rl_cfg.get('gmail_app_password') or getattr(Config, 'GMAIL_APP_PASSWORD', '') or os.environ.get('GMAIL_APP_PASSWORD', '') or '').strip()
 
+    upi_mode = rl_cfg.get('upi_mode', 'auto')
+    is_auto = bool(upi_mode != 'manual')
+    mode_btn_lbl = f"Verification: {'🤖 Auto (Gmail)' if is_auto else '📸 Manual (Screenshot)'}"
+    mode_api = f"{'Auto (Gmail)' if is_auto else 'Manual (Screenshot)'}"
+    mode_icon = "6019110229680068974" if is_auto else "5766975922620076409"
+    mode_text = "🤖 Automated (Gmail IMAP)" if is_auto else "📸 Manual (Screenshot Verification)"
+
     upi_disp = upi_id if upi_id else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
     gmail_disp = gmail_user if gmail_user else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
     pass_disp = 'Set <emoji id="6120635817674149717">✅</emoji>' if gmail_pass else '<emoji id="5970055887774028039">🔴</emoji> Not Configured'
@@ -1995,6 +2016,7 @@ async def settings_query(bot, query):
 
     buttons = [
         [InlineKeyboardButton(upi_toggle_lbl, callback_data="settings#sb_rl_upi_toggle")],
+        [InlineKeyboardButton(mode_btn_lbl, callback_data="settings#sb_rl_upi_mode_toggle")],
         [
             InlineKeyboardButton("💳 UPI ID", callback_data="settings#sb_rl_upi_id"),
             InlineKeyboardButton("👤 Payee Name", callback_data="settings#sb_rl_upi_name")
@@ -2005,6 +2027,7 @@ async def settings_query(bot, query):
     ]
     api_buttons = [
         [{"text": upi_toggle_api, "callback_data": "settings#sb_rl_upi_toggle", "icon_custom_emoji_id": toggle_icon}],
+        [{"text": mode_api, "callback_data": "settings#sb_rl_upi_mode_toggle", "icon_custom_emoji_id": mode_icon}],
         [
             {"text": "UPI ID", "callback_data": "settings#sb_rl_upi_id", "icon_custom_emoji_id": "5766975922620076409"},
             {"text": "Payee Name", "callback_data": "settings#sb_rl_upi_name", "icon_custom_emoji_id": "6023838795399436901"}
@@ -2013,21 +2036,24 @@ async def settings_query(bot, query):
         [{"text": "Password", "callback_data": "settings#sb_rl_gmail_pass", "icon_custom_emoji_id": "6019290828759898301"}],
         [{"text": "Back", "callback_data": "settings#sb_rl_payment_menu"}],
     ]
-    upi_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '<emoji id="5970055887774028039">🔴</emoji> Incomplete'
+    if is_auto:
+        upi_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready & Auto-Verified' if (upi_id and gmail_user and gmail_pass) else '<emoji id="5970055887774028039">🔴</emoji> Incomplete (Gmail config missing)'
+    else:
+        upi_status_str = '<emoji id="5809949600152296075">🟢</emoji> Ready (Manual Screenshot Mode)' if upi_id else '<emoji id="5970055887774028039">🔴</emoji> Incomplete (UPI ID missing)'
+
     upi_text = (
-        f'<emoji id="6019110229680068974">💳</emoji> <b>UPI & Gmail Config</b>\n'
+        f'<emoji id="6019110229680068974">💳</emoji> <b>UPI & Payment Verification Config</b>\n'
         f"────────────────────\n"
+        f"<b>Verification Mode:</b> {mode_text}\n"
         f"<b>UPI ID:</b> <code>{upi_disp}</code>\n"
         f"<b>Payee Name:</b> <code>{upi_name}</code>\n"
         f"<b>Gmail Account:</b> <code>{gmail_disp}</code>\n"
         f"<b>Gmail App Password:</b> <code>{pass_disp}</code>\n"
         f"<b>Status:</b> {upi_status_str}\n"
         f"────────────────────\n"
-        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>How Gmail Auto-Verification Works:</b>\n"
-        f"When users pay via UPI, they submit their 12-digit UTR.\n"
-        f"The bot connects via IMAP SSL to your Gmail account, searches for the transaction email, "
-        f"confirms the amount, and activates the pass within seconds!\n\n"
-        f"<b>Note:</b> For Gmail App Password, generate a 16-character App Password from Google Account → Security → 2-Step Verification → App Passwords.</blockquote>"
+        f"<blockquote expandable><emoji id=\"5807700854060357972\">ℹ️</emoji> <b>Verification Modes:</b>\n"
+        f"• <b>Automated (Gmail):</b> User enters UTR or system checks Gmail IMAP for transaction emails and verifies automatically within 15 seconds.\n"
+        f"• <b>Manual (Screenshot):</b> User sends payment screenshot in Delivery Bot within 5 minutes. Admin receives notification in Main Bot with Approve & Decline buttons!</blockquote>"
     )
     from plugins.share_bot import send_or_edit_with_custom_icons
     sent_ok = await send_or_edit_with_custom_icons(
@@ -2050,6 +2076,17 @@ async def settings_query(bot, query):
     await db.set_delivery_rate_limit_config(upi_enabled=new_state)
     state_str = "ENABLED 🟢" if new_state else "DISABLED 🔴"
     try: await query.answer(f"UPI Gateway is now: {state_str}!", show_alert=True)
+    except Exception: pass
+    query.data = "settings#sb_rl_upi_menu"
+    return await settings_query(bot, query)
+
+  elif type == "sb_rl_upi_mode_toggle":
+    rl_cfg = await db.get_delivery_rate_limit_config()
+    cur_mode = rl_cfg.get('upi_mode', 'auto')
+    new_mode = 'manual' if cur_mode != 'manual' else 'auto'
+    await db.set_delivery_rate_limit_config(upi_mode=new_mode)
+    mode_str = "MANUAL (Screenshot Verification) 📸" if new_mode == 'manual' else "AUTOMATED (Gmail IMAP) 🤖"
+    try: await query.answer(f"UPI Mode: {mode_str}!", show_alert=True)
     except Exception: pass
     query.data = "settings#sb_rl_upi_menu"
     return await settings_query(bot, query)
@@ -6793,3 +6830,196 @@ async def next_filters_buttons(user_id):
                     callback_data="settings#main")
        ]]
   return InlineKeyboardMarkup(buttons)
+
+
+@Client.on_callback_query(filters.regex(r'^admin_pass_(approve|decline)_'))
+async def admin_pass_approval_callback(bot, query):
+    """Admin callback handler in Main Bot for manual UPI payment screenshot approval/decline."""
+    admin_id = query.from_user.id if query.from_user else 0
+    from plugins.banned import _is_any_owner
+    if not (await _is_any_owner(admin_id)):
+        return await query.answer("⛔ Access denied. Only bot owners can approve/decline payments.", show_alert=True)
+
+    parts = query.data.split('_', 3)
+    if len(parts) < 4:
+        return await query.answer("Invalid callback data.", show_alert=True)
+    action = parts[2]
+    order_id = parts[3]
+
+    order = await db.get_pass_order(order_id)
+    if not order:
+        return await query.answer("⚠️ Order not found in database.", show_alert=True)
+
+    cur_status = order.get('status', '')
+    if cur_status == 'PAID':
+        return await query.answer("✅ This order has already been APPROVED and activated!", show_alert=True)
+    if cur_status == 'REJECTED':
+        return await query.answer("❌ This order has already been DECLINED.", show_alert=True)
+
+    user_id = int(order.get('user_id'))
+    u_name = order.get('user_name', 'Customer')
+    dur_key = order.get('plan') or order.get('duration') or '1d'
+    amount = float(order.get('amount') or 0.0)
+    tier_val = str(order.get('tier') or 'basic').lower().strip()
+    cv_val = str(order.get('checkout_version') or 'v1').lower().strip()
+
+    from database import format_duration_verbose, parse_duration_to_seconds
+    dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
+    dur_verbose = format_duration_verbose(dur_sec)
+
+    import time, datetime, asyncio
+    try:
+        import pytz
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        now_dt = datetime.datetime.now(ist_tz)
+        act_time_str = now_dt.strftime('%d-%m-%Y %I:%M %p')
+    except Exception:
+        act_time_str = datetime.datetime.now().strftime('%d-%m-%Y %I:%M %p')
+
+    admin_name = query.from_user.first_name if query.from_user else f"Admin {admin_id}"
+    tier_badge = "👑 Pro" if tier_val == 'pro' else ("💎 Premium" if tier_val == 'premium' else "⚡ Basic")
+
+    if action == 'approve':
+        claimed = await db.mark_pass_order_paid_atomic(order_id, payment_details={'approved_by': admin_id, 'approved_at': time.time()})
+        if not claimed:
+            return await query.answer("⚠️ Order already processed by another admin!", show_alert=True)
+
+        # Grant pass in database
+        new_expiry = await db.grant_user_unlimited_pass(
+            user_id=user_id,
+            duration=dur_key,
+            user_name=u_name,
+            bot_id=str(bot.me.id) if getattr(bot, 'me', None) else None,
+            bot_username=getattr(getattr(bot, 'me', None), 'username', ''),
+            plan_key=dur_key,
+            amount=amount,
+            tier=tier_val
+        )
+
+        try:
+            exp_dt = datetime.datetime.fromtimestamp(new_expiry, tz=ist_tz)
+            exp_str = exp_dt.strftime('%d-%m-%Y %I:%M %p')
+        except Exception:
+            exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
+
+        # Notify user in delivery bot / main bot
+        user_msg = (
+            f'<emoji id="5224607267797606837">🎉</emoji> <b>Payment Approved & Pass Activated!</b>\n\n'
+            f"Hey <b>{u_name}</b>, your payment screenshot for <b>{dur_verbose.title()} {tier_badge} Unlimited Pass</b> has been verified and approved by admin!\n\n"
+            f"• <b>Order ID:</b> <code>{order_id}</code>\n"
+            f"• <b>Amount:</b> ₹{amount:.2f}\n"
+            f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
+            f'• <b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
+            f"You can now download all stories and batch files without any cooldown or limits. Enjoy!"
+        )
+        target_bot_id = str(order.get('bot_id') or '')
+        notified = False
+        try:
+            from plugins.share_bot import share_clients
+            if target_bot_id and target_bot_id in share_clients:
+                await share_clients[target_bot_id].send_message(user_id, user_msg)
+                notified = True
+            elif share_clients:
+                for s_cli in share_clients.values():
+                    try:
+                        await s_cli.send_message(user_id, user_msg)
+                        notified = True
+                        break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if not notified:
+            try:
+                await bot.send_message(user_id, user_msg)
+            except Exception:
+                pass
+
+        # Dispatch log with checkout_version and tier
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        log_ch = rl_cfg.get('log_channel')
+        from plugins.arya_logger import log_pass_purchased
+        asyncio.create_task(log_pass_purchased(
+            user_id=user_id,
+            user_name=u_name,
+            duration_str=dur_verbose.title(),
+            amount=amount,
+            order_id=order_id,
+            expiry_ts=new_expiry,
+            log_channel=log_ch,
+            gateway="Pay Via UPI (Manual Screenshot)",
+            tier=tier_val,
+            checkout_version=cv_val
+        ))
+
+        await query.answer("✅ Payment Approved! Pass activated and user notified.", show_alert=True)
+        orig_caption = query.message.caption or query.message.text or ""
+        updated_caption = (
+            f"{orig_caption}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ <b>APPROVED by {admin_name}</b> (<code>{admin_id}</code>)\n"
+            f"⏰ <b>Approved At:</b> <code>{act_time_str}</code>"
+        )
+        try:
+            if getattr(query.message, 'photo', None):
+                await query.message.edit_caption(updated_caption, reply_markup=None)
+            else:
+                await query.message.edit_text(updated_caption, reply_markup=None)
+        except Exception:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+    else:
+        # Decline flow
+        await db.pass_orders.update_one(
+            {'order_id': order_id},
+            {'$set': {'status': 'REJECTED', 'rejected_by': admin_id, 'rejected_at': time.time()}}
+        )
+        decline_user_msg = (
+            f"❌ <b>Payment Screenshot Rejected</b>\n\n"
+            f"Hey <b>{u_name}</b>, your submitted payment screenshot for Order <code>{order_id}</code> could not be verified by the admin team.\n\n"
+            f"<i>Reason: Invalid or unreadable payment proof.</i>\n\n"
+            f"If money was deducted from your bank, please retry or contact our support team with transaction details."
+        )
+        dec_notified = False
+        try:
+            from plugins.share_bot import share_clients
+            if target_bot_id and target_bot_id in share_clients:
+                await share_clients[target_bot_id].send_message(user_id, decline_user_msg)
+                dec_notified = True
+            elif share_clients:
+                for s_cli in share_clients.values():
+                    try:
+                        await s_cli.send_message(user_id, decline_user_msg)
+                        dec_notified = True
+                        break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if not dec_notified:
+            try:
+                await bot.send_message(user_id, decline_user_msg)
+            except Exception:
+                pass
+
+        await query.answer("❌ Payment screenshot rejected and user notified.", show_alert=True)
+        orig_caption = query.message.caption or query.message.text or ""
+        updated_caption = (
+            f"{orig_caption}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"❌ <b>DECLINED by {admin_name}</b> (<code>{admin_id}</code>)\n"
+            f"⏰ <b>Declined At:</b> <code>{act_time_str}</code>"
+        )
+        try:
+            if getattr(query.message, 'photo', None):
+                await query.message.edit_caption(updated_caption, reply_markup=None)
+            else:
+                await query.message.edit_text(updated_caption, reply_markup=None)
+        except Exception:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass

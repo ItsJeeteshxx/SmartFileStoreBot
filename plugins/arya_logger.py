@@ -458,7 +458,8 @@ async def log_pass_purchased(
     log_channel: Optional[int] = None,
     gateway: str = "Cashfree PG",
     days: int = 1,
-    tier: str = "basic"
+    tier: str = "basic",
+    checkout_version: str = "v1"
 ) -> None:
     """Log when a user purchases an Unlimited Delivery Pass in Quoteblock format."""
     now_str = _ist_str()
@@ -482,12 +483,15 @@ async def log_pass_purchased(
     else:
         tier_display = "⚡ BASIC PASS"
 
+    cv_display = str(checkout_version or "V1").upper()
+
     text = (
         f"<blockquote><b>UNLIMITED ACCESS PASS PURCHASED</b>\n"
         f"────────────────────\n"
         f"<b>Name:</b> {_esc(user_name)}\n"
         f"<b>User ID:</b> <code>{user_id}</code>\n"
         f"<b>Tier:</b> <b>{tier_display}</b>\n"
+        f"<b>Checkout Version:</b> <code>{cv_display}</code>\n"
         f"<b>Plan:</b> {plan_display} Unlimited Access\n"
         f"<b>Amount:</b> ₹{amount:.2f}\n"
         f"<b>Gateway:</b> {_esc(gateway)}\n"
