@@ -539,14 +539,18 @@ class PremiumDatabase:
                 async for ban in bans_cursor:
                     ban_id = ban.get("_id")
                     reason = str(ban.get("reason", "")).lower()
-                    is_manual = reason in ["banned by administrator", "admin ban"]
-                    if not is_manual or "auto-ban" in reason or "alt of" in reason or "strike" in reason or "rapid" in reason or "evasion" in reason:
+                    is_share_or_admin = any(k in reason for k in ("rapid", "strike", "share", "admin", "manual"))
+                    if not is_share_or_admin and ("alt of" in reason or "evasion" in reason):
                         await db_obj.premium_bans.delete_one({"_id": ban_id})
                         unbanned_count += 1
-                    logger.info(f"✅ Auto-Unbanned Paid User {ban_id} from premium_bans")
+                        logger.info(f"✅ Auto-Unbanned Paid User {ban_id} from premium_bans")
 
             await self.users.update_many(
-                {"id": {"$in": paid_uids_list}, "$or": [{"ban_status.ban_reason": {"$regex": "auto-ban|alt of|strike|rapid|evasion", "$options": "i"}}, {"ban_status.is_banned": True}]},
+                {
+                    "id": {"$in": paid_uids_list},
+                    "ban_status.is_banned": True,
+                    "ban_status.ban_reason": {"$regex": "^auto-ban: (alt of|evasion)", "$options": "i"}
+                },
                 {"$set": {
                     "ban_status.is_banned": False,
                     "ban_status.ban_reason": "",

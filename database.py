@@ -779,7 +779,14 @@ class Database:
             if now < expiry:
                 return doc
         try:
-            doc = await self.col.find_one({'id': uid_int})
+            doc = await self.col.find_one({
+                '$or': [
+                    {'id': uid_int},
+                    {'id': str(uid_int)},
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)}
+                ]
+            })
             res = doc or {}
             if hasattr(self, '_user_cache'):
                 self._user_cache[uid_int] = (res, now + 30)  # cache for 30s
@@ -792,20 +799,44 @@ class Database:
             self._user_cache.pop(int(user_id), None)
 
     async def ban_user(self, user_id, ban_reason="No Reason"):
+        uid_int = int(user_id)
         ban_status = dict(
             is_banned=True,
-            ban_reason=ban_reason
+            ban_reason=ban_reason,
+            reason=ban_reason
         )
-        await self.col.update_one({'id': int(user_id)}, {'$set': {'ban_status': ban_status}}, upsert=True)
+        await self.col.update_one(
+            {'$or': [{'id': uid_int}, {'_id': uid_int}]},
+            {'$set': {'ban_status': ban_status, 'banned': True, 'ban_reason': ban_reason}},
+            upsert=True
+        )
+        try:
+            import datetime
+            await self.db.premium_bans.update_one(
+                {'$or': [{'_id': uid_int}, {'_id': str(uid_int)}]},
+                {'$set': {
+                    'status': 'banned',
+                    'reason': ban_reason,
+                    'banned_at': datetime.datetime.now(datetime.timezone.utc)
+                }},
+                upsert=True
+            )
+        except Exception:
+            pass
         # Evict cache
         if hasattr(self, '_ban_status_cache'):
-            self._ban_status_cache.pop(int(user_id), None)
-        self._invalidate_user_cache(user_id)
+            self._ban_status_cache.pop(uid_int, None)
+        self._invalidate_user_cache(uid_int)
+
+    async def unban_user(self, user_id):
+        """Alias for remove_ban for API consistency."""
+        return await self.remove_ban(user_id)
 
     async def get_ban_status(self, id):
         default = dict(
             is_banned=False,
-            ban_reason=''
+            ban_reason='',
+            reason=''
         )
         try:
             user_id_int = int(id)
@@ -821,51 +852,55 @@ class Database:
                 if now < expiry:
                     return val
 
-        # Immunity check: Paid users are immune to auto-bans
-        try:
-            if await self.is_paid_user(user_id_int):
-                # If paid user has local ban status with an auto-ban reason, unban them automatically
-                user = await self._get_user_doc(user_id_int)
-                if user and user.get('ban_status', {}).get('is_banned'):
-                    reason = str(user.get('ban_status', {}).get('ban_reason', '')).lower()
-                    if "auto-ban" in reason or "alt of" in reason or "strike" in reason or "rapid" in reason or "evasion" in reason:
-                        await self.remove_ban(user_id_int)
-                        user = await self._get_user_doc(user_id_int)
-                
-                # Check premium_bans collection for auto-ban
-                prem_ban = await self.db.premium_bans.find_one({'_id': user_id_int})
-                if prem_ban and prem_ban.get('status') in ('banned', 'flagged'):
-                    reason = str(prem_ban.get('reason', '')).lower()
-                    if "auto-ban" in reason or "alt of" in reason or "strike" in reason or "rapid" in reason or "evasion" in reason or prem_ban.get('status') == 'flagged':
-                        await self.db.premium_bans.delete_one({'_id': user_id_int})
-                        prem_ban = None
-                
-                if not (user and user.get('ban_status', {}).get('is_banned')) and not prem_ban:
-                    if hasattr(self, '_ban_status_cache'):
-                        self._ban_status_cache[user_id_int] = (default, now + 120)
-                    return default
-        except Exception as _p_err:
-            pass
-
         # 1. Check local bot collection ban status in 'arya' DB using cached doc
         user = await self._get_user_doc(user_id_int)
-        if user and user.get('ban_status', {}).get('is_banned'):
-            res = user.get('ban_status', default)
-            if hasattr(self, '_ban_status_cache'):
-                # Cache banned user for 30s
-                self._ban_status_cache[user_id_int] = (res, now + 30)
-            return res
+        if user:
+            # Check nested ban_status
+            bs = user.get('ban_status', {})
+            if bs and bs.get('is_banned'):
+                r = bs.get('ban_reason') or bs.get('reason') or 'Banned'
+                res = {'is_banned': True, 'ban_reason': r, 'reason': r}
+                if hasattr(self, '_ban_status_cache'):
+                    self._ban_status_cache[user_id_int] = (res, now + 30)
+                return res
+            # Check root banned flag (e.g. from web app / mini app admin)
+            if user.get('banned') is True:
+                r = user.get('ban_reason') or 'Banned by administrator'
+                res = {'is_banned': True, 'ban_reason': r, 'reason': r}
+                if hasattr(self, '_ban_status_cache'):
+                    self._ban_status_cache[user_id_int] = (res, now + 30)
+                return res
             
         # 2. Check premium_bans collection (same 'arya' DB — used by mini app admin panel)
         try:
-            prem_ban = await self.db.premium_bans.find_one({'_id': user_id_int})
+            prem_ban = await self.db.premium_bans.find_one({'$or': [{'_id': user_id_int}, {'_id': str(user_id_int)}]})
             if prem_ban and prem_ban.get('status') in ('banned', 'flagged'):
+                r = prem_ban.get('reason') or 'Banned by administrator'
                 res = {
                     'is_banned': True,
-                    'ban_reason': prem_ban.get('reason', 'Banned by administrator')
+                    'ban_reason': r,
+                    'reason': r
                 }
                 if hasattr(self, '_ban_status_cache'):
-                    # Cache banned user for 30s
+                    self._ban_status_cache[user_id_int] = (res, now + 30)
+                return res
+        except Exception:
+            pass
+
+        # 3. Check banned_users collection
+        try:
+            b_doc = await self.db.banned_users.find_one({
+                '$or': [
+                    {'user_id': user_id_int},
+                    {'user_id': str(user_id_int)},
+                    {'_id': user_id_int},
+                    {'_id': str(user_id_int)}
+                ]
+            })
+            if b_doc:
+                r = b_doc.get('reason') or 'Banned'
+                res = {'is_banned': True, 'ban_reason': r, 'reason': r}
+                if hasattr(self, '_ban_status_cache'):
                     self._ban_status_cache[user_id_int] = (res, now + 30)
                 return res
         except Exception:
@@ -875,6 +910,69 @@ class Database:
             # Cache non-banned user for 120s
             self._ban_status_cache[user_id_int] = (default, now + 120)
         return default
+
+    async def sync_all_banned_users(self):
+        """
+        Synchronizes all banned users across premium_bans, banned_users, and users collection.
+        Ensures that any user previously banned in any collection has is_banned=True in users collection.
+        Fixes any accidental unbans caused by legacy auto-unban code.
+        """
+        try:
+            count = 0
+            # 1. Sync from premium_bans
+            async for pb in self.db.premium_bans.find({'status': {'$in': ['banned', 'flagged']}}):
+                raw_id = pb.get('_id')
+                if not raw_id:
+                    continue
+                try:
+                    uid = int(raw_id)
+                except Exception:
+                    continue
+                r = pb.get('reason') or 'Banned by administrator'
+                await self.col.update_one(
+                    {'$or': [{'id': uid}, {'_id': uid}]},
+                    {'$set': {
+                        'ban_status': {'is_banned': True, 'ban_reason': r, 'reason': r},
+                        'banned': True,
+                        'ban_reason': r
+                    }},
+                    upsert=True
+                )
+                count += 1
+
+            # 2. Sync from banned_users
+            try:
+                async for bu in self.db.banned_users.find({}):
+                    raw_id = bu.get('user_id') or bu.get('_id')
+                    if not raw_id:
+                        continue
+                    try:
+                        uid = int(raw_id)
+                    except Exception:
+                        continue
+                    r = bu.get('reason') or 'Banned'
+                    await self.col.update_one(
+                        {'$or': [{'id': uid}, {'_id': uid}]},
+                        {'$set': {
+                            'ban_status': {'is_banned': True, 'ban_reason': r, 'reason': r},
+                            'banned': True,
+                            'ban_reason': r
+                        }},
+                        upsert=True
+                    )
+                    count += 1
+            except Exception:
+                pass
+
+            # 3. Clear cache so all bots see fresh ban status
+            if hasattr(self, '_ban_status_cache'):
+                self._ban_status_cache.clear()
+            if hasattr(self, '_user_cache'):
+                self._user_cache.clear()
+
+            logger.info(f"✅ Sync banned users completed. Synchronized {count} banned users.")
+        except Exception as e:
+            logger.error(f"Error in sync_all_banned_users: {e}")
 
     async def is_paid_user(self, user_id) -> bool:
         """Check if user is a paid user (has at least 1 purchased story or completed order)."""
@@ -1068,9 +1166,14 @@ class Database:
 
             paid_uids_list = list(paid_uids)
 
-            # 5. Delete auto-bans for paid users from premium_bans
+            # 5. Delete auto-bans for paid users from users collection EXCEPT share bot / rapid / strike / admin bans
+            # Users banned for abusing share bots or banned manually must REMAIN BANNED
             await self.col.update_many(
-                {"id": {"$in": paid_uids_list}, "$or": [{"ban_status.ban_reason": {"$regex": "auto-ban|alt of|strike|rapid|evasion", "$options": "i"}}, {"ban_status.is_banned": True}]},
+                {
+                    "id": {"$in": paid_uids_list},
+                    "ban_status.is_banned": True,
+                    "ban_status.ban_reason": {"$regex": "^auto-ban: (alt of|evasion)", "$options": "i"}
+                },
                 {"$set": {
                     "ban_status.is_banned": False,
                     "ban_status.ban_reason": "",
@@ -1110,7 +1213,8 @@ class Database:
                         c_ips = [i for i in b_doc.get("ips", []) if i not in paid_ips]
                         c_devs = [d for d in b_doc.get("device_ids", []) if d not in paid_devices]
                         r = str(b_doc.get("reason", "")).lower()
-                        is_auto = "auto-ban" in r or "alt of" in r or "strike" in r or "rapid" in r
+                        is_share_or_admin = any(k in r for k in ("rapid", "strike", "share", "admin", "manual"))
+                        is_auto = ("auto-ban" in r or "alt of" in r or "evasion" in r) and not is_share_or_admin
                         if is_auto and (not c_ips or not c_devs or b_doc.get("_id") in paid_uids):
                             await self.db.premium_bans.delete_one({"_id": b_doc["_id"]})
                         else:

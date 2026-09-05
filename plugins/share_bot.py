@@ -546,6 +546,10 @@ async def _fsub_record_jr(client, request):
     req_ch_id = request.chat.id    # integer from Telegram
     req_user_id = request.from_user.id  # integer
 
+    ban_status = await db.get_ban_status(req_user_id)
+    if ban_status.get('is_banned'):
+        return
+
     for ch in fsub_chs:
         if not ch.get('is_active', True):
             continue
@@ -603,11 +607,8 @@ async def _process_start(client, message):
         # Check ban status concurrently
         ban_status = await db.get_ban_status(user_id)
         if ban_status.get('is_banned'):
-            reason = str(ban_status.get('reason', '')).lower()
-            if 'rapid' in reason or 'strike' in reason:
-                await db.unban_user(user_id)
-            else:
-                return
+            logger.warning(f"[ShareBot] Banned user {user_id} blocked on plain /start")
+            return
         if bot_id and await db.is_store_bot_mode(bot_id):
             from plugins.store_bot import send_store_main_menu
             await send_store_main_menu(client, user_id, bot_id, message.from_user.first_name if message.from_user else "")
@@ -690,12 +691,8 @@ async def _process_start(client, message):
     )
 
     if ban_status.get('is_banned'):
-        reason = str(ban_status.get('reason', '')).lower()
-        if 'rapid' in reason or 'strike' in reason:
-            await db.unban_user(user_id)
-        else:
-            logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
-            return
+        logger.warning(f"[ShareBot] Banned user {user_id} blocked in _process_start")
+        return
 
     if not link_data:
         await message.reply_text(
@@ -1895,6 +1892,11 @@ async def _process_fsub_check(client, query):
     
     bot_id = str(client.me.id) if client.me else None
     user_id = query.from_user.id
+
+    ban_status = await db.get_ban_status(user_id)
+    if ban_status.get('is_banned'):
+        await query.answer("⛔ You are banned from using this bot.", show_alert=True)
+        return
     
     # 2. Re-check FSub (per-bot fsub with rotation & active filtering)
     fsub_channels = await db.get_effective_bot_fsub_channels(bot_id)
@@ -2718,6 +2720,10 @@ async def _handle_share_bot_utr_message(client, message):
     if not message.from_user or not message.text:
         return
     user_id = message.from_user.id
+    ban_status = await db.get_ban_status(user_id)
+    if ban_status.get('is_banned'):
+        _pending_utr_users.pop(user_id, None)
+        return
     if user_id not in _pending_utr_users:
         return
 
@@ -3538,6 +3544,12 @@ async def _process_pass_callback(client, query):
     data = query.data
     user_id = query.from_user.id
     user_name = query.from_user.first_name or "User"
+
+    ban_status = await db.get_ban_status(user_id)
+    if ban_status.get('is_banned'):
+        _pending_utr_users.pop(user_id, None)
+        await query.answer("⛔ You are banned from using this bot.", show_alert=True)
+        return
 
     # Clear pending UTR session if user navigates to any other menu/back
     if not data.startswith("pass#upibuy_") and not data.startswith("pass#upirecheck_"):
@@ -5858,6 +5870,11 @@ async def _process_store_callback(client: Client, query: CallbackQuery):
     bot_id = str(client.me.id) if getattr(client, 'me', None) else ""
     bot_uname = client.me.username if getattr(client, 'me', None) else "StoreBot"
 
+    ban_status = await db.get_ban_status(user_id)
+    if ban_status.get('is_banned'):
+        await query.answer("⛔ You are banned from using this bot.", show_alert=True)
+        return
+
     if data.startswith("store_view_"):
         show_id = data.split("store_view_")[1]
         show = await db.get_store_show(show_id)
@@ -6093,22 +6110,32 @@ def register_share_handlers(app: Client):
     ))
 
     async def _cmd_about(client, message):
+        user_id = message.from_user.id if message.from_user else 0
+        if (await db.get_ban_status(user_id)).get('is_banned'): return
         bot_id = str(client.me.id) if client.me else None
         await _send_about(client, message, bot_id=bot_id, edit=False)
         
     async def _cmd_help(client, message):
+        user_id = message.from_user.id if message.from_user else 0
+        if (await db.get_ban_status(user_id)).get('is_banned'): return
         bot_id = str(client.me.id) if client.me else None
         await _send_help(client, message, bot_id)
         
     async def _cmd_premium(client, message):
+        user_id = message.from_user.id if message.from_user else 0
+        if (await db.get_ban_status(user_id)).get('is_banned'): return
         await _send_premium_menu(client, message, edit=False)
         
     async def _cmd_support(client, message):
+        user_id = message.from_user.id if message.from_user else 0
+        if (await db.get_ban_status(user_id)).get('is_banned'): return
         txt = "<b>»  " + _sc("Support") + "</b>\n\n<i>" + _sc("If you need help or have any questions, join our support group.") + "</i>"
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Support Group"), url=SUPPORT_LINK)]])
         await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
 
     async def _cmd_updates(client, message):
+        user_id = message.from_user.id if message.from_user else 0
+        if (await db.get_ban_status(user_id)).get('is_banned'): return
         txt = "<b>»  " + _sc("Updates") + "</b>\n\n<i>" + _sc("Stay updated with our latest news and announcements.") + "</i>"
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("»  " + _sc("Update Channel"), url=UPDATE_LINK)]])
         await message.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
@@ -6628,6 +6655,9 @@ async def run_pass_expiry_monitor_loop():
 async def start_share_bot():
     """Start all Share Bot clients from DB."""
     global share_clients
+
+    # Synchronize all banned users across collections so bans are strictly locked down
+    asyncio.create_task(db.sync_all_banned_users())
 
     # Stop existing clients first
     for cl in list(share_clients.values()):
