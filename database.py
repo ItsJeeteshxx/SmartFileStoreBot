@@ -108,6 +108,53 @@ def format_duration_verbose(seconds: int) -> str:
         return f"{days} day{'s' if days != 1 else ''} {rem_h} hr"
 
 
+def format_plan_name_friendly(dur_key: str, lang: str = 'en') -> str:
+    """Helper to return friendly plan string like '7 Days' or '7 दिन'."""
+    dur_str = str(dur_key).lower().strip()
+    if lang == 'hi':
+        if dur_str in ('7d', '7days', '7day', '7'):
+            return "7 दिन"
+        elif dur_str.endswith('mo'):
+            n = dur_str[:-2]
+            return f"{n} {'महीना' if n == '1' else 'महीने'}"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            n = dur_str.replace('months', '').replace('month', '').strip()
+            return f"{n} {'महीना' if n == '1' else 'महीने'}"
+        elif dur_str.endswith('d'):
+            n = dur_str[:-1]
+            return f"{n} {'दिन' if n == '1' else 'दिन'}"
+        elif dur_str.endswith('h'):
+            n = dur_str[:-1]
+            return f"{n} घंटे"
+        elif dur_str.endswith('m'):
+            n = dur_str[:-1]
+            return f"{n} मिनट"
+        elif dur_str.endswith('y') or dur_str.endswith('yr') or dur_str == '365d':
+            return "1 साल"
+        return dur_str
+    else:
+        if dur_str in ('7d', '7days', '7day', '7'):
+            return "7 Days"
+        elif dur_str.endswith('mo'):
+            n = dur_str[:-2]
+            return f"{n} {'Month' if n == '1' else 'Months'}"
+        elif dur_str.endswith('month') or dur_str.endswith('months'):
+            n = dur_str.replace('months', '').replace('month', '').strip()
+            return f"{n} {'Month' if n == '1' else 'Months'}"
+        elif dur_str.endswith('d'):
+            n = dur_str[:-1]
+            return f"{n} {'Day' if n == '1' else 'Days'}"
+        elif dur_str.endswith('h'):
+            n = dur_str[:-1]
+            return f"{n} {'Hour' if n == '1' else 'Hours'}"
+        elif dur_str.endswith('m'):
+            n = dur_str[:-1]
+            return f"{n} {'Minute' if n == '1' else 'Minutes'}"
+        elif dur_str.endswith('y') or dur_str.endswith('yr') or dur_str == '365d':
+            return "1 Year"
+        return dur_str
+
+
 def parse_pricing_input(text: str) -> dict:
     """
     Parses flexible pricing input from admin.

@@ -5598,7 +5598,7 @@ async def _process_pass_callback(client, query):
         else:
             back_cb = "pass#method_upi"
 
-        from database import parse_duration_to_seconds, format_plan_name_friendly
+        from database import parse_duration_to_seconds
         dur_sec = parse_duration_to_seconds(dur_key, default_unit='d')
 
         if is_hi:
