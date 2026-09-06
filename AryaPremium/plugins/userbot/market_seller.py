@@ -1684,6 +1684,28 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
         valid_stories_cursor = db.db.premium_stories.find({"$or": query_filter})
         valid_stories = await valid_stories_cursor.to_list(length=1000)
 
+    # Isolate Show Store Mode: only show purchased shows belonging to this bot / platform
+    bt_doc = None
+    if hasattr(client, "me") and client.me:
+        try:
+            bt_doc = await _get_cached_bot_doc(client.me.id)
+        except Exception:
+            pass
+    bt_cfg = (bt_doc.get("config") or {}) if bt_doc else {}
+    is_show_store = (bt_cfg.get("bot_mode") == "show_store")
+    bot_platform = bt_cfg.get("platform_name")
+
+    if is_show_store:
+        filtered_valid = []
+        cfg_plat = str(bot_platform or "").strip().lower()
+        for s in valid_stories:
+            if s.get("is_show") is True:
+                s_bot_id = s.get("bot_id")
+                s_plat = str(s.get("platform") or "").strip().lower()
+                if (s_bot_id and client.me and int(s_bot_id) == int(client.me.id)) or (cfg_plat and s_plat == cfg_plat):
+                    filtered_valid.append(s)
+        valid_stories = filtered_valid
+
     stories_map = {}
     for s in valid_stories:
         stories_map[str(s['_id'])] = s
@@ -1831,7 +1853,17 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
             cb = f"mb#purchased_view_{item['story_id']}"
         kb.append([InlineKeyboardButton(s_name, callback_data=cb)])
 
-    if lang == 'hi':
+    if is_show_store:
+        plat_disp = bot_platform or "Shows"
+        if lang == 'hi':
+            title, total_txt, desc = f"⟦ मेरे {plat_disp} शोज़ ⟧", "कुल शोज़ ⟶", f"आपके द्वारा खरीदे गए {plat_disp} के सभी शोज़ नीचे उपलब्ध हैं।"
+            next_btn, prev_btn, back_btn = "आगे ❭", "❬ पीछे", "« वापस मेनू"
+            empty_txt = f"{plat_disp} का कोई खरीदा हुआ शो नहीं मिला।"
+        else:
+            title, total_txt, desc = f"⟦ 𝗠𝗬 {plat_disp.upper()} 𝗦𝗛𝗢𝗪𝗦 ⟧", "ᴛᴏᴛᴀʟ ⟶", f"𝖠𝗅𝗅 {plat_disp} 𝗌𝗁𝗈𝗐𝗌 𝗒𝗈𝗎 𝗁𝖺𝗏𝖾 𝗉𝗎𝗋𝖼𝗁𝖺𝗌𝖾𝖽 𝖺𝗋𝖾 𝗅𝗂𝗌𝗍𝖾𝖽 𝖻𝖾𝗅𝗈𝗐."
+            next_btn, prev_btn, back_btn = "𝗡𝗲𝘅𝘁 ❭", "❬ 𝗣𝗿𝗲𝘃", _sc("BACK")
+            empty_txt = f"ɴᴏ {plat_disp.upper()} ꜱʜᴏᴡꜱ ꜰᴏᴜɴᴅ."
+    elif lang == 'hi':
         title, total_txt, desc = "⟦ मेरी स्टोरीज ⟧", "कुल स्टोरी ⟶", "आपके अकाउंट में मौजूद सभी स्टोरीज नीचे दी गई हैं।"
         next_btn, prev_btn, back_btn = "आगे ❭", "❬ पीछे", "« वापस मेनू"
         empty_txt, market_btn_l = "कोई खरीद नहीं मिली।", "स्टोर खोलें"
@@ -1850,7 +1882,7 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
     kb.append([InlineKeyboardButton(back_btn, callback_data="mb#main_back")])
 
     txt_b = f"<b>{title}</b>\n\n<b>{total_txt}</b> {total}\n\n{desc}" if total > 0 else f"<b>{title}</b>\n\n<b>{total_txt}</b> 0\n\n{empty_txt}"
-    if total == 0: kb.insert(0, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
+    if total == 0 and not is_show_store: kb.insert(0, [InlineKeyboardButton(market_btn_l, callback_data="mb#main_marketplace")])
 
     if edit_query:
         await _safe_edit(edit_query.message, text=txt_b, markup=InlineKeyboardMarkup(kb))
@@ -5733,6 +5765,10 @@ async def _process_callback(client, query):
 
 
         if action == "marketplace":
+            bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+            bt_cfg_local = bt_rec.get("config", {}) or {}
+            is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
+
             platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
             PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
             for _rm in ("Other",):
@@ -5749,34 +5785,50 @@ async def _process_callback(client, query):
 
             await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": 0}})
 
-            # ── If only 1 platform, skip selection and jump directly ──
-            if len(platforms) == 1:
-                auto_plat = platforms[0]
+            # ── If in Show Store mode OR only 1 platform, skip selection and jump directly ──
+            if is_ss or len(platforms) == 1:
+                if is_ss:
+                    auto_plat = bt_cfg_local.get("platform_name") or (platforms[0] if platforms else "Story TV")
+                else:
+                    auto_plat = platforms[0]
+
                 await db.db.users.update_one(
                     {"id": user_id},
-                    {"$set": {"_mkt_plat": auto_plat, "_mkt_page": 0}}
+                    {"$set": {"_mkt_plat": auto_plat, "_mkt_page": 0, "_mkt_mode": "normal"}}
                 )
-                # Redirect: delete current home message and show stories list
                 try:
                     await query.message.delete()
                 except Exception:
                     pass
-                # Build a fake message-like object to reuse the platform → story listing path
-                # We call the same code path that runs when a platform button is pressed
-                # by triggering a direct message_handler equivalent
+
                 q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
                 q_plat = {"platform": {"$regex": f"^{re.escape(auto_plat)}$", "$options": "i"}}
                 q_find = {"$and": [q_bot, q_plat]}
+                if is_ss:
+                    q_find["is_show"] = True
+
                 PAGE_SIZE = 20
                 total_s = await db.db.premium_stories.count_documents(q_find)
+
+                # If 0 shows in show store mode
+                if total_s == 0 and is_ss:
+                    plat_title = to_mathbold(auto_plat)
+                    msg_text = (
+                        f'<b>⟦ <emoji id="5937999673510858217">📽️</emoji> {plat_title} ⟧</b>\n\n'
+                        f"<i>{'No shows available in this store yet. Please check back later!' if lang == 'en' else 'इस स्टोर में अभी कोई शो उपलब्ध नहीं है। कृपया बाद में चेक करें!'}</i>"
+                    )
+                    kb = [[_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))]]
+                    ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                    if not ok:
+                        pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                        await client.send_message(user_id, msg_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+                    return
+
                 total_pg = max(1, (total_s + PAGE_SIZE - 1) // PAGE_SIZE)
                 stories_page = await db.db.premium_stories.find(
                     q_find, {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
                 ).sort("_id", -1).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
 
-                bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
-                bt_cfg_local = bt_rec.get("config", {}) or {}
-                is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
                 item_label = ("शो" if lang == 'hi' else "Show") if is_ss else ("कहानी" if lang == 'hi' else "Story")
 
                 kb = []
@@ -5806,11 +5858,27 @@ async def _process_callback(client, query):
 
                 plat_title = to_mathbold(auto_plat)
                 pg_info = f"<i>{_sc('Page') if lang == 'en' else 'पेज'} 1/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{'Total:' if lang == 'en' else 'कुल:'} <b>{total_s}</b></i>"
+                icon_tag = '<emoji id="5937999673510858217">📽️</emoji>' if is_ss else '<emoji id="5764638872000533034">📑</emoji>'
+                tap_hint = (_sc("Tap any show below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें:") if is_ss else (_sc("Tap any story below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
                 msg_text = (
-                    f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {plat_title} ⟧</b>\n\n'
+                    f'<b>⟦ {icon_tag} {plat_title} ⟧</b>\n\n'
                     f"<blockquote expandable>{pg_info}\n"
-                    f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
+                    f"{tap_hint}</blockquote>"
                 )
+                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                if not ok:
+                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                    await client.send_message(user_id, msg_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
+                return
+
+            if not platforms:
+                msg_text = (
+                    f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> MARKETPLACE ⟧</b>\n\n'
+                    f"<i>{'No stories available in this store yet. Please check back later!' if lang == 'en' else 'इस स्टोर में अभी कोई कहानी उपलब्ध नहीं है। कृपया बाद में चेक करें!'}</i>"
+                )
+                kb = [[_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))]]
+                try: await query.message.delete()
+                except Exception: pass
                 ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
                 if not ok:
                     pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
@@ -5833,6 +5901,7 @@ async def _process_callback(client, query):
                 f"<b>{p_title}</b>\n\n{p_desc}",
                 reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
             )
+
 
 
 

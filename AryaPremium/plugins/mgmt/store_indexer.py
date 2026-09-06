@@ -21,6 +21,100 @@ logger = logging.getLogger("AryaPremiumStoreIndexer")
 PM = "html"
 
 
+def parse_duration_to_seconds(dur_str: str) -> int:
+    """Parses duration string like '1h 32m 23s' or '45m' or '01:32:23' into integer seconds."""
+    if not dur_str:
+        return 0
+    dur_clean = str(dur_str).strip()
+    hrs, mins, secs = 0, 0, 0
+    h_m = re.search(r'(\d+)\s*h(?:our|ours|r)?', dur_clean, re.I)
+    m_m = re.search(r'(\d+)\s*m(?:in|ins|inute|inutes)?', dur_clean, re.I)
+    s_m = re.search(r'(\d+)\s*s(?:ec|ecs|econd|econds)?', dur_clean, re.I)
+    if h_m: hrs = int(h_m.group(1))
+    if m_m: mins = int(m_m.group(1))
+    if s_m: secs = int(s_m.group(1))
+    if not (h_m or m_m or s_m):
+        parts = re.split(r'[:.]', dur_clean)
+        if len(parts) == 3 and all(p.strip().isdigit() for p in parts):
+            hrs, mins, secs = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2 and all(p.strip().isdigit() for p in parts):
+            mins, secs = int(parts[0]), int(parts[1])
+    return hrs * 3600 + mins * 60 + secs
+
+
+def parse_show_caption(raw_text: str, custom_format: str = None) -> dict:
+    """
+    Extracts structured show metadata (title, author, language, episodes, duration)
+    from database channel message captions.
+    Supports both custom format templates (e.g. with {title}, {author}, etc.) and smart regex matching.
+    """
+    if not raw_text:
+        return {"title": "", "author": "", "language": "", "episodes": "", "duration": "", "duration_seconds": 0}
+
+    res = {
+        "title": "",
+        "author": "",
+        "language": "",
+        "episodes": "",
+        "duration": "",
+        "duration_seconds": 0
+    }
+
+    # 1. If custom format template is supplied, attempt matching
+    if custom_format and any(tag in custom_format for tag in ["{title}", "{author}", "{language}", "{episodes}", "{duration}"]):
+        try:
+            pattern = re.escape(custom_format)
+            for tag in ["{title}", "{author}", "{language}", "{episodes}", "{duration}"]:
+                escaped_tag = re.escape(tag)
+                clean_name = tag.strip("{}")
+                pattern = pattern.replace(escaped_tag, f"(?P<{clean_name}>.+?)")
+            pattern = pattern.replace(r"\ ", r"\s+")
+            if pattern.endswith(r".+?)"):
+                pattern = pattern[:-4] + r".+)"
+            m = re.search(pattern, raw_text, flags=re.DOTALL | re.IGNORECASE)
+            if m:
+                for k, v in m.groupdict().items():
+                    if v:
+                        res[k] = v.strip()
+        except Exception as e:
+            logger.debug(f"[StoreIndexer] Custom format matching failed: {e}")
+
+    # 2. Smart regex extraction with lookahead delimiters
+    stop = r'(?=\n|\||📚|👤|🗣|🎬|⏱|📱|🖥|\b(?:Story|Title|Show|Name|Author|Writer|Language|Lang|Episodes?|Ep|Duration|Time|Length|Platform)\s*:|$)'
+
+    if not res["title"]:
+        tm = re.search(r'(?:📚\s*(?:Story|Title|Show|Name)?\s*:\s*|(?:\bStory|\bTitle)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
+        if tm:
+            res["title"] = _clean_show_title(tm.group(1).strip())
+        else:
+            res["title"] = _clean_show_title(raw_text)
+
+    if not res["author"]:
+        am = re.search(r'(?:👤\s*(?:Author|Writer)?\s*:\s*|(?:\bAuthor|\bWriter)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
+        if am:
+            res["author"] = am.group(1).strip().strip("•-—|/")
+
+    if not res["language"]:
+        lm = re.search(r'(?:🗣\s*(?:Language|Lang)?\s*:\s*|(?:\bLanguage|\bLang)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
+        if lm:
+            res["language"] = lm.group(1).strip().strip("•-—|/")
+
+    if not res["episodes"]:
+        em = re.search(r'(?:🎬\s*(?:Episodes?|Ep|Total\s*Episodes?)?\s*:\s*|(?:\bEpisodes?|\bEp)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
+        if em:
+            res["episodes"] = em.group(1).strip().strip("•-—|/")
+
+    if not res["duration"]:
+        dm = re.search(r'(?:⏱\s*(?:Duration|Length|Time)?\s*:\s*|(?:\bDuration|\bTime)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
+        if dm:
+            res["duration"] = dm.group(1).strip().strip("•-—|/")
+
+    if res["duration"]:
+        res["duration_seconds"] = parse_duration_to_seconds(res["duration"])
+
+    return res
+
+
 def _clean_show_title(raw_text: str) -> str:
     """
     Cleans raw caption/text to extract pure Show Title:
@@ -35,9 +129,9 @@ def _clean_show_title(raw_text: str) -> str:
         return ""
 
     title = first_chunk
-    title = re.sub(r'^(?:📽️|🎬|🎥|📺|🍿)?\s*(?:show|title|name)\s*:\s*', '', title, flags=re.I).strip()
+    title = re.sub(r'^(?:📽️|🎬|🎥|📺|🍿)?\s*(?:show|title|name|story)\s*:\s*', '', title, flags=re.I).strip()
     
-    strip_emojis = ["🎬", "📽️", "🎥", "📺", "🍿", "📹", "🔹", "🔸", "▫️", "▪️", "▶️", "👉", "✨", "🔥", "⚡", "🌟", "👑", "💎"]
+    strip_emojis = ["📚", "🎬", "📽️", "🎥", "📺", "🍿", "📹", "🔹", "🔸", "▫️", "▪️", "▶️", "👉", "✨", "🔥", "⚡", "🌟", "👑", "💎"]
     for emo in strip_emojis:
         if title.startswith(emo):
             title = title[len(emo):].strip()
@@ -89,9 +183,18 @@ def process_poster_image(input_path: str, target_size=(600, 720)) -> str:
         return input_path
 
 
-def build_showcase_caption(title: str, platform: str = "Story TV", genre: str = "Drama / Romance", duration: str = "Full Show", price: int = 19) -> str:
+def build_showcase_caption(
+    title: str,
+    platform: str = "Story TV",
+    genre: str = "Drama / Romance",
+    duration: str = "Full Show",
+    price: int = 19,
+    author: str = "",
+    language: str = "",
+    episodes: str = ""
+) -> str:
     """
-    Constructs the exact requested public showcase channel caption with custom emoji IDs:
+    Constructs the public showcase channel caption with custom emoji IDs:
     - 5937999673510858217 for Show / Video
     - 6026337676091726218 for Platform
     - 6024065724291488135 for Genre
@@ -99,18 +202,24 @@ def build_showcase_caption(title: str, platform: str = "Story TV", genre: str = 
     - 5904462880941545555 for Price
     """
     clean_title = _clean_show_title(title)
-    caption = (
-        f'<emoji id="5937999673510858217">📽️</emoji> <b>Show :</b> {clean_title}\n'
-        f'<emoji id="6026337676091726218">🖥</emoji> <b>Platform :</b> {platform}\n'
-        f'<emoji id="6024065724291488135">🧩</emoji> <b>Genre :</b> {genre}\n'
-        f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> {duration}\n'
-        f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> ₹{price}\n\n'
-        f"<blockquote expandable>\n"
-        f"❏ Note: This is a paid show. Access will be available after purchase.\n"
-        f"❏ नोट: यह शो फ्री नहीं है, इसे देखने के लिए खरीदना होगा।\n"
+    cap_lines = [f'<emoji id="5937999673510858217">📽️</emoji> <b>Show :</b> {clean_title}']
+    if author:
+        cap_lines.append(f'👤 <b>Author :</b> {author}')
+    if language:
+        cap_lines.append(f'🗣 <b>Language :</b> {language}')
+    if episodes:
+        cap_lines.append(f'🎬 <b>Episodes :</b> {episodes}')
+    cap_lines.extend([
+        f'<emoji id="6026337676091726218">🖥</emoji> <b>Platform :</b> {platform}',
+        f'<emoji id="6024065724291488135">🧩</emoji> <b>Genre :</b> {genre}',
+        f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> {duration}',
+        f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> ₹{price}\n',
+        f"<blockquote expandable>",
+        f"❏ Note: This is a paid show. Access will be available after purchase.",
+        f"❏ नोट: यह शो फ्री नहीं है, इसे देखने के लिए खरीदना होगा।",
         f"</blockquote>"
-    )
-    return caption
+    ])
+    return "\n".join(cap_lines)
 
 
 def build_showcase_buttons(show_id: str, store_bot_username: str, tutorial_url: str = "https://t.me/UseAryaBot") -> tuple[InlineKeyboardMarkup, list]:
@@ -166,11 +275,13 @@ async def scan_and_index_channel(
 
     current_poster_msg = None
     current_poster_title = ""
+    current_poster_meta = {}
 
     # Fetch bot document to resolve username and last scanned position
     bot_doc = await db.db.premium_bots.find_one({"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]})
     bot_cfg = (bot_doc.get("config") or {}) if bot_doc else {}
     bot_uname = bot_doc.get("username", "StoreBot") if bot_doc else "StoreBot"
+    scan_fmt = bot_cfg.get("scan_format")
 
     # Resume from last scanned position if start_msg_id wasn't manually overridden
     saved_last_id = int(bot_cfg.get("last_scanned_msg_id", 0) or 0)
@@ -215,24 +326,36 @@ async def scan_and_index_channel(
             # Case 1: Message is a Photo / Poster
             if msg.photo:
                 raw_caption = msg.caption or ""
-                poster_title = _clean_show_title(raw_caption)
+                parsed_meta = parse_show_caption(raw_caption, custom_format=scan_fmt)
+                poster_title = parsed_meta.get("title") or _clean_show_title(raw_caption)
                 if poster_title:
                     current_poster_msg = msg
                     current_poster_title = poster_title
+                    current_poster_meta = parsed_meta
 
             # Case 2: Message is a Video / Document Video
             elif msg.video or (msg.document and msg.document.mime_type and "video" in msg.document.mime_type):
                 raw_cap = msg.caption or getattr(msg.document or msg.video, 'file_name', '') or ""
-                vid_title = _clean_show_title(raw_cap)
+                vid_parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
+                vid_title = vid_parsed.get("title") or _clean_show_title(raw_cap)
                 
                 duration_sec = 0
                 if msg.video:
                     duration_sec = getattr(msg.video, 'duration', 0) or 0
                 duration_str = _format_video_duration(duration_sec)
 
-                show_title = current_poster_title or vid_title or f"Show #{msg.id}"
+                meta = current_poster_meta or vid_parsed or {}
+                show_title = meta.get("title") or current_poster_title or vid_title or f"Show #{msg.id}"
                 clean_title = _clean_show_title(show_title)
                 norm_key = _normalize_title(clean_title)
+
+                author = meta.get("author") or ""
+                language = meta.get("language") or "English"
+                episodes = meta.get("episodes") or ""
+                if meta.get("duration"):
+                    duration_str = meta.get("duration")
+                    if meta.get("duration_seconds"):
+                        duration_sec = meta.get("duration_seconds")
 
                 file_uid = getattr(msg.video or msg.document, 'file_unique_id', '')
 
@@ -275,6 +398,9 @@ async def scan_and_index_channel(
                     "story_name_en": clean_title,
                     "story_name_hi": clean_title,
                     "clean_title": norm_key,
+                    "author": author,
+                    "language": language,
+                    "episodes": episodes,
                     "platform": default_platform,
                     "genre": default_genre,
                     "duration": duration_str,
@@ -309,6 +435,7 @@ async def scan_and_index_channel(
 
                 current_poster_msg = None
                 current_poster_title = ""
+                current_poster_meta = {}
 
             if progress_callback and indexed_count % 10 == 0:
                 try: await progress_callback(indexed_count, duplicate_count)
@@ -368,7 +495,10 @@ async def publish_show_to_showcase(
             platform=show.get("platform", "Story TV"),
             genre=show.get("genre", "Drama / Romance"),
             duration=show.get("duration", "Full Show"),
-            price=show.get("price", 19)
+            price=show.get("price", 19),
+            author=show.get("author", ""),
+            language=show.get("language", ""),
+            episodes=str(show.get("episodes", "")) if show.get("episodes") else ""
         )
 
         buttons, api_buttons = build_showcase_buttons(
@@ -412,19 +542,22 @@ async def publish_show_to_showcase(
 
 
 # ── Live Auto-Poster for Database Channel Arrivals ───────────────────────────
-_pending_live_posters = {} # { channel_id: { "msg_id": msg_id, "title": title, "time": timestamp } }
+_pending_live_posters = {} # { channel_id: { "msg_id": msg_id, "title": title, "meta": meta_dict, "time": timestamp } }
 
 async def handle_live_channel_show_arrival(client: Client, message: Message):
     """
     Listens live to configured database channels.
     Auto-indexes new poster + video arrivals and auto-posts to the Showcase Channel.
+    Only active when matching bot has config.auto_index_active == True.
     """
     if not message or not message.chat:
         return
     ch_id = message.chat.id
 
+    # Strictly match Show Store bot with Auto Index ACTIVE and matching DB Channel
     matching_bot = await db.db.premium_bots.find_one({
         "config.bot_mode": "show_store",
+        "config.auto_index_active": True,
         "config.db_channel_id": ch_id
     })
     if not matching_bot:
@@ -436,15 +569,18 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
     if not target_showcase:
         return
     b_uname = matching_bot.get("username", "StoreBot")
+    scan_fmt = cfg.get("scan_format")
 
     # 1. Poster Photo arrived
     if message.photo:
         raw_cap = message.caption or ""
-        t = _clean_show_title(raw_cap)
+        parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
+        t = parsed.get("title") or _clean_show_title(raw_cap)
         if t:
             _pending_live_posters[ch_id] = {
                 "msg_id": message.id,
                 "title": t,
+                "meta": parsed,
                 "time": time.time()
             }
             logger.info(f"[LiveStoreWatcher] Cached pending poster for '{t}' (Msg: {message.id}) in DB {ch_id}")
@@ -453,15 +589,20 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
     # 2. Video arrived
     elif message.video or (message.document and message.document.mime_type and "video" in message.document.mime_type):
         raw_cap = message.caption or getattr(message.document or message.video, 'file_name', '') or ""
-        vid_title = _clean_show_title(raw_cap)
+        vid_parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
+        vid_title = vid_parsed.get("title") or _clean_show_title(raw_cap)
         
         pending = _pending_live_posters.get(ch_id)
         poster_id = message.id
+        meta = {}
         show_title = vid_title or f"Show #{message.id}"
         if pending and (time.time() - pending.get("time", 0)) < 600:
             poster_id = pending["msg_id"]
-            show_title = pending["title"] or show_title
+            meta = pending.get("meta") or {}
+            show_title = meta.get("title") or pending.get("title") or show_title
             del _pending_live_posters[ch_id]
+        if not meta:
+            meta = vid_parsed
 
         clean_t = _clean_show_title(show_title)
         norm_key = _normalize_title(clean_t)
@@ -483,6 +624,14 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
         if message.video:
             duration_sec = getattr(message.video, 'duration', 0) or 0
         duration_str = _format_video_duration(duration_sec)
+
+        author = meta.get("author") or ""
+        language = meta.get("language") or "English"
+        episodes = meta.get("episodes") or ""
+        if meta.get("duration"):
+            duration_str = meta.get("duration")
+            if meta.get("duration_seconds"):
+                duration_sec = meta.get("duration_seconds")
 
         show_id = str(uuid.uuid4())[:8]
         def_price = cfg.get("default_price", 19)
@@ -519,6 +668,9 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
             "story_name_en": clean_t,
             "story_name_hi": clean_t,
             "clean_title": norm_key,
+            "author": author,
+            "language": language,
+            "episodes": episodes,
             "platform": def_platform,
             "genre": "Drama / Romance",
             "duration": duration_str,
@@ -574,3 +726,4 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
             logger.info(f"[LiveStoreWatcher] Auto-published '{clean_t}' to Showcase Channel {target_showcase}")
         except Exception as e:
             logger.error(f"[LiveStoreWatcher] Auto-publish failed: {e}")
+

@@ -275,6 +275,26 @@ async def native_ask(bot, user_id: int, text: str, reply_markup=None, timeout: i
         _waiting_futures.pop(key, None)
         raise
 
+async def ask_user(bot, user_id: int, text: str = None, reply_markup=None, timeout: int = 60, parse_mode=None):
+    """Waits for user input. If text is provided, sends it first via native_ask."""
+    if text is not None:
+        return await native_ask(bot, user_id, text=text, reply_markup=reply_markup, timeout=timeout, parse_mode=parse_mode)
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    key = _ask_key(bot, user_id)
+
+    old = _waiting_futures.pop(key, None)
+    if old and not old.done():
+        old.cancel()
+
+    _waiting_futures[key] = fut
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        _waiting_futures.pop(key, None)
+        raise
+
+
 async def _deliver_purchased_story(bot_id: str, user_id: int, story: dict):
     """Delegates to the market_seller delivery engine after payment approval."""
     from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
@@ -359,40 +379,35 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
         from config import Config
         from database import db
 
-    channel_id = None
+    channel_id = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("PAYMENT_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    if not channel_id:
+        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: PAYMENT_LOGS_CHANNEL not configured — skipping.")
+        return
+
     target_bot_id = bot_id
+    store_bot_uname = ""
+    if bot_username:
+        store_bot_uname = bot_username.lstrip("@").strip()
+
     if not target_bot_id and order_id and hasattr(db, "db") and db.db is not None:
         try:
             order_doc = await db.db.orders.find_one({"order_id": order_id})
             if order_doc:
                 target_bot_id = order_doc.get("bot_id")
+                if not store_bot_uname and order_doc.get("bot_username"):
+                    store_bot_uname = order_doc.get("bot_username").lstrip("@").strip()
         except Exception:
             pass
 
-    if not target_bot_id and bot_username and hasattr(db, "db") and db.db is not None:
-        try:
-            b_clean = bot_username.lstrip("@").strip()
-            bot_doc = await db.db.premium_bots.find_one({"username": {"$regex": f"^{b_clean}$", "$options": "i"}})
-            if bot_doc:
-                target_bot_id = bot_doc.get("id")
-        except Exception:
-            pass
-
-    if target_bot_id and hasattr(db, "db") and db.db is not None:
+    if not store_bot_uname and target_bot_id and hasattr(db, "db") and db.db is not None:
         try:
             bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
             if bot_doc:
-                custom_ch = (bot_doc.get("config") or {}).get("log_channel")
-                if custom_ch:
-                    channel_id = custom_ch
+                store_bot_uname = bot_doc.get("username", "")
         except Exception:
             pass
 
-    if not channel_id:
-        channel_id = getattr(Config, "PAYMENT_LOGS_CHANNEL", None) or os.environ.get("PAYMENT_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
-    if not channel_id:
-        import logging; logging.getLogger(__name__).warning("[AryaLog] log_payment: PAYMENT_LOGS_CHANNEL not configured — skipping.")
-        return
+    store_bot_display = f"@{store_bot_uname}" if store_bot_uname else "@StoreBot"
 
     try:
         if order_id and hasattr(db, "db") and db.db is not None:
@@ -459,6 +474,7 @@ async def log_payment(user_id: int, user_first_name: str, s_name: str, amount, m
             f"<b>✅ PAYMENT CONFIRMED</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>❖ Order ID:</b> <code>{order_id or 'N/A'}</code>\n"
+            f"<b>❖ Store Bot:</b> {store_bot_display}\n"
             f"<b>❖ User:</b> {user_display}\n"
             f"<b>❖ Telegram ID:</b> <code>{user_id}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -483,32 +499,35 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
         from config import Config
         from database import db
 
-    channel_id = None
-    target_bot_id = bot_id
-    if not target_bot_id and bot_username and hasattr(db, "db") and db.db is not None:
-        try:
-            b_clean = bot_username.lstrip("@").strip()
-            bot_doc = await db.db.premium_bots.find_one({"username": {"$regex": f"^{b_clean}$", "$options": "i"}})
-            if bot_doc:
-                target_bot_id = bot_doc.get("id")
-        except Exception:
-            pass
-
-    if target_bot_id and hasattr(db, "db") and db.db is not None:
-        try:
-            bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
-            if bot_doc:
-                custom_ch = (bot_doc.get("config") or {}).get("log_channel")
-                if custom_ch:
-                    channel_id = custom_ch
-        except Exception:
-            pass
-
-    if not channel_id:
-        channel_id = getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
+    channel_id = getattr(Config, "DELIVERY_LOGS_CHANNEL", None) or os.environ.get("DELIVERY_LOGS_CHANNEL") or getattr(Config, "ARYA_LOGS_CHANNEL", None) or os.environ.get("ARYA_LOGS_CHANNEL")
     if not channel_id:
         import logging; logging.getLogger(__name__).warning("[AryaLog] log_delivery: DELIVERY_LOGS_CHANNEL not configured — skipping.")
         return
+
+    target_bot_id = bot_id
+    store_bot_uname = ""
+    if bot_username:
+        store_bot_uname = bot_username.lstrip("@").strip()
+
+    if not target_bot_id and order_id and hasattr(db, "db") and db.db is not None:
+        try:
+            ord_doc = await db.db.orders.find_one({"order_id": order_id})
+            if ord_doc:
+                target_bot_id = ord_doc.get("bot_id")
+                if not store_bot_uname and ord_doc.get("bot_username"):
+                    store_bot_uname = ord_doc.get("bot_username").lstrip("@").strip()
+        except Exception:
+            pass
+
+    if not store_bot_uname and target_bot_id and hasattr(db, "db") and db.db is not None:
+        try:
+            bot_doc = await db.db.premium_bots.find_one({"id": int(target_bot_id)})
+            if bot_doc:
+                store_bot_uname = bot_doc.get("username", "")
+        except Exception:
+            pass
+
+    store_bot_display = f"@{store_bot_uname}" if store_bot_uname else "@StoreBot"
 
     try:
         # Auto-resolve user profile from DB if name or username is missing/generic
@@ -553,7 +572,7 @@ async def log_delivery(bot_username: str, user_id: int, user_first_name: str, s_
             f"<b>📦 DELIVERY EVENT</b>\n"
             f"────────────────────\n"
             f"<b>Order ID:</b> <code>{order_id or 'N/A'}</code>\n"
-            f"<b>Store Bot:</b> @{bot_username or 'Unknown'}\n"
+            f"<b>Store Bot:</b> {store_bot_display}\n"
             f"<b>User:</b> {user_display}\n"
             f"<b>Telegram ID:</b> <code>{user_id}</code>\n"
             f"<b>Story:</b> {escape_html(s_name)}\n"

@@ -1211,7 +1211,9 @@ def _format_story(s: dict) -> dict | None:
         "isCompleted":  status_val == "Completed",
         "fileCount":    s.get("file_count") or (len(s.get("valid_file_ids")) if s.get("valid_file_ids") else None) or s.get("fileCount") or (abs(s.get('end_id', 0) - s.get('start_id', 0)) + 1 if s.get('end_id') and s.get('start_id') else None),
         "enable_parts": enable_parts_bool,
-        "parts":        cleaned_parts,
+        "is_show":       bool(s.get("is_show", False)),
+        "author":        s.get("author") or "",
+        "duration":      s.get("duration") or "",
         "is_must_have":  bool(s.get("is_must_have", False)),
         "show_checkout_warning": bool(s.get("show_checkout_warning", False)),
         "series_id":    str(s.get("series_id")) if s.get("series_id") else None,
@@ -6139,6 +6141,9 @@ async def get_my_purchases(telegram_id: str):
         if story_oid_list:
             story_cursor = arya_db.db.premium_stories.find({"_id": {"$in": story_oid_list}})
             async for s in story_cursor:
+                # Exclude Show Store Mode shows from Mini App Library
+                if s.get("is_show") is True:
+                    continue
                 stories_by_oid[str(s["_id"])] = s
 
         # ── BULK FETCH: premium_purchases in ONE query ──
@@ -6335,7 +6340,7 @@ async def get_my_purchases(telegram_id: str):
                 
                 try:
                     story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
-                    if story:
+                    if story and not story.get("is_show"):
                         formatted = _format_story(story)
                         if formatted:
                             formatted["story_id"] = formatted["id"]

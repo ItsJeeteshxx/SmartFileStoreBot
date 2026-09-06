@@ -274,6 +274,26 @@ async def native_ask(bot, user_id: int, text: str, reply_markup=None, timeout: i
         _waiting_futures.pop(key, None)
         raise
 
+async def ask_user(bot, user_id: int, text: str = None, reply_markup=None, timeout: int = 60, parse_mode=None):
+    """Waits for user input. If text is provided, sends it first via native_ask."""
+    if text is not None:
+        return await native_ask(bot, user_id, text=text, reply_markup=reply_markup, timeout=timeout, parse_mode=parse_mode)
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    key = _ask_key(bot, user_id)
+
+    old = _waiting_futures.pop(key, None)
+    if old and not old.done():
+        old.cancel()
+
+    _waiting_futures[key] = fut
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        _waiting_futures.pop(key, None)
+        raise
+
+
 async def _deliver_purchased_story(bot_id: str, user_id: int, story: dict):
     """Delegates to the market_seller delivery engine after payment approval."""
     from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
