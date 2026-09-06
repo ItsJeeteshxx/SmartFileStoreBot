@@ -693,13 +693,14 @@ async def cmd_grant_pass(client, message):
         exp_str = datetime.datetime.fromtimestamp(new_expiry).strftime('%d-%m-%Y %I:%M %p')
 
     pass_data = await db.get_user_unlimited_pass(target_uid)
-    tier_label = "👑 PRO PASS" if tier_input == 'pro' else ("💎 PREMIUM PASS" if tier_input == 'premium' else "⚡ BASIC PASS")
+    time_left = pass_data.get('time_left_str', dur_input)
+    tier_label = '<emoji id="5805553606635559688">👑</emoji> PRO PASS' if tier_input == 'pro' else ('<emoji id="6156730271858169904">💎</emoji> PREMIUM PASS' if tier_input == 'premium' else '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS')
     await message.reply_text(
-        f"✅ <b>Unlimited Pass Granted!</b>\n\n"
-        f"<b>User ID:</b> <code>{target_uid}</code>\n"
-        f"<b>Tier:</b> <b>{tier_label}</b>\n"
-        f"<b>Time Left:</b> <code>{pass_data.get('time_left_str', dur_input)}</code>\n"
-        f"<b>Expires At:</b> <code>{exp_str}</code>"
+        f'<emoji id="5411359377904934337">✅</emoji> <b>Unlimited Pass Granted!</b>\n\n'
+        f'<emoji id="6021683099773966917">🆔</emoji> <b>User ID:</b> <code>{target_uid}</code>\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Tier:</b> <b>{tier_label}</b>\n'
+        f'<emoji id="5807879906951960923">⏳</emoji> <b>Time Left:</b> <code>{time_left}</code>\n'
+        f'<emoji id="5807427071370075099">📅</emoji> <b>Expires At:</b> <code>{exp_str}</code>'
     )
 
 @Client.on_message(filters.command(["revokepass"]) & filters.private)
@@ -716,7 +717,7 @@ async def cmd_revoke_pass(client, message):
         return await message.reply_text("❌ Invalid User ID.")
 
     await db.revoke_user_unlimited_pass(target_uid)
-    await message.reply_text(f"✅ Unlimited Pass revoked for user <code>{target_uid}</code>.")
+    await message.reply_text(f'<emoji id="5411359377904934337">✅</emoji> Unlimited Pass revoked for user <code>{target_uid}</code>.')
 
 @Client.on_message(filters.command(["pass_status"]) & filters.private)
 async def cmd_pass_status(client, message):
@@ -738,7 +739,7 @@ async def cmd_pass_status(client, message):
     hits = await db.get_user_delivery_hits(target_uid, win_sec)
     win_friendly = format_duration_friendly(win_sec)
 
-    status_str = "🟢 ACTIVE" if pass_data['active'] else "🔴 INACTIVE / FREE"
+    status_str = '<emoji id="5411359377904934337">🟢</emoji> ACTIVE' if pass_data['active'] else '<emoji id="5774077015388852135">🔴</emoji> INACTIVE / FREE'
     exp_str = "N/A"
     if pass_data['expires_at']:
         import datetime
@@ -750,12 +751,14 @@ async def cmd_pass_status(client, message):
         except Exception:
             exp_str = datetime.datetime.fromtimestamp(pass_data['expires_at']).strftime('%d-%m-%Y %I:%M %p')
 
+    time_left = pass_data.get('time_left_str', 'None')
+    max_lim = rl_cfg.get('max_limit', 5)
     await message.reply_text(
-        f"📊 <b>User Pass & Delivery Status</b>\n\n"
-        f"<b>User ID:</b> <code>{target_uid}</code>\n"
-        f"<b>Pass Status:</b> {status_str}\n"
-        f"<b>Expires At:</b> <code>{exp_str}</code> (Time Left: {pass_data.get('time_left_str', 'None')})\n"
-        f"<b>Recent Deliveries (Past {win_friendly}):</b> {len(hits)} / {rl_cfg.get('max_limit', 5)}"
+        f'<emoji id="6032604359794104706">📊</emoji> <b>User Pass & Delivery Status</b>\n\n'
+        f'<emoji id="6021683099773966917">🆔</emoji> <b>User ID:</b> <code>{target_uid}</code>\n'
+        f'<emoji id="6007983438294949171">👑</emoji> <b>Pass Status:</b> {status_str}\n'
+        f'<emoji id="5807427071370075099">📅</emoji> <b>Expires At:</b> <code>{exp_str}</code> (Time Left: {time_left})\n'
+        f'<emoji id="5415825426633202840">⚡️</emoji> <b>Recent Deliveries (Past {win_friendly}):</b> {len(hits)} / {max_lim}'
     )
 
 

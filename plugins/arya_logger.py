@@ -477,27 +477,27 @@ async def log_pass_purchased(
     plan_display = duration_str if duration_str else (f"{days} Day(s)" if str(days).isdigit() else str(days))
     t_clean = str(tier or 'basic').strip().lower()
     if t_clean == 'pro':
-        tier_display = "👑 PRO PASS"
+        tier_display = '<emoji id="5805553606635559688">👑</emoji> PRO PASS'
     elif t_clean == 'premium':
-        tier_display = "💎 PREMIUM PASS"
+        tier_display = '<emoji id="6156730271858169904">💎</emoji> PREMIUM PASS'
     else:
-        tier_display = "⚡ BASIC PASS"
+        tier_display = '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS'
 
     cv_display = str(checkout_version or "V1").upper()
 
     text = (
-        f"<blockquote><b>UNLIMITED ACCESS PASS PURCHASED</b>\n"
+        f'<blockquote><emoji id="5224607267797606837">🎉</emoji> <b>UNLIMITED ACCESS PASS PURCHASED</b>\n'
         f"────────────────────\n"
-        f"<b>Name:</b> {_esc(user_name)}\n"
-        f"<b>User ID:</b> <code>{user_id}</code>\n"
-        f"<b>Tier:</b> <b>{tier_display}</b>\n"
-        f"<b>Checkout Version:</b> <code>{cv_display}</code>\n"
-        f"<b>Plan:</b> {plan_display} Unlimited Access\n"
-        f"<b>Amount:</b> ₹{amount:.2f}\n"
-        f"<b>Gateway:</b> {_esc(gateway)}\n"
-        f"<b>Order ID:</b> <code>{_esc(order_id)}</code>\n"
-        f"<b>Valid Until:</b> <code>{exp_str}</code>\n"
-        f"<b>Purchased At:</b> <code>{now_str}</code></blockquote>"
+        f'<emoji id="5904630315946611415">👤</emoji> <b>Name:</b> {_esc(user_name)}\n'
+        f'<emoji id="6021683099773966917">🆔</emoji> <b>User ID:</b> <code>{user_id}</code>\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Tier:</b> <b>{tier_display}</b>\n'
+        f'<emoji id="6032604359794104706">⚙️</emoji> <b>Checkout Version:</b> <code>{cv_display}</code>\n'
+        f'<emoji id="5415825426633202840">⚡️</emoji> <b>Plan:</b> {plan_display} Unlimited Access\n'
+        f'<emoji id="6030443364178992166">💰</emoji> <b>Amount:</b> ₹{amount:.2f}\n'
+        f'<emoji id="6019224342666157570">💳</emoji> <b>Gateway:</b> {_esc(gateway)}\n'
+        f'<emoji id="6023880246128810031">🆔</emoji> <b>Order ID:</b> <code>{_esc(order_id)}</code>\n'
+        f'<emoji id="5807427071370075099">📅</emoji> <b>Valid Until:</b> <code>{exp_str}</code>\n'
+        f'<emoji id="5807879906951960923">⏰</emoji> <b>Purchased At:</b> <code>{now_str}</code></blockquote>'
     )
 
     if log_channel:

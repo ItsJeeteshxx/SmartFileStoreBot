@@ -2300,13 +2300,13 @@ async def settings_query(bot, query):
     api_buttons.append([{"text": "Add Customer Pass", "callback_data": "settings#sb_rl_add_cust", "icon_custom_emoji_id": "5882207227997066107"}])
 
     buttons.append([InlineKeyboardButton("Back", callback_data="settings#sb_ratelimit")])
-    api_buttons.append([{"text": "Back", "callback_data": "settings#sb_ratelimit"}])
+    api_buttons.append([{"text": "Back", "callback_data": "settings#sb_ratelimit", "icon_custom_emoji_id": "5879857507198833579"}])
 
     text = (
         '<emoji id="5778145208411624388">👤</emoji> <b>Costumers & Subscriptions</b>\n'
         "────────────────────\n"
         f'<emoji id="5904630315946611415">👥</emoji> <b>Total Customers:</b> <code>{total_cust}</code> | <emoji id="6007983438294949171">👑</emoji> <b>Active Passes:</b> <code>{active_cust}</code>\n'
-        f'<emoji id="6021435576513730578">👑</emoji> <b>Active Pro:</b> <code>{pro_cust}</code> | <emoji id="5264895611517300926">⚡</emoji> <b>Active Basic:</b> <code>{basic_cust}</code>\n'
+        f'<emoji id="5805553606635559688">👑</emoji> <b>Active Pro:</b> <code>{pro_cust}</code> | <emoji id="5890925363067886150">⚡</emoji> <b>Active Basic:</b> <code>{basic_cust}</code>\n'
         f'<emoji id="6023880246128810031">📄</emoji> <b>Page:</b> <code>{page + 1} of {total_pages}</code>\n'
         "────────────────────"
     )
@@ -2457,7 +2457,7 @@ async def settings_query(bot, query):
     except Exception:
         u_name = f"User {target_uid}"
 
-    tier_label = "👑 PRO PASS" if tier == 'pro' else ("💎 PREMIUM PASS" if tier == 'premium' else "⚡ BASIC PASS")
+    tier_label = '<emoji id="5805553606635559688">👑</emoji> PRO PASS' if tier == 'pro' else ('<emoji id="6156730271858169904">💎</emoji> PREMIUM PASS' if tier == 'premium' else '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS')
     dur_text = (
         f'<emoji id="5807879906951960923">⏳</emoji> <b>Select Duration For User</b> <code>{target_uid}</code>\n\n'
         f"• <b>Customer:</b> {u_name}\n"
@@ -2611,10 +2611,10 @@ async def settings_query(bot, query):
 
     tier_label = '<emoji id="5805553606635559688">👑</emoji> PRO PASS' if tier == 'pro' else '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS'
     cust_msg = (
-        f'<emoji id="6267118537752450044">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
+        f'<emoji id="5411359377904934337">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
         f"• <b>Tier:</b> <b>{tier_label}</b>\n"
         f"• <b>Plan:</b> {str(dur_verb).title()} Unlimited Access Pass\n"
-        f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+        f'• <b>Status:</b> <emoji id="5411359377904934337">✅</emoji> <b>Active & Ready</b>\n\n'
         f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
     )
     sent = False
@@ -2734,13 +2734,13 @@ async def settings_query(bot, query):
 
     pass_tier = str(pass_info.get('tier', 'basic')).lower().strip()
     if pass_tier == 'pro':
-        tier_display = '<emoji id="6007983438294949171">👑</emoji> <b>PRO PASS (Unlimited Access)</b>'
+        tier_display = '<emoji id="5805553606635559688">👑</emoji> <b>PRO PASS (Unlimited Access)</b>'
         tier_short = "👑 PRO"
     elif pass_tier == 'premium':
-        tier_display = '<emoji id="6007983438294949171">💎</emoji> <b>PREMIUM PASS (Story + Bot Access)</b>'
+        tier_display = '<emoji id="6156730271858169904">💎</emoji> <b>PREMIUM PASS (Story + Bot Access)</b>'
         tier_short = "💎 PREMIUM"
     else:
-        tier_display = '<emoji id="5264895611517300926">⚡</emoji> <b>BASIC PASS (Standard Access)</b>'
+        tier_display = '<emoji id="5890925363067886150">⚡</emoji> <b>BASIC PASS (Standard Access)</b>'
         tier_short = "⚡ BASIC"
 
     if active:
@@ -2993,7 +2993,7 @@ async def settings_query(bot, query):
             {"text": "Switch to Basic", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_basic", "icon_custom_emoji_id": "5890925363067886150"},
             {"text": "Switch to Pro", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_pro", "icon_custom_emoji_id": "5805553606635559688"}
         ],
-        [{"text": "Back", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}"}]
+        [{"text": "Back", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}", "icon_custom_emoji_id": "5879857507198833579"}]
     ]
     from plugins.share_bot import send_or_edit_with_custom_icons
     sent_ok = await send_or_edit_with_custom_icons(
@@ -3074,10 +3074,10 @@ async def settings_query(bot, query):
 
     tier_label = '<emoji id="5805553606635559688">👑</emoji> PRO PASS' if cust_tier == 'pro' else '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS'
     cust_msg = (
-        f'<emoji id="6267118537752450044">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
+        f'<emoji id="5411359377904934337">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
         f"• <b>Tier:</b> <b>{tier_label}</b>\n"
         f"• <b>Plan:</b> {str(dur_verb).title()} Unlimited Access Pass\n"
-        f"• <b>Status:</b> ✅ <b>Active & Ready</b>\n\n"
+        f'• <b>Status:</b> <emoji id="5411359377904934337">✅</emoji> <b>Active & Ready</b>\n\n'
         f'<blockquote><emoji id="5850176641803753392">🎉</emoji> <i>ᴛʜᴀɴᴋ ʏᴏᴜ! ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇꜱꜱ ᴘᴀꜱꜱ ʜᴀꜱ ʙᴇᴇɴ ᴀᴄᴛɪᴠᴀᴛᴇᴅ. ᴇɴᴊᴏʏ ᴜɴʟɪᴍɪᴛᴇᴅ ɪɴꜱᴛᴀɴᴛ ᴅᴏᴡɴʟᴏᴀᴅꜱ ᴡɪᴛʜ ᴢᴇʀᴏ ʟɪᴍɪᴛꜱ!</i></blockquote>'
     )
     sent = False
@@ -6902,7 +6902,7 @@ async def admin_pass_approval_callback(bot, query):
         act_time_str = datetime.datetime.now().strftime('%d-%m-%Y %I:%M %p')
 
     admin_name = query.from_user.first_name if query.from_user else f"Admin {admin_id}"
-    tier_badge = "👑 Pro" if tier_val == 'pro' else ("💎 Premium" if tier_val == 'premium' else "⚡ Basic")
+    tier_badge = '<emoji id="5805553606635559688">👑</emoji> Pro' if tier_val == 'pro' else ('<emoji id="6156730271858169904">💎</emoji> Premium' if tier_val == 'premium' else '<emoji id="5890925363067886150">⚡</emoji> Basic')
 
     if action == 'approve':
         claimed = await db.mark_pass_order_paid_atomic(order_id, payment_details={'approved_by': admin_id, 'approved_at': time.time()})
@@ -6931,10 +6931,10 @@ async def admin_pass_approval_callback(bot, query):
         user_msg = (
             f'<emoji id="5224607267797606837">🎉</emoji> <b>Payment Approved & Pass Activated!</b>\n\n'
             f"Hey <b>{u_name}</b>, your payment screenshot for <b>{dur_verbose.title()} {tier_badge} Unlimited Pass</b> has been verified and approved by admin!\n\n"
-            f"• <b>Order ID:</b> <code>{order_id}</code>\n"
-            f"• <b>Amount:</b> ₹{amount:.2f}\n"
-            f"• <b>Valid Until:</b> <code>{exp_str}</code>\n"
-            f'• <b>Status:</b> <emoji id="5411359377904934337">🟢</emoji> Unlimited Access (No Cooldown)\n\n'
+            f'• <emoji id="6023880246128810031">🆔</emoji> <b>Order ID:</b> <code>{order_id}</code>\n'
+            f'• <emoji id="6030443364178992166">💰</emoji> <b>Amount:</b> ₹{amount:.2f}\n'
+            f'• <emoji id="5807427071370075099">📅</emoji> <b>Valid Until:</b> <code>{exp_str}</code>\n'
+            f'• <emoji id="5411359377904934337">🟢</emoji> <b>Status:</b> Unlimited Access (No Cooldown)\n\n'
             f"You can now download all stories and batch files without any cooldown or limits. Enjoy!"
         )
         target_bot_id = str(order.get('bot_id') or '')
@@ -6982,8 +6982,8 @@ async def admin_pass_approval_callback(bot, query):
         updated_caption = (
             f"{orig_caption}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ <b>APPROVED by {admin_name}</b> (<code>{admin_id}</code>)\n"
-            f"⏰ <b>Approved At:</b> <code>{act_time_str}</code>"
+            f'<emoji id="5411359377904934337">✅</emoji> <b>APPROVED by {admin_name}</b> (<code>{admin_id}</code>)\n'
+            f'<emoji id="5807879906951960923">⏰</emoji> <b>Approved At:</b> <code>{act_time_str}</code>'
         )
         try:
             if getattr(query.message, 'photo', None):
@@ -7003,7 +7003,7 @@ async def admin_pass_approval_callback(bot, query):
             {'$set': {'status': 'REJECTED', 'rejected_by': admin_id, 'rejected_at': time.time()}}
         )
         decline_user_msg = (
-            f"❌ <b>Payment Screenshot Rejected</b>\n\n"
+            f'<emoji id="5774077015388852135">❌</emoji> <b>Payment Screenshot Rejected</b>\n\n'
             f"Hey <b>{u_name}</b>, your submitted payment screenshot for Order <code>{order_id}</code> could not be verified by the admin team.\n\n"
             f"<i>Reason: Invalid or unreadable payment proof.</i>\n\n"
             f"If money was deducted from your bank, please retry or contact our support team with transaction details."
@@ -7035,8 +7035,8 @@ async def admin_pass_approval_callback(bot, query):
         updated_caption = (
             f"{orig_caption}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"❌ <b>DECLINED by {admin_name}</b> (<code>{admin_id}</code>)\n"
-            f"⏰ <b>Declined At:</b> <code>{act_time_str}</code>"
+            f'<emoji id="5774077015388852135">❌</emoji> <b>DECLINED by {admin_name}</b> (<code>{admin_id}</code>)\n'
+            f'<emoji id="5807879906951960923">⏰</emoji> <b>Declined At:</b> <code>{act_time_str}</code>'
         )
         try:
             if getattr(query.message, 'photo', None):
