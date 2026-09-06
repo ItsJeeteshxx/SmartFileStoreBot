@@ -158,7 +158,8 @@ async def _create_share_flow(bot, user_id, force_live=False):
                 kb = []
                 for b in share_bots:
                     kb.append([f"{b['name']} (@{b['username']})"])
-                kb.append(["Scan Database Channel", "⛔ Cᴀɴᴄᴇʟ"])
+                kb.append(["Scan Database Channel"])
+                kb.append(["⛔ Cᴀɴᴄᴇʟ"])
                 
                 msg = await _ask(bot, user_id, 
                     "<b>❪ SHARE LINKS: SELECT ACCOUNT ❫</b>\n\nChoose the Share Bot you want to use for link generation and delivery:",
@@ -199,7 +200,8 @@ async def _create_share_flow(bot, user_id, force_live=False):
             # ─── STEP 1.1: MULTI SHARE BOT (DUAL DELIVERY) OPTION ───
             elif step == 11:
                 markup_multi = ReplyKeyboardMarkup([
-                    ["✅ Yes, Use 2 Share Bots", "❌ No, Single Bot"],
+                    ["✅ Yes, Use 2 Share Bots"],
+                    ["❌ No, Single Bot"],
                     ["↩️ Uɴᴅᴏ", "⛔ Cᴀɴᴄᴇʟ"]
                 ], resize_keyboard=True, one_time_keyboard=True)
 

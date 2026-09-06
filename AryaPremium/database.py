@@ -624,4 +624,61 @@ class PremiumDatabase:
     async def remove_connected_bot(self, bot_id: int):
         await self.bots.delete_one({"bot_id": bot_id})
 
+    async def remove_ban(self, id):
+        uid_int = int(id)
+        ban_status = dict(
+            is_banned=False,
+            ban_reason='',
+            reason=''
+        )
+        try:
+            await self.users.update_many(
+                {'$or': [
+                    {'id': uid_int},
+                    {'id': str(uid_int)},
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)}
+                ]},
+                {
+                    '$set': {
+                        'ban_status': ban_status,
+                        'banned': False,
+                        'ban_reason': ''
+                    },
+                    '$unset': {
+                        'abuse_strike': '',
+                        'is_banned': ''
+                    }
+                }
+            )
+        except Exception:
+            pass
+
+        try:
+            await self.db.premium_bans.delete_many({
+                '$or': [
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)},
+                    {'user_id': uid_int},
+                    {'user_id': str(uid_int)}
+                ]
+            })
+        except Exception:
+            pass
+
+        try:
+            await self.db.banned_users.delete_many({
+                '$or': [
+                    {'user_id': uid_int},
+                    {'user_id': str(uid_int)},
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)}
+                ]
+            })
+        except Exception:
+            pass
+
+    async def unban_user(self, user_id):
+        return await self.remove_ban(user_id)
+
 db = PremiumDatabase()

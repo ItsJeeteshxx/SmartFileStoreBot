@@ -804,18 +804,75 @@ class Database:
         return len(docs)
     
     async def remove_ban(self, id):
+        uid_int = int(id)
         ban_status = dict(
             is_banned=False,
-            ban_reason=''
+            ban_reason='',
+            reason=''
         )
-        await self.col.update_one({'id': int(id)}, {
-            '$set': {'ban_status': ban_status},
-            '$unset': {'abuse_strike': ''}
-        }, upsert=True)
-        # Evict cache
+        # 1. Update users collection across all potential id/_id representations
+        try:
+            await self.col.update_many(
+                {'$or': [
+                    {'id': uid_int},
+                    {'id': str(uid_int)},
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)}
+                ]},
+                {
+                    '$set': {
+                        'ban_status': ban_status,
+                        'banned': False,
+                        'ban_reason': ''
+                    },
+                    '$unset': {
+                        'abuse_strike': '',
+                        'is_banned': ''
+                    }
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[remove_ban] Error updating users collection: {e}")
+
+        # 2. Delete from premium_bans collection
+        try:
+            await self.db.premium_bans.delete_many({
+                '$or': [
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)},
+                    {'user_id': uid_int},
+                    {'user_id': str(uid_int)}
+                ]
+            })
+        except Exception as e:
+            logger.warning(f"[remove_ban] Error deleting from premium_bans: {e}")
+
+        # 3. Delete from banned_users collection
+        try:
+            await self.db.banned_users.delete_many({
+                '$or': [
+                    {'user_id': uid_int},
+                    {'user_id': str(uid_int)},
+                    {'_id': uid_int},
+                    {'_id': str(uid_int)}
+                ]
+            })
+        except Exception as e:
+            logger.warning(f"[remove_ban] Error deleting from banned_users: {e}")
+
+        # 4. Evict in-memory cache
         if hasattr(self, '_ban_status_cache'):
-            self._ban_status_cache.pop(int(id), None)
-        self._invalidate_user_cache(id)
+            self._ban_status_cache.pop(uid_int, None)
+            self._ban_status_cache.pop(str(uid_int), None)
+        self._invalidate_user_cache(uid_int)
+
+        # 5. Clear in-memory abuse strikes in share_bot
+        try:
+            from plugins.share_bot import _abuse_strikes, _abuse_last_delivery
+            _abuse_strikes.pop(uid_int, None)
+            _abuse_last_delivery.pop(uid_int, None)
+        except Exception:
+            pass
     
     async def _get_user_doc(self, user_id: int) -> dict:
         import time as _t
