@@ -1,7 +1,10 @@
+import logging
 from os import environ 
 from config import Config
 import motor.motor_asyncio
 from pymongo import MongoClient
+
+logger = logging.getLogger(__name__)
 
 async def mongodb_version():
     x = MongoClient(Config.DATABASE_URI)
