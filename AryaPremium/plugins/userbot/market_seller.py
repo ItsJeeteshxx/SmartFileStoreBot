@@ -3425,7 +3425,11 @@ async def _process_start(client, message):
             story = await db.db.premium_stories.find_one({"story_id": story_id})
 
         if not story:
-            # Fallback 3: Check by normalized title
+            # Fallback 3: Story might be stored with deep_key field
+            story = await db.db.premium_stories.find_one({"deep_key": story_id})
+
+        if not story:
+            # Fallback 4: Check by normalized title
             try:
                 from plugins.mgmt.store_indexer import _normalize_title
                 norm = _normalize_title(story_id)
@@ -4354,7 +4358,7 @@ async def _process_text(client, message):
         or "request" in txt.lower()
         or "अनुरोध" in txt
     )
-    if not pending_s_id_utr and not is_any_menu_btn and bot_mode == "miniapp":
+    if not pending_s_id_utr and not is_any_menu_btn and not user.get("state") and bot_mode == "miniapp":
         return
 
     # -- UTR Payment handler: user sends their 12-digit UTR in chat --
@@ -4990,8 +4994,12 @@ async def _process_text(client, message):
             "$or": [
                 {"story_name_en": {"$regex": reg, "$options": "i"}},
                 {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                {"title": {"$regex": reg, "$options": "i"}},
+                {"clean_title": {"$regex": reg, "$options": "i"}},
                 {"story_name_en": {"$regex": reg_sub, "$options": "i"}},
-                {"story_name_hi": {"$regex": reg_sub, "$options": "i"}}
+                {"story_name_hi": {"$regex": reg_sub, "$options": "i"}},
+                {"title": {"$regex": reg_sub, "$options": "i"}},
+                {"clean_title": {"$regex": reg_sub, "$options": "i"}}
             ]
         })
 
@@ -5200,80 +5208,126 @@ async def _process_text(client, message):
         return
 
     # ── SEARCH trigger ──
-    if txt == "🔍 " + ("SEARCH" if lang=='en' else "खोजें") or txt in ("SEARCH", "खोजें", "🔎 SEARCH", "🔎 खोजें"):
+    is_search_btn = (
+        txt.strip().upper() in ("SEARCH", "SEARCH STORY", "SEARCH SHOWS", "FIND")
+        or txt.strip() in ("खोजें", "खोज", "स्टोरी खोजें", "शो खोजें")
+        or any(txt.strip().endswith(w) for w in ("SEARCH", "खोजें", "Search", "search"))
+        or ("search" in txt_lower and len(txt_lower) <= 15)
+        or ("खोज" in txt and len(txt) <= 15)
+    )
+    if is_search_btn and user.get("state") != "searching":
         try:
             await message.delete()
         except Exception:
             pass
-        await message.reply_text(
-            f'<b><emoji id="6025893082552081088">🔍</emoji> SEARCH</b>\n\n<i>Type a few words of the story name to search:</i>',
-            reply_markup=ReplyKeyboardMarkup([["« " + "CANCEL"]], resize_keyboard=True),
-            parse_mode=enums.ParseMode.HTML
-        )
-        await db.update_user(user_id, {"state": "searching"})
-        return
-
-    # ── CANCEL search ──
-    if txt == "« " + "CANCEL" or (user.get("state") == "searching" and (txt.startswith("«") or txt.lower() in ["cancel", "रद्द", "back", "वापस"])):
-        try:
-            await message.delete()
-        except Exception:
-            pass
-        await db.update_user(user_id, {"state": None})
-        m = await message.reply_text("<i>❌ Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        await asyncio.sleep(1.5)
-        try: await m.delete()
-        except: pass
-        await _send_main_menu(client, user_id, message.from_user, lang)
-        return
-
-    # ── SEARCH query matching ──
-    if user.get("state") == "searching":
-        q = txt.lower().strip()
-        if not q or len(q) < 2:
-            return await message.reply_text("<i>Please type at least 2 characters to search.</i>")
 
         bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
         bt_cfg = (bt_rec.get("config") or {}) if bt_rec else {}
         is_ss = (bt_cfg.get("bot_mode") == "show_store")
 
+        item_noun = ("show" if is_ss else "story") if lang == 'en' else ("शो" if is_ss else "कहानी")
+        title_txt = "SEARCH SHOWS" if is_ss else "SEARCH STORY"
+        if lang == 'hi':
+            title_txt = "शो खोजें" if is_ss else "कहानी खोजें"
+            prompt_txt = f"कृपया खोजने के लिए {item_noun} का नाम या कीवर्ड टाइप करें:"
+            cancel_txt = "« रद्द करें"
+        else:
+            prompt_txt = f"Please type the name or keywords of the {item_noun} to search:"
+            cancel_txt = "« CANCEL"
+
+        await db.update_user(user_id, {"state": "searching"})
+        return await message.reply_text(
+            f'<b><emoji id="6025893082552081088">🔍</emoji> {title_txt}</b>\n\n<i>{prompt_txt}</i>',
+            reply_markup=ReplyKeyboardMarkup([[cancel_txt]], resize_keyboard=True),
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    # ── CANCEL search ──
+    if user.get("state") == "searching" and (txt.startswith("«") or txt.lower().strip() in ["cancel", "रद्द", "रद्द करें", "back", "वापस", "वापस मेनू"]):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await db.update_user(user_id, {"state": None})
+        m = await message.reply_text("<i>❌ Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+        await asyncio.sleep(1.2)
+        try: await m.delete()
+        except: pass
+        return await _send_main_menu(client, user_id, message.from_user, lang)
+
+    # ── SEARCH query matching ──
+    if user.get("state") == "searching":
+        q = txt.strip()
+        if not q or len(q) < 2:
+            return await message.reply_text("<i>Please type at least 2 characters to search.</i>" if lang == 'en' else "<i>खोजने के लिए कम से कम 2 अक्षर टाइप करें।</i>", parse_mode=enums.ParseMode.HTML)
+
+        bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+        bt_cfg = (bt_rec.get("config") or {}) if bt_rec else {}
+        is_ss = (bt_cfg.get("bot_mode") == "show_store")
+
+        import re
+        reg = re.escape(q)
+        q_text_match = {
+            "$or": [
+                {"story_name_en": {"$regex": reg, "$options": "i"}},
+                {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                {"title": {"$regex": reg, "$options": "i"}},
+                {"clean_title": {"$regex": reg, "$options": "i"}},
+                {"genre": {"$regex": reg, "$options": "i"}}
+            ]
+        }
+
         if is_ss:
-            q_find = {
-                "is_show": True,
-                "$or": [{"bot_id": client.me.id}, {"platform": {"$regex": f"^{re.escape(bt_cfg.get('platform_name', ''))}$", "$options": "i"}}]
-            }
+            base_cond = {"is_show": True}
+            plat_name = bt_cfg.get("platform_name")
+            if plat_name:
+                scope_cond = {
+                    "$or": [
+                        {"bot_id": client.me.id},
+                        {"platform": {"$regex": f"^{re.escape(plat_name)}$", "$options": "i"}}
+                    ]
+                }
+                q_find = {"$and": [base_cond, scope_cond, q_text_match]}
+            else:
+                q_find = {"$and": [base_cond, q_text_match]}
         else:
             show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
             ss_plats = [b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")]
-            q_find = {
-                "is_show": {"$ne": True},
-                "$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]
-            }
+            mode_cond = {"is_show": {"$ne": True}}
             if ss_plats:
-                q_find["platform"] = {"$nin": ss_plats}
+                mode_cond["platform"] = {"$nin": ss_plats}
+            bot_scope = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+            q_find = {"$and": [mode_cond, bot_scope, q_text_match]}
 
-        all_stories = await db.db.premium_stories.find(q_find).to_list(length=None)
-        matches = [s for s in all_stories if q in s.get("story_name_en", "").lower() or q in s.get("story_name_hi", "").lower()]
+        matches = await db.db.premium_stories.find(q_find).sort("_id", -1).limit(50).to_list(length=50)
+        if not matches:
+            fallback_find = {"$and": [{"is_show": True} if is_ss else {"is_show": {"$ne": True}}, q_text_match]}
+            matches = await db.db.premium_stories.find(fallback_find).sort("_id", -1).limit(50).to_list(length=50)
+
         if not matches:
             item_noun = ("shows" if is_ss else "stories") if lang == 'en' else ("शो" if is_ss else "कहानियाँ")
-            return await message.reply_text(f"<i>{'No ' + item_noun + ' matched'} '<b>{txt}</b>'. {'Try different keywords.' if lang == 'en' else 'कृपया अन्य कीवर्ड आज़माएँ।'}</i>")
+            no_match_txt = f"<i>No {item_noun} matched '<b>{txt}</b>'. Try different keywords.</i>" if lang == 'en' else f"<i>'<b>{txt}</b>' से मिलता कोई {item_noun} नहीं मिला। कृपया अन्य कीवर्ड आज़माएँ।</i>"
+            return await message.reply_text(no_match_txt, parse_mode=enums.ParseMode.HTML)
 
         if len(matches) == 1:
             await db.update_user(user_id, {"state": None})
             return await _show_story_profile(client, user_id, matches[0], lang)
 
         kb = []
+        MNL = 22
         for idx, s in enumerate(matches, start=1):
-            s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
+            s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or ('Show' if is_ss else 'Story')
+            if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
             btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
             if idx <= 5:
                 kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
             else:
                 kb.append([_kb_btn(btn_txt)])
-        kb.append([_kb_btn("« " + ("CANCEL" if lang == 'en' else "रद्द करें"))])
+        cancel_btn_txt = "« " + ("CANCEL" if lang == 'en' else "रद्द करें")
+        kb.append([_kb_btn(cancel_btn_txt)])
 
         title_res = _sc("Search Results") if lang == 'en' else "खोज परिणाम"
-        tap_info = _sc("Tap on a story name from the keyboard menu below to view its details and purchase options.") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे दिए गए कीबोर्ड मेनू से किसी कहानी पर टैप करें।"
+        tap_info = (_sc("Tap on any show below to view details and purchase:") if is_ss else _sc("Tap on any story below to view details and purchase:")) if lang == 'en' else ("विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें:" if is_ss else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
         msg_text = (
             f'<b><emoji id="5258274739041883702">🔍</emoji> {title_res} ({len(matches)})</b>\n\n'
             f"<blockquote expandable>{tap_info}</blockquote>"
@@ -10491,12 +10545,25 @@ async def _process_inline_query(client, inline_query):
 
         if is_ss:
             mode_cond = {"is_show": True}
+            ss_plat = bt_cfg.get("platform_name")
+            if ss_plat:
+                q_bot = {
+                    "$or": [
+                        {"bot_id": bot_id},
+                        {"platform": {"$regex": f"^{re.escape(ss_plat)}$", "$options": "i"}}
+                    ]
+                }
+            elif bot_id:
+                q_bot = {"$or": [{"bot_id": bot_id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+            else:
+                q_bot = None
         else:
             show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
             ss_plats = [b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")]
             mode_cond = {"is_show": {"$ne": True}}
             if ss_plats:
                 mode_cond["platform"] = {"$nin": ss_plats}
+            q_bot = {"$or": [{"bot_id": bot_id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]} if bot_id else None
 
         import re
         q_cond = None
@@ -10506,6 +10573,8 @@ async def _process_inline_query(client, inline_query):
                 "$or": [
                     {"story_name_en": {"$regex": reg, "$options": "i"}},
                     {"story_name_hi": {"$regex": reg, "$options": "i"}},
+                    {"title": {"$regex": reg, "$options": "i"}},
+                    {"clean_title": {"$regex": reg, "$options": "i"}},
                     {"platform": {"$regex": reg, "$options": "i"}},
                     {"genre": {"$regex": reg, "$options": "i"}}
                 ]
@@ -10531,16 +10600,16 @@ async def _process_inline_query(client, inline_query):
 
         for idx, s in enumerate(stories):
             s_id = str(s['_id'])
-            s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Unknown Story'))
+            s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or ('Show' if s.get('is_show') else 'Story')
             platform = s.get('platform', 'Unknown')
-            episodes = s.get('episodes', 'Unknown')
+            episodes = s.get('episodes') or s.get('total_episodes') or 'Unknown'
             price = int(s.get('price', 0))
             thumb = _resolve_story_thumb_url(s)
 
             item_type_label = "Show" if s.get("is_show") else "Story"
             desc_text = f"{platform} • {episodes} eps • ₹{price}"
 
-            start_cmd = f"/start s_{s.get('deep_key') or s_id}" if s.get("is_show") else f"/start story_{s_id}"
+            start_cmd = f"/start story_{s_id}"
 
             article_kwargs = {
                 "id": f"{s_id}_{idx}",
