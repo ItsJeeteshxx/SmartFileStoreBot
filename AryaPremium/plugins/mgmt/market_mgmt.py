@@ -3609,43 +3609,59 @@ async def _add_story_flow(client, user_id):
                     await client.send_message(user_id, "<i>Uploading image to Cloudflare R2 & store bot...</i>")
                     try:
                         from plugins.userbot.market_seller import market_clients
-                        from r2_helper import upload_image_to_r2
-                        dl = await client.download_media(msg_img.photo.file_id)
+                        try:
+                            from AryaPremium.r2_helper import upload_image_to_r2
+                        except ImportError:
+                            from r2_helper import upload_image_to_r2
 
+                        dl = await client.download_media(msg_img.photo.file_id)
                         clean_name = sj.get("story_name_en") or sj.get("story_name_hi") or "story"
-                        r2_url = await upload_image_to_r2(dl, clean_title=clean_name)
-                        if r2_url:
-                            sj["poster_url"] = r2_url
-                            sj["banner_url"] = r2_url
-                            sj["image_url"] = r2_url
-                            sj["image"] = r2_url
-                            sj["cover"] = r2_url
+                        
+                        cdn_url = await upload_image_to_r2(dl, clean_title=clean_name)
+                        if not cdn_url:
+                            try:
+                                from AryaPremium.utils import upload_to_catbox
+                            except ImportError:
+                                from utils import upload_to_catbox
+                            cdn_url = await upload_to_catbox(dl)
+
+                        if cdn_url:
+                            sj["poster_url"] = cdn_url
+                            sj["banner_url"] = cdn_url
+                            sj["image_url"] = cdn_url
+                            sj["image"] = cdn_url
+                            sj["cover"] = cdn_url
+                            sj["poster"] = cdn_url
+                            sj["banner"] = cdn_url
                         else:
-                            from utils import upload_to_catbox
-                            catbox_url = await upload_to_catbox(dl)
-                            if catbox_url:
-                                sj["poster_url"] = catbox_url
-                                sj["banner_url"] = catbox_url
-                                sj["image_url"] = catbox_url
-                                sj["image"] = catbox_url
-                                sj["cover"] = catbox_url
+                            sj["image"] = msg_img.photo.file_id
+                            sj["poster"] = msg_img.photo.file_id
+                            sj["banner"] = msg_img.photo.file_id
+                        
+                        sj["poster_file_id"] = msg_img.photo.file_id
 
                         store_cli = market_clients.get(str(sj["bot_id"]))
-                        if store_cli and not sj.get("poster_url"):
+                        if store_cli and not cdn_url:
                             try:
                                 ul = await store_cli.send_photo(user_id, photo=dl)
                                 sj["image"] = ul.photo.file_id
+                                sj["poster"] = ul.photo.file_id
                             except Exception:
                                 pass
 
                         try:
-                            import os; os.remove(dl)
+                            if os.path.exists(dl): os.remove(dl)
                         except Exception: pass
                     except Exception as e:
                         logger.warning(f"[AddStory] Image upload error: {e}")
                         sj["image"] = msg_img.photo.file_id
+                        sj["poster"] = msg_img.photo.file_id
+                        sj["banner"] = msg_img.photo.file_id
+                        sj["poster_file_id"] = msg_img.photo.file_id
                 else:
                     sj["image"] = None
+                    sj["poster"] = None
+                    sj["banner"] = None
                 step = 8
                 continue
 
@@ -4143,44 +4159,64 @@ async def _edit_story_flow(client, user_id, s_id, action):
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"description_te": msg.text.strip()}})
         elif action == "image":
             if getattr(msg, 'photo', None):
-                await client.send_message(user_id, "<i>Uploading image to store bot and CDN...</i>")
+                await client.send_message(user_id, "<i>Uploading image to Cloudflare R2 & store bot...</i>")
                 try:
                     from plugins.userbot.market_seller import market_clients
-                    from utils import upload_to_catbox
-                    store_cli = market_clients.get(str(story.get("bot_id")))
+                    try:
+                        from AryaPremium.r2_helper import upload_image_to_r2
+                    except ImportError:
+                        from r2_helper import upload_image_to_r2
+
                     dl = await client.download_media(msg.photo.file_id)
+                    clean_name = story.get("story_name_en") or story.get("story_name_hi") or "story"
                     
-                    catbox_url = await upload_to_catbox(dl)
+                    cdn_url = await upload_image_to_r2(dl, clean_title=clean_name)
+                    if not cdn_url:
+                        try:
+                            from AryaPremium.utils import upload_to_catbox
+                        except ImportError:
+                            from utils import upload_to_catbox
+                        cdn_url = await upload_to_catbox(dl)
+
                     updates = {}
-                    if catbox_url:
-                        updates["poster_url"] = catbox_url
-                        updates["image_url"] = catbox_url
-                        
-                    if store_cli:
+                    if cdn_url:
+                        updates["poster_url"] = cdn_url
+                        updates["banner_url"] = cdn_url
+                        updates["image_url"] = cdn_url
+                        updates["image"] = cdn_url
+                        updates["cover"] = cdn_url
+                        updates["poster"] = cdn_url
+                        updates["banner"] = cdn_url
+                    else:
+                        updates["image"] = msg.photo.file_id
+                        updates["poster"] = msg.photo.file_id
+                        updates["banner"] = msg.photo.file_id
+                    
+                    updates["poster_file_id"] = msg.photo.file_id
+
+                    store_cli = market_clients.get(str(story.get("bot_id")))
+                    if store_cli and not cdn_url:
                         try:
                             ul = await store_cli.send_photo(user_id, photo=dl)
                             updates["image"] = ul.photo.file_id
                             updates["poster"] = ul.photo.file_id
                             updates["banner"] = ul.photo.file_id
                         except Exception:
-                            updates["image"] = msg.photo.file_id
-                            updates["poster"] = msg.photo.file_id
-                            updates["banner"] = msg.photo.file_id
-                    else:
-                        updates["image"] = msg.photo.file_id
-                        updates["poster"] = msg.photo.file_id
-                        updates["banner"] = msg.photo.file_id
-                    
+                            pass
+
                     await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": updates})
                     try:
-                        import os; os.remove(dl)
+                        import os
+                        if os.path.exists(dl): os.remove(dl)
                     except Exception:
                         pass
                 except Exception as e:
+                    logger.warning(f"[EditStory] Image upload error: {e}")
                     await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {
                         "image": msg.photo.file_id,
                         "poster": msg.photo.file_id,
-                        "banner": msg.photo.file_id
+                        "banner": msg.photo.file_id,
+                        "poster_file_id": msg.photo.file_id
                     }})
             else:
                 back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]])

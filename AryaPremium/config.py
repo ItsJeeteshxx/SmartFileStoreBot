@@ -97,3 +97,10 @@ class Config:
     REFUND_POLICY_URL = _env("REFUND_POLICY_URL", "")
     OXAPAY_KEY = _env("OXAPAY_KEY", "")  # OxaPay merchant key (empty = disabled)
     OXAPAY_ENV = _env("OXAPAY_ENV", "production")  # 'sandbox' or 'production'
+
+    # Cloudflare R2 Configuration (Story & Show Banners CDN)
+    R2_ACCOUNT_ID       = _env("R2_ACCOUNT_ID", "d738aa13a7944050a7edb60cc5cd91bb")
+    R2_ACCESS_KEY_ID    = _env("R2_ACCESS_KEY_ID", "") or _env("R2_ACCESS_KEY", "")
+    R2_SECRET_ACCESS_KEY = _env("R2_SECRET_ACCESS_KEY", "") or _env("R2_SECRET_KEY", "")
+    R2_BUCKET_NAME      = _env("R2_BUCKET_NAME", "arya-images") or _env("R2_BUCKET", "arya-images")
+    R2_CUSTOM_DOMAIN    = _env("R2_CUSTOM_DOMAIN", "") or _env("R2_DOMAIN", "https://pub-d738aa13a7944050a7edb60cc5cd91bb.r2.dev")

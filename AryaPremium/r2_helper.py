@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import sys
 import uuid
 import asyncio
 import logging
@@ -8,10 +9,16 @@ from PIL import Image
 
 logger = logging.getLogger("AryaR2Helper")
 
+curr_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(curr_dir)
+if curr_dir not in sys.path:
+    sys.path.insert(0, curr_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+
 def _inject_env_if_needed():
     """Ensures R2 credentials from any .env or config.env are active."""
-    curr_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(curr_dir)
     for p in [
         os.path.join(curr_dir, ".env"),
         os.path.join(parent_dir, ".env"),
@@ -28,11 +35,13 @@ def _inject_env_if_needed():
                             k, v = line.split("=", 1)
                             k = k.strip()
                             v = v.strip().strip("'").strip('"')
-                            os.environ.setdefault(k, v)
+                            if v and (not os.environ.get(k) or not os.environ[k].strip()):
+                                os.environ[k] = v
             except Exception:
                 pass
 
 _inject_env_if_needed()
+
 
 def _get_r2_config():
     _inject_env_if_needed()
@@ -55,6 +64,19 @@ def _get_r2_config():
     return r2_account_id, r2_access_key, r2_secret_key, r2_bucket, r2_domain
 
 
+async def _fallback_catbox(raw_bytes: bytes, filename: str = "banner.webp") -> str:
+    """Helper to upload to Catbox CDN if Cloudflare R2 is unavailable or fails."""
+    try:
+        try:
+            from AryaPremium.utils import upload_to_catbox
+        except ImportError:
+            from utils import upload_to_catbox
+        return await upload_to_catbox(raw_bytes, filename=filename) or ""
+    except Exception as e:
+        logger.debug(f"[R2] Catbox fallback error: {e}")
+        return ""
+
+
 async def upload_image_to_r2(
     img_input,
     width: int = None,
@@ -66,7 +88,8 @@ async def upload_image_to_r2(
 ) -> str:
     """
     Optimizes image (accepts bytes, filepath str, PathLike, or BytesIO) to WebP and uploads to Cloudflare R2.
-    Returns permanent CDN URL on success, or empty string on failure.
+    If R2 credentials are not set or R2 upload fails, automatically falls back to Catbox CDN.
+    Returns permanent public CDN URL on success, or empty string on failure.
     """
     if not img_input:
         return ""
@@ -92,11 +115,6 @@ async def upload_image_to_r2(
     if not raw_bytes:
         return ""
 
-    r2_account_id, r2_access_key, r2_secret_key, r2_bucket, r2_domain = _get_r2_config()
-    if not (r2_account_id and r2_access_key and r2_secret_key and r2_bucket):
-        logger.warning(f"[R2] Cloudflare R2 credentials missing in environment (Account: {bool(r2_account_id)}, Key: {bool(r2_access_key)}, Secret: {bool(r2_secret_key)}, Bucket: {r2_bucket}).")
-        return ""
-
     def process_data(data):
         img = Image.open(io.BytesIO(data))
         if img.mode == "CMYK":
@@ -117,41 +135,59 @@ async def upload_image_to_r2(
         processed_bytes = await asyncio.to_thread(process_data, raw_bytes)
     except Exception as e:
         logger.error(f"[R2] Image optimization error: {e}")
-        return ""
+        processed_bytes = raw_bytes
 
-    import boto3
-    def upload_r2():
-        try:
-            s3 = boto3.client(
-                "s3",
-                endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
-                aws_access_key_id=r2_access_key,
-                aws_secret_access_key=r2_secret_key,
-                region_name="auto"
-            )
-            ext = format.lower()
-            content_type = f"image/{ext}"
-            filename = f"{uuid.uuid4().hex}.{ext}"
-            
-            s3.put_object(
-                Bucket=r2_bucket,
-                Key=filename,
-                Body=processed_bytes,
-                ContentType=content_type
-            )
-            
-            if r2_domain:
-                domain = r2_domain.strip("/")
-                if not domain.startswith("http"):
-                    domain = "https://" + domain
-                res_url = f"{domain}/{filename}"
-            else:
-                res_url = f"https://pub-{r2_account_id[:32]}.r2.dev/{filename}"
+    r2_account_id, r2_access_key, r2_secret_key, r2_bucket, r2_domain = _get_r2_config()
+    ext = format.lower()
+    fn_name = f"{uuid.uuid4().hex}.{ext}"
 
-            logger.info(f"[R2] Successfully uploaded {len(processed_bytes)} bytes ➔ {res_url}")
-            return res_url
-        except Exception as e:
-            logger.error(f"[R2] Cloudflare R2 S3 put_object error: {e}")
-            return ""
+    # If Cloudflare R2 credentials are present, attempt R2 upload first
+    if r2_account_id and r2_access_key and r2_secret_key and r2_bucket:
+        import boto3
+        def upload_r2():
+            try:
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                    aws_access_key_id=r2_access_key,
+                    aws_secret_access_key=r2_secret_key,
+                    region_name="auto"
+                )
+                content_type = f"image/{ext}"
+                s3.put_object(
+                    Bucket=r2_bucket,
+                    Key=fn_name,
+                    Body=processed_bytes,
+                    ContentType=content_type
+                )
+                
+                if r2_domain:
+                    domain = r2_domain.strip("/")
+                    if not domain.startswith("http"):
+                        domain = "https://" + domain
+                    res_url = f"{domain}/{fn_name}"
+                else:
+                    res_url = f"https://pub-{r2_account_id[:32]}.r2.dev/{fn_name}"
 
-    return await asyncio.to_thread(upload_r2)
+                logger.info(f"[R2] Successfully uploaded to Cloudflare R2 ➔ {res_url}")
+                return res_url
+            except Exception as e:
+                logger.error(f"[R2] Cloudflare R2 put_object error: {e}")
+                return ""
+
+        r2_result = await asyncio.to_thread(upload_r2)
+        if r2_result:
+            return r2_result
+
+    # Fallback to Catbox CDN so the banner is NEVER left without a public CDN URL!
+    logger.info(f"[R2] Falling back to Catbox CDN for image upload...")
+    catbox_result = await _fallback_catbox(processed_bytes, filename=fn_name)
+    if catbox_result:
+        logger.info(f"[R2] Uploaded image to Catbox CDN ➔ {catbox_result}")
+        return catbox_result
+
+    return ""
+
+
+# Alias for backward compatibility
+upload_image_to_cdn = upload_image_to_r2

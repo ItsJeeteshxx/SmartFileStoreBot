@@ -731,16 +731,44 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
 
 
 
-async def upload_to_catbox(file_path):
-    import aiohttp, os
-    async with aiohttp.ClientSession() as session:
-        data = aiohttp.FormData()
-        data.add_field('reqtype', 'fileupload')
-        data.add_field('userhash', '')
-        data.add_field('fileToUpload', open(file_path, 'rb'), filename=os.path.basename(file_path))
-        async with session.post('https://catbox.moe/user/api.php', data=data) as resp:
-            if resp.status == 200:
-                return await resp.text()
+async def upload_to_catbox(file_or_bytes, filename: str = "poster.webp") -> Optional[str]:
+    """Uploads file path or bytes to Catbox.moe CDN."""
+    import aiohttp, os, io
+    file_obj = None
+    close_file = False
+    try:
+        if isinstance(file_or_bytes, (bytes, bytearray)):
+            file_obj = io.BytesIO(file_or_bytes)
+            fname = filename
+        elif hasattr(file_or_bytes, 'read'):
+            file_obj = file_or_bytes
+            fname = filename
+        elif isinstance(file_or_bytes, (str, os.PathLike)):
+            p_str = str(file_or_bytes)
+            if not os.path.exists(p_str):
+                return None
+            file_obj = open(p_str, 'rb')
+            fname = os.path.basename(p_str)
+            close_file = True
+        else:
+            return None
+
+        async with aiohttp.ClientSession() as session:
+            data = aiohttp.FormData()
+            data.add_field('reqtype', 'fileupload')
+            data.add_field('userhash', '')
+            data.add_field('fileToUpload', file_obj, filename=fname)
+            async with session.post('https://catbox.moe/user/api.php', data=data, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+                if resp.status == 200:
+                    url = (await resp.text()).strip()
+                    if url.startswith("http"):
+                        return url
+    except Exception as e:
+        logger.debug(f"[Catbox] Upload error: {e}")
+    finally:
+        if close_file and file_obj:
+            try: file_obj.close()
+            except Exception: pass
     return None
 
 
@@ -843,18 +871,28 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
         
     valid_ids = sorted(list(set(valid_ids)))
 
-    # If poster bytes were found and story has no R2 URL, upload to R2
+    # If poster bytes were found and story has no public CDN URL, upload to R2 / Catbox
     current_poster = str(story_doc.get("poster_url") or story_doc.get("image") or "")
-    if discovered_poster_bytes and ("r2.dev" not in current_poster and "r2.cloudflarestorage" not in current_poster):
+    if discovered_poster_bytes and ("r2.dev" not in current_poster and "r2.cloudflarestorage" not in current_poster and not current_poster.startswith("http")):
         try:
-            from r2_helper import upload_image_to_r2
-            r2_url = await upload_image_to_r2(discovered_poster_bytes, width=600, height=600, format="WEBP", quality=80)
+            try:
+                from AryaPremium.r2_helper import upload_image_to_r2
+            except ImportError:
+                from r2_helper import upload_image_to_r2
+            
+            clean_title = story_doc.get("story_name_en") or story_doc.get("title") or "story"
+            r2_url = await upload_image_to_r2(discovered_poster_bytes, width=600, height=720, format="WEBP", quality=85, clean_title=clean_title)
+            if not r2_url:
+                r2_url = await upload_to_catbox(discovered_poster_bytes)
             if r2_url:
                 updates_poster = {
                     "poster_url": r2_url,
                     "banner_url": r2_url,
+                    "image_url": r2_url,
                     "image": r2_url,
                     "cover": r2_url,
+                    "poster": r2_url,
+                    "banner": r2_url,
                     "r2_migrated": True
                 }
                 story_doc.update(updates_poster)
@@ -900,13 +938,16 @@ async def scan_and_index_story(client, story_doc: dict, save_to_db: bool = True,
         "valid_file_ids": valid_ids,
         "file_count": len(valid_ids),
     }
-    p_url = story_doc.get("poster_url") or story_doc.get("image") or story_doc.get("cover") or story_doc.get("banner_url")
+    p_url = story_doc.get("poster_url") or story_doc.get("banner_url") or story_doc.get("image_url") or story_doc.get("image") or story_doc.get("cover")
     if p_url:
-        updates["poster_url"] = story_doc.get("poster_url") or p_url
-        updates["banner_url"] = story_doc.get("banner_url") or p_url
-        updates["image"] = story_doc.get("image") or p_url
-        updates["cover"] = story_doc.get("cover") or p_url
-        if "r2.dev" in str(p_url) or "r2.cloudflarestorage" in str(p_url):
+        updates["poster_url"] = p_url
+        updates["banner_url"] = p_url
+        updates["image_url"] = p_url
+        updates["image"] = p_url
+        updates["cover"] = p_url
+        updates["poster"] = p_url
+        updates["banner"] = p_url
+        if "r2.dev" in str(p_url) or "r2.cloudflarestorage" in str(p_url) or "catbox.moe" in str(p_url):
             updates["r2_migrated"] = True
     if updated_parts:
         updates["parts"] = updated_parts
