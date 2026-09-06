@@ -1291,13 +1291,12 @@ async def settings_query(bot, query):
         f'<emoji id="6021435576513730578">👑</emoji> <b>Pass UI Version:-</b> {uiver_str}\n'
         f'<emoji id="6021789619257874157">🔢</emoji> <b>Free User Limit:-</b> <code>{max_limit} links | {win_verbose}</code>\n'
         f'<emoji id="6023843687367190257">📋</emoji> <b>Purchase Logs:-</b> <code>{pass_log_str}</code>\n'
-        f'<emoji id="6023985764885338464">⚠️</emoji> <b>Rate Limit Hit Logs:-</b> <code>{hit_log_str}</code>\n'
-        f'<emoji id="6021435576513730578">👑</emoji> <b>Pass Plans:-</b> {pricing_str}\n'
-        f"────────────────────\n"
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Pass Plans:-</b> {pricing_str}\n\n'
         f'<emoji id="5904462880941545555">💰</emoji> <b>Pass Revenue & Sales Analytics:</b>\n'
+        f"────────────────────\n"
         f'<emoji id="5807800879553715710">📈</emoji> <b>Total Sales:</b> <code>{tot_sales} passes</code> | <b>Total Revenue:</b> <code>₹{tot_rev:.2f}</code>\n'
         f'<emoji id="6034898821517940846">⏰</emoji> <b>Today\'s Sales:</b> <code>{today_sales} passes</code> | <b>Today\'s Revenue:</b> <code>₹{today_rev:.2f}</code>\n'
-        f'<emoji id="6021435576513730578">👑</emoji> <b>Tiers Sold:</b> ⚡ Basic: {b_sales} | 👑 Pro: {p_sales} | 💎 Premium: {prem_sales}\n'
+        f'<emoji id="6021435576513730578">👑</emoji> <b>Tiers Sold:</b> <emoji id="5890925363067886150">⚡</emoji> Basic: {b_sales} | <emoji id="5805553606635559688">👑</emoji> Pro: {p_sales}\n'
         f'<emoji id="6032594876506312598">👥</emoji> <b>Active Customers:</b> <code>{active_cust} / {total_cust}</code>\n'
         f"────────────────────\n"
         f'<emoji id="5904359114531675993">💳</emoji> <b>Gateways:-</b> UPI: {upi_status} | Cashfree: {cf_status} | OxaPay: {oxa_status}'
@@ -2368,33 +2367,26 @@ async def settings_query(bot, query):
     try: await resp.delete()
     except Exception: pass
 
-    # Step 1: Select Plan Tier (Basic, Pro, Premium)
+    # Step 1: Select Plan Tier (Basic or Pro)
     tier_text = (
-        f'<emoji id="6021435576513730578">👑</emoji> <b>Select Plan Tier For Customer</b>\n\n'
+        f'<emoji id="5805553606635559688">👑</emoji> <b>Select Plan Tier For Customer</b>\n\n'
         f"• <b>Name:</b> {u_name}\n"
         f"• <b>User ID:</b> <code>{target_uid}</code>\n\n"
         "Please choose which pass tier to grant to this user:\n\n"
-        "• <emoji id=\"5264895611517300926\">⚡</emoji> <b>Basic Pass:</b> Standard delivery pass with rate limit bypass.\n"
-        "• <emoji id=\"6007983438294949171\">👑</emoji> <b>Pro Pass:</b> Unlimited fast downloads with high priority & VIP access.\n"
-        "• <emoji id=\"6007983438294949171\">💎</emoji> <b>Premium Pass:</b> Full pass including Storyfi Bot & Mini App access."
+        '• <emoji id="5890925363067886150">⚡</emoji> <b>Basic Pass:</b> Standard delivery pass with rate limit bypass.\n'
+        '• <emoji id="5805553606635559688">👑</emoji> <b>Pro Pass:</b> Unlimited fast downloads with high priority & VIP access.'
     )
     tier_buttons = [
         [
             InlineKeyboardButton("⚡ Basic Pass", callback_data=f"settings#sb_rl_gtier_{target_uid}_basic"),
             InlineKeyboardButton("👑 Pro Pass", callback_data=f"settings#sb_rl_gtier_{target_uid}_pro")
         ],
-        [
-            InlineKeyboardButton("💎 Premium Pass", callback_data=f"settings#sb_rl_gtier_{target_uid}_premium")
-        ],
         [InlineKeyboardButton("Back", callback_data="settings#sb_rl_cust_0")]
     ]
     api_tier_buttons = [
         [
-            {"text": "Basic Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_basic", "icon_custom_emoji_id": "5264895611517300926"},
-            {"text": "Pro Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_pro", "icon_custom_emoji_id": "6007983438294949171"}
-        ],
-        [
-            {"text": "Premium Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_premium", "icon_custom_emoji_id": "6007983438294949171"}
+            {"text": "Basic Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_basic", "icon_custom_emoji_id": "5890925363067886150"},
+            {"text": "Pro Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_pro", "icon_custom_emoji_id": "5805553606635559688"}
         ],
         [{"text": "Back", "callback_data": "settings#sb_rl_cust_0"}]
     ]
@@ -2420,31 +2412,24 @@ async def settings_query(bot, query):
         pass
 
     tier_text = (
-        f'<emoji id="6021435576513730578">👑</emoji> <b>Select Plan Tier For Customer</b>\n\n'
+        f'<emoji id="5805553606635559688">👑</emoji> <b>Select Plan Tier For Customer</b>\n\n'
         f"• <b>Name:</b> {u_name}\n"
         f"• <b>User ID:</b> <code>{target_uid}</code>\n\n"
         "Please choose which pass tier to grant to this user:\n\n"
-        "• <emoji id=\"5264895611517300926\">⚡</emoji> <b>Basic Pass:</b> Standard delivery pass with rate limit bypass.\n"
-        "• <emoji id=\"6007983438294949171\">👑</emoji> <b>Pro Pass:</b> Unlimited fast downloads with high priority & VIP access.\n"
-        "• <emoji id=\"6007983438294949171\">💎</emoji> <b>Premium Pass:</b> Full pass including Storyfi Bot & Mini App access."
+        '• <emoji id="5890925363067886150">⚡</emoji> <b>Basic Pass:</b> Standard delivery pass with rate limit bypass.\n'
+        '• <emoji id="5805553606635559688">👑</emoji> <b>Pro Pass:</b> Unlimited fast downloads with high priority & VIP access.'
     )
     tier_buttons = [
         [
             InlineKeyboardButton("⚡ Basic Pass", callback_data=f"settings#sb_rl_gtier_{target_uid}_basic"),
             InlineKeyboardButton("👑 Pro Pass", callback_data=f"settings#sb_rl_gtier_{target_uid}_pro")
         ],
-        [
-            InlineKeyboardButton("💎 Premium Pass", callback_data=f"settings#sb_rl_gtier_{target_uid}_premium")
-        ],
         [InlineKeyboardButton("Back", callback_data="settings#sb_rl_cust_0")]
     ]
     api_tier_buttons = [
         [
-            {"text": "Basic Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_basic", "icon_custom_emoji_id": "5264895611517300926"},
-            {"text": "Pro Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_pro", "icon_custom_emoji_id": "6007983438294949171"}
-        ],
-        [
-            {"text": "Premium Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_premium", "icon_custom_emoji_id": "6007983438294949171"}
+            {"text": "Basic Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_basic", "icon_custom_emoji_id": "5890925363067886150"},
+            {"text": "Pro Pass", "callback_data": f"settings#sb_rl_gtier_{target_uid}_pro", "icon_custom_emoji_id": "5805553606635559688"}
         ],
         [{"text": "Back", "callback_data": "settings#sb_rl_cust_0"}]
     ]
@@ -2585,23 +2570,33 @@ async def settings_query(bot, query):
     except Exception:
         u_name = f"User {target_uid}"
 
+    admin_id = query.from_user.id if query.from_user else 0
+    admin_name = query.from_user.first_name if query.from_user else f"Admin {admin_id}"
+    admin_un = f"@{query.from_user.username}" if (query.from_user and query.from_user.username) else ""
+    admin_info = f"{admin_name} ({admin_un})" if admin_un else f"{admin_name} (ID: {admin_id})"
+    order_id = f"MANUAL_{tier.upper()}_{int(time.time())}"
+
     new_expiry = await db.grant_user_unlimited_pass(target_uid, dur, user_name=u_name, tier=tier)
     
     # Save manual order in database pass_orders collection for full tracking
     try:
         await db.pass_orders.insert_one({
-            'order_id': f"MANUAL_{tier.upper()}_{int(time.time())}",
+            'order_id': order_id,
             'user_id': target_uid,
             'user_name': u_name,
             'plan': dur,
             'duration': dur,
+            'duration_key': dur,
             'amount': 0.0,
             'tier': tier,
-            'gateway': f'Admin Manual Grant ({tier.title()})',
+            'gateway': f'Admin Manual Grant ({admin_info})',
             'status': 'PAID',
             'created_at': time.time(),
             'paid_at': time.time(),
-            'expires_at': new_expiry
+            'expires_at': new_expiry,
+            'admin_id': admin_id,
+            'admin_name': admin_name,
+            'granted_by': admin_info
         })
     except Exception:
         pass
@@ -2614,7 +2609,7 @@ async def settings_query(bot, query):
     except Exception:
         dur_verb = dur
 
-    tier_label = "👑 PRO PASS" if tier == 'pro' else ("💎 PREMIUM PASS" if tier == 'premium' else "⚡ BASIC PASS")
+    tier_label = '<emoji id="5805553606635559688">👑</emoji> PRO PASS' if tier == 'pro' else '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS'
     cust_msg = (
         f'<emoji id="6267118537752450044">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
         f"• <b>Tier:</b> <b>{tier_label}</b>\n"
@@ -2651,10 +2646,10 @@ async def settings_query(bot, query):
             user_name=u_name,
             duration_str=str(dur_verb).title(),
             amount=0.0,
-            order_id=f"MANUAL_{tier.upper()}_{int(time.time())}",
+            order_id=order_id,
             expiry_ts=new_expiry,
             log_channel=log_ch,
-            gateway=f"Admin Manual Grant ({tier.title()})",
+            gateway=f"Admin Manual Grant ({admin_info})",
             tier=tier
         ))
     except Exception as l_err:
@@ -2991,18 +2986,12 @@ async def settings_query(bot, query):
             InlineKeyboardButton("⚡ Switch to Basic", callback_data=f"settings#sb_rl_dotier_{cust_uid}_{page}_basic"),
             InlineKeyboardButton("👑 Switch to Pro", callback_data=f"settings#sb_rl_dotier_{cust_uid}_{page}_pro")
         ],
-        [
-            InlineKeyboardButton("💎 Switch to Premium", callback_data=f"settings#sb_rl_dotier_{cust_uid}_{page}_premium")
-        ],
         [InlineKeyboardButton("Back", callback_data=f"settings#sb_rl_u_{cust_uid}_{page}")]
     ]
     api_st_buttons = [
         [
-            {"text": "Switch to Basic", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_basic", "icon_custom_emoji_id": "5264895611517300926"},
-            {"text": "Switch to Pro", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_pro", "icon_custom_emoji_id": "6007983438294949171"}
-        ],
-        [
-            {"text": "Switch to Premium", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_premium", "icon_custom_emoji_id": "6007983438294949171"}
+            {"text": "Switch to Basic", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_basic", "icon_custom_emoji_id": "5890925363067886150"},
+            {"text": "Switch to Pro", "callback_data": f"settings#sb_rl_dotier_{cust_uid}_{page}_pro", "icon_custom_emoji_id": "5805553606635559688"}
         ],
         [{"text": "Back", "callback_data": f"settings#sb_rl_u_{cust_uid}_{page}"}]
     ]
@@ -3035,9 +3024,45 @@ async def settings_query(bot, query):
     dur = parts[4]
     page = int(parts[5]) if len(parts) > 5 else 0
 
+    admin_id = query.from_user.id if query.from_user else 0
+    admin_name = query.from_user.first_name if query.from_user else f"Admin {admin_id}"
+    admin_un = f"@{query.from_user.username}" if (query.from_user and query.from_user.username) else ""
+    admin_info = f"{admin_name} ({admin_un})" if admin_un else f"{admin_name} (ID: {admin_id})"
+
     cur_pass = await db.get_user_unlimited_pass(cust_uid)
     cust_tier = cur_pass.get('tier', 'basic') if cur_pass else 'basic'
     new_expiry = await db.grant_user_unlimited_pass(cust_uid, dur, tier=cust_tier)
+
+    order_id = f"MANUAL_{cust_tier.upper()}_{int(time.time())}"
+    u_name = f"User {cust_uid}"
+    try:
+        chat_obj = await bot.get_chat(cust_uid)
+        u_name = chat_obj.first_name or u_name
+    except Exception:
+        pass
+
+    # Save manual order in database pass_orders collection for full tracking
+    try:
+        await db.pass_orders.insert_one({
+            'order_id': order_id,
+            'user_id': cust_uid,
+            'user_name': u_name,
+            'plan': dur,
+            'duration': dur,
+            'duration_key': dur,
+            'amount': 0.0,
+            'tier': cust_tier,
+            'gateway': f'Admin Manual Grant ({admin_info})',
+            'status': 'PAID',
+            'created_at': time.time(),
+            'paid_at': time.time(),
+            'expires_at': new_expiry,
+            'admin_id': admin_id,
+            'admin_name': admin_name,
+            'granted_by': admin_info
+        })
+    except Exception:
+        pass
 
     # Notify customer
     dur_verb = dur
@@ -3047,7 +3072,7 @@ async def settings_query(bot, query):
     except Exception:
         dur_verb = dur
 
-    tier_label = "👑 PRO PASS" if cust_tier == 'pro' else ("💎 PREMIUM PASS" if cust_tier == 'premium' else "⚡ BASIC PASS")
+    tier_label = '<emoji id="5805553606635559688">👑</emoji> PRO PASS' if cust_tier == 'pro' else '<emoji id="5890925363067886150">⚡</emoji> BASIC PASS'
     cust_msg = (
         f'<emoji id="6267118537752450044">🟢</emoji> <b>Unlimited Access Pass Activated!</b>\n\n'
         f"• <b>Tier:</b> <b>{tier_label}</b>\n"
@@ -3081,13 +3106,13 @@ async def settings_query(bot, query):
         from plugins.arya_logger import log_pass_purchased
         asyncio.create_task(log_pass_purchased(
             user_id=cust_uid,
-            user_name=f"User {cust_uid}",
+            user_name=u_name,
             duration_str=str(dur_verb).title(),
             amount=0.0,
-            order_id=f"ADMIN_GRANT_{int(time.time())}",
+            order_id=order_id,
             expiry_ts=new_expiry,
             log_channel=log_ch,
-            gateway=f"Admin Action ({cust_tier.title()})",
+            gateway=f"Admin Manual Grant ({admin_info})",
             tier=cust_tier
         ))
     except Exception as l_err:

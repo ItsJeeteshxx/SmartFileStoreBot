@@ -501,13 +501,47 @@ async def log_pass_purchased(
     )
 
     if log_channel:
-        bot = _get_bot()
-        if bot:
+        try:
+            target_chat_id = int(str(log_channel).strip())
+            candidate_bots = []
+            primary_bot = _get_bot()
+            if primary_bot:
+                candidate_bots.append(primary_bot)
             try:
-                await bot.send_message(chat_id=int(log_channel), text=text, parse_mode=enums.ParseMode.HTML)
-                return
-            except Exception as e:
-                logger.warning(f"[AryaLog] Failed to send pass purchase log to custom channel {log_channel}: {e}")
+                from plugins.share_bot import share_clients
+                if share_clients:
+                    for s_cli in share_clients.values():
+                        if s_cli and s_cli not in candidate_bots:
+                            candidate_bots.append(s_cli)
+            except Exception:
+                pass
+
+            for b in candidate_bots:
+                try:
+                    await b.send_message(
+                        chat_id=target_chat_id,
+                        text=text,
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                    return
+                except Exception as send_err:
+                    err_str = str(send_err).upper()
+                    if any(k in err_str for k in ("PEER_ID_INVALID", "CHANNEL_INVALID", "CHAT_NOT_FOUND")):
+                        try:
+                            from plugins.utils import safe_resolve_peer
+                            await safe_resolve_peer(b, target_chat_id)
+                            await b.send_message(
+                                chat_id=target_chat_id,
+                                text=text,
+                                parse_mode=enums.ParseMode.HTML,
+                                disable_web_page_preview=True
+                            )
+                            return
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.warning(f"[AryaLog] Failed to send pass purchase log to custom channel {log_channel}: {e}")
 
     # Fallback to general share bot log channel if no dedicated pass log channel
     await _send(text, 'ch_share')
@@ -544,13 +578,47 @@ async def log_rate_limit_reached(
     )
 
     if log_channel:
-        bot = _get_bot()
-        if bot:
+        try:
+            target_chat_id = int(str(log_channel).strip())
+            candidate_bots = []
+            primary_bot = _get_bot()
+            if primary_bot:
+                candidate_bots.append(primary_bot)
             try:
-                await bot.send_message(chat_id=int(log_channel), text=text, parse_mode=enums.ParseMode.HTML)
-                return
-            except Exception as e:
-                logger.warning(f"[AryaLog] Failed to send rate limit log to custom channel {log_channel}: {e}")
+                from plugins.share_bot import share_clients
+                if share_clients:
+                    for s_cli in share_clients.values():
+                        if s_cli and s_cli not in candidate_bots:
+                            candidate_bots.append(s_cli)
+            except Exception:
+                pass
+
+            for b in candidate_bots:
+                try:
+                    await b.send_message(
+                        chat_id=target_chat_id,
+                        text=text,
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True
+                    )
+                    return
+                except Exception as send_err:
+                    err_str = str(send_err).upper()
+                    if any(k in err_str for k in ("PEER_ID_INVALID", "CHANNEL_INVALID", "CHAT_NOT_FOUND")):
+                        try:
+                            from plugins.utils import safe_resolve_peer
+                            await safe_resolve_peer(b, target_chat_id)
+                            await b.send_message(
+                                chat_id=target_chat_id,
+                                text=text,
+                                parse_mode=enums.ParseMode.HTML,
+                                disable_web_page_preview=True
+                            )
+                            return
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.warning(f"[AryaLog] Failed to send rate limit log to custom channel {log_channel}: {e}")
 
     # Fallback to general share bot log channel if configured
     await _send(text, 'ch_share')

@@ -1898,6 +1898,7 @@ class Database:
             'oxapay_env': 'production',
             'oxapay_enabled': True,
             'upi_enabled': True,
+            'upi_mode': 'auto',
             'pass_ui_version': 'v1',
             'v2_gateway': 'cashfree',
             'pro_prices': {'1d': 25, '3d': 50, '7d': 90, '1mo': 399, '6mo': 1799},
@@ -1937,8 +1938,8 @@ class Database:
             'enabled', 'max_limit', 'window_seconds', 'window_hours', 'log_channel',
             'rate_limit_log_channel', 'prices', 'cashfree_app_id', 'cashfree_secret_key',
             'cashfree_env', 'upi_id', 'upi_name', 'gmail_user', 'gmail_app_password',
-            'oxapay_key', 'oxapay_env', 'oxapay_enabled', 'upi_enabled', 'pass_ui_version',
-            'v2_gateway', 'pro_prices', 'premium_prices', 'hidden_plans'
+            'oxapay_key', 'oxapay_env', 'oxapay_enabled', 'upi_enabled', 'upi_mode',
+            'pass_ui_version', 'v2_gateway', 'pro_prices', 'premium_prices', 'hidden_plans'
         }
         filtered = {k: v for k, v in kwargs.items() if k in _VALID}
         if not filtered:
@@ -2054,6 +2055,9 @@ class Database:
             gw_raw = str(o.get('gateway') or '').lower()
             if 'oxa' in oid.lower() or 'crypto' in gw_raw or 'oxapay' in gw_raw:
                 gw_display = "Crypto ( Oxapay )"
+            elif 'admin' in gw_raw or 'manual grant' in gw_raw or o.get('granted_by') or 'manual' in oid.lower():
+                admin_grant = o.get('granted_by') or o.get('admin_name') or "Admin"
+                gw_display = f"Manual Grant ({admin_grant})"
             elif 'upi' in oid.lower() or 'upi' in gw_raw:
                 gw_display = "Manual UPI"
             else:
@@ -2064,6 +2068,8 @@ class Database:
 
             if raw_status in ('PAID', 'SUCCESS', 'COMPLETED'):
                 final_status = 'PAID'
+            elif raw_status == 'REVOKED':
+                final_status = 'REVOKED'
             elif raw_status in ('FAILED', 'CANCELLED', 'EXPIRED'):
                 final_status = 'FAILED'
             else:
@@ -2074,7 +2080,7 @@ class Database:
                 else:
                     final_status = 'PENDING'
 
-            if paid_only and final_status != 'PAID':
+            if paid_only and final_status not in ('PAID', 'REVOKED'):
                 continue
 
             plan_val = o.get('duration_key') or o.get('plan') or o.get('duration') or '1d'
@@ -2087,7 +2093,8 @@ class Database:
                 'tier': tier_val,
                 'status': final_status,
                 'time': c_time,
-                'gateway': gw_display
+                'gateway': gw_display,
+                'granted_by': o.get('granted_by') or o.get('admin_name') or ''
             })
 
         for u in utrs:
@@ -2270,10 +2277,16 @@ class Database:
     async def revoke_user_unlimited_pass(self, user_id: int):
         """Revoke user's unlimited pass while preserving history and records."""
         import time
+        now = time.time()
         await self.unlimited_passes.update_one(
             {'user_id': int(user_id)},
-            {'$set': {'expires_at': 0.0, 'revoked_at': time.time()}},
+            {'$set': {'expires_at': 0.0, 'revoked_at': now, 'revoked': True}},
             upsert=False
+        )
+        # Mark all paid pass orders as REVOKED so revenue is deducted from sales analytics
+        await self.pass_orders.update_many(
+            {'user_id': int(user_id), 'status': 'PAID'},
+            {'$set': {'status': 'REVOKED', 'revoked_at': now}}
         )
 
     async def create_pass_order(self, order_dict: dict):
