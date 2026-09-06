@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional, Union, List, Dict, Any
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, RPCError
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
