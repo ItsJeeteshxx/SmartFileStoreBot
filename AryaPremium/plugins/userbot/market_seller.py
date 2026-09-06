@@ -1504,18 +1504,17 @@ async def _send_reply_keyboard_bot_api(
     api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
 
     api_keyboard = []
+    valid_kb_keys = ("text", "request_users", "request_chat", "request_contact", "request_location", "request_poll", "web_app")
     for row in keyboard:
         api_row = []
         for btn in row:
             if isinstance(btn, dict):
-                api_row.append(btn)
+                # Only keep valid Telegram Bot API KeyboardButton fields to avoid 400 Bad Request
+                api_row.append({k: v for k, v in btn.items() if k in valid_kb_keys})
             elif isinstance(btn, str):
                 api_row.append({"text": btn})
             elif hasattr(btn, "text"):
-                d = {"text": btn.text}
-                if hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id:
-                    d["icon_custom_emoji_id"] = str(btn.icon_custom_emoji_id)
-                api_row.append(d)
+                api_row.append({"text": btn.text})
         api_keyboard.append(api_row)
 
     payload = {
@@ -2283,7 +2282,7 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
 
     # ── 2. Check direct file_id candidates ──
     fid_candidates = []
-    for k in ("image", "poster", "banner"):
+    for k in ("poster_file_id", "image", "poster", "banner", "thumbnail"):
         val = story.get(k)
         if val and isinstance(val, str) and not val.startswith("http") and not val.startswith("/"):
             if val not in fid_candidates: fid_candidates.append(val)
@@ -2336,6 +2335,23 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
                             return True
             except Exception:
                 continue
+
+    # ── 3.5. Channel Media Fallback (Directly download poster from DB channel if R2/external skipped) ──
+    chan_id = story.get("channel_id") or story.get("source")
+    p_msg_id = story.get("poster_msg_id") or (story.get("parts", [{}])[0].get("msg_id") if story.get("parts") else None)
+    if chan_id and p_msg_id:
+        try:
+            p_msg = await client.get_messages(chan_id, p_msg_id)
+            if p_msg and (p_msg.photo or getattr(p_msg.video, 'thumbs', None)):
+                dl_b = await client.download_media(p_msg, in_memory=True)
+                if dl_b:
+                    raw_b = bytes(dl_b.getbuffer())
+                    if raw_b:
+                        ok = await _send_story_photo_bytes(client, user_id, raw_b, caption, reply_markup, story)
+                        if ok:
+                            return True
+        except Exception as e:
+            logger.debug(f"Channel media download fallback error: {e}")
 
     # ── 4. Final Text Fallback ──
     if has_custom_emoji:
@@ -2429,13 +2445,19 @@ async def _show_story_profile(client, user_id, story, lang):
         # ── Show Store OTT Format (No paid note in bot preview) ──
         dur = story.get('duration', 'Full Show')
         p_val = story.get('price', 19)
-        txt = (
-            f'<emoji id="5937999673510858217">📽️</emoji> <b>Show :</b> {to_mathbold(name)}\n'
-            f'<emoji id="6026337676091726218">🖥</emoji> <b>Platform :</b> <b>{platform}</b>\n'
-            f'<emoji id="6024065724291488135">🧩</emoji> <b>Genre :</b> <b>{genre}</b>\n'
-            f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> <b>{dur}</b>\n'
-            f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> <b>₹{p_val}</b>\n'
-        )
+        author = story.get('author', '')
+        language = story.get('language', '')
+        episodes_val = story.get('episodes') or story.get('total_episodes') or (len(story.get('parts', [])) if story.get('parts') else '1')
+        cap_lines = [f'<emoji id="5937999673510858217">📽️</emoji> <b>Show :</b> {to_mathbold(name)}']
+        if author:
+            cap_lines.append(f'<emoji id="6021487472603568286">👤</emoji> <b>Author :</b> <b>{author}</b>')
+        if language:
+            cap_lines.append(f'<emoji id="6030768072296502910">🌐</emoji> <b>Language :</b> <b>{language}</b>')
+        cap_lines.append(f'<emoji id="5807622114424924272">🎬</emoji> <b>Episodes :</b> <b>{episodes_val}</b>')
+        if dur and dur != '0s' and dur != '0':
+            cap_lines.append(f'<emoji id="5807622114424924272">🎬</emoji> <b>Duration :</b> <b>{dur}</b>')
+        cap_lines.append(f'<emoji id="5904462880941545555">💰</emoji> <b>Price :</b> <b>₹{p_val}</b>\n')
+        txt = "\n".join(cap_lines)
     else:
         header_txt = (
             f'<b><emoji id="5465432711218863135">♨️</emoji> Story:</b> {to_mathbold(name)}\n'
@@ -2471,10 +2493,13 @@ async def _show_story_profile(client, user_id, story, lang):
         txt = header_txt.replace(to_mathbold(desc_full), to_mathbold(safe_desc))
         
     demo_btn = "डेमो फ़ाइलें देखें" if lang == "hi" else "View Demo Files"
+    if story.get('is_show'):
+        p_val = story.get('price', 19)
+        confirm_btn = f"Buy Now (₹{p_val})" if lang != 'hi' else f"अभी खरीदें (₹{p_val})"
     kb = [
-        [_ikb(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}", icon_custom_emoji_id="6273749318717412886")],
+        [_ikb(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}", icon_custom_emoji_id="6030664675253820292" if story.get('is_show') else "6273749318717412886")],
         [_ikb(demo_btn, callback_data=f"mb#demo#{str(story['_id'])}", icon_custom_emoji_id="5305388752162539722")],
-        [InlineKeyboardButton(back_btn, callback_data="mb#return_main")]
+        [_ikb(back_btn, callback_data="mb#return_main", icon_custom_emoji_id="5774077015388852135")]
     ]
     markup = InlineKeyboardMarkup(kb)
 
@@ -2489,7 +2514,7 @@ async def _show_story_profile(client, user_id, story, lang):
 
 async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
     if lang == 'hi':
-        tc_title = "<b>⟦ नियम और शर्तें ⟧</b>"
+        tc_title = '<b>⟦ <emoji id="5764638872000533034">📑</emoji> नियम और शर्तें ⟧</b>'
         tc_subtitle = "खरीदने से पहले, कृपया निम्नलिखित पढ़ें और सहमत हों:"
         missing_title = "• <b>गायब एपिसोड</b>"
         missing_desc = "सार्वजनिक रूप से जारी न होने पर 3-4 एपिसोड अनुपलब्ध हो सकते हैं। ऐसा होने पर हम अपनी तरफ से कहानी की कीमत कम रखते हैं। यदि वे एपिसोड हमें बाद में मिलते हैं, तो उन्हें आपके वर्तमान एपिसोड्स में जोड़ दिया जाएगा। यदि 4 से अधिक एपिसोड गायब हैं, तो कृपया सपोर्ट से संपर्क करें।"
@@ -2505,7 +2530,7 @@ async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
         iaadnsa_btn = "IAADNSA"
         back_btn = "‹ वापस"
     else:
-        tc_title = "<b>⟦ 𝗧𝗘𝗥𝗠𝗦 & 𝗖𝗢𝗡𝗗𝗜𝗧𝗜𝗢𝗡𝗦 ⟧</b>"
+        tc_title = '<b>⟦ <emoji id="5764638872000533034">📑</emoji> 𝗧𝗘𝗥𝗠𝗦 & 𝗖𝗢𝗡𝗗𝗜𝗧𝗜𝗢𝗡𝗦 ⟧</b>'
         tc_subtitle = "𝖡𝖾𝖿𝗈𝗋𝖾 𝗉𝗎𝗋𝖼𝗁𝖺𝗌𝗂𝗇𝗀, 𝗉𝗅𝖾𝖺𝗌𝖾 𝗋𝖾𝖺𝖽 𝖺𝗇𝖽 𝖺𝗀𝗋𝖾𝖾 𝗍𝗈 𝗍𝗁𝖾 𝖿𝗈𝗅𝗅𝗈𝗐𝗂𝗇𝗀:"
         missing_title = "• <b>𝗠𝗶𝘀𝘀𝗶𝗻𝗴 𝗘𝗽𝗶𝘀𝗼𝗱𝗲𝘀</b>"
         missing_desc = "3-4 episodes may be missing if not publicly released. In such cases, we keep the story price lower from our side. If we find those episodes later, they will be automatically added to your current episodes. If more than 4 episodes are missing, please contact support."
@@ -2527,7 +2552,7 @@ async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
     s_obj = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)}, {"story_name_hi": 1, "story_name_en": 1})
     s_name = s_obj.get(f'story_name_{lang}', s_obj.get('story_name_en', 'Unknown')) if s_obj else 'Unknown'
 
-    user_details = f'👤 <b>User:</b> {full_name} ({uname_str}) | <b>ID:</b> <code>{user_id}</code>\n<emoji id="6023962911364357003">📖</emoji> <b>Story:</b> {s_name}\n'
+    user_details = f'<emoji id="6021487472603568286">👤</emoji> <b>User:</b> {full_name} ({uname_str}) | <b>ID:</b> <code>{user_id}</code>\n<emoji id="6023962911364357003">📖</emoji> <b>Story:</b> {s_name}\n'
 
     tc_text = (
         f"{tc_title}\n\n"
@@ -2542,9 +2567,9 @@ async def _show_tc(client, user_id, story_id, lang='en', from_user=None):
 
     kb = [
         [_ikb(accept_btn, callback_data=f"mb#tc_accept_{story_id}", icon_custom_emoji_id="6273749318717412886"),
-         InlineKeyboardButton(reject_btn, callback_data="mb#tc_reject")],
+         _ikb(reject_btn, callback_data="mb#tc_reject", icon_custom_emoji_id="5774077015388852135")],
         [_ikb(iaadnsa_btn, callback_data=f"mb#tc_iaadnsa_{story_id}", icon_custom_emoji_id="6273749318717412886"),
-         InlineKeyboardButton(back_btn, callback_data=f"mb#view_{story_id}")]
+         _ikb(back_btn, callback_data=f"mb#view_{story_id}", icon_custom_emoji_id="5774077015388852135")]
     ]
     from pyrogram import enums
     await client.send_message(user_id, tc_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -2738,7 +2763,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
         title = "⟦ सुरक्षित चेकआउट ⟧"
         item_lbl = "आइटम"
         price_lbl = "कुल कीमत"
-        rzp_title = "✅ ऑटोमैटिक पेमेंट (Razorpay)"
+        rzp_title = '<emoji id="6273749318717412886">✅</emoji> ऑटोमैटिक पेमेंट (Razorpay)'
         rzp_desc = "• <b>फायदे:</b> तत्काल एक्सेस (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> UPI, डेबिट कार्ड, वॉलेट, नेट बैंकिंग।\n• <b>वेरिफिकेशन:</b> पेमेंट सफल होते ही अपने आप।"
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> मैनुअल पेमेंट (Manual UPI)'
         upi_desc = "• <b>प्रोसेस:</b> पे करें -> स्क्रीनशॉट भेजें -> एडमिन चेक करेगा।\n• <b>पेमेंट मोड:</b> केवल UPI ऐप्स (PhonePe, GPay, etc.)।\n• <b>वेरिफिकेशन:</b> इसमें 5-10 मिनट का समय लग सकता है।"
@@ -2750,7 +2775,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
         title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
         item_lbl = "Item"
         price_lbl = "Total Price"
-        rzp_title = "✅ 𝗔𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆)"
+        rzp_title = '<emoji id="6273749318717412886">✅</emoji> 𝗔𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆)'
         rzp_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> UPI, Debit Card, Wallets, Net Banking.\n• <b>Verification:</b> Automatically upon successful payment."
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗠𝗮𝗻𝘂𝗮𝗹 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>Process:</b> Pay -> Send Screenshot -> Admin Verify.\n• <b>Modes:</b> Only UPI Apps (PhonePe, GPay, etc.).\n• <b>Verification:</b> Manual (Takes 5-10 minutes)."
@@ -2836,7 +2861,7 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
 
         
 
-    kb.append([InlineKeyboardButton(back_btn, callback_data="mb#return_main")])
+    kb.append([_ikb(back_btn, callback_data="mb#return_main", icon_custom_emoji_id="5774077015388852135")])
 
     markup = InlineKeyboardMarkup(kb)
 
@@ -2844,7 +2869,28 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
 
     IMG_URL = "https://files.catbox.moe/4ud7fx.png"
 
-    # Delete previous message as we are replacing text with an image
+    # Fast In-Place Edit if called from CallbackQuery on an existing photo message
+    if not is_msg and getattr(msg_or_query, "message", None) and getattr(msg_or_query.message, "photo", None):
+        try:
+            ok = await _send_or_edit_seller_bot_api(
+                client=client,
+                chat_id=user_id,
+                text=txt,
+                markup=markup,
+                message_id=msg_or_query.message.id
+            )
+            if ok:
+                return
+            await msg_or_query.message.edit_caption(
+                caption=txt,
+                reply_markup=markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+        except Exception as edit_err:
+            logger.debug(f"[Checkout FastEdit V1] in-place caption edit fallback: {edit_err}")
+
+    # Delete previous message as fallback before sending new photo
     try:
         if is_msg:
             await msg_or_query.delete()
@@ -2889,10 +2935,10 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>प्रक्रिया:</b> किसी भी UPI ऐप से भुगतान करें → 12-अंकों का UTR दर्ज करें → ऑटो-वेरिफाई।\n• <b>माध्यम:</b> PhonePe, GPay, Paytm, BHIM आदि।\n• <b>सत्यापन:</b> स्वचालित सत्यापन (1-2 मिनट)।"
         
-        cf_title = "💳 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)"
+        cf_title = '<emoji id="6030410254276106984">💳</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)'
         cf_desc = "• <b>लाभ:</b> तुरंत एक्सेस, 100% सुरक्षित पेमेंट गेटवे।\n• <b>माध्यम:</b> कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, UPI (GPay, PhonePe, Paytm), वॉलेट्स।\n• <b>सत्यापन:</b> तत्काल ऑटोमैटिक वेरिफिकेशन और डिलीवरी।"
         
-        crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
+        crypto_title = '<emoji id="5904462880941545555">💰</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)'
         crypto_desc = "• <b>लाभ:</b> तुरंत एक्सेस (कोई प्रतीक्षा नहीं), 24/7 उपलब्ध।\n• <b>माध्यम:</b> BTC, USDT, ETH, LTC और 300+ अन्य कॉइन्स।\n• <b>सत्यापन:</b> भुगतान के तुरंत बाद स्वचालित।"
         
         pay_upi_btn = "Pay Via UPI"
@@ -2908,10 +2954,10 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>Process:</b> Pay directly using any UPI App → Enter 12-digit UTR → Auto Verify.\n• <b>Modes:</b> PhonePe, GPay, Paytm, BHIM, etc.\n• <b>Verification:</b> Automatic verification (Takes 1-2 mins)."
         
-        cf_title = "💳 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)"
+        cf_title = '<emoji id="6030410254276106984">💳</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)'
         cf_desc = "• <b>Benefits:</b> Instant Access, 100% Secure Payment Gateway.\n• <b>Modes:</b> Cards (Credit/Debit), NetBanking, UPI (GPay, PhonePe, Paytm), Wallets.\n• <b>Verification:</b> Instant automated verification & immediate delivery."
         
-        crypto_title = "₿ 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)"
+        crypto_title = '<emoji id="5904462880941545555">💰</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)'
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
         
         pay_upi_btn = "Pay Via UPI"
@@ -2990,12 +3036,33 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         kb.append([_ikb(pay_cf_btn, callback_data=f"mb#pay2#cashfree#{str(story['_id'])}", icon_custom_emoji_id="6104751980641525812")])
 
     if show_crypto:
-        kb.append([InlineKeyboardButton(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}")])
+        kb.append([_ikb(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}", icon_custom_emoji_id="5904462880941545555")])
 
-    kb.append([InlineKeyboardButton(back_btn, callback_data=f"mb#view_{str(story['_id'])}")])
+    kb.append([_ikb(back_btn, callback_data=f"mb#view_{str(story['_id'])}", icon_custom_emoji_id="5774077015388852135")])
     markup = InlineKeyboardMarkup(kb)
 
     IMG_URL = "https://files.catbox.moe/a6xw61.png"
+
+    # Fast In-Place Edit if called from CallbackQuery on an existing photo message
+    if not is_msg and getattr(msg_or_query, "message", None) and getattr(msg_or_query.message, "photo", None):
+        try:
+            ok = await _send_or_edit_seller_bot_api(
+                client=client,
+                chat_id=user_id,
+                text=txt,
+                markup=markup,
+                message_id=msg_or_query.message.id
+            )
+            if ok:
+                return
+            await msg_or_query.message.edit_caption(
+                caption=txt,
+                reply_markup=markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+        except Exception as edit_err:
+            logger.debug(f"[Checkout FastEdit V2] in-place caption edit fallback: {edit_err}")
 
     try:
         if is_msg:
@@ -3326,51 +3393,121 @@ async def _process_start(client, message):
             return
             return
 
-    if len(args) > 1 and (args[1].startswith("buy_") or args[1].startswith("story_")):
+    if len(args) > 1 and (args[1].startswith("buy_") or args[1].startswith("story_") or args[1].startswith("s_")):
 
         if args[1].startswith("buy_"):
             story_id = args[1][4:].strip()
-        else:
+        elif args[1].startswith("story_"):
             story_id = args[1][6:].strip()
-        logger.error(f"DEBUG_START_PRINT: extracted story_id: '{story_id}' from args: {args}")
+        elif args[1].startswith("s_"):
+            story_id = args[1][2:].strip()
+        else:
+            story_id = args[1].strip()
+
+        logger.info(f"[StartDeepLink] extracted story_id: '{story_id}' from args: {args}")
 
         from bson.objectid import ObjectId
-
         from bson.errors import InvalidId
 
-        
-
         story = None
-
         try:
-
             o_id = ObjectId(story_id)
-
             story = await db.db.premium_stories.find_one({"_id": o_id})
-
-        except InvalidId:
-
+        except (InvalidId, Exception):
             pass
 
-            
-
         if not story:
-
             # Fallback 1: Story might be stored with a string _id
-
             story = await db.db.premium_stories.find_one({"_id": story_id})
-
-            
 
         if not story:
             # Fallback 2: Story might be stored with story_id field
             story = await db.db.premium_stories.find_one({"story_id": story_id})
-            
+
         if not story:
-            logger.error(f"DEBUG: Story not found in DB for ID: {story_id}")
+            # Fallback 3: Check by normalized title
+            try:
+                from plugins.mgmt.store_indexer import _normalize_title
+                norm = _normalize_title(story_id)
+                if norm:
+                    story = await db.db.premium_stories.find_one({"clean_title": norm})
+            except Exception:
+                pass
+
+        if not story:
+            logger.error(f"[StartDeepLink] Story not found in DB for ID: {story_id}")
             return await message.reply_text("❌ <b>Story not found!</b>\n\nIt seems this story has been removed from the database, or the link is invalid.")
             
         if story:
+            # ── Check Mode Isolation: OTT Show vs Audio Story ──
+            bt_curr = await _get_cached_bot_doc(client.me.id)
+            cur_cfg = (bt_curr.get("config") or {}) if bt_curr else {}
+            cur_mode = cur_cfg.get("bot_mode", "full")
+            is_show_item = bool(story.get("is_show"))
+
+            # Case A: User opened an OTT Show link in a non-show_store bot (Full Store or Miniapp bot)
+            if is_show_item and cur_mode != "show_store":
+                show_plat = story.get("platform", "Show")
+                target_bot = await db.db.premium_bots.find_one({
+                    "config.bot_mode": "show_store",
+                    "$or": [
+                        {"config.platform_name": {"$regex": f"^{re.escape(show_plat)}$", "$options": "i"}},
+                        {"config.target_platform": {"$regex": f"^{re.escape(show_plat)}$", "$options": "i"}},
+                        {"id": story.get("bot_id")}
+                    ]
+                })
+                if not target_bot:
+                    target_bot = await db.db.premium_bots.find_one({"config.bot_mode": "show_store"})
+
+                target_uname = target_bot.get("username") if target_bot else ""
+                target_clean = target_uname.replace("@", "").strip() if target_uname else ""
+
+                deep_key = story.get("deep_key") or str(story.get("_id"))
+                deep_link = f"https://t.me/{target_clean}?start=s_{deep_key}" if target_clean else ""
+
+                sn = story.get(f"story_name_{lang}") or story.get("story_name_en") or story.get("title") or "Show"
+
+                notice_en = (
+                    f'<emoji id="5937999673510858217">📽️</emoji> <b>Exclusive OTT Show: {sn}</b>\n\n'
+                    f"This show is exclusively available on our dedicated <b>{show_plat}</b> bot.\n\n"
+                    f"Please tap below to browse, purchase, and watch on @{target_clean}:"
+                )
+                notice_hi = (
+                    f'<emoji id="5937999673510858217">📽️</emoji> <b>विशेष OTT शो: {sn}</b>\n\n'
+                    f"यह शो विशेष रूप से हमारे समर्पित <b>{show_plat}</b> बॉट पर उपलब्ध है।\n\n"
+                    f"ब्राउज़ करने, खरीदने और देखने के लिए कृपया नीचे @{target_clean} पर टैप करें:"
+                )
+                msg_txt = notice_en if lang == 'en' else notice_hi
+                kb = []
+                if deep_link:
+                    kb.append([_ikb(f"Open in @{target_clean}", url=deep_link, icon_custom_emoji_id="6030664675253820292")])
+                kb.append([_ikb(f"« ❮ {_sc('MAIN MENU') if lang == 'en' else 'मुख्य मेनू'}", callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")])
+                return await message.reply_text(msg_txt, reply_markup=InlineKeyboardMarkup(kb), disable_web_page_preview=True)
+
+            # Case B: User opened an Audio Story link in a dedicated Show Store bot
+            if not is_show_item and cur_mode == "show_store":
+                main_bot = await db.db.premium_bots.find_one({"config.bot_mode": {"$ne": "show_store"}})
+                main_uname = main_bot.get("username") if main_bot else ""
+                main_clean = main_uname.replace("@", "").strip() if main_uname else ""
+                deep_link = f"https://t.me/{main_clean}?start=story_{str(story.get('_id'))}" if main_clean else ""
+
+                sn = story.get(f"story_name_{lang}") or story.get("story_name_en") or story.get("title") or "Story"
+                notice_en = (
+                    f'<emoji id="5465432711218863135">♨️</emoji> <b>Audio Story: {sn}</b>\n\n'
+                    f"This bot is exclusively dedicated to <b>{cur_cfg.get('platform_name', 'Video Shows')}</b>.\n\n"
+                    f"Audio stories are available on our main store bot @{main_clean}:"
+                )
+                notice_hi = (
+                    f'<emoji id="5465432711218863135">♨️</emoji> <b>ऑडियो कहानी: {sn}</b>\n\n'
+                    f"यह बॉट विशेष रूप से <b>{cur_cfg.get('platform_name', 'वीडियो शो')}</b> के लिए समर्पित है।\n\n"
+                    f"ऑडियो कहानियाँ हमारे मुख्य स्टोर बॉट @{main_clean} पर उपलब्ध हैं:"
+                )
+                msg_txt = notice_en if lang == 'en' else notice_hi
+                kb = []
+                if deep_link:
+                    kb.append([_ikb(f"Open in @{main_clean}", url=deep_link, icon_custom_emoji_id="6030664675253820292")])
+                kb.append([_ikb(f"« ❮ {_sc('MAIN MENU') if lang == 'en' else 'मुख्य मेनू'}", callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")])
+                return await message.reply_text(msg_txt, reply_markup=InlineKeyboardMarkup(kb), disable_web_page_preview=True)
 
             has_paid = await db.has_purchase(user_id, story_id)
 
@@ -3472,71 +3609,45 @@ async def _process_start(client, message):
 
 
 
-    # ── Force Join Logic (Unicode only, no emojis) ──
+    # ── Force Join Logic (Bypassed in Show Store mode) ──
+    bt = await _get_cached_bot_doc(client.me.id)
+    bot_cfg = (bt.get("config") or {}) if bt else {}
+    bot_mode = bot_cfg.get("bot_mode", "full")
+    is_show_store = (bot_mode == "show_store")
 
-    INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
+    if not is_show_store:
+        INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
+        try:
+            chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
+            if chat_member.status in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                raise Exception("Not joined")
+        except Exception:
+            if lang == 'hi':
+                join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
+                join_txt = (
+                    "𝗕𝗼𝘁 𝗸𝗼 𝘂𝘀𝗲 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗹𝗶𝘆𝗲 𝗮𝗮𝗽𝗸𝗼 𝗵𝘂𝗺𝗮𝗿𝗲 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝗺𝗲𝗶𝗻 𝗷𝗼𝗶𝗻 𝗵𝗼𝗻𝗮 𝗵𝗼𝗴𝗮।\n\n"
+                    "<blockquote expandable>"
+                    "𝗝𝗼𝗶𝗻 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗯𝗮𝗮𝗱 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝗽𝗮𝗿 𝗰𝗹𝗶𝗰𝗸 𝗸𝗮𝗿𝗲𝗻। 𝗜𝘀𝘀𝗲 𝗮𝗮𝗽𝗸𝗼 𝘀𝗮𝗯𝗵𝗶 𝗮𝗱𝘃𝗮𝗻𝗰𝗲𝗱 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀 𝗮𝘂𝗿 𝘂𝗽𝗱𝗮𝘁𝗲𝘀 𝗺𝗶𝗹𝘁𝗲 𝗿𝗮𝗵𝗲𝗻𝗴𝗲।\n"
+                    "</blockquote>"
+                )
+                join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥 𝗟𝗜𝗬𝗔"
+            else:
+                join_title = "𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                join_txt = (
+                    "𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝘁𝗼 𝘂𝘀𝗲 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁.\n\n"
+                    "<blockquote expandable>"
+                    "𝗔𝗳𝘁𝗲𝗿 𝗷𝗼𝗶𝗻𝗶𝗻𝗴, 𝗰𝗹𝗶𝗰𝗸 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝘁𝗼 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗲. 𝗬𝗼𝘂 𝘄𝗶𝗹𝗹 𝗴𝗲𝘁 𝗮𝗰𝗰𝗲𝘀𝘀 𝘁𝗼 𝗮𝗹𝗹 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝘀𝘁𝗼𝗿𝗶𝗲𝘀 𝗮𝗻𝗱 𝗶𝗻𝘀𝘁𝗮𝗻𝘁 DELIVERY."
+                    "</blockquote>"
+                )
+                join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
 
-    try:
-
-        chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
-
-        if chat_member.status in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
-
-            raise Exception("Not joined")
-
-    except Exception:
-
-        if lang == 'hi':
-
-            join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
-
-            join_txt = (
-
-                "𝗕𝗼𝘁 𝗸𝗼 𝘂𝘀𝗲 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗹𝗶𝘆𝗲 𝗮𝗮𝗽𝗸𝗼 𝗵𝘂𝗺𝗮𝗿𝗲 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝗺𝗲𝗶𝗻 𝗷𝗼𝗶𝗻 𝗵𝗼𝗻𝗮 𝗵𝗼𝗴𝗮।\n\n"
-
-                "<blockquote expandable>"
-
-                "𝗝𝗼𝗶𝗻 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗯𝗮𝗮𝗱 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝗽𝗮𝗿 𝗰𝗹𝗶𝗰𝗸 𝗸𝗮𝗿𝗲𝗻। 𝗜𝘀𝘀𝗲 𝗮𝗮𝗽𝗸𝗼 𝘀𝗮𝗯𝗵𝗶 𝗮𝗱𝘃𝗮𝗻𝗰𝗲𝗱 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀 𝗮𝘂𝗿 𝘂𝗽𝗱𝗮𝘁𝗲𝘀 𝗺𝗶𝗹𝘁𝗲 𝗿𝗮𝗵𝗲𝗻𝗴𝗲।\n"
-
-                "</blockquote>"
-
-            )
-
-            join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-
-            joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥 𝗟𝗜𝗬𝗔"
-
-        else:
-
-            join_title = "𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-
-            join_txt = (
-
-                "𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝘁𝗼 𝘂𝘀𝗲 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁.\n\n"
-
-                "<blockquote expandable>"
-
-                "𝗔𝗳𝘁𝗲𝗿 𝗷𝗼𝗶𝗻𝗶𝗻𝗴, 𝗰𝗹𝗶𝗰𝗸 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝘁𝗼 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗲. 𝗬𝗼𝘂 𝘄𝗶𝗹𝗹 𝗴𝗲𝘁 𝗮𝗰𝗰𝗲𝘀𝘀 𝘁𝗼 𝗮𝗹𝗹 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝘀𝘁𝗼𝗿𝗶𝗲𝘀 𝗮𝗻𝗱 𝗶𝗻𝘀𝘁𝗮𝗻𝘁 DELIVERY."
-
-                "</blockquote>"
-
-            )
-
-            join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-
-            joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
-
-
-
-        join_kb = [
-
-            [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
-
-            [InlineKeyboardButton(joined_btn, callback_data=f"mb#jchk{arg_p}")]
-
-        ]
-
-        return await message.reply_text(f"<b>{join_title}</b>\n\n{join_txt}", reply_markup=InlineKeyboardMarkup(join_kb))
+            join_kb = [
+                [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
+                [InlineKeyboardButton(joined_btn, callback_data=f"mb#jchk{arg_p}")]
+            ]
+            return await message.reply_text(f"<b>{join_title}</b>\n\n{join_txt}", reply_markup=InlineKeyboardMarkup(join_kb))
 
 
 
@@ -5122,12 +5233,30 @@ async def _process_text(client, message):
         if not q or len(q) < 2:
             return await message.reply_text("<i>Please type at least 2 characters to search.</i>")
 
-        all_stories = await db.db.premium_stories.find({"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}).to_list(length=None)
-        if not all_stories:
-            all_stories = await db.db.premium_stories.find({}).to_list(length=None)
+        bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+        bt_cfg = (bt_rec.get("config") or {}) if bt_rec else {}
+        is_ss = (bt_cfg.get("bot_mode") == "show_store")
+
+        if is_ss:
+            q_find = {
+                "is_show": True,
+                "$or": [{"bot_id": client.me.id}, {"platform": {"$regex": f"^{re.escape(bt_cfg.get('platform_name', ''))}$", "$options": "i"}}]
+            }
+        else:
+            show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
+            ss_plats = [b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")]
+            q_find = {
+                "is_show": {"$ne": True},
+                "$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]
+            }
+            if ss_plats:
+                q_find["platform"] = {"$nin": ss_plats}
+
+        all_stories = await db.db.premium_stories.find(q_find).to_list(length=None)
         matches = [s for s in all_stories if q in s.get("story_name_en", "").lower() or q in s.get("story_name_hi", "").lower()]
         if not matches:
-            return await message.reply_text(f"<i>No stories matched '<b>{txt}</b>'. Try different keywords.</i>")
+            item_noun = ("shows" if is_ss else "stories") if lang == 'en' else ("शो" if is_ss else "कहानियाँ")
+            return await message.reply_text(f"<i>{'No ' + item_noun + ' matched'} '<b>{txt}</b>'. {'Try different keywords.' if lang == 'en' else 'कृपया अन्य कीवर्ड आज़माएँ।'}</i>")
 
         if len(matches) == 1:
             await db.update_user(user_id, {"state": None})
@@ -5164,8 +5293,26 @@ async def _process_text(client, message):
 
 
 async def _show_marketplace_platforms(client, query, lang='en'):
-    platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
-    PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
+    bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+    bt_cfg_local = bt_rec.get("config", {}) or {}
+    is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
+
+    if is_ss:
+        auto_plat = bt_cfg_local.get("platform_name") or bt_cfg_local.get("target_platform")
+        if not auto_plat:
+            p_doc = await db.db.premium_stories.find_one({"$or": [{"bot_id": client.me.id}, {"is_show": True}]}, {"platform": 1})
+            auto_plat = p_doc.get("platform") if p_doc else "Kuku TV"
+        return await _show_marketplace_stories(client, query, auto_plat, 0, lang)
+
+    platforms = await db.db.premium_stories.distinct('platform', {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]})
+    # Exclude show store platforms from full store bot
+    show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
+    show_store_plats = {b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")}
+    for sp in await db.db.premium_stories.distinct("platform", {"is_show": True}):
+        if sp: show_store_plats.add(sp)
+    platforms = [p for p in platforms if p not in show_store_plats and p != "Other"]
+
+    PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Pratilipi FM", "Headfone"]
     for _rm in ("Other",):
         if _rm in platforms:
             platforms.remove(_rm)
@@ -5200,14 +5347,31 @@ async def _show_marketplace_platforms(client, query, lang='en'):
 
 async def _show_marketplace_stories(client, query, platform_name: str, page: int = 0, lang='en'):
     PAGE_SIZE = 8
-    q_find = {"bot_id": client.me.id}
-    if platform_name != "Other":
-        q_find["platform"] = platform_name
+    bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+    bt_cfg_local = bt_rec.get("config", {}) or {}
+    is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
+
+    if is_ss:
+        q_find = {
+            "is_show": True,
+            "$or": [
+                {"bot_id": client.me.id},
+                {"platform": {"$regex": f"^{re.escape(platform_name)}$", "$options": "i"}}
+            ]
+        }
+    else:
+        q_find = {
+            "is_show": {"$ne": True},
+            "$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]
+        }
+        if platform_name != "Other":
+            q_find["platform"] = platform_name
 
     total_count = await db.db.premium_stories.count_documents(q_find)
     if total_count == 0:
-        empty_txt = "No stories found for this platform." if lang == 'en' else "इस प्लेटफॉर्म के लिए कोई कहानी नहीं मिली।"
-        kb = [[InlineKeyboardButton(f"« ❮ {_sc('BACK') if lang == 'en' else 'वापस'}", callback_data="mb#main_marketplace")]]
+        empty_txt = ("No shows found in this store." if is_ss else "No stories found for this platform.") if lang == 'en' else ("इस स्टोर में कोई शो नहीं मिला।" if is_ss else "इस प्लेटफॉर्म के लिए कोई कहानी नहीं मिली।")
+        back_cb = "mb#main_back" if is_ss else "mb#main_marketplace"
+        kb = [[InlineKeyboardButton(f"« ❮ {_sc('BACK') if lang == 'en' else 'वापस'}", callback_data=back_cb)]]
         return await _safe_edit(query.message, text=f"<i>{empty_txt}</i>", markup=InlineKeyboardMarkup(kb))
 
     total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -5220,13 +5384,14 @@ async def _show_marketplace_stories(client, query, platform_name: str, page: int
 
     stories = await db.db.premium_stories.find(
         q_find,
-        {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+        {"story_name_en": 1, "story_name_hi": 1, "title": 1, "price": 1, "platform": 1, "_id": 1}
     ).sort("_id", -1).skip(page * PAGE_SIZE).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
 
     kb = []
+    item_fallback = "Show" if is_ss else "Story"
     for idx, s in enumerate(stories, start=page * PAGE_SIZE + 1):
         s_id = str(s["_id"])
-        s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+        s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or item_fallback
         if len(s_name) > 22:
             s_name = s_name[:20] + "…"
         price = s.get('price', 0)
@@ -5248,16 +5413,21 @@ async def _show_marketplace_stories(client, query, platform_name: str, page: int
         nav.append(InlineKeyboardButton(_sc("NEXT") if lang == 'en' else "अगला", callback_data=f"mb#mkt_plat#{platform_name}#{page+1}"))
     kb.append(nav)
 
-    search_lbl = _sc("SEARCH STORY") if lang == 'en' else "स्टोरी खोजें"
+    search_lbl = (_sc("SEARCH SHOWS") if lang == 'en' else "शो खोजें") if is_ss else (_sc("SEARCH STORY") if lang == 'en' else "स्टोरी खोजें")
     kb.append([_ikb(f"  {search_lbl}", callback_data="mb#mkt_search", icon_custom_emoji_id="6025893082552081088")])
-    kb.append([InlineKeyboardButton(f"« ❮ {_sc('BACK TO PLATFORMS') if lang == 'en' else 'प्लेटफॉर्म मेनू'}", callback_data="mb#main_marketplace")])
 
-    title = _sc("AVAILABLE STORIES") if lang == 'en' else "उपलब्ध कहानियाँ"
+    back_cb = "mb#main_back" if is_ss else "mb#main_marketplace"
+    back_lbl = (_sc("MAIN MENU") if lang == 'en' else "मुख्य मेनू") if is_ss else (_sc("BACK TO PLATFORMS") if lang == 'en' else "प्लेटफॉर्म मेनू")
+    kb.append([InlineKeyboardButton(f"« ❮ {back_lbl}", callback_data=back_cb)])
+
+    icon_tag = '<emoji id="5937999673510858217">📽️</emoji>' if is_ss else '<emoji id="5764638872000533034">📑</emoji>'
+    title = (_sc("AVAILABLE SHOWS") if lang == 'en' else "उपलब्ध शो") if is_ss else (_sc("AVAILABLE STORIES") if lang == 'en' else "उपलब्ध कहानियाँ")
+    prompt_hint = (_sc("Tap any show button below to view details and purchase.") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें।") if is_ss else (_sc("Tap any story button below to view details and purchase options.") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें।")
     txt = (
-        f"<b>⟦ {title} — {to_mathbold(platform_name)} ⟧</b>\n"
+        f"<b>⟦ {icon_tag} {title} — {to_mathbold(platform_name)} ⟧</b>\n"
         f"<i>Page {page+1}/{total_pages} (Total: {total_count})</i>\n\n"
         f"<blockquote expandable>"
-        f"<i>{_sc('Tap any story button below to view details and purchase options.')}</i>"
+        f"<i>{prompt_hint}</i>"
         f"</blockquote>"
     )
     await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
@@ -5265,9 +5435,25 @@ async def _show_marketplace_stories(client, query, platform_name: str, page: int
 
 async def _show_marketplace_all_stories(client, query, platform_name: str, page: int = 0, lang='en'):
     PAGE_SIZE = 12
-    q_find = {"bot_id": client.me.id}
-    if platform_name != "Other":
-        q_find["platform"] = platform_name
+    bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
+    bt_cfg_local = bt_rec.get("config", {}) or {}
+    is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
+
+    if is_ss:
+        q_find = {
+            "is_show": True,
+            "$or": [
+                {"bot_id": client.me.id},
+                {"platform": {"$regex": f"^{re.escape(platform_name)}$", "$options": "i"}}
+            ]
+        }
+    else:
+        q_find = {
+            "is_show": {"$ne": True},
+            "$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]
+        }
+        if platform_name != "Other":
+            q_find["platform"] = platform_name
 
     total_count = await db.db.premium_stories.count_documents(q_find)
     total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -5280,13 +5466,14 @@ async def _show_marketplace_all_stories(client, query, platform_name: str, page:
 
     stories = await db.db.premium_stories.find(
         q_find,
-        {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+        {"story_name_en": 1, "story_name_hi": 1, "title": 1, "price": 1, "platform": 1, "_id": 1}
     ).sort("_id", -1).skip(page * PAGE_SIZE).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
 
     kb = []
+    item_fallback = "Show" if is_ss else "Story"
     for idx, s in enumerate(stories, start=page * PAGE_SIZE + 1):
         s_id = str(s["_id"])
-        s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+        s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or item_fallback
         if len(s_name) > 22:
             s_name = s_name[:20] + "…"
         price = s.get('price', 0)
@@ -5308,15 +5495,19 @@ async def _show_marketplace_all_stories(client, query, platform_name: str, page:
 
     kb.append([InlineKeyboardButton(f"« ❮ {_sc('BACK TO STORIES') if lang == 'en' else 'वापस'}", callback_data=f"mb#mkt_plat#{platform_name}#0")])
 
-    title = _sc("ALL STORIES") if lang == 'en' else "सभी कहानियाँ"
+    icon_tag = '<emoji id="5937999673510858217">📽️</emoji>' if is_ss else '<emoji id="5764638872000533034">📑</emoji>'
+    title = (_sc("ALL SHOWS") if lang == 'en' else "सभी शो") if is_ss else (_sc("ALL STORIES") if lang == 'en' else "सभी कहानियाँ")
     txt = (
-        f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title} — {to_mathbold(platform_name)} ⟧</b>\n'
+        f'<b>⟦ {icon_tag} {title} — {to_mathbold(platform_name)} ⟧</b>\n'
         f"<i>Page {page+1}/{total_pages} (Total: {total_count})</i>"
     )
     await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
 
 
 async def _show_about_arya(client, query, page: int):
+    user_id = query.from_user.id if query.from_user else 0
+    user = await db.get_user(user_id, from_user=query.from_user) if query.from_user else {}
+    lang = (user.get('lang') or 'en') if user else 'en'
 
     if page == 0:
         txt = (
@@ -5341,9 +5532,11 @@ async def _show_about_arya(client, query, page: int):
             f"• <b>{_sc('Seamless Experience:')}</b> {_sc('Clean UI, fast response times, and high-quality file delivery.')}"
             f"</blockquote>"
         )
+        tc_btn_txt = _sc("TERMS & CONDITIONS") if lang == 'en' else "नियम और शर्तें"
         kb = [
+            [_ikb(tc_btn_txt, callback_data="mb#about_tc", icon_custom_emoji_id="5764638872000533034")],
             [InlineKeyboardButton(f"ɴᴇxᴛ ❭", callback_data="mb#about_arya_1")],
-            [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")]
+            [_ikb(f"« ❮ {_sc('BACK') if lang == 'en' else 'वापस'}", callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")]
         ]
     else:
         txt = (
@@ -5368,11 +5561,80 @@ async def _show_about_arya(client, query, page: int):
             f"• <b>{_sc('Smart Management:')}</b> {_sc('Auto-approve logic, Force Subscribe walls, and deep user analytics.')}"
             f"</blockquote>"
         )
+        tc_btn_txt = _sc("TERMS & CONDITIONS") if lang == 'en' else "नियम और शर्तें"
         kb = [
+            [_ikb(tc_btn_txt, callback_data="mb#about_tc", icon_custom_emoji_id="5764638872000533034")],
             [InlineKeyboardButton(f"❬ ᴘʀᴇᴠ", callback_data="mb#about_arya_0")],
-            [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")]
+            [_ikb(f"« ❮ {_sc('BACK') if lang == 'en' else 'वापस'}", callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")]
         ]
 
+    await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
+
+
+async def _show_terms_and_conditions(client, query, lang='en'):
+    if lang == 'hi':
+        txt = (
+            '<b>⟦ <emoji id="5764638872000533034">📑</emoji> नियम एवं शर्तें (TERMS & CONDITIONS) ⟧</b>\n\n'
+            "<i>खरीदारी करने से पहले कृपया आधिकारिक बॉट सेवा शर्तें ध्यानपूर्वक पढ़ें:</i>\n\n"
+            "<blockquote expandable>"
+            '<b>1. <emoji id="5807622114424924272">🎬</emoji> सामग्री एवं डिलीवरी नीति (Delivery Policy)</b>\n'
+            "• भुगतान की पुष्टि के तुरंत बाद सभी फाइल्स ऑटोमैटिक डिलीवर कर दी जाती हैं।\n"
+            "• आप फाइलों को सीधे चैट (DM Delivery) में या प्राइवेट चैनल लिंक द्वारा प्राप्त कर सकते हैं।\n"
+            "• सभी एपिसोड्स मूल डेटाबेस चैनल के क्रम में बिना किसी कैप्शन छेड़छाड़ के डिलीवर होते हैं।\n"
+            "• <b>लाइफटाइम एक्सेस:</b> खरीदी गई सभी सामग्री आपकी 'My Stories' लाइब्रेरी में हमेशा उपलब्ध रहेगी। आप 'Regenerate Files' से उन्हें कभी भी दोबारा पा सकते हैं।"
+            "</blockquote>\n\n"
+            "<blockquote expandable>"
+            '<b>2. <emoji id="6030410254276106984">💳</emoji> भुगतान एवं मूल्य नीति (Payments Policy)</b>\n'
+            "• सभी भुगतान 100% सुरक्षित हैं: Direct UPI (12-अंक UTR ऑटो-वेरिफिकेशन), Cashfree/Cards/NetBanking, या Crypto।\n"
+            "• प्रत्येक शो / स्टोरी का एकमुश्त मूल्य होता है, कोई भी आवर्ती (recurring) या छिपा हुआ शुल्क नहीं है।"
+            "</blockquote>\n\n"
+            "<blockquote expandable>"
+            '<b>3. <emoji id="5807492110059838726">🔄</emoji> रिफंड एवं प्रतिस्थापन नीति (Refund Policy)</b>\n'
+            "• चूंकि डिजिटल वीडियो और ऑडियो फ़ाइलें तुरंत डिलीवर की जाती हैं, इसलिए सफलतापूर्वक डिलीवर की गई सामग्री पर रिफंड लागू नहीं होता है।\n"
+            "• <b>पेमेंट कटौती / डुप्लीकेट:</b> यदि पैसे कट गए और डिलीवरी नहीं हुई, तो 12-अंक का UTR दर्ज करें, सिस्टम तुरंत वेरिफाई करके डिलीवरी देगा या 24 घंटे में रिफंड प्रदान करेगा।\n"
+            "• <b>मिसिंग / डैमेज फाइलें:</b> किसी भी मिसिंग या अधूरी फाइल को सपोर्ट या रीजेनरेट बटन से मुफ्त में तुरंत दोबारा भेजा जाता है।"
+            "</blockquote>\n\n"
+            "<blockquote expandable>"
+            '<b>4. <emoji id="6019118553326689234">🛡️</emoji> सुरक्षा एवं उचित उपयोग (Security & Usage)</b>\n'
+            "• सामग्री केवल आपके व्यक्तिगत उपयोग के लिए है। अनधिकृत व्यावसायिक वितरण वर्जित है।\n"
+            "• फर्जी या एडिटेड पेमेंट स्क्रीनशॉट भेजने पर बॉट से स्थायी प्रतिबंध (Permanent Ban) लगाया जाएगा।"
+            "</blockquote>"
+        )
+    else:
+        txt = (
+            f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {_sc("TERMS & CONDITIONS")} ⟧</b>\n\n'
+            "<i>Please read and agree to our official service terms and policies before purchasing:</i>\n\n"
+            "<blockquote expandable>"
+            '<b>1. <emoji id="5807622114424924272">🎬</emoji> Content & Delivery Policy</b>\n'
+            "• Content is instantly unlocked upon automated payment verification.\n"
+            "• You may choose between Direct Message (DM) Delivery or Private Secure Channel Link delivery.\n"
+            "• All video/audio episodes are delivered in original sequential order with intact captions from the database channel.\n"
+            "• <b>Lifetime Library Access:</b> All purchased items remain permanently accessible under <b>My Stories</b>. You can re-download or regenerate your files anytime at zero extra cost."
+            "</blockquote>\n\n"
+            "<blockquote expandable>"
+            '<b>2. <emoji id="6030410254276106984">💳</emoji> Payment & Pricing Terms</b>\n'
+            "• 100% secure payments via Direct UPI (with instant 12-digit UTR auto-validation), Payment Gateway (Cashfree, Cards, NetBanking), or Crypto.\n"
+            "• One-time upfront pricing per show or audio story. Zero subscriptions, zero hidden charges."
+            "</blockquote>\n\n"
+            "<blockquote expandable>"
+            '<b>3. <emoji id="5807492110059838726">🔄</emoji> Refund & Replacement Policy</b>\n'
+            "• As digital video and audio media files are immediately fulfilled and delivered, completed orders that have been accessed are non-refundable.\n"
+            "• <b>Payment Discrepancy / Deductions:</b> If an amount was deducted but delivery was delayed, or if you made a duplicate transfer, enter your 12-digit UTR for automatic instant fulfillment or contact admin for a full reversal within 24 hours.\n"
+            "• <b>File Replacement Guarantee:</b> In the rare event of a missing or corrupted episode, free replacement files are instantly re-delivered via the 'Regenerate Files' button or 24/7 Support."
+            "</blockquote>\n\n"
+            "<blockquote expandable>"
+            '<b>4. <emoji id="6019118553326689234">🛡️</emoji> Fair Usage & Security</b>\n'
+            "• Delivered content is licensed strictly for personal non-commercial entertainment. Commercial broadcasting or unauthorized mass sharing is strictly prohibited.\n"
+            "• Submitting counterfeit or fraudulent payment proofs will result in an immediate and permanent ban from our network."
+            "</blockquote>"
+        )
+
+    tc_back = "« ❮ " + ("Back to About" if lang == 'en' else "वापस अबाउट")
+    main_back = "« ❮ " + (_sc("MAIN MENU") if lang == 'en' else "मुख्य मेनू")
+    kb = [
+        [_ikb(tc_back, callback_data="mb#about_arya_0", icon_custom_emoji_id="6021620268697393273")],
+        [_ikb(main_back, callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")]
+    ]
     await _safe_edit(query.message, text=txt, markup=InlineKeyboardMarkup(kb))
 
 
@@ -5598,49 +5860,54 @@ async def _process_callback(client, query):
         # After language selection, check pending arg (deep link), then force-join, then main menu
         pending_arg = data[3] if len(data) > 3 else None
 
-        # Force join check
-        INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
-        is_joined = False
-        try:
-            chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
-            if chat_member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
-                is_joined = True
-        except Exception:
-            pass
+        # Force join check (bypassed in Show Store mode)
+        bt = await _get_cached_bot_doc(client.me.id)
+        bot_cfg = (bt.get("config") or {}) if bt else {}
+        is_show_store = (bot_cfg.get("bot_mode") == "show_store")
 
-        if not is_joined:
-            arg_p = f"#{pending_arg}" if pending_arg else ""
-            if chosen_lang == 'hi':
-                join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
-                join_txt = (
-                    "𝗕𝗼𝘁 𝗸𝗼 𝘂𝘀𝗲 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗹𝗶𝘆𝗲 𝗮𝗮𝗽𝗸𝗼 𝗵𝘂𝗺𝗮𝗿𝗲 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝗺𝗲𝗶𝗻 𝗷𝗼𝗶𝗻 𝗵𝗼𝗻𝗮 𝗵𝗼𝗴𝗮।\n\n"
-                    "<blockquote expandable>"
-                    "𝗝𝗼𝗶𝗻 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗯𝗮𝗮𝗱 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝗽𝗮𝗿 𝗰𝗹𝗶𝗰𝗸 𝗸𝗮𝗿𝗲𝗻।\n"
-                    "</blockquote>"
-                )
-                join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-                joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥 𝗟𝗜𝗬𝗔"
-            else:
-                join_title = "𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-                join_txt = (
-                    "𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝘁𝗼 𝘂𝘀𝗲 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁.\n\n"
-                    "<blockquote expandable>"
-                    "𝗔𝗳𝘁𝗲𝗿 𝗷𝗼𝗶𝗻𝗶𝗻𝗴, 𝗰𝗹𝗶𝗰𝗸 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝘁𝗼 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗲."
-                    "</blockquote>"
-                )
-                join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-                joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
+        if not is_show_store:
+            INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
+            is_joined = False
+            try:
+                chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
+                if chat_member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                    is_joined = True
+            except Exception:
+                pass
 
-            join_kb = [
-                [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
-                [InlineKeyboardButton(joined_btn, callback_data=f"mb#jchk{arg_p}")]
-            ]
-            return await client.send_message(
-                user_id,
-                f"<b>{join_title}</b>\n\n{join_txt}",
-                reply_markup=InlineKeyboardMarkup(join_kb),
-                parse_mode=enums.ParseMode.HTML
-            )
+            if not is_joined:
+                arg_p = f"#{pending_arg}" if pending_arg else ""
+                if chosen_lang == 'hi':
+                    join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
+                    join_txt = (
+                        "𝗕𝗼𝘁 𝗸𝗼 𝘂𝘀𝗲 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗹𝗶𝘆𝗲 𝗮𝗮𝗽𝗸𝗼 𝗵𝘂𝗺𝗮𝗿𝗲 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝗺𝗲𝗶𝗻 𝗷𝗼𝗶𝗻 𝗵𝗼𝗻𝗮 𝗵𝗼𝗴𝗮।\n\n"
+                        "<blockquote expandable>"
+                        "𝗝𝗼𝗶𝗻 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗯𝗮𝗮𝗱 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝗽𝗮𝗿 𝗰𝗹𝗶𝗰𝗸 𝗸𝗮𝗿𝗲𝗻।\n"
+                        "</blockquote>"
+                    )
+                    join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                    joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥 𝗟𝗜𝗬𝗔"
+                else:
+                    join_title = "𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                    join_txt = (
+                        "𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝘁𝗼 𝘂𝘀𝗲 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁.\n\n"
+                        "<blockquote expandable>"
+                        "𝗔𝗳𝘁𝗲𝗿 𝗷𝗼𝗶𝗻𝗶𝗻𝗴, 𝗰𝗹𝗶𝗰𝗸 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝘁𝗼 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗲."
+                        "</blockquote>"
+                    )
+                    join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+                    joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
+
+                join_kb = [
+                    [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
+                    [InlineKeyboardButton(joined_btn, callback_data=f"mb#jchk{arg_p}")]
+                ]
+                return await client.send_message(
+                    user_id,
+                    f"<b>{join_title}</b>\n\n{join_txt}",
+                    reply_markup=InlineKeyboardMarkup(join_kb),
+                    parse_mode=enums.ParseMode.HTML
+                )
 
         # Already joined → go to main menu or process pending deep link
         if pending_arg:
@@ -5734,6 +6001,10 @@ async def _process_callback(client, query):
 
     # ── About Arya ──
 
+    if cmd == "about_tc":
+        await query.answer()
+        return await _show_terms_and_conditions(client, query, lang)
+
     if cmd.startswith("about_arya_"):
 
         page = int(cmd.replace("about_arya_", ""))
@@ -5765,142 +6036,7 @@ async def _process_callback(client, query):
 
 
         if action == "marketplace":
-            bt_rec = await db.db.premium_bots.find_one({"id": client.me.id}) or {}
-            bt_cfg_local = bt_rec.get("config", {}) or {}
-            is_ss = (bt_cfg_local.get("bot_mode") == "show_store")
-
-            platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
-            PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Kuku TV", "Pratilipi FM", "Headfone", "Story TV"]
-            for _rm in ("Other",):
-                if _rm in platforms:
-                    platforms.remove(_rm)
-
-            sorted_plats = []
-            for pp in PRIORITY_PLATFORMS:
-                if pp in platforms:
-                    sorted_plats.append(pp)
-                    platforms.remove(pp)
-            sorted_plats.extend(sorted(platforms))
-            platforms = sorted_plats
-
-            await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": 0}})
-
-            # ── If in Show Store mode OR only 1 platform, skip selection and jump directly ──
-            if is_ss or len(platforms) == 1:
-                if is_ss:
-                    auto_plat = bt_cfg_local.get("platform_name") or (platforms[0] if platforms else "Story TV")
-                else:
-                    auto_plat = platforms[0]
-
-                await db.db.users.update_one(
-                    {"id": user_id},
-                    {"$set": {"_mkt_plat": auto_plat, "_mkt_page": 0, "_mkt_mode": "normal"}}
-                )
-                try:
-                    await query.message.delete()
-                except Exception:
-                    pass
-
-                q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
-                q_plat = {"platform": {"$regex": f"^{re.escape(auto_plat)}$", "$options": "i"}}
-                q_find = {"$and": [q_bot, q_plat]}
-                if is_ss:
-                    q_find["is_show"] = True
-
-                PAGE_SIZE = 20
-                total_s = await db.db.premium_stories.count_documents(q_find)
-
-                # If 0 shows in show store mode
-                if total_s == 0 and is_ss:
-                    plat_title = to_mathbold(auto_plat)
-                    msg_text = (
-                        f'<b>⟦ <emoji id="5937999673510858217">📽️</emoji> {plat_title} ⟧</b>\n\n'
-                        f"<i>{'No shows available in this store yet. Please check back later!' if lang == 'en' else 'इस स्टोर में अभी कोई शो उपलब्ध नहीं है। कृपया बाद में चेक करें!'}</i>"
-                    )
-                    kb = [[_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))]]
-                    ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
-                    if not ok:
-                        pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
-                        await client.send_message(user_id, msg_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
-                    return
-
-                total_pg = max(1, (total_s + PAGE_SIZE - 1) // PAGE_SIZE)
-                stories_page = await db.db.premium_stories.find(
-                    q_find, {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
-                ).sort("_id", -1).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
-
-                item_label = ("शो" if lang == 'hi' else "Show") if is_ss else ("कहानी" if lang == 'hi' else "Story")
-
-                kb = []
-                MNL = 22
-                for idx, s in enumerate(stories_page, start=1):
-                    sn = s.get(f'story_name_{lang}', s.get('story_name_en', item_label))
-                    if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
-                    btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
-                    if idx <= 5:
-                        kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
-                    else:
-                        kb.append([_kb_btn(btn_txt)])
-
-                if total_pg > 1:
-                    nav_row = []
-                    if total_pg > 1:
-                        nav_row.append(_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭"))
-                    if nav_row:
-                        kb.append(nav_row)
-
-                view_all_btn = "📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें")
-                search_text = "SEARCH" if lang == 'en' else "खोजें"
-                kb.append([_kb_btn(view_all_btn)])
-                kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
-                kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
-                kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
-
-                plat_title = to_mathbold(auto_plat)
-                pg_info = f"<i>{_sc('Page') if lang == 'en' else 'पेज'} 1/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{'Total:' if lang == 'en' else 'कुल:'} <b>{total_s}</b></i>"
-                icon_tag = '<emoji id="5937999673510858217">📽️</emoji>' if is_ss else '<emoji id="5764638872000533034">📑</emoji>'
-                tap_hint = (_sc("Tap any show below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें:") if is_ss else (_sc("Tap any story below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
-                msg_text = (
-                    f'<b>⟦ {icon_tag} {plat_title} ⟧</b>\n\n'
-                    f"<blockquote expandable>{pg_info}\n"
-                    f"{tap_hint}</blockquote>"
-                )
-                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
-                if not ok:
-                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
-                    await client.send_message(user_id, msg_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
-                return
-
-            if not platforms:
-                msg_text = (
-                    f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> MARKETPLACE ⟧</b>\n\n'
-                    f"<i>{'No stories available in this store yet. Please check back later!' if lang == 'en' else 'इस स्टोर में अभी कोई कहानी उपलब्ध नहीं है। कृपया बाद में चेक करें!'}</i>"
-                )
-                kb = [[_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))]]
-                try: await query.message.delete()
-                except Exception: pass
-                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
-                if not ok:
-                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
-                    await client.send_message(user_id, msg_text, reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
-                return
-
-            t = T[lang]
-            kb = []
-            for i in range(0, len(platforms), 2):
-                row = platforms[i:i+2]
-                kb.append(row)
-            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang=='en' else "वापस मेनू")])
-
-            p_title = "🎧 Platform Selection" if lang == 'en' else "🎧 प्लेटफॉर्म चयन"
-            p_desc = "Choose a platform from the keyboard below:" if lang == 'en' else "नीचे दिए गए कीबोर्ड से एक प्लेटफॉर्म चुनें:"
-
-            await query.message.delete()
-            return await client.send_message(
-                user_id,
-                f"<b>{p_title}</b>\n\n{p_desc}",
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-            )
+            return await _show_marketplace_platforms(client, query, lang)
 
 
 
@@ -6353,27 +6489,33 @@ async def _process_callback(client, query):
 
                 
 
-        try:
-
-            await query.message.delete()
-
-        except:
-
-            pass
-
-        # Check if T&C is globally disabled by admin
-
-        _tnc_cfg1 = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-
-        # Check if T&C is globally disabled by admin
+        # Check if T&C is globally disabled by admin or if show store / show item
         _tnc_cfg1 = await _get_cached_features()
-        if not _tnc_cfg1.get("tnc_enabled", True):
-            from bson.objectid import ObjectId as _ObjId1
-            _s1 = await db.db.premium_stories.find_one({"_id": _ObjId1(s_id)})
+        _bt1 = await _get_cached_bot_doc(client.me.id)
+        _bt_cfg1 = (_bt1 or {}).get("config", {})
+
+        from bson.objectid import ObjectId as _ObjId1
+        _s1 = None
+        try:
+            if _ObjId1.is_valid(s_id):
+                _s1 = await db.db.premium_stories.find_one({"_id": _ObjId1(s_id)})
+        except Exception:
+            pass
+        if not _s1:
+            _s1 = await db.db.premium_stories.find_one({"_id": s_id})
+        if not _s1:
+            _s1 = await db.db.premium_stories.find_one({"story_id": s_id})
+
+        is_show_item = (_bt_cfg1.get("bot_mode") == "show_store") or (_s1 and _s1.get("is_show"))
+
+        if not _tnc_cfg1.get("tnc_enabled", True) or is_show_item:
             if _s1:
-                _bt1 = await _get_cached_bot_doc(client.me.id)
-                _bt_cfg1 = (_bt1 or {}).get("config", {})
                 return await _show_story_details(client, query, _s1, lang, bot_cfg=_bt_cfg1)
+
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         return await _show_tc(client, user_id, s_id, lang, from_user=query.from_user)
 
     elif cmd == "demo":
@@ -7504,11 +7646,11 @@ async def _process_callback(client, query):
 
             await query.message.reply_text(
 
-                "<b>📸 पेमेंट स्क्रीनशॉट भेजें</b>\n\n"
+                '<b><emoji id="5886285355279193209">🏷</emoji> पेमेंट स्क्रीनशॉट भेजें</b>\n\n'
 
                 "सत्यापन शुरू करने के लिए कृपया अपने सफल भुगतान का स्क्रीनशॉट यहाँ भेजें।",
 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« वापस", callback_data=f"mb#pay#upi#{s_id}")]])
+                reply_markup=InlineKeyboardMarkup([[_ikb("« वापस", callback_data=f"mb#pay#upi#{s_id}", icon_custom_emoji_id="5774077015388852135")]])
 
             )
 
@@ -7518,11 +7660,11 @@ async def _process_callback(client, query):
 
             await query.message.reply_text(
 
-                f"<b>📸 {_sc('SEND PAYMENT SCREENSHOT')}</b>\n\n"
+                f'<b><emoji id="5886285355279193209">🏷</emoji> {_sc("SEND PAYMENT SCREENSHOT")}</b>\n\n'
 
                 f"{_sc('Please send your successful payment screenshot here to begin verification.')}",
 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« {_sc('BACK')}", callback_data=f"mb#pay#upi#{s_id}")]])
+                reply_markup=InlineKeyboardMarkup([[_ikb(f"« {_sc('BACK')}", callback_data=f"mb#pay#upi#{s_id}", icon_custom_emoji_id="5774077015388852135")]])
 
             )
 
@@ -7549,7 +7691,7 @@ async def _process_callback(client, query):
         )
         kb_dev = [
             [_ikb("Contact Developer", url="https://t.me/MeJeetX", icon_custom_emoji_id="6021683099773966917")],
-            [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_help")]
+            [_ikb(f"« ❮ {_sc('BACK')}", callback_data="mb#main_help", icon_custom_emoji_id="5774077015388852135")]
         ]
         await _safe_edit(query.message, text=txt_dev, markup=InlineKeyboardMarkup(kb_dev))
         return
@@ -7652,14 +7794,14 @@ async def _process_callback(client, query):
             logger.info(f"[PAY2-CF] Showing payment screen to user {user_id}: order={order_id}, link={pay_link}")
 
             desc_cf = (
-                f"<b>⟦ 💳 PAYMENT GATEWAY ⟧</b>\n\n"
+                f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> PAYMENT GATEWAY ⟧</b>\n\n'
                 f"<b>• Story:</b> {to_mathbold(s_name)}\n"
                 f"<b>• Amount:</b> ₹{price}\n"
                 f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
                 f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
                 f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
             ) if lang == 'en' else (
-                f"<b>⟦ 💳 पेमेंट गेटवे ⟧</b>\n\n"
+                f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> पेमेंट गेटवे ⟧</b>\n\n'
                 f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
                 f"<b>• राशि:</b> ₹{price}\n"
                 f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
@@ -7667,14 +7809,14 @@ async def _process_callback(client, query):
                 f"<i>भुगतान पूरा करने के बाद, तत्काल डिलीवरी के लिए <b>Check Status</b> पर टैप करें।</i>"
             )
 
-            pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें (Cards/UPI/NetBanking)"
-            check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
+            pay_now_lbl = "Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "अभी भुगतान करें (Cards/UPI/NetBanking)"
+            check_lbl = "Check Payment Status" if lang == 'en' else "स्टेटस चेक करें"
             back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
 
             kb = [
-                [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
+                [_ikb(pay_now_lbl, url=pay_link, icon_custom_emoji_id="6030410254276106984")],
                 [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
-                [InlineKeyboardButton(back_lbl, callback_data=f"mb#pay_back#{s_id}")]
+                [_ikb(back_lbl, callback_data=f"mb#pay_back#{s_id}", icon_custom_emoji_id="5774077015388852135")]
             ]
 
             await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
@@ -7981,7 +8123,7 @@ async def _process_callback(client, query):
                         f"यदि यह आपका सही UTR है, तो संपर्क सहायता से करें।",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔄 दूसरा UTR डालें", callback_data=f"mb#verify2_utr#{s_id}")],
+                            [_ikb("दूसरा UTR डालें", callback_data=f"mb#verify2_utr#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                         ])
                     )
                 else:
@@ -7992,7 +8134,7 @@ async def _process_callback(client, query):
                         f"<i>If you believe this is a mistake, please contact support.</i>",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🔄 Enter a Different UTR", callback_data=f"mb#clear_and_retry_utr#{s_id}")],
+                            [_ikb("Enter a Different UTR", callback_data=f"mb#clear_and_retry_utr#{s_id}", icon_custom_emoji_id="5807492110059838726")],
                         ])
                     )
 
@@ -8271,7 +8413,7 @@ async def _process_callback(client, query):
             return await query.answer("No pending payment found. Generate link again.", show_alert=True)
 
         await query.answer("Checking payment status... please wait.", show_alert=False)
-        m = await query.message.edit_text(f"🛡️ <b>{_sc('VERIFYING PAYMENT')}...</b>\n<i>{_sc('Checking crypto blockchain status via OxaPay.')}</i>")
+        m = await query.message.edit_text(f'<emoji id="6019118553326689234">🛡️</emoji> <b>{_sc("VERIFYING PAYMENT")}...</b>\n<i>{_sc("Checking crypto blockchain status via OxaPay.")}</i>')
         
         status = await _check_oxapay_invoice_bot(checkout["payment_id"])
         
@@ -8281,7 +8423,7 @@ async def _process_callback(client, query):
                 {"_id": checkout["_id"]},
                 {"$set": {"status": "approved", "updated_at": datetime.utcnow()}}
             )
-            await m.edit_text("✅ <b>Crypto Payment Confirmed successfully!</b>\nAdding to your unlocked stories...")
+            await m.edit_text('<emoji id="6273749318717412886">✅</emoji> <b>Crypto Payment Confirmed successfully!</b>\nAdding to your unlocked stories...')
             
             story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
             
@@ -8373,7 +8515,7 @@ async def _process_callback(client, query):
 
         await query.answer("Checking payment status... please wait.", show_alert=False)
 
-        m = await query.message.edit_text(f"🛡️ <b>{_sc('VERIFYING PAYMENT')}...</b>\n<i>{_sc('Checking with')} {method.capitalize()} {_sc('servers.')}</i>")
+        m = await query.message.edit_text(f'<emoji id="6019118553326689234">🛡️</emoji> <b>{_sc("VERIFYING PAYMENT")}...</b>\n<i>{_sc("Checking with")} {method.capitalize()} {_sc("servers.")}</i>')
 
         
 
@@ -8403,7 +8545,7 @@ async def _process_callback(client, query):
 
             # Send notification
 
-            await m.edit_text("✅ <b>Payment Confirmed successfully!</b>\nAdding to your unlocked stories...")
+            await m.edit_text('<emoji id="6273749318717412886">✅</emoji> <b>Payment Confirmed successfully!</b>\nAdding to your unlocked stories...')
 
             
 
@@ -8529,15 +8671,13 @@ async def _process_callback(client, query):
 
             # Revert to payment button state
 
+            pay_row = [_ikb(f"{_sc('PAY VIA')} {_sc(method.upper())}", url=checkout.get("pay_link_copy", "https://t.me"), icon_custom_emoji_id="6030410254276106984")] if "pay_link_copy" in checkout else []
             kb = [
-
-                [InlineKeyboardButton(f"💳 {_sc('PAY VIA')} {_sc(method.upper())}", url=checkout.get("pay_link_copy", "https://t.me"))] if "pay_link_copy" in checkout else [],
-
-                [InlineKeyboardButton(f"✅ {_sc('VERIFY PAYMENT')}", callback_data=f"mb#{method}_check#{s_id}")],
-
-                [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#return_main")]
-
+                pay_row,
+                [_ikb(f"{_sc('VERIFY PAYMENT')}", callback_data=f"mb#{method}_check#{s_id}", icon_custom_emoji_id="6273749318717412886")],
+                [_ikb(f"« ❮ {_sc('BACK')}", callback_data="mb#return_main", icon_custom_emoji_id="5774077015388852135")]
             ]
+            kb = [r for r in kb if r]
 
             # Since url is not strictly saved, we might have lost it.
 
@@ -9138,10 +9278,10 @@ async def dispatch_delivery_choice(client, user_id, story, part_info=None):
         back_btn_txt = f"« ❮ {_sc('MAIN MENU')}"
 
     dm_cb = f"mb#deliver_dm#{story_id_str}#{part_info.get('id')}" if part_info else f"mb#deliver_dm#{story_id_str}"
-    kb = [[InlineKeyboardButton(dm_btn_txt, callback_data=dm_cb)]]
+    kb = [[_ikb(dm_btn_txt, callback_data=dm_cb, icon_custom_emoji_id="5776182936638329359")]]
     if can_use_channel:
-        kb.append([InlineKeyboardButton(chan_btn_txt, callback_data=f"mb#deliver_channel#{story_id_str}")])
-    kb.append([InlineKeyboardButton(back_btn_txt, callback_data="mb#main_back")])
+        kb.append([_ikb(chan_btn_txt, callback_data=f"mb#deliver_channel#{story_id_str}", icon_custom_emoji_id="6030664675253820292")])
+    kb.append([_ikb(back_btn_txt, callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")])
 
 
 
@@ -9416,7 +9556,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
         bt = await db.db.premium_bots.find_one({"id": client.me.id})
         bt_cfg = bt.get("config", {}) if bt else {}
         user_obj = await get_robust_user(client, user_id)
-        src = story.get('source')
+        src = story.get('source') or story.get('channel_id')
         start = part_start if part_start else story.get('start_id')
         end = part_end if part_end else story.get('end_id')
         story_id_str = str(story['_id'])
@@ -9431,6 +9571,14 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                 msg_range = [mid for mid in val_ids if ps <= mid <= pe]
             else:
                 msg_range = val_ids
+        elif story.get('parts'):
+            parts_mids = [p['msg_id'] for p in story['parts'] if p.get('msg_id')]
+            if part_start and part_end:
+                ps = min(int(part_start), int(part_end))
+                pe = max(int(part_start), int(part_end))
+                msg_range = [mid for mid in parts_mids if ps <= mid <= pe]
+            else:
+                msg_range = parts_mids
         else:
             if not src or not start or not end:
                 await client.send_message(user_id, "❌ Story file range is not configured correctly. Please contact admin.")
@@ -9443,8 +9591,8 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
 
         # Fetching Message with Media & Cancel Button
         fetch_config = bt_cfg.get("fetching_media")
-        fetch_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⛔ CANCEL DELIVERY", callback_data=f"mb#cancel_dm#{story_id_str}")]])
-        fetch_text = f"<b>⏳ Starting DM Delivery...</b>\n\n<i>Please wait while we fetch and deliver your files. This may take a few moments.</i>"
+        fetch_kb = InlineKeyboardMarkup([[_ikb("CANCEL DELIVERY", callback_data=f"mb#cancel_dm#{story_id_str}", icon_custom_emoji_id="5774077015388852135")]])
+        fetch_text = f'<b><emoji id="5348471079482441278">⏳</emoji> Starting DM Delivery...</b>\n\n<i>Please wait while we fetch and deliver your files. This may take a few moments.</i>'
         
         fetch_msg = None
         if fetch_config:
@@ -9515,7 +9663,8 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                     message_id=msg_id,
                     protect_content=bt_cfg.get("protect", False) or not story.get('forwarding_enabled', True),
                 )
-                if cap_tpl:
+                is_show_delivery = bool(story.get("is_show") or bt_cfg.get("bot_mode") == "show_store")
+                if cap_tpl and not is_show_delivery:
                     my_kwargs = dict(kwargs)
                     if "{original_caption}" in cap_tpl or "{file_name}" in cap_tpl:
                         try:
@@ -10024,7 +10173,7 @@ async def _do_channel_delivery(client, user_id, story, status_msg=None):
 
 
 
-            kb_link = [[InlineKeyboardButton(back_btn_txt, callback_data="mb#main_back")]]
+            kb_link = [[_ikb(back_btn_txt, callback_data="mb#main_back", icon_custom_emoji_id="5774077015388852135")]]
 
             msg = await client.send_message(user_id, txt, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(kb_link))
 
@@ -10191,9 +10340,21 @@ async def _process_inline_query(client, inline_query):
         user = await db.get_user(user_id, from_user=inline_query.from_user, bot_id=bot_id) if user_id else {}
         lang = user.get('lang', 'en') if user else 'en'
         
-        q_bot = {"$or": [{"bot_id": bot_id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]} if bot_id else {}
-        
+        bt_rec = await db.db.premium_bots.find_one({"id": bot_id}) if bot_id else {}
+        bt_cfg = (bt_rec.get("config") or {}) if bt_rec else {}
+        is_ss = (bt_cfg.get("bot_mode") == "show_store")
+
+        if is_ss:
+            mode_cond = {"is_show": True}
+        else:
+            show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
+            ss_plats = [b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")]
+            mode_cond = {"is_show": {"$ne": True}}
+            if ss_plats:
+                mode_cond["platform"] = {"$nin": ss_plats}
+
         import re
+        q_cond = None
         if q:
             reg = re.escape(q)
             q_cond = {
@@ -10204,27 +10365,21 @@ async def _process_inline_query(client, inline_query):
                     {"genre": {"$regex": reg, "$options": "i"}}
                 ]
             }
-            if q_bot:
-                q_find = {"$and": [q_bot, q_cond]}
-            else:
-                q_find = q_cond
-        else:
-            q_find = q_bot if q_bot else {}
+
+        and_clauses = [mode_cond]
+        if q_bot:
+            and_clauses.append(q_bot)
+        if q_cond:
+            and_clauses.append(q_cond)
+        q_find = {"$and": and_clauses} if len(and_clauses) > 1 else and_clauses[0]
 
         stories = await db.db.premium_stories.find(q_find).sort("_id", -1).limit(50).to_list(length=50)
         if not stories:
-            if q:
-                reg = re.escape(q)
-                stories = await db.db.premium_stories.find({
-                    "$or": [
-                        {"story_name_en": {"$regex": reg, "$options": "i"}},
-                        {"story_name_hi": {"$regex": reg, "$options": "i"}},
-                        {"platform": {"$regex": reg, "$options": "i"}},
-                        {"genre": {"$regex": reg, "$options": "i"}}
-                    ]
-                }).sort("_id", -1).limit(50).to_list(length=50)
-            else:
-                stories = await db.db.premium_stories.find({}).sort("_id", -1).limit(50).to_list(length=50)
+            fallback_clauses = [mode_cond]
+            if q_cond:
+                fallback_clauses.append(q_cond)
+            fallback_find = {"$and": fallback_clauses} if len(fallback_clauses) > 1 else fallback_clauses[0]
+            stories = await db.db.premium_stories.find(fallback_find).sort("_id", -1).limit(50).to_list(length=50)
 
         from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
         results = []
@@ -10237,15 +10392,16 @@ async def _process_inline_query(client, inline_query):
             price = int(s.get('price', 0))
             thumb = _resolve_story_thumb_url(s)
 
+            item_type_label = "Show" if s.get("is_show") else "Story"
             desc_text = f"{platform} • {episodes} eps • ₹{price}"
+
+            start_cmd = f"/start s_{s.get('deep_key') or s_id}" if s.get("is_show") else f"/start story_{s_id}"
 
             article_kwargs = {
                 "id": f"{s_id}_{idx}",
                 "title": s_name,
                 "description": desc_text,
-                "input_message_content": InputTextMessageContent(
-                    f"/start story_{s_id}"
-                )
+                "input_message_content": InputTextMessageContent(start_cmd)
             }
             if thumb:
                 article_kwargs["thumb_url"] = thumb
@@ -10254,11 +10410,12 @@ async def _process_inline_query(client, inline_query):
 
             results.append(InlineQueryResultArticle(**article_kwargs))
 
+        pm_txt = ("🎬 Browse All Shows" if lang == 'en' else "🎬 सभी शो देखें") if is_ss else ("🛒 Browse All Marketplace Stories" if lang == 'en' else "🛒 सभी कहानियाँ देखें")
         await inline_query.answer(
             results=results,
             cache_time=1,
             is_personal=True,
-            switch_pm_text="🛒 Browse All Marketplace Stories" if lang == 'en' else "🛒 सभी कहानियाँ देखें",
+            switch_pm_text=pm_txt,
             switch_pm_parameter="marketplace"
         )
     except Exception as e:

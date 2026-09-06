@@ -7468,6 +7468,57 @@ async def adjust_all_story_prices(payload: dict):
         logger.error(f"Error bulk adjusting prices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@api_router.post("/admin/clean-fragmented-shows")
+async def clean_fragmented_shows_endpoint(payload: dict = None):
+    """
+    Purges standalone fragmented single-episode records created for Kuku TV / Story TV OTT shows,
+    preserving consolidated multi-episode show records.
+    """
+    try:
+        payload = payload or {}
+        telegram_id = str(payload.get("telegram_id", ""))
+        if telegram_id and not is_admin(telegram_id):
+            raise HTTPException(status_code=403, detail="Not authorized as Admin")
+
+        arya_db = app.state.db
+        query = {
+            "$and": [
+                {
+                    "$or": [
+                        {"platform": {"$regex": "^(kuku tv|story tv)$", "$options": "i"}},
+                        {"is_show": True}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"parts": {"$size": 0}},
+                        {"parts": {"$size": 1}},
+                        {"parts": {"$exists": False}},
+                        {"file_count": {"$lte": 1}}
+                    ]
+                }
+            ]
+        }
+
+        candidates = await arya_db.stories.find(query, {"title": 1, "story_name_en": 1, "platform": 1, "parts": 1}).to_list(length=500)
+        del_result = await arya_db.stories.delete_many(query)
+
+        global _stories_cache
+        _stories_cache = None
+
+        logger.info(f"[CleanFragmented] Purged {del_result.deleted_count} fragmented show records.")
+        return {
+            "success": True,
+            "deleted_count": del_result.deleted_count,
+            "purged_records": [{"id": str(d.get("_id")), "title": d.get("title") or d.get("story_name_en"), "platform": d.get("platform")} for d in candidates]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cleaning fragmented shows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ────────────────────────────────────────────────────────────────────────────────────────────────────
 # UPLOAD ADMIN IMAGE (POST /admin/upload-image)
 # ────────────────────────────────────────────────────────────────────────────────────────────────────

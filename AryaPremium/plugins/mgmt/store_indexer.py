@@ -42,6 +42,63 @@ def parse_duration_to_seconds(dur_str: str) -> int:
     return hrs * 3600 + mins * 60 + secs
 
 
+def extract_expected_episodes_count(ep_str: str) -> int:
+    """Extracts integer total episode count from '70', '1 to 50', '1-50', etc."""
+    if not ep_str:
+        return 0
+    ep_clean = str(ep_str).strip()
+    m_range = re.search(r'(?:to|-)\s*(\d+)', ep_clean, re.I)
+    if m_range:
+        return int(m_range.group(1))
+    m_num = re.search(r'(\d+)', ep_clean)
+    if m_num:
+        return int(m_num.group(1))
+    return 0
+
+
+def parse_episode_numbers(raw_caption: str, fallback_idx: int = 1) -> list[int]:
+    """
+    Parses episode numbers from video captions like:
+    'He Died Unwanted, Came Back Rich Episode - 4 , He Died Unwanted, Came Back Rich Episode - 5' -> [4, 5]
+    'He Died Unwanted, Came Back Rich Episode - 1' -> [1]
+    'Episode 10' -> [10]
+    """
+    if not raw_caption:
+        return [fallback_idx]
+    matches = re.findall(r'(?:Episode|Ep|Part)\s*[-:.]?\s*(\d+)', raw_caption, flags=re.I)
+    if matches:
+        return [int(m) for m in matches]
+    m_range = re.search(r'(\d+)\s*(?:to|-)\s*(\d+)', raw_caption, flags=re.I)
+    if m_range:
+        s, e = int(m_range.group(1)), int(m_range.group(2))
+        if 1 <= s <= e <= s + 200:
+            return list(range(s, e + 1))
+    return [fallback_idx]
+
+
+def is_story_completion_message(text: str) -> bool:
+    """
+    Detects show completion marker messages like:
+    'Hey, the story is complete. Hope you like it 🫶🏻.If you’re looking for another story, then try…    @StoriesByJeetXNew'
+    """
+    if not text:
+        return False
+    clean = text.lower()
+    markers = [
+        "story is complete",
+        "the story is complete",
+        "show is complete",
+        "the show is complete",
+        "hope you like it",
+        "looking for another story",
+        "story complete",
+        "show complete",
+        "kahaani poori ho gayi",
+        "kahani poori ho gayi",
+    ]
+    return any(m in clean for m in markers)
+
+
 def parse_show_caption(raw_text: str, custom_format: str = None) -> dict:
     """
     Extracts structured show metadata (title, author, language, episodes, duration)
@@ -49,13 +106,14 @@ def parse_show_caption(raw_text: str, custom_format: str = None) -> dict:
     Supports both custom format templates (e.g. with {title}, {author}, etc.) and smart regex matching.
     """
     if not raw_text:
-        return {"title": "", "author": "", "language": "", "episodes": "", "duration": "", "duration_seconds": 0}
+        return {"title": "", "author": "", "language": "", "episodes": "", "total_episodes": 0, "duration": "", "duration_seconds": 0}
 
     res = {
         "title": "",
         "author": "",
         "language": "",
         "episodes": "",
+        "total_episodes": 0,
         "duration": "",
         "duration_seconds": 0
     }
@@ -103,6 +161,9 @@ def parse_show_caption(raw_text: str, custom_format: str = None) -> dict:
         em = re.search(r'(?:🎬\s*(?:Episodes?|Ep|Total\s*Episodes?)?\s*:\s*|(?:\bEpisodes?|\bEp)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
         if em:
             res["episodes"] = em.group(1).strip().strip("•-—|/")
+
+    if res["episodes"]:
+        res["total_episodes"] = extract_expected_episodes_count(res["episodes"])
 
     if not res["duration"]:
         dm = re.search(r'(?:⏱\s*(?:Duration|Length|Time)?\s*:\s*|(?:\bDuration|\bTime)\s*:\s*)(.+?)' + stop, raw_text, flags=re.I)
@@ -252,6 +313,195 @@ def build_showcase_buttons(show_id: str, store_bot_username: str, tutorial_url: 
     return InlineKeyboardMarkup(buttons), api_buttons
 
 
+# ── Helper to commit grouped show document ──────────────────────────────────
+async def _commit_show_record(
+    client: Client,
+    channel_id: int,
+    bot_id: int,
+    bot_uname: str,
+    active_show: dict,
+    default_price: int = 19,
+    default_platform: str = "Story TV",
+    default_genre: str = "Drama / Romance"
+) -> dict:
+    """
+    Compiles all collected video episodes for active_show, uploads poster to Cloudflare R2,
+    stores or updates the show in premium_stories, and returns the final show_doc.
+    """
+    raw_episodes = active_show.get("episodes") or []
+    if not raw_episodes:
+        return None
+
+    # Deduplicate episodes by message id
+    seen_msg_ids = set()
+    unique_eps = []
+    for ep in raw_episodes:
+        if ep["msg_id"] not in seen_msg_ids:
+            seen_msg_ids.add(ep["msg_id"])
+            unique_eps.append(ep)
+
+    sorted_eps = sorted(unique_eps, key=lambda x: (x.get("part", 0), x.get("msg_id", 0)))
+    if not sorted_eps:
+        return None
+
+    first_msg_id = sorted_eps[0]["msg_id"]
+    last_msg_id = sorted_eps[-1]["msg_id"]
+    valid_file_ids = [e["msg_id"] for e in sorted_eps]
+
+    meta = active_show.get("meta") or {}
+    show_title = meta.get("title") or active_show.get("title") or f"Show #{first_msg_id}"
+    clean_title = _clean_show_title(show_title)
+    norm_key = _normalize_title(clean_title)
+
+    author = meta.get("author") or ""
+    language = meta.get("language") or "English"
+    episodes_str = meta.get("episodes") or str(len(sorted_eps))
+    expected_eps = active_show.get("expected_episodes") or len(sorted_eps)
+    total_episodes = max(expected_eps, len(sorted_eps))
+
+    total_sec = meta.get("duration_seconds") or sum(e.get("duration", 0) for e in sorted_eps)
+    dur_str = meta.get("duration") or _format_video_duration(total_sec)
+
+    # Check for existing show
+    existing = await db.db.premium_stories.find_one({
+        "$or": [
+            {"clean_title": norm_key, "bot_id": int(bot_id)},
+            {"channel_id": channel_id, "start_id": first_msg_id},
+            {"clean_title": norm_key}
+        ]
+    })
+
+    poster_msg = active_show.get("poster_msg")
+    poster_id = poster_msg.id if poster_msg else first_msg_id
+
+    tg_photo_file_id = ""
+    if poster_msg:
+        if getattr(poster_msg, 'photo', None):
+            tg_photo_file_id = poster_msg.photo.file_id
+        elif getattr(poster_msg, 'video', None) and getattr(poster_msg.video, 'thumbs', None):
+            tg_photo_file_id = poster_msg.video.thumbs[0].file_id
+
+    # If existing and already has same or more parts, reuse poster and update parts
+    poster_url = existing.get("poster_url", "") if existing else ""
+    if not poster_url:
+        try:
+            target_media_msg = poster_msg if (poster_msg and poster_msg.photo) else None
+            if not target_media_msg:
+                # Try getting the first episode's thumb or photo
+                first_ep_msg = None
+                try:
+                    first_ep_msg = await client.get_messages(channel_id, first_msg_id)
+                except Exception:
+                    pass
+                if first_ep_msg and (first_ep_msg.photo or getattr(first_ep_msg.video, 'thumbs', None)):
+                    target_media_msg = first_ep_msg
+
+            if target_media_msg:
+                media_dl = await client.download_media(target_media_msg)
+                if media_dl:
+                    from r2_helper import upload_image_to_r2
+                    poster_url = await upload_image_to_r2(
+                        media_dl, width=600, height=720, format="WEBP", quality=85, clean_title=clean_title
+                    )
+                    try:
+                        if os.path.exists(media_dl): os.remove(media_dl)
+                    except Exception: pass
+        except Exception as ex:
+            logger.debug(f"[StoreIndexer] R2 poster upload skipped for {clean_title}: {ex}")
+
+    parts_list = []
+    for idx, ep in enumerate(sorted_eps, start=1):
+        parts_list.append({
+            "part": idx,
+            "episodes_covered": ep.get("episodes_covered", [idx]),
+            "msg_id": ep["msg_id"],
+            "file_id": ep.get("file_id", ""),
+            "file_unique_id": ep.get("file_unique_id", ""),
+            "channel_id": channel_id,
+            "file_name": ep.get("file_name", f"{clean_title}_Ep{idx}.mp4"),
+            "caption": ep.get("caption", "")
+        })
+
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+
+    if existing:
+        await db.db.premium_stories.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {
+                "title": clean_title,
+                "story_name_en": clean_title,
+                "story_name_hi": clean_title,
+                "author": author or existing.get("author", ""),
+                "language": language or existing.get("language", "English"),
+                "episodes": episodes_str,
+                "total_episodes": total_episodes,
+                "file_count": len(parts_list),
+                "duration": dur_str,
+                "duration_seconds": total_sec,
+                "source": channel_id,
+                "channel_id": channel_id,
+                "start_id": first_msg_id,
+                "end_id": last_msg_id,
+                "valid_file_ids": valid_file_ids,
+                "parts": parts_list,
+                "poster_file_id": tg_photo_file_id or existing.get("poster_file_id", ""),
+                "poster_msg_id": poster_id,
+                "poster_url": poster_url or existing.get("poster_url", ""),
+                "banner_url": poster_url or existing.get("banner_url", ""),
+                "image": poster_url or tg_photo_file_id or existing.get("image", ""),
+                "cover": poster_url or tg_photo_file_id or existing.get("cover", ""),
+                "is_show": True,
+                "status": "Completed",
+                "updated_at": now_utc
+            }}
+        )
+        updated_doc = await db.db.premium_stories.find_one({"_id": existing["_id"]})
+        logger.info(f"[StoreIndexer] Updated show: '{clean_title}' ({len(parts_list)} episodes, IDs #{first_msg_id}..#{last_msg_id})")
+        return updated_doc
+
+    show_id = str(uuid.uuid4())[:8]
+    show_doc = {
+        "story_id": show_id,
+        "title": clean_title,
+        "story_name_en": clean_title,
+        "story_name_hi": clean_title,
+        "clean_title": norm_key,
+        "author": author,
+        "language": language,
+        "episodes": episodes_str,
+        "total_episodes": total_episodes,
+        "file_count": len(parts_list),
+        "platform": default_platform,
+        "genre": default_genre,
+        "duration": dur_str,
+        "duration_seconds": total_sec,
+        "price": default_price,
+        "bot_id": int(bot_id),
+        "bot_username": bot_uname,
+        "channel_id": channel_id,
+        "source": channel_id,
+        "poster_file_id": tg_photo_file_id,
+        "poster_msg_id": poster_id,
+        "poster_url": poster_url,
+        "banner_url": poster_url,
+        "image": poster_url or tg_photo_file_id,
+        "cover": poster_url or tg_photo_file_id,
+        "start_id": first_msg_id,
+        "end_id": last_msg_id,
+        "valid_file_ids": valid_file_ids,
+        "parts": parts_list,
+        "is_show": True,
+        "visibility": "available",
+        "status": "Completed",
+        "created_at": now_utc,
+        "uploaded_at": now_utc
+    }
+    await db.db.premium_stories.insert_one(show_doc)
+    logger.info(f"[StoreIndexer] Indexed new show: '{clean_title}' (ShowID: {show_id}, {len(parts_list)} episodes, IDs #{first_msg_id}..#{last_msg_id})")
+    return show_doc
+
+
 # ── Database Channel Sequential Auto-Scanner ──────────────────────────────────
 async def scan_and_index_channel(
     client: Client,
@@ -265,17 +515,16 @@ async def scan_and_index_channel(
     progress_callback = None
 ) -> dict:
     """
-    Scans a database channel sequentially, pairs Poster Image + Video files,
-    creates clean records in premium_stories, uploads posters to Cloudflare R2,
-    tracks last_scanned_msg_id to prevent re-scanning old messages, and returns statistics.
+    Scans a database channel sequentially, groups Poster Image + all consecutive Video episodes
+    belonging to the show (delimited by completion text markers or next show poster),
+    stores complete records in premium_stories with full parts array, uploads posters to Cloudflare R2,
+    and tracks last_scanned_msg_id.
     """
     indexed_count = 0
     duplicate_count = 0
     duplicate_titles = []
 
-    current_poster_msg = None
-    current_poster_title = ""
-    current_poster_meta = {}
+    active_show = None
 
     # Fetch bot document to resolve username and last scanned position
     bot_doc = await db.db.premium_bots.find_one({"$or": [{"id": int(bot_id)}, {"bot_id": int(bot_id)}]})
@@ -328,120 +577,111 @@ async def scan_and_index_channel(
                 raw_caption = msg.caption or ""
                 parsed_meta = parse_show_caption(raw_caption, custom_format=scan_fmt)
                 poster_title = parsed_meta.get("title") or _clean_show_title(raw_caption)
-                if poster_title:
-                    current_poster_msg = msg
-                    current_poster_title = poster_title
-                    current_poster_meta = parsed_meta
 
-            # Case 2: Message is a Video / Document Video
+                # Boundary Check: If an active show was accumulating and has episodes, finalize it!
+                if active_show and active_show.get("episodes"):
+                    doc = await _commit_show_record(
+                        client=client,
+                        channel_id=channel_id,
+                        bot_id=bot_id,
+                        bot_uname=bot_uname,
+                        active_show=active_show,
+                        default_price=default_price,
+                        default_platform=default_platform,
+                        default_genre=default_genre
+                    )
+                    if doc:
+                        indexed_count += 1
+                    active_show = None
+
+                # Initialize new active show buffer
+                if poster_title:
+                    active_show = {
+                        "title": poster_title,
+                        "meta": parsed_meta,
+                        "poster_msg": msg,
+                        "expected_episodes": parsed_meta.get("total_episodes") or extract_expected_episodes_count(parsed_meta.get("episodes")),
+                        "episodes": [],
+                        "channel_id": channel_id
+                    }
+                    logger.info(f"[StoreIndexer] Started new show buffer for '{poster_title}' (Msg #{msg.id}, Expected eps: {active_show['expected_episodes']})")
+
+            # Case 2: Message is a Video / Document Video (Episode)
             elif msg.video or (msg.document and msg.document.mime_type and "video" in msg.document.mime_type):
                 raw_cap = msg.caption or getattr(msg.document or msg.video, 'file_name', '') or ""
-                vid_parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
-                vid_title = vid_parsed.get("title") or _clean_show_title(raw_cap)
                 
-                duration_sec = 0
-                if msg.video:
-                    duration_sec = getattr(msg.video, 'duration', 0) or 0
-                duration_str = _format_video_duration(duration_sec)
+                if not active_show:
+                    # Video arrived without a preceding poster in batch
+                    vid_parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
+                    vid_title = vid_parsed.get("title") or _clean_show_title(raw_cap)
+                    active_show = {
+                        "title": vid_title or f"Show #{msg.id}",
+                        "meta": vid_parsed,
+                        "poster_msg": msg,
+                        "expected_episodes": vid_parsed.get("total_episodes") or extract_expected_episodes_count(vid_parsed.get("episodes")),
+                        "episodes": [],
+                        "channel_id": channel_id
+                    }
 
-                meta = current_poster_meta or vid_parsed or {}
-                show_title = meta.get("title") or current_poster_title or vid_title or f"Show #{msg.id}"
-                clean_title = _clean_show_title(show_title)
-                norm_key = _normalize_title(clean_title)
-
-                author = meta.get("author") or ""
-                language = meta.get("language") or "English"
-                episodes = meta.get("episodes") or ""
-                if meta.get("duration"):
-                    duration_str = meta.get("duration")
-                    if meta.get("duration_seconds"):
-                        duration_sec = meta.get("duration_seconds")
-
+                ep_nums = parse_episode_numbers(raw_cap, fallback_idx=len(active_show["episodes"]) + 1)
+                primary_ep = ep_nums[0] if ep_nums else (len(active_show["episodes"]) + 1)
                 file_uid = getattr(msg.video or msg.document, 'file_unique_id', '')
+                file_id = getattr(msg.video or msg.document, 'file_id', '')
+                file_name = getattr(msg.video or msg.document, 'file_name', f"{active_show['title']}_Ep{primary_ep}.mp4")
 
-                # Robust Deduplication Check (by clean title, file_unique_id, or msg_id in channel)
-                existing = await db.db.premium_stories.find_one({
-                    "$or": [
-                        {"clean_title": norm_key},
-                        {"parts.file_unique_id": file_uid} if file_uid else {"_id": None},
-                        {"parts.msg_id": msg.id, "channel_id": channel_id}
-                    ]
-                })
-                if existing:
-                    duplicate_count += 1
-                    duplicate_titles.append(clean_title)
-                    continue
-
-                poster_id = current_poster_msg.id if current_poster_msg else msg.id
-                show_id = str(uuid.uuid4())[:8]
-
-                poster_url = ""
-                try:
-                    target_media_msg = current_poster_msg if (current_poster_msg and current_poster_msg.photo) else (msg if (msg.photo or getattr(msg.video, 'thumbs', None)) else None)
-                    if target_media_msg:
-                        media_dl = await client.download_media(target_media_msg)
-                        if media_dl:
-                            from r2_helper import upload_image_to_r2
-                            poster_url = await upload_image_to_r2(media_dl, width=600, height=720, format="WEBP", quality=85, clean_title=clean_title)
-                            try:
-                                if os.path.exists(media_dl): os.remove(media_dl)
-                            except Exception: pass
-                except Exception as ex:
-                    logger.debug(f"[StoreIndexer] R2 poster upload skipped for {clean_title}: {ex}")
-
-                from datetime import datetime, timezone
-                now_utc = datetime.now(timezone.utc)
-
-                show_doc = {
-                    "story_id": show_id,
-                    "title": clean_title,
-                    "story_name_en": clean_title,
-                    "story_name_hi": clean_title,
-                    "clean_title": norm_key,
-                    "author": author,
-                    "language": language,
-                    "episodes": episodes,
-                    "platform": default_platform,
-                    "genre": default_genre,
-                    "duration": duration_str,
-                    "duration_seconds": duration_sec,
-                    "price": default_price,
-                    "bot_id": int(bot_id),
-                    "bot_username": bot_uname,
+                active_show["episodes"].append({
+                    "part": primary_ep,
+                    "episodes_covered": ep_nums,
+                    "msg_id": msg.id,
+                    "file_id": file_id,
+                    "file_unique_id": file_uid,
                     "channel_id": channel_id,
-                    "poster_msg_id": poster_id,
-                    "poster_url": poster_url,
-                    "banner_url": poster_url,
-                    "image": poster_url,
-                    "cover": poster_url,
-                    "parts": [{
-                        "part": 1,
-                        "file_id": getattr(msg.video or msg.document, 'file_id', ''),
-                        "file_unique_id": getattr(msg.video or msg.document, 'file_unique_id', ''),
-                        "msg_id": msg.id,
-                        "channel_id": channel_id,
-                        "file_name": getattr(msg.video or msg.document, 'file_name', f"{clean_title}.mp4")
-                    }],
-                    "is_show": True,
-                    "visibility": "available",
-                    "status": "Completed",
-                    "created_at": now_utc,
-                    "uploaded_at": now_utc
-                }
+                    "file_name": file_name,
+                    "caption": raw_cap,
+                    "duration": getattr(msg.video, 'duration', 0) if msg.video else 0
+                })
 
-                await db.db.premium_stories.insert_one(show_doc)
-                indexed_count += 1
-                logger.info(f"[StoreIndexer] Indexed #{indexed_count}: '{clean_title}' (ShowID: {show_id})")
+            # Case 3: Message is Text (Completion Marker)
+            elif msg.text:
+                raw_text = msg.text or ""
+                if active_show and is_story_completion_message(raw_text):
+                    logger.info(f"[StoreIndexer] Completion marker found for '{active_show.get('title')}' at Msg #{msg.id}")
+                    if active_show.get("episodes"):
+                        doc = await _commit_show_record(
+                            client=client,
+                            channel_id=channel_id,
+                            bot_id=bot_id,
+                            bot_uname=bot_uname,
+                            active_show=active_show,
+                            default_price=default_price,
+                            default_platform=default_platform,
+                            default_genre=default_genre
+                        )
+                        if doc:
+                            indexed_count += 1
+                    active_show = None
 
-                current_poster_msg = None
-                current_poster_title = ""
-                current_poster_meta = {}
-
-            if progress_callback and indexed_count % 10 == 0:
+            if progress_callback and indexed_count % 5 == 0:
                 try: await progress_callback(indexed_count, duplicate_count)
                 except Exception: pass
 
         msg_id += 50
+
+    # End of scan: finalize any remaining active show
+    if active_show and active_show.get("episodes"):
+        doc = await _commit_show_record(
+            client=client,
+            channel_id=channel_id,
+            bot_id=bot_id,
+            bot_uname=bot_uname,
+            active_show=active_show,
+            default_price=default_price,
+            default_platform=default_platform,
+            default_genre=default_genre
+        )
+        if doc:
+            indexed_count += 1
+        active_show = None
 
     # Persist the highest scanned message ID so we never repeat already scanned messages
     if highest_seen_msg_id > saved_last_id:
@@ -542,12 +782,14 @@ async def publish_show_to_showcase(
 
 
 # ── Live Auto-Poster for Database Channel Arrivals ───────────────────────────
-_pending_live_posters = {} # { channel_id: { "msg_id": msg_id, "title": title, "meta": meta_dict, "time": timestamp } }
+_active_live_shows = {}  # { channel_id: { "title": ..., "meta": ..., "poster_msg": ..., "expected_episodes": ..., "episodes": [], "time": ... } }
 
 async def handle_live_channel_show_arrival(client: Client, message: Message):
     """
     Listens live to configured database channels.
-    Auto-indexes new poster + video arrivals and auto-posts to the Showcase Channel.
+    Auto-indexes new poster + video arrivals, groups all episodes of the show,
+    and auto-posts the completed show to the Showcase Channel upon completion text marker
+    or next show arrival.
     Only active when matching bot has config.auto_index_active == True.
     """
     if not message or not message.chat:
@@ -566,10 +808,11 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
     b_id = matching_bot["id"]
     cfg = matching_bot.get("config", {}) or {}
     target_showcase = cfg.get("showcase_channel_id")
-    if not target_showcase:
-        return
     b_uname = matching_bot.get("username", "StoreBot")
     scan_fmt = cfg.get("scan_format")
+    def_price = cfg.get("default_price", 19)
+    def_platform = cfg.get("platform_name", "Story TV")
+    def_genre = cfg.get("genre", "Drama / Romance")
 
     # 1. Poster Photo arrived
     if message.photo:
@@ -577,130 +820,79 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
         parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
         t = parsed.get("title") or _clean_show_title(raw_cap)
         if t:
-            _pending_live_posters[ch_id] = {
-                "msg_id": message.id,
+            # If there was a previous live show accumulating in this channel with episodes, finalize it!
+            prev_act = _active_live_shows.get(ch_id)
+            if prev_act and prev_act.get("episodes"):
+                logger.info(f"[LiveStoreWatcher] Finalizing previous show '{prev_act.get('title')}' before starting new show '{t}'")
+                prev_doc = await _commit_show_record(
+                    client=client,
+                    channel_id=ch_id,
+                    bot_id=b_id,
+                    bot_uname=b_uname,
+                    active_show=prev_act,
+                    default_price=def_price,
+                    default_platform=def_platform,
+                    default_genre=def_genre
+                )
+                if prev_doc and target_showcase:
+                    try:
+                        await publish_show_to_showcase(
+                            client=client,
+                            target_channel_id=target_showcase,
+                            show=prev_doc,
+                            store_bot_username=b_uname,
+                            tutorial_link=cfg.get("tutorial_url", "https://t.me/UseAryaBot")
+                        )
+                    except Exception as ex:
+                        logger.error(f"[LiveStoreWatcher] Auto-publish failed: {ex}")
+
+            _active_live_shows[ch_id] = {
                 "title": t,
                 "meta": parsed,
+                "poster_msg": message,
+                "expected_episodes": parsed.get("total_episodes") or extract_expected_episodes_count(parsed.get("episodes")),
+                "episodes": [],
+                "channel_id": ch_id,
                 "time": time.time()
             }
-            logger.info(f"[LiveStoreWatcher] Cached pending poster for '{t}' (Msg: {message.id}) in DB {ch_id}")
+            logger.info(f"[LiveStoreWatcher] Started live show buffer for '{t}' (Msg #{message.id}) in DB {ch_id}")
         return
 
-    # 2. Video arrived
+    # 2. Video arrived (Episode)
     elif message.video or (message.document and message.document.mime_type and "video" in message.document.mime_type):
         raw_cap = message.caption or getattr(message.document or message.video, 'file_name', '') or ""
-        vid_parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
-        vid_title = vid_parsed.get("title") or _clean_show_title(raw_cap)
-        
-        pending = _pending_live_posters.get(ch_id)
-        poster_id = message.id
-        meta = {}
-        show_title = vid_title or f"Show #{message.id}"
-        if pending and (time.time() - pending.get("time", 0)) < 600:
-            poster_id = pending["msg_id"]
-            meta = pending.get("meta") or {}
-            show_title = meta.get("title") or pending.get("title") or show_title
-            del _pending_live_posters[ch_id]
-        if not meta:
-            meta = vid_parsed
-
-        clean_t = _clean_show_title(show_title)
-        norm_key = _normalize_title(clean_t)
-        file_uid = getattr(message.video or message.document, 'file_unique_id', '')
-
-        # Deduplication Check
-        existing = await db.db.premium_stories.find_one({
-            "$or": [
-                {"clean_title": norm_key},
-                {"parts.file_unique_id": file_uid} if file_uid else {"_id": None},
-                {"parts.msg_id": message.id, "channel_id": ch_id}
-            ]
-        })
-        if existing:
-            logger.warning(f"[LiveStoreWatcher] Duplicate show skipped: {clean_t}")
-            return
-
-        duration_sec = 0
-        if message.video:
-            duration_sec = getattr(message.video, 'duration', 0) or 0
-        duration_str = _format_video_duration(duration_sec)
-
-        author = meta.get("author") or ""
-        language = meta.get("language") or "English"
-        episodes = meta.get("episodes") or ""
-        if meta.get("duration"):
-            duration_str = meta.get("duration")
-            if meta.get("duration_seconds"):
-                duration_sec = meta.get("duration_seconds")
-
-        show_id = str(uuid.uuid4())[:8]
-        def_price = cfg.get("default_price", 19)
-        def_platform = cfg.get("platform_name", "Story TV")
-
-        # Upload poster to Cloudflare R2
-        poster_url = ""
-        try:
-            target_poster_msg = None
-            if pending and pending.get("msg_id"):
-                try:
-                    target_poster_msg = await client.get_messages(ch_id, pending["msg_id"])
-                except Exception: pass
-            if not target_poster_msg or not target_poster_msg.photo:
-                target_poster_msg = message if (message.photo or getattr(message.video, 'thumbs', None)) else None
-
-            if target_poster_msg:
-                media_dl = await client.download_media(target_poster_msg)
-                if media_dl:
-                    from r2_helper import upload_image_to_r2
-                    poster_url = await upload_image_to_r2(media_dl, width=600, height=720, format="WEBP", quality=85, clean_title=clean_t)
-                    try:
-                        if os.path.exists(media_dl): os.remove(media_dl)
-                    except Exception: pass
-        except Exception as ex:
-            logger.debug(f"[LiveStoreWatcher] R2 poster upload skipped for {clean_t}: {ex}")
-
-        from datetime import datetime, timezone
-        now_utc = datetime.now(timezone.utc)
-
-        show_doc = {
-            "story_id": show_id,
-            "title": clean_t,
-            "story_name_en": clean_t,
-            "story_name_hi": clean_t,
-            "clean_title": norm_key,
-            "author": author,
-            "language": language,
-            "episodes": episodes,
-            "platform": def_platform,
-            "genre": "Drama / Romance",
-            "duration": duration_str,
-            "duration_seconds": duration_sec,
-            "price": def_price,
-            "bot_id": int(b_id),
-            "bot_username": b_uname,
-            "channel_id": ch_id,
-            "poster_msg_id": poster_id,
-            "poster_url": poster_url,
-            "banner_url": poster_url,
-            "image": poster_url,
-            "cover": poster_url,
-            "parts": [{
-                "part": 1,
-                "file_id": getattr(message.video or message.document, 'file_id', ''),
-                "file_unique_id": getattr(message.video or message.document, 'file_unique_id', ''),
-                "msg_id": message.id,
+        if ch_id not in _active_live_shows:
+            vid_parsed = parse_show_caption(raw_cap, custom_format=scan_fmt)
+            vid_title = vid_parsed.get("title") or _clean_show_title(raw_cap)
+            _active_live_shows[ch_id] = {
+                "title": vid_title or f"Show #{message.id}",
+                "meta": vid_parsed,
+                "poster_msg": message,
+                "expected_episodes": vid_parsed.get("total_episodes") or extract_expected_episodes_count(vid_parsed.get("episodes")),
+                "episodes": [],
                 "channel_id": ch_id,
-                "file_name": getattr(message.video or message.document, 'file_name', f"{clean_t}.mp4")
-            }],
-            "is_show": True,
-            "visibility": "available",
-            "status": "Completed",
-            "created_at": now_utc,
-            "uploaded_at": now_utc
-        }
+                "time": time.time()
+            }
 
-        await db.db.premium_stories.insert_one(show_doc)
-        logger.info(f"[LiveStoreWatcher] Auto-indexed live show '{clean_t}' (ShowID: {show_id})")
+        ep_nums = parse_episode_numbers(raw_cap, fallback_idx=len(_active_live_shows[ch_id]["episodes"]) + 1)
+        primary_ep = ep_nums[0] if ep_nums else (len(_active_live_shows[ch_id]["episodes"]) + 1)
+        file_uid = getattr(message.video or message.document, 'file_unique_id', '')
+        file_id = getattr(message.video or message.document, 'file_id', '')
+        file_name = getattr(message.video or message.document, 'file_name', f"{_active_live_shows[ch_id]['title']}_Ep{primary_ep}.mp4")
+
+        _active_live_shows[ch_id]["episodes"].append({
+            "part": primary_ep,
+            "episodes_covered": ep_nums,
+            "msg_id": message.id,
+            "file_id": file_id,
+            "file_unique_id": file_uid,
+            "channel_id": ch_id,
+            "file_name": file_name,
+            "caption": raw_cap,
+            "duration": getattr(message.video, 'duration', 0) if message.video else 0
+        })
+        _active_live_shows[ch_id]["time"] = time.time()
+        logger.info(f"[LiveStoreWatcher] Appended episode {primary_ep} for '{_active_live_shows[ch_id]['title']}' (Total eps: {len(_active_live_shows[ch_id]['episodes'])})")
 
         # Update last scanned ID
         await db.db.premium_bots.update_one(
@@ -708,22 +900,75 @@ async def handle_live_channel_show_arrival(client: Client, message: Message):
             {"$set": {"config.last_scanned_msg_id": message.id}}
         )
 
-        # Clear Mini App Cache so new show is instantly visible in Mini App
-        try:
-            import mini_app_api
-            mini_app_api._stories_cache = None
-        except Exception:
-            pass
+        # Safety auto-finalize if expected episodes count reached
+        exp = _active_live_shows[ch_id].get("expected_episodes", 0)
+        if exp > 0 and len(_active_live_shows[ch_id]["episodes"]) >= exp:
+            async def _delayed_finalize(ch, snap_len):
+                await asyncio.sleep(25)
+                act = _active_live_shows.get(ch)
+                if act and len(act.get("episodes", [])) == snap_len:
+                    logger.info(f"[LiveStoreWatcher] Expected episodes ({exp}) reached & idle. Auto-finalizing '{act.get('title')}'...")
+                    doc = await _commit_show_record(
+                        client=client,
+                        channel_id=ch,
+                        bot_id=b_id,
+                        bot_uname=b_uname,
+                        active_show=act,
+                        default_price=def_price,
+                        default_platform=def_platform,
+                        default_genre=def_genre
+                    )
+                    _active_live_shows.pop(ch, None)
+                    if doc and target_showcase:
+                        try:
+                            await publish_show_to_showcase(
+                                client=client,
+                                target_channel_id=target_showcase,
+                                show=doc,
+                                store_bot_username=b_uname,
+                                tutorial_link=cfg.get("tutorial_url", "https://t.me/UseAryaBot")
+                            )
+                        except Exception as ex:
+                            logger.error(f"[LiveStoreWatcher] Auto-publish failed: {ex}")
+            asyncio.create_task(_delayed_finalize(ch_id, len(_active_live_shows[ch_id]["episodes"])))
+        return
 
-        try:
-            await publish_show_to_showcase(
-                client=client,
-                target_channel_id=target_showcase,
-                show=show_doc,
-                store_bot_username=b_uname,
-                tutorial_link=cfg.get("tutorial_url", "https://t.me/UseAryaBot")
-            )
-            logger.info(f"[LiveStoreWatcher] Auto-published '{clean_t}' to Showcase Channel {target_showcase}")
-        except Exception as e:
-            logger.error(f"[LiveStoreWatcher] Auto-publish failed: {e}")
+    # 3. Text arrived (Completion Marker)
+    elif message.text:
+        txt = message.text or ""
+        if is_story_completion_message(txt):
+            active = _active_live_shows.get(ch_id)
+            if active and active.get("episodes"):
+                logger.info(f"[LiveStoreWatcher] Story completion marker detected for '{active.get('title')}' in DB {ch_id}")
+                show_doc = await _commit_show_record(
+                    client=client,
+                    channel_id=ch_id,
+                    bot_id=b_id,
+                    bot_uname=b_uname,
+                    active_show=active,
+                    default_price=def_price,
+                    default_platform=def_platform,
+                    default_genre=def_genre
+                )
+                del _active_live_shows[ch_id]
+
+                # Clear Mini App Cache so new show is instantly visible in Mini App
+                try:
+                    import mini_app_api
+                    mini_app_api._stories_cache = None
+                except Exception:
+                    pass
+
+                if show_doc and target_showcase:
+                    try:
+                        await publish_show_to_showcase(
+                            client=client,
+                            target_channel_id=target_showcase,
+                            show=show_doc,
+                            store_bot_username=b_uname,
+                            tutorial_link=cfg.get("tutorial_url", "https://t.me/UseAryaBot")
+                        )
+                        logger.info(f"[LiveStoreWatcher] Auto-published '{show_doc.get('title')}' to Showcase Channel {target_showcase}")
+                    except Exception as ex:
+                        logger.error(f"[LiveStoreWatcher] Auto-publish failed: {ex}")
 
