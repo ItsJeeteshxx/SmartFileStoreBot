@@ -2194,7 +2194,14 @@ async def _fetch_url_bytes(url: str) -> bytes | None:
     return None
 
 
-async def _send_story_photo_bytes(client, user_id: int, img_bytes: bytes, caption: str, reply_markup=None, story: dict = None) -> bool:
+def _is_checkout_instruction_img(val) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    v_low = val.lower()
+    return "a6xw61" in v_low or "4ud7fx" in v_low
+
+
+async def _send_story_photo_bytes(client, user_id: int, img_bytes: bytes, caption: str, reply_markup=None, story: dict = None, allow_db_cache: bool = True) -> bool:
     """Uploads raw image bytes directly via Telegram Bot API multipart sendPhoto."""
     bot_token = await _get_seller_bot_token(client)
     if not bot_token:
@@ -2219,13 +2226,14 @@ async def _send_story_photo_bytes(client, user_id: int, img_bytes: bytes, captio
             async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
                 res = await resp.json()
                 if res.get("ok"):
-                    # Cache the new file_id for THIS bot so future queries are instant
+                    # Cache the new file_id for THIS bot so future queries are instant (ONLY if allowed)
                     try:
-                        photos = res.get("result", {}).get("photo", [])
-                        if photos and story and story.get("_id"):
-                            new_fid = photos[-1].get("file_id")
-                            if new_fid:
-                                await db.db.premium_stories.update_one({"_id": story["_id"]}, {"$set": {"image": new_fid}})
+                        if allow_db_cache:
+                            photos = res.get("result", {}).get("photo", [])
+                            if photos and story and story.get("_id"):
+                                new_fid = photos[-1].get("file_id")
+                                if new_fid:
+                                    await db.db.premium_stories.update_one({"_id": story["_id"]}, {"$set": {"image": new_fid}})
                     except Exception:
                         pass
                     return True
@@ -2253,19 +2261,22 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
         val = story.get(k)
         if val and isinstance(val, str):
             val = val.strip()
+            if _is_checkout_instruction_img(val):
+                continue
             if val.startswith("http://") or val.startswith("https://"):
                 if val not in http_candidates: http_candidates.append(val)
             elif val.startswith("/") or val.startswith("uploads/") or val.startswith("static/"):
                 full_url = "https://aryapremium.store/" + val.lstrip("/")
                 if full_url not in http_candidates: http_candidates.append(full_url)
 
-    if fallback_photo and isinstance(fallback_photo, str) and fallback_photo.startswith("http"):
+    if fallback_photo and isinstance(fallback_photo, str) and fallback_photo.startswith("http") and not _is_checkout_instruction_img(fallback_photo):
         if fallback_photo not in http_candidates: http_candidates.append(fallback_photo)
 
     for h_url in http_candidates:
         img_bytes = await _fetch_url_bytes(h_url)
         if img_bytes:
-            ok = await _send_story_photo_bytes(client, user_id, img_bytes, caption, reply_markup, story)
+            is_fb = (h_url == fallback_photo) or _is_checkout_instruction_img(h_url)
+            ok = await _send_story_photo_bytes(client, user_id, img_bytes, caption, reply_markup, story, allow_db_cache=not is_fb)
             if ok:
                 return True
             try:
@@ -2280,12 +2291,13 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
             except Exception as e:
                 logger.debug(f"Pyrogram BytesIO send_photo failed: {e}")
 
-    # ── 2. Check direct file_id candidates ──
+    # ── 2. Check direct file_id candidates (prioritize original poster over image) ──
     fid_candidates = []
-    for k in ("poster_file_id", "image", "poster", "banner", "thumbnail"):
+    for k in ("poster_file_id", "cover", "poster", "banner", "thumbnail", "image"):
         val = story.get(k)
         if val and isinstance(val, str) and not val.startswith("http") and not val.startswith("/"):
-            if val not in fid_candidates: fid_candidates.append(val)
+            if not _is_checkout_instruction_img(val) and val not in fid_candidates:
+                fid_candidates.append(val)
 
     has_custom_emoji = reply_markup and any(
         hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
@@ -2386,7 +2398,12 @@ async def _show_story_profile(client, user_id, story, lang):
 
     episodes = story.get('episodes', 'Unknown')
 
-    image = story.get('image') or story.get('poster_url') or story.get('image_url')
+    image = None
+    for cand_k in ("poster_url", "banner_url", "image_url", "poster_file_id", "cover", "poster", "banner", "image"):
+        cand_val = story.get(cand_k)
+        if cand_val and not _is_checkout_instruction_img(cand_val):
+            image = cand_val
+            break
 
 
 
@@ -2704,6 +2721,161 @@ def _upi_availability(bot_cfg: dict) -> dict:
 
 
 
+_CHECKOUT_IMAGE_CACHE: dict = {}  # (bot_token, img_url) -> file_id
+
+
+async def _send_checkout_screen(client, user_id: int, img_url: str, caption: str, reply_markup=None, msg_or_query=None) -> bool:
+    """
+    Renders the official Secure Checkout screen displaying the instruction image (NOT story banner).
+    1. Attempts in-place editMessageMedia via Telegram Bot API so user smoothly transitions
+       to checkout instructions without message deletion flicker.
+    2. If in-place media edit fails or query has no photo message, deletes previous message
+       and sends a new photo message with the instructions image.
+    3. Caches instruction image file_id per bot in memory for instant delivery.
+    4. NEVER modifies or saves anything into db.premium_stories.
+    """
+    from pyrogram import enums
+    import aiohttp
+    import json
+    import re
+    import io
+
+    bot_token = await _get_seller_bot_token(client)
+    cache_key = (bot_token or "", img_url)
+    cached_fid = _CHECKOUT_IMAGE_CACHE.get(cache_key)
+
+    is_msg = hasattr(msg_or_query, "text") or hasattr(msg_or_query, "photo")
+    cb_query = msg_or_query if not is_msg else None
+    existing_msg = getattr(cb_query, "message", None) if cb_query else (msg_or_query if is_msg else None)
+    has_photo_msg = existing_msg and getattr(existing_msg, "photo", None) is not None
+
+    api_text = re.sub(r'<emoji id="(\d+)">([^<]*)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', caption)
+    api_kb = _markup_to_bot_api_list(reply_markup) if reply_markup else []
+
+    # ── 1. Fast In-Place Media Edit (if triggered from CallbackQuery on photo message) ──
+    if bot_token and cb_query and has_photo_msg and getattr(existing_msg, "id", None):
+        target_media = cached_fid or img_url
+        edit_payload = {
+            "chat_id": int(user_id),
+            "message_id": int(existing_msg.id),
+            "media": json.dumps({
+                "type": "photo",
+                "media": target_media,
+                "caption": api_text,
+                "parse_mode": "HTML"
+            }),
+            "reply_markup": json.dumps({"inline_keyboard": api_kb})
+        }
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/editMessageMedia"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=edit_payload, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
+                    res = await resp.json()
+                    if res.get("ok"):
+                        photos = res.get("result", {}).get("photo", [])
+                        if photos and photos[-1].get("file_id"):
+                            _CHECKOUT_IMAGE_CACHE[cache_key] = photos[-1]["file_id"]
+                        return True
+                    else:
+                        logger.debug(f"[Checkout Screen] editMessageMedia returned: {res}")
+        except Exception as e:
+            logger.debug(f"[Checkout Screen] editMessageMedia exception: {e}")
+
+    # ── 2. Clean up previous message before sending new checkout photo ──
+    try:
+        if existing_msg:
+            await existing_msg.delete()
+        elif hasattr(msg_or_query, "delete"):
+            await msg_or_query.delete()
+    except Exception:
+        pass
+
+    # ── 3. Send using cached Telegram file_id if available ──
+    if cached_fid:
+        if bot_token:
+            try:
+                url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+                payload = {
+                    "chat_id": str(user_id),
+                    "photo": cached_fid,
+                    "caption": api_text,
+                    "parse_mode": "HTML",
+                    "reply_markup": {"inline_keyboard": api_kb} if api_kb else {}
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+                        res = await resp.json()
+                        if res.get("ok"):
+                            return True
+            except Exception as e:
+                logger.debug(f"[Checkout Screen] Cached file_id sendPhoto failed: {e}")
+
+        try:
+            await client.send_photo(
+                chat_id=user_id,
+                photo=cached_fid,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"[Checkout Screen] Pyrogram send_photo with cached_fid failed: {e}")
+
+    # ── 4. Fetch bytes from img_url and send multipart ──
+    img_bytes = await _fetch_url_bytes(img_url)
+    if img_bytes and bot_token:
+        try:
+            data = aiohttp.FormData()
+            data.add_field("chat_id", str(user_id))
+            data.add_field("caption", api_text)
+            data.add_field("parse_mode", "HTML")
+            if api_kb:
+                data.add_field("reply_markup", json.dumps({"inline_keyboard": api_kb}))
+            data.add_field("photo", img_bytes, filename="checkout_instructions.png", content_type="image/png")
+
+            url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                    res = await resp.json()
+                    if res.get("ok"):
+                        photos = res.get("result", {}).get("photo", [])
+                        if photos and photos[-1].get("file_id"):
+                            _CHECKOUT_IMAGE_CACHE[cache_key] = photos[-1]["file_id"]
+                        return True
+                    else:
+                        logger.debug(f"[Checkout Screen] Multipart sendPhoto returned: {res}")
+        except Exception as e:
+            logger.debug(f"[Checkout Screen] Multipart sendPhoto exception: {e}")
+
+    # ── 5. Pyrogram BytesIO fallback ──
+    if img_bytes:
+        try:
+            await client.send_photo(
+                chat_id=user_id,
+                photo=io.BytesIO(img_bytes),
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"[Checkout Screen] Pyrogram BytesIO sendPhoto failed: {e}")
+
+    # ── 6. Ultimate text fallback ──
+    try:
+        await client.send_message(
+            chat_id=user_id,
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.HTML
+        )
+        return True
+    except Exception as e:
+        logger.error(f"[Checkout Screen] Fallback text message failed: {e}")
+        return False
+
+
 async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict = None):
 
     # ── Checkout Mode Routing ──────────────────────────────────────────────────
@@ -2868,44 +3040,13 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
 
 
     IMG_URL = "https://files.catbox.moe/4ud7fx.png"
-
-    # Fast In-Place Edit if called from CallbackQuery on an existing photo message
-    if not is_msg and getattr(msg_or_query, "message", None) and getattr(msg_or_query.message, "photo", None):
-        try:
-            ok = await _send_or_edit_seller_bot_api(
-                client=client,
-                chat_id=user_id,
-                text=txt,
-                markup=markup,
-                message_id=msg_or_query.message.id
-            )
-            if ok:
-                return
-            await msg_or_query.message.edit_caption(
-                caption=txt,
-                reply_markup=markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-            return
-        except Exception as edit_err:
-            logger.debug(f"[Checkout FastEdit V1] in-place caption edit fallback: {edit_err}")
-
-    # Delete previous message as fallback before sending new photo
-    try:
-        if is_msg:
-            await msg_or_query.delete()
-        else:
-            await msg_or_query.message.delete()
-    except Exception:
-        pass
-
-    await _send_story_photo(
+    return await _send_checkout_screen(
         client=client,
         user_id=user_id,
-        story=story,
+        img_url=IMG_URL,
         caption=txt,
         reply_markup=markup,
-        fallback_photo=IMG_URL
+        msg_or_query=msg_or_query
     )
 
 
@@ -3046,43 +3187,13 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     markup = InlineKeyboardMarkup(kb)
 
     IMG_URL = "https://files.catbox.moe/a6xw61.png"
-
-    # Fast In-Place Edit if called from CallbackQuery on an existing photo message
-    if not is_msg and getattr(msg_or_query, "message", None) and getattr(msg_or_query.message, "photo", None):
-        try:
-            ok = await _send_or_edit_seller_bot_api(
-                client=client,
-                chat_id=user_id,
-                text=txt,
-                markup=markup,
-                message_id=msg_or_query.message.id
-            )
-            if ok:
-                return
-            await msg_or_query.message.edit_caption(
-                caption=txt,
-                reply_markup=markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-            return
-        except Exception as edit_err:
-            logger.debug(f"[Checkout FastEdit V2] in-place caption edit fallback: {edit_err}")
-
-    try:
-        if is_msg:
-            await msg_or_query.delete()
-        else:
-            await msg_or_query.message.delete()
-    except Exception:
-        pass
-
-    await _send_story_photo(
+    return await _send_checkout_screen(
         client=client,
         user_id=user_id,
-        story=story,
+        img_url=IMG_URL,
         caption=txt,
         reply_markup=markup,
-        fallback_photo=IMG_URL
+        msg_or_query=msg_or_query
     )
 
 
@@ -10526,6 +10637,8 @@ def _resolve_story_thumb_url(s: dict) -> str | None:
         val = s.get(k)
         if val and isinstance(val, str):
             val = val.strip()
+            if _is_checkout_instruction_img(val):
+                continue
             if val.startswith("http://") or val.startswith("https://"):
                 return val
             if (val.startswith("/") or val.startswith("uploads/") or val.startswith("static/") or (val.endswith((".jpg", ".jpeg", ".png", ".webp")) and not val.startswith("AgAC") and len(val) < 80 and " " not in val)):

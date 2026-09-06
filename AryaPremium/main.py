@@ -338,6 +338,14 @@ async def main():
     if 'mgmt_bot' in locals():
         asyncio.create_task(_weekly_dead_file_cleaner_task())
 
+    # Auto-Restore any story banners that were contaminated by checkout instructions
+    try:
+        from scripts.restore_story_banners import restore_contaminated_banners
+        mb_for_restore = mgmt_bot if 'mgmt_bot' in locals() else None
+        asyncio.create_task(restore_contaminated_banners(db=db, bot_client=mb_for_restore))
+    except Exception as e:
+        logger.warning(f"Could not trigger story banner restoration task: {e}")
+
     # Keep bots running
     await idle()
 
