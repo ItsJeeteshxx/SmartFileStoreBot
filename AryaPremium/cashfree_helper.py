@@ -10,22 +10,64 @@ logger = logging.getLogger("AryaCashfree")
 
 async def get_cashfree_config() -> dict:
     """Fetches Cashfree credentials from MongoDB feature_toggles / config."""
-    cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-    enabled = cfg.get("cashfree_enabled", False)
-    app_id = cfg.get("cashfree_app_id") or cfg.get("cashfree_api_id") or getattr(Config, "CASHFREE_APP_ID", "") or ""
-    secret_key = cfg.get("cashfree_secret_key") or getattr(Config, "CASHFREE_SECRET_KEY", "") or ""
-    env = (cfg.get("cashfree_env") or getattr(Config, "CASHFREE_ENV", "production") or "production").lower()
-    
-    base_url = "https://sandbox.cashfree.com/pg" if env == "sandbox" else "https://api.cashfree.com/pg"
+    try:
+        from AryaPremium.database import db
+    except ImportError:
+        from database import db
+
+    try:
+        cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
+    except Exception as ex:
+        logger.warning(f"[CF] Failed to fetch feature_toggles: {ex}")
+        cfg = {}
+
+    cf_status = str(cfg.get("cashfree_status", "")).strip().lower()
+    cf_enabled_flag = cfg.get("cashfree_enabled", None)
+
+    app_id = (
+        cfg.get("cashfree_app_id") 
+        or cfg.get("cashfree_api_id") 
+        or getattr(Config, "CASHFREE_APP_ID", "") 
+        or ""
+    ).strip()
+
+    secret_key = (
+        cfg.get("cashfree_secret_key") 
+        or getattr(Config, "CASHFREE_SECRET_KEY", "") 
+        or ""
+    ).strip()
+
+    env = (
+        cfg.get("cashfree_env") 
+        or getattr(Config, "CASHFREE_ENV", "production") 
+        or "production"
+    ).strip().lower()
+
+    is_sandbox = (
+        env in ("sandbox", "staging", "test")
+        or "TEST" in app_id.upper()
+        or "SANDBOX" in app_id.upper()
+    )
+    base_url = "https://sandbox.cashfree.com/pg" if is_sandbox else "https://api.cashfree.com/pg"
     is_configured = bool(app_id and secret_key)
-    logger.info(f"[CF] Config: enabled={enabled}, app_id={'SET' if app_id else 'MISSING'}, secret={'SET' if secret_key else 'MISSING'}, env={env}, is_configured={is_configured}")
+
+    is_disabled = (cf_status in ("disabled", "hidden", "false", "0") or cf_enabled_flag is False)
+    is_explicitly_enabled = (cf_status in ("active", "enabled", "visible", "true", "1") or cf_enabled_flag is True)
+
+    # Enabled if configured and either explicitly enabled or not explicitly hidden/disabled
+    enabled = is_configured and (is_explicitly_enabled or (cf_status not in ("hidden", "disabled") and not is_disabled))
+
+    logger.info(f"[CF] Config: enabled={enabled}, is_configured={is_configured}, is_sandbox={is_sandbox}, env={env}, base_url={base_url}")
     return {
-        "enabled": bool(enabled and app_id and secret_key),
+        "enabled": enabled,
         "is_configured": is_configured,
-        "app_id": str(app_id).strip(),
-        "secret_key": str(secret_key).strip(),
-        "env": env,
-        "base_url": base_url
+        "is_sandbox": is_sandbox,
+        "app_id": app_id,
+        "secret_key": secret_key,
+        "env": "sandbox" if is_sandbox else "production",
+        "base_url": base_url,
+        "callback_url": cfg.get("cashfree_callback_url", "https://sliceurl.app/api/cashfree-callback"),
+        "return_url": cfg.get("cashfree_return_url", "https://isaythanks.vercel.app")
     }
 
 
@@ -40,37 +82,39 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     story_name = story.get("story_name_en", "Story")
     order_id = f"cf_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
 
-    if not cf_cfg["app_id"] or not cf_cfg["secret_key"]:
-        # Fallback to Arya Premium Mini App payment screen wrapper
-        miniapp_pay_link = f"https://aryapremium.store/app?story_id={story_id}&buy=cashfree&user_id={user_id}"
-        return {
-            "success": True,
-            "order_id": order_id,
-            "payment_link": miniapp_pay_link,
-            "amount": price
-        }
-
-    price = float(story.get("price", 0))
     if price <= 0:
         return {"success": False, "error": "Invalid story price."}
 
-    story_id = str(story["_id"])
-    story_name = story.get("story_name_en", "Story")
-    # Clean unique order id: cf_<user_id>_<timestamp>_<hex>
-    order_id = f"cf_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    miniapp_fallback_link = f"https://aryapremium.store/app?story_id={story_id}&buy=cashfree&user_id={user_id}"
+
+    if not cf_cfg["is_configured"]:
+        logger.warning("[CF] Credentials missing. Returning mini app fallback link.")
+        return {
+            "success": True,
+            "order_id": order_id,
+            "payment_link": miniapp_fallback_link,
+            "amount": price
+        }
 
     headers = {
         "x-client-id": cf_cfg["app_id"],
         "x-client-secret": cf_cfg["secret_key"],
         "x-api-version": "2023-08-01",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
 
     clean_user_name = "".join(c for c in (user_name or "Buyer") if c.isalnum() or c in " _-")[:40] or "Buyer"
-    
+
+    # Ensure valid return_url (Cashfree API rejects null return_url)
+    if bot_username:
+        return_url = f"https://t.me/{bot_username}?start=cf_{order_id}"
+    else:
+        return_url = cf_cfg.get("return_url") or f"https://aryapremium.store/app?order_id={order_id}"
+
     payload = {
         "order_id": order_id,
-        "order_amount": price,
+        "order_amount": round(price, 2),
         "order_currency": "INR",
         "customer_details": {
             "customer_id": f"tg_{user_id}",
@@ -79,7 +123,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
             "customer_phone": "9999999999"
         },
         "order_meta": {
-            "return_url": f"https://t.me/{bot_username}?start=cf_{order_id}" if bot_username else None,
+            "return_url": return_url,
             "notify_url": "https://aryapremium.store/api/cashfree-webhook"
         },
         "order_note": f"Purchase of {story_name[:30]}"
@@ -89,37 +133,41 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     logger.info(f"[CF] Creating order: order_id={order_id}, amount={price}, env={cf_cfg['env']}, url={url}")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=12.0)) as resp:
                 data = await resp.json()
                 logger.info(f"[CF] API Response: status={resp.status}, data={data}")
                 if resp.status in (200, 201) and (data.get("payment_session_id") or data.get("order_id")):
                     payment_session_id = data.get("payment_session_id", "")
-                    is_sb = (cf_cfg["env"] == "sandbox")
+                    is_sb = cf_cfg.get("is_sandbox", False)
                     # Use Arya Premium Mini App animated wrapper for Cashfree JS SDK checkout
                     payment_link = (
                         f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sb else 'false'}"
                         if payment_session_id else
-                        (data.get("payment_link") or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None))
+                        (data.get("payment_link") or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None) or miniapp_fallback_link)
                     )
                     
                     logger.info(f"[CF] Order created successfully: order_id={order_id}, pay_link={payment_link}")
 
                     # Store order in MongoDB
-                    await db.db.orders.insert_one({
-                        "order_id": order_id,
-                        "cf_order_id": data.get("cf_order_id"),
-                        "payment_session_id": payment_session_id,
-                        "user_id": int(user_id),
-                        "story_ids": [story_id],
-                        "story_id": story_id,
-                        "story_name": story_name,
-                        "amount": price,
-                        "currency": "INR",
-                        "status": "pending",
-                        "gateway": "cashfree",
-                        "payment_link": payment_link,
-                        "created_at": time.time()
-                    })
+                    try:
+                        await db.db.orders.insert_one({
+                            "order_id": order_id,
+                            "cf_order_id": data.get("cf_order_id"),
+                            "payment_session_id": payment_session_id,
+                            "user_id": int(user_id),
+                            "story_ids": [story_id],
+                            "story_id": story_id,
+                            "story_name": story_name,
+                            "bot_username": bot_username,
+                            "amount": price,
+                            "currency": "INR",
+                            "status": "pending",
+                            "gateway": "cashfree",
+                            "payment_link": payment_link,
+                            "created_at": time.time()
+                        })
+                    except Exception as db_err:
+                        logger.error(f"[CF] Failed to insert pending order: {db_err}")
 
                     return {
                         "success": True,
@@ -131,42 +179,80 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                 else:
                     err_msg = data.get("message") or data.get("description") or str(data)
                     logger.error(f"[CF] Create order FAILED: status={resp.status}, response={data}")
-                    return {"success": False, "error": err_msg}
+                    # Return fallback link so user is never stranded
+                    return {
+                        "success": True,
+                        "order_id": order_id,
+                        "payment_link": miniapp_fallback_link,
+                        "amount": price,
+                        "warning": err_msg
+                    }
     except Exception as e:
         logger.error(f"[CF] Create order EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
-        miniapp_pay_link = f"https://aryapremium.store/app?story_id={story_id}&buy=cashfree&user_id={user_id}"
-        logger.info(f"[CF] Falling back to mini app link: {miniapp_pay_link}")
         return {
             "success": True,
             "order_id": order_id,
-            "payment_link": miniapp_pay_link,
+            "payment_link": miniapp_fallback_link,
             "amount": price
         }
 
 
 async def check_cashfree_order_status(order_id: str) -> dict:
     """
-    Checks the status of a Cashfree order from Cashfree PG API.
+    Checks the status of a Cashfree order from MongoDB / Cashfree PG API.
     Returns dict with status: 'PAID' | 'ACTIVE' | 'FAILED' | 'EXPIRED', is_paid: bool, raw: dict.
     """
+    try:
+        from AryaPremium.database import db
+    except ImportError:
+        from database import db
+
+    # Check MongoDB first (fast path if webhook already processed payment)
+    try:
+        db_order = await db.db.orders.find_one({
+            "$or": [
+                {"order_id": order_id},
+                {"cf_order_id": order_id},
+                {"payment_session_id": order_id}
+            ]
+        })
+        if db_order and db_order.get("status") in ("paid", "PAID", "SUCCESS"):
+            return {
+                "status": "PAID",
+                "is_paid": True,
+                "amount": db_order.get("amount", 0),
+                "order_id": order_id
+            }
+    except Exception as ex:
+        logger.warning(f"[CF-STATUS] Error querying DB: {ex}")
+
     cf_cfg = await get_cashfree_config()
-    if not cf_cfg["app_id"] or not cf_cfg["secret_key"]:
+    if not cf_cfg["is_configured"]:
         return {"status": "ERROR", "is_paid": False, "error": "Not configured."}
 
     headers = {
         "x-client-id": cf_cfg["app_id"],
         "x-client-secret": cf_cfg["secret_key"],
-        "x-api-version": "2023-08-01"
+        "x-api-version": "2023-08-01",
+        "Accept": "application/json"
     }
 
     url = f"{cf_cfg['base_url']}/orders/{order_id}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
                 data = await resp.json()
                 if resp.status == 200:
                     order_status = (data.get("order_status") or "").upper()
-                    is_paid = (order_status == "PAID")
+                    is_paid = (order_status in ("PAID", "SUCCESS"))
+                    if is_paid:
+                        try:
+                            await db.db.orders.update_one(
+                                {"$or": [{"order_id": order_id}, {"cf_order_id": order_id}]},
+                                {"$set": {"status": "paid", "paid_at": time.time(), "cf_order_id": data.get("cf_order_id")}}
+                            )
+                        except Exception:
+                            pass
                     return {
                         "status": order_status,
                         "is_paid": is_paid,

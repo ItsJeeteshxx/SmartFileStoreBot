@@ -2916,12 +2916,26 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
     """
     from pyrogram.types import Message, CallbackQuery
     is_msg = isinstance(msg_or_query, Message)
-    user_id = msg_or_query.chat.id if is_msg else msg_or_query.from_user.id
+    is_cb = isinstance(msg_or_query, CallbackQuery)
+    if is_msg:
+        user_id = msg_or_query.chat.id
+    elif is_cb:
+        user_id = msg_or_query.from_user.id
+    elif isinstance(msg_or_query, int):
+        user_id = msg_or_query
+    else:
+        user_id = getattr(msg_or_query, "from_user", getattr(msg_or_query, "chat", None))
+        user_id = getattr(user_id, "id", 0) if user_id else 0
+
     name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
     price = story.get('price', 0)
     p_str = f"₹{price}" if price > 0 else "FREE"
 
-    bot_cfg = bot_cfg if isinstance(bot_cfg, dict) else {}
+    if not bot_cfg:
+        try:
+            bot_cfg = await _get_cached_bot_doc(client.me.id) or {}
+        except Exception:
+            bot_cfg = {}
 
     from cashfree_helper import get_cashfree_config
     cf_cfg = await get_cashfree_config()
@@ -2966,44 +2980,34 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         unavailable_upi = "UPI Currently Unavailable"
         back_btn = f"❮ {_sc('BACK')}"
 
-    # UPI availability check
-    upi_status = _upi_availability(bot_cfg)
-    upi_ok = upi_status['available']
+    # UPI availability in Checkout 2 (Automated IMAP UTR verification - Available 24/7 unless explicitly disabled by admin)
+    upi_enabled = bot_cfg.get('upi_enabled')
+    if upi_enabled is False:
+        upi_ok = False
+        upi_status = {'available': False, 'reason': 'manual', 'until': None}
+    else:
+        upi_ok = True
+        upi_status = {'available': True, 'reason': 'auto', 'until': None}
 
     if upi_ok:
         upi_block = f"<blockquote expandable=\"true\">{upi_title}\n{upi_desc}</blockquote>"
     else:
-        if upi_status['reason'] == 'schedule':
-            until_note = upi_status.get('until', '6:00 AM IST')
-            if lang == 'hi':
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी उपलब्ध नहीं है।</b>\n\n"
-                    f"• रात्रि 9 बजे से सुबह 6 बजे के बीच सुरक्षा कारणों से डायरेक्ट UPI बंद रहता है।\n"
-                    f"• UPI फिर से उपलब्ध होगा: <b>{until_note}</b>\n\n"
-                    f"कृपया अन्य उपलब्ध भुगतान विकल्प का उपयोग करें।</blockquote>"
-                )
-            else:
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is currently unavailable.</b>\n\n"
-                    f"• Direct UPI is paused between 9 PM – 6 AM IST for security.\n"
-                    f"• UPI will be available again at: <b>{until_note}</b>\n\n"
-                    f"Please use another available payment method.</blockquote>"
-                )
+        if lang == 'hi':
+            upi_block = (
+                f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
+                f"• एडमिन ने फिलहाल डायरेक्ट UPI बंद किया है।\n"
+                f"• कृपया अन्य उपलब्ध भुगतान विकल्प का उपयोग करें।</blockquote>"
+            )
         else:
-            if lang == 'hi':
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
-                    f"• एडमिन ने फिलहाल डायरेक्ट UPI बंद किया है।\n"
-                    f"• कृपया अन्य उपलब्ध भुगतान विकल्प का उपयोग करें।</blockquote>"
-                )
-            else:
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is temporarily unavailable.</b>\n\n"
-                    f"• The admin has disabled Direct UPI for now.\n"
-                    f"• Please use another available payment method.</blockquote>"
-                )
+            upi_block = (
+                f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is temporarily unavailable.</b>\n\n"
+                f"• The admin has disabled Direct UPI for now.\n"
+                f"• Please use another available payment method.</blockquote>"
+            )
 
-    story_methods = story.get("payment_methods", ["upi", "razorpay"])
+    story_methods = story.get("payment_methods")
+    if not story_methods:
+        story_methods = ["upi", "razorpay", "cashfree"]
     show_upi = "upi" in story_methods
     oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
     is_show_store_mode = bool(story.get("is_show") or (bot_cfg.get("bot_mode") == "show_store"))
@@ -3145,9 +3149,11 @@ async def _process_start(client, message):
         ord_doc = await db.db.orders.find_one({"order_id": order_id})
         if ord_doc:
             s_id = ord_doc.get("story_id") or (ord_doc.get("story_ids")[0] if ord_doc.get("story_ids") else None)
-            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)}) if s_id else None
+            story = None
+            if s_id:
+                story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id) if ObjectId.is_valid(str(s_id)) else s_id})
             status_res = await check_cashfree_order_status(order_id)
-            if status_res.get("is_paid") and story:
+            if (status_res.get("is_paid") or ord_doc.get("status") in ("paid", "PAID", "SUCCESS")) and story:
                 await db.db.orders.update_one({"order_id": order_id}, {"$set": {"status": "paid", "paid_at": time.time()}})
                 
                 # Check if order was for a specific part
@@ -4368,7 +4374,7 @@ async def _process_text(client, message):
 
     pending_s_id_utr = user.get("pending_utr_story_id")
     if pending_s_id_utr:
-        # 5-minute timeout check (auto-expire UTR state if > 300 seconds)
+        # 15-minute timeout check (auto-expire UTR state if > 900 seconds)
         opened_at = user.get("pending_utr_opened_at")
         if opened_at:
             try:
@@ -4377,7 +4383,7 @@ async def _process_text(client, message):
                     elapsed_sec = (_dt.utcnow() - opened_at).total_seconds()
                 else:
                     elapsed_sec = 9999
-                if elapsed_sec > 300:
+                if elapsed_sec > 900:
                     await _clear_utr_state(user_id)
                     return
             except Exception:
@@ -8096,7 +8102,7 @@ async def _process_callback(client, query):
             except Exception as ex:
                 logger.error(f"[PAY2] Database checkout update failed: {ex}", exc_info=True)
 
-            p_name = (bt_cfg.get("upi_name") or "Merchant").strip()
+            p_name = p_name or (bt_cfg.get("upi_name") or "Merchant").strip()
 
             try:
                 logger.info("[PAY2] Setting pending_utr_story_id in user doc...")
@@ -8591,7 +8597,9 @@ async def _process_callback(client, query):
                 from bson.objectid import ObjectId
                 story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
                 if story:
-                    await _show_story_details_v2(client, user_id, story, lang, query)
+                    _bt = await _get_cached_bot_doc(client.me.id)
+                    _bt_cfg = (_bt or {}).get("config", {})
+                    await _show_story_details_v2(client, query, story, lang, bot_cfg=_bt_cfg)
                     return
             except Exception:
                 pass
