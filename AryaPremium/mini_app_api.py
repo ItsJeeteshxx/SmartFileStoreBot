@@ -1274,9 +1274,11 @@ async def get_stories():
             import asyncio
             purchases_agg = await asyncio.wait_for(
                 arya_db.db.orders.aggregate(purchase_pipeline).to_list(length=None),
-                timeout=0.6
+                timeout=2.5
             )
             purchase_map = {str(p["_id"]): int(p.get("purchases", 0)) for p in purchases_agg}
+        except asyncio.TimeoutError:
+            logger.debug("Purchase aggregation timed out (>2.5s) — using default rankings.")
         except Exception as pe:
             logger.warning(f"Failed to aggregate purchases: {pe}")
 
@@ -1312,7 +1314,7 @@ async def get_stories():
             import asyncio
             analytics_agg = await asyncio.wait_for(
                 arya_db.db.mini_app_analytics.aggregate(analytics_pipeline).to_list(length=None),
-                timeout=0.6
+                timeout=2.5
             )
             for a in analytics_agg:
                 sid = str(a["_id"].get("story_id"))
@@ -1322,6 +1324,10 @@ async def get_stories():
                     searches_map[sid] = searches_map.get(sid, 0) + count
                 else:
                     views_map[sid] = views_map.get(sid, 0) + count
+        except asyncio.TimeoutError:
+            logger.debug("Analytics aggregation timed out (>2.5s) — using default metrics.")
+        except Exception as ae:
+            logger.warning(f"Failed to aggregate analytics: {ae}")
                     
             recent_p_pipeline = [
                 {"$match": {
