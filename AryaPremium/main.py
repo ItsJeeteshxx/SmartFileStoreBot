@@ -346,6 +346,13 @@ async def main():
     except Exception as e:
         logger.warning(f"Could not trigger story banner restoration task: {e}")
 
+    # Auto-Clean duplicate and corrupted show titles in MongoDB
+    try:
+        from plugins.mgmt.store_indexer import cleanup_duplicate_and_corrupted_shows
+        asyncio.create_task(cleanup_duplicate_and_corrupted_shows())
+    except Exception as e:
+        logger.warning(f"Could not trigger cleanup_duplicate_and_corrupted_shows: {e}")
+
     # Keep bots running
     await idle()
 

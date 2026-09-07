@@ -11027,9 +11027,29 @@ async def _process_inline_query(client, inline_query):
         results = []
         bot_uname = (getattr(getattr(client, "me", None), "username", "") or "").replace("@", "").strip()
 
+        try:
+            from plugins.mgmt.store_indexer import _clean_show_title, _normalize_title
+        except ImportError:
+            try:
+                from AryaPremium.plugins.mgmt.store_indexer import _clean_show_title, _normalize_title
+            except ImportError:
+                def _clean_show_title(t): return t
+                def _normalize_title(t): return t.lower()
+
+        seen_show_keys = set()
+
         for idx, s in enumerate(stories):
             s_id = str(s['_id'])
-            s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or ('Show' if s.get('is_show') else 'Story')
+            raw_s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or ('Show' if s.get('is_show') else 'Story')
+            if s.get('is_show') or is_ss:
+                s_name = _clean_show_title(raw_s_name) or raw_s_name
+                norm_key = _normalize_title(s_name)
+                if norm_key in seen_show_keys:
+                    continue
+                seen_show_keys.add(norm_key)
+            else:
+                s_name = raw_s_name
+
             platform = s.get('platform', 'Unknown')
             episodes = s.get('episodes') or s.get('total_episodes') or 'Unknown'
             price = int(s.get('price', 0))
