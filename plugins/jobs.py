@@ -690,6 +690,7 @@ async def _forward_message(
                 is_text_replaced = True
 
     async def _send_one(chat, thread):
+        nonlocal client, msg
         use_forward_tag = forward_tag
         if new_caption is not None or is_text_replaced:
             # Telegram CANNOT modify text/captions of natively forwarded messages.

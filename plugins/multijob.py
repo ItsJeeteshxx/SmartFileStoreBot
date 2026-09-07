@@ -303,6 +303,7 @@ async def _mj_forward(
                 is_text_replaced = True
 
     async def _send_one(chat, thread):
+        nonlocal client, msg
         # Use local flag — do NOT mutate nonlocal forward_tag as it would
         # contaminate the second destination call and all future messages.
         use_forward_tag = forward_tag
@@ -482,7 +483,8 @@ async def _mj_forward(
                 
                 # For transient errors, retry up to 5 attempts (not 30, which wasted 39 minutes!)
                 if _send_attempt >= 4 or not is_transient:
-                    logger.warning(f"[MultiJob _send_one] Forward failed for msg {msg.id} to {chat}: {exc}")
+                    msg_id_display = getattr(msg, 'id', '?')
+                    logger.warning(f"[MultiJob _send_one] Forward failed for msg {msg_id_display} to {chat}: {exc}")
                     if is_transient and _send_attempt >= 4:
                         raise ConnectionError(f"Transient error persisted: {exc}")
                     return False, str(exc), False
