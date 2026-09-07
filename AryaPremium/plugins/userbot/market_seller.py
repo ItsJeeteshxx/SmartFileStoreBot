@@ -3295,7 +3295,7 @@ async def _process_start(client, message):
             async def answer(self, text="", show_alert=False):
                 pass
         m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading Store...</i>', parse_mode=enums.ParseMode.HTML)
-        return await _show_marketplace_platforms(client, MockQuery(m, message.from_user, "mb#main_marketplace"), lang)
+        return await _open_reply_keyboard_marketplace(client, message.from_user.id, lang, query_message=m)
 
     # ── Deep Link Handler: /start cf_<order_id> (Cashfree Payment Return) ──
     if len(args) > 1 and args[1].startswith("cf_"):
@@ -4347,7 +4347,7 @@ async def _process_text(client, message):
         if cmd_word in ["/mystories", "/stories", "/library"]:
             return await _send_my_stories_menu(client, user_id, user, lang, reply_to_message=message)
 
-        if cmd_word in ["/marketplace", "/arya", "/help", "/settings", "/profile"]:
+        if cmd_word in ["/marketplace", "/store", "/shows", "/arya", "/help", "/settings", "/profile"]:
             m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading...</i>', parse_mode=enums.ParseMode.HTML)
             class MockQuery:
                 def __init__(self, msg, u, d):
@@ -4358,6 +4358,8 @@ async def _process_text(client, message):
                     pass
             mapping = {
                 "/marketplace": "mb#main_marketplace",
+                "/store": "mb#main_marketplace",
+                "/shows": "mb#main_marketplace",
                 "/arya": "mb#about_arya_0",
                 "/help": "mb#main_help",
                 "/settings": "mb#main_settings",
@@ -4890,41 +4892,66 @@ async def _process_text(client, message):
         u_doc = await db.db.users.find_one({"id": int(user_id)}) or {}
         plat = u_doc.get("_mkt_plat") or user.get("_mkt_plat")
 
+        bt_rec = await _get_cached_bot_doc(client.me.id)
+        is_ss = (await _is_show_store_bot(client, bt_rec)) or bool(u_doc.get("_mkt_is_ss"))
+
         ALL_PAGE_SIZE = 70
 
-        q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
-        if plat == "Other":
-            q_plat = {
-                "$or": [
-                    {"platform": "Other"},
-                    {"platform": {"$exists": False}},
-                    {"platform": None},
-                    {"platform": ""}
-                ]
+        if is_ss:
+            mode_cond = {"is_show": True}
+            if plat and plat != "Other":
+                clean_p = re.sub(r'[\s_\-]+', '.*', plat.strip())
+                q_find = {
+                    "$and": [
+                        mode_cond,
+                        {
+                            "$or": [
+                                {"platform": {"$regex": f".*{clean_p}.*", "$options": "i"}},
+                                {"platform": {"$regex": re.escape(plat), "$options": "i"}}
+                            ]
+                        }
+                    ]
+                }
+            else:
+                q_find = mode_cond
+
+            total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0:
+                q_find = {"is_show": True}
+                total_s = await db.db.premium_stories.count_documents(q_find)
+        else:
+            mode_cond = {
+                "is_show": {"$ne": True},
+                "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
             }
-        elif plat:
-            q_plat = {"platform": {"$regex": f"^{re.escape(plat)}$", "$options": "i"}}
-        else:
-            q_plat = {}
+            q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+            if plat == "Other":
+                q_plat = {
+                    "$or": [
+                        {"platform": "Other"},
+                        {"platform": {"$exists": False}},
+                        {"platform": None},
+                        {"platform": ""}
+                    ]
+                }
+            elif plat:
+                q_plat = {"platform": {"$regex": f"^{re.escape(plat)}$", "$options": "i"}}
+            else:
+                q_plat = {}
 
-        if q_plat:
-            q_find = {"$and": [q_bot, q_plat]}
-        else:
-            q_find = q_bot
-
-        total_s = await db.db.premium_stories.count_documents(q_find)
-        if total_s == 0 and q_plat:
-            total_s = await db.db.premium_stories.count_documents(q_plat)
-            if total_s > 0:
-                q_find = q_plat
+            q_find = {"$and": [mode_cond, q_bot, q_plat]} if q_plat else {"$and": [mode_cond, q_bot]}
+            total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0 and q_plat:
+                q_find = {"$and": [mode_cond, q_plat]}
+                total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0:
+                q_find = mode_cond
+                total_s = await db.db.premium_stories.count_documents(q_find)
 
         if total_s == 0:
-            total_s = await db.db.premium_stories.count_documents({})
-            if total_s > 0:
-                q_find = {}
-            else:
-                empty_msg = "No stories available right now." if lang == 'en' else "वर्तमान में कोई कहानी उपलब्ध नहीं है।"
-                return await message.reply_text(f"<i>{empty_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+            empty_noun = ("shows" if is_ss else "stories") if lang == 'en' else ("शो" if is_ss else "कहानियाँ")
+            empty_msg = f"No {empty_noun} available right now." if lang == 'en' else f"वर्तमान में कोई {empty_noun} उपलब्ध नहीं है।"
+            return await message.reply_text(f"<i>{empty_msg}</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
         total_pg = max(1, (total_s + ALL_PAGE_SIZE - 1) // ALL_PAGE_SIZE)
         cur_all_page = 0
@@ -4932,19 +4959,20 @@ async def _process_text(client, message):
         # Save mode and page in DB
         await db.db.users.update_one(
             {"id": int(user_id)},
-            {"$set": {"_mkt_mode": "all", "_mkt_all_page": cur_all_page, "_mkt_plat": plat}}
+            {"$set": {"_mkt_mode": "all", "_mkt_all_page": cur_all_page, "_mkt_plat": plat, "_mkt_is_ss": is_ss}}
         )
 
         all_stories = await db.db.premium_stories.find(
             q_find,
-            {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+            {"story_name_en": 1, "story_name_hi": 1, "title": 1, "clean_title": 1, "price": 1, "platform": 1, "_id": 1}
         ).sort("_id", -1).skip(cur_all_page * ALL_PAGE_SIZE).limit(ALL_PAGE_SIZE).to_list(length=ALL_PAGE_SIZE)
 
         kb = []
         MNL = 22
         start_idx = cur_all_page * ALL_PAGE_SIZE + 1
+        item_lbl = ("शो" if lang == 'hi' else "Show") if is_ss else ("कहानी" if lang == 'hi' else "Story")
         for idx, s in enumerate(all_stories, start=start_idx):
-            sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+            sn = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or s.get('clean_title') or item_lbl
             if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
             btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
             if idx <= 5:
@@ -4952,7 +4980,7 @@ async def _process_text(client, message):
             else:
                 kb.append([_kb_btn(btn_txt)])
         
-        # Pagination row for View All (if > 70 stories)
+        # Pagination row for View All (if > 70 items)
         if total_pg > 1:
             nav_row = []
             if cur_all_page > 0:
@@ -4967,19 +4995,22 @@ async def _process_text(client, message):
         kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
         kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
 
-        title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
+        title = ("ALL SHOWS" if lang == 'en' else "सभी शोज़") if is_ss else ("ALL STORIES" if lang == 'en' else "सभी स्टोरिज")
         plat_hdr = f" — {to_mathbold(plat)}" if plat else ""
-        pg_info = f"<i>{_sc('Page')} {cur_all_page+1}/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{_sc('Total Stories:') if lang == 'en' else 'कुल स्टोरिज:'} <b>{total_s}</b></i>"
+        item_unit = ("Show" if lang == 'en' else "शो") if is_ss else (_sc("Total Stories:") if lang == 'en' else "कुल स्टोरिज:")
+        pg_info = f"<i>{_sc('Page')} {cur_all_page+1}/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{item_unit} <b>{total_s}</b></i>"
+        icon_tag = '<emoji id="5937999673510858217">📽️</emoji>' if is_ss else '<emoji id="5764638872000533034">📑</emoji>'
+        tap_hint = (_sc("Tap any show below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें:") if is_ss else (_sc("Tap any story below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
         msg_text = (
-            f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title}{plat_hdr} ⟧</b>\n\n'
+            f'<b>⟦ {icon_tag} {title}{plat_hdr} ⟧</b>\n\n'
             f"<blockquote expandable>{pg_info}\n"
-            f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
+            f"{tap_hint}</blockquote>"
         )
         ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
         if not ok:
             pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
             await message.reply_text(
-                msg_text,
+                _clean_emoji_for_pyrogram(msg_text),
                 reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
                 parse_mode=enums.ParseMode.HTML
             )
@@ -5009,53 +5040,84 @@ async def _process_text(client, message):
         cur_all_p = int(u_fresh.get("_mkt_all_page", user.get("_mkt_all_page", 0)))
         cur_norm_p = int(u_fresh.get("_mkt_page", user.get("_mkt_page", 0)))
 
+        bt_rec = await _get_cached_bot_doc(client.me.id)
+        is_ss = (await _is_show_store_bot(client, bt_rec)) or bool(u_fresh.get("_mkt_is_ss"))
+
         is_next = is_nav_next
 
-        q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
-        if plat == "Other":
-            q_plat = {
-                "$or": [
-                    {"platform": "Other"},
-                    {"platform": {"$exists": False}},
-                    {"platform": None},
-                    {"platform": ""}
-                ]
+        if is_ss:
+            mode_cond = {"is_show": True}
+            if plat and plat != "Other":
+                clean_p = re.sub(r'[\s_\-]+', '.*', plat.strip())
+                q_find = {
+                    "$and": [
+                        mode_cond,
+                        {
+                            "$or": [
+                                {"platform": {"$regex": f".*{clean_p}.*", "$options": "i"}},
+                                {"platform": {"$regex": re.escape(plat), "$options": "i"}}
+                            ]
+                        }
+                    ]
+                }
+            else:
+                q_find = mode_cond
+
+            total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0:
+                q_find = {"is_show": True}
+                total_s = await db.db.premium_stories.count_documents(q_find)
+        else:
+            mode_cond = {
+                "is_show": {"$ne": True},
+                "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
             }
-        elif plat:
-            q_plat = {"platform": {"$regex": f"^{re.escape(plat)}$", "$options": "i"}}
-        else:
-            q_plat = {}
+            q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+            if plat == "Other":
+                q_plat = {
+                    "$or": [
+                        {"platform": "Other"},
+                        {"platform": {"$exists": False}},
+                        {"platform": None},
+                        {"platform": ""}
+                    ]
+                }
+            elif plat:
+                q_plat = {"platform": {"$regex": f"^{re.escape(plat)}$", "$options": "i"}}
+            else:
+                q_plat = {}
 
-        if q_plat:
-            q_find = {"$and": [q_bot, q_plat]}
-        else:
-            q_find = q_bot
+            q_find = {"$and": [mode_cond, q_bot, q_plat]} if q_plat else {"$and": [mode_cond, q_bot]}
+            total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0 and q_plat:
+                q_find = {"$and": [mode_cond, q_plat]}
+                total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0:
+                q_find = mode_cond
+                total_s = await db.db.premium_stories.count_documents(q_find)
 
-        total_s = await db.db.premium_stories.count_documents(q_find)
-        if total_s == 0 and q_plat:
-            total_s = await db.db.premium_stories.count_documents(q_plat)
-            if total_s > 0:
-                q_find = q_plat
+        item_lbl = ("शो" if lang == 'hi' else "Show") if is_ss else ("कहानी" if lang == 'hi' else "Story")
+        icon_tag = '<emoji id="5937999673510858217">📽️</emoji>' if is_ss else '<emoji id="5764638872000533034">📑</emoji>'
 
         if mkt_mode == "all":
-            # ── View All Pagination (70 stories per page) ──
+            # ── View All Pagination (70 items per page) ──
             ALL_PAGE_SIZE = 70
             total_pg = max(1, (total_s + ALL_PAGE_SIZE - 1) // ALL_PAGE_SIZE)
             new_page = cur_all_p + 1 if is_next else cur_all_p - 1
             new_page = max(0, min(new_page, total_pg - 1))
 
-            await db.db.users.update_one({"id": int(user_id)}, {"$set": {"_mkt_all_page": new_page, "_mkt_mode": "all", "_mkt_plat": plat}})
+            await db.db.users.update_one({"id": int(user_id)}, {"$set": {"_mkt_all_page": new_page, "_mkt_mode": "all", "_mkt_plat": plat, "_mkt_is_ss": is_ss}})
 
             pg_stories = await db.db.premium_stories.find(
                 q_find,
-                {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+                {"story_name_en": 1, "story_name_hi": 1, "title": 1, "clean_title": 1, "price": 1, "platform": 1, "_id": 1}
             ).sort("_id", -1).skip(new_page * ALL_PAGE_SIZE).limit(ALL_PAGE_SIZE).to_list(length=ALL_PAGE_SIZE)
 
             MNL = 22
             kb = []
             start_idx = new_page * ALL_PAGE_SIZE + 1
             for idx, s in enumerate(pg_stories, start=start_idx):
-                sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+                sn = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or s.get('clean_title') or item_lbl
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
                 btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
                 if idx <= 5:
@@ -5076,31 +5138,32 @@ async def _process_text(client, message):
             kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
             kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
 
-            title = "ALL STORIES" if lang == 'en' else "सभी स्टोरिज"
+            title = ("ALL SHOWS" if lang == 'en' else "सभी शोज़") if is_ss else ("ALL STORIES" if lang == 'en' else "सभी स्टोरिज")
             plat_hdr = f" — {to_mathbold(plat)}" if plat else ""
+            tap_hint = (_sc("Tap any show below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें:") if is_ss else (_sc("Tap any story below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
             msg_text = (
-                f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> {title}{plat_hdr} ⟧</b>\n\n'
+                f'<b>⟦ {icon_tag} {title}{plat_hdr} ⟧</b>\n\n'
                 f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg} (Total: {total_s})</i>\n"
-                f"{_sc('Tap any story below to view details and purchase:') if lang == 'en' else 'विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:'}</blockquote>"
+                f"{tap_hint}</blockquote>"
             )
         else:
-            # ── Normal Mode Pagination (15 stories per page) ──
+            # ── Normal Mode Pagination (15 items per page) ──
             STORY_PAGE_SIZE = 15
             total_pg = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
             new_page = cur_norm_p + 1 if is_next else cur_norm_p - 1
             new_page = max(0, min(new_page, total_pg - 1))
 
-            await db.db.users.update_one({"id": int(user_id)}, {"$set": {"_mkt_page": new_page, "_mkt_mode": "normal", "_mkt_plat": plat}})
+            await db.db.users.update_one({"id": int(user_id)}, {"$set": {"_mkt_page": new_page, "_mkt_mode": "normal", "_mkt_plat": plat, "_mkt_is_ss": is_ss}})
 
             pg_stories = await db.db.premium_stories.find(
                 q_find,
-                {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+                {"story_name_en": 1, "story_name_hi": 1, "title": 1, "clean_title": 1, "price": 1, "platform": 1, "_id": 1}
             ).sort("_id", -1).skip(new_page * STORY_PAGE_SIZE).limit(STORY_PAGE_SIZE).to_list(length=STORY_PAGE_SIZE)
 
             MNL = 22
             kb = []
             for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
-                sn = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
+                sn = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or s.get('clean_title') or item_lbl
                 if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
                 btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
                 if idx <= 5:
@@ -5123,18 +5186,18 @@ async def _process_text(client, message):
             kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
             kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
 
-            title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
+            title = ("AVAILABLE SHOWS" if lang == 'en' else "उपलब्ध शोज़") if is_ss else ("AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज")
             plat_hdr = f" — {to_mathbold(plat)}" if plat else ""
             msg_text = (
-                f"<b>⟦ {title}{plat_hdr} ⟧</b>\n"
-                f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>"
+                f"<b>⟦ {icon_tag} {title}{plat_hdr} ⟧</b>\n"
+                f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg} (Total: {total_s})</i></blockquote>"
             )
 
         ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
         if not ok:
             pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
             await message.reply_text(
-                msg_text,
+                _clean_emoji_for_pyrogram(msg_text),
                 reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
                 parse_mode=enums.ParseMode.HTML
             )
@@ -5182,10 +5245,14 @@ async def _process_text(client, message):
         return await _show_story_profile(client, user_id, story, lang)
 
     # Platform selection
-    platforms = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
-    platforms.append("Other")
+    audio_scope = {
+        "is_show": {"$ne": True},
+        "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
+    }
+    distinct_audio_plats = await db.db.premium_stories.distinct('platform', audio_scope)
+    known_platforms = set(distinct_audio_plats) | {"Pocket FM", "Eight FM", "Kuku FM", "Pratilipi FM", "Headfone", "Other"}
 
-    if txt in platforms:
+    if txt in known_platforms:
         try:
             await message.delete()
         except Exception:
@@ -5196,17 +5263,33 @@ async def _process_text(client, message):
         if user.get("_mkt_plat") != txt:
             s_page = 0
 
-        query_find = {"bot_id": client.me.id}
-        if txt != "Other": query_find["platform"] = txt
+        q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+        if txt != "Other":
+            q_plat = {"platform": {"$regex": f"^{re.escape(txt)}$", "$options": "i"}}
+        else:
+            q_plat = {
+                "$or": [
+                    {"platform": "Other"},
+                    {"platform": {"$exists": False}},
+                    {"platform": None},
+                    {"platform": ""}
+                ]
+            }
 
+        query_find = {"$and": [q_bot, q_plat, {"is_show": {"$ne": True}}]}
         total_s = await db.db.premium_stories.count_documents(query_find)
         if total_s == 0:
-            return await message.reply_text("<i>No stories found for this platform.</i>", parse_mode=enums.ParseMode.HTML)
+            query_find = {"$and": [q_plat, {"is_show": {"$ne": True}}]}
+            total_s = await db.db.premium_stories.count_documents(query_find)
+
+        if total_s == 0:
+            empty_txt = "<i>No stories found for this platform.</i>" if lang == 'en' else "<i>इस प्लेटफॉर्म के लिए कोई कहानी नहीं मिली।</i>"
+            return await message.reply_text(empty_txt, parse_mode=enums.ParseMode.HTML)
 
         total_pages_s = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
         s_page = max(0, min(s_page, total_pages_s - 1))
 
-        await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_plat": txt, "_mkt_page": s_page, "_mkt_mode": "normal"}})
+        await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_plat": txt, "_mkt_page": s_page, "_mkt_mode": "normal", "_mkt_is_ss": False}})
 
         page_stories = await db.db.premium_stories.find(
             query_find,
@@ -5216,7 +5299,7 @@ async def _process_text(client, message):
         MNL = 22
         kb = []
         for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
-            s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
+            s_name = s.get(f'story_name_{lang}', s.get('story_name_en', 'Story'))
             if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
             btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
             if idx <= 5:
@@ -5256,7 +5339,7 @@ async def _process_text(client, message):
         if not ok:
             pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
             await message.reply_text(
-                msg_text,
+                _clean_emoji_for_pyrogram(msg_text),
                 reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
                 parse_mode=enums.ParseMode.HTML
             )
@@ -5515,6 +5598,285 @@ async def _process_text(client, message):
 
 
 
+
+
+async def _open_reply_keyboard_marketplace(client, user_id: int, lang: str = 'en', query_message=None):
+    """
+    Opens the Marketplace or Store ReplyKeyboardMarkup for the user.
+    - Show Store mode (OTT video shows): Immediately presents ReplyKeyboardMarkup of shows.
+    - Full Store mode (Audio stories): Presents ReplyKeyboardMarkup of audio platforms (Pocket FM, Eight FM, etc.).
+      If only 1 platform exists, jumps directly to that platform's story ReplyKeyboardMarkup.
+    """
+    try:
+        bt_rec = await _get_cached_bot_doc(client.me.id)
+        bt_cfg = (bt_rec.get("config") or {}) if bt_rec else {}
+        is_ss = await _is_show_store_bot(client, bt_rec)
+
+        if is_ss:
+            # ── Show Store Mode (OTT Video Shows) ──
+            auto_plat = bt_cfg.get("platform_name") or bt_cfg.get("target_platform")
+            q_show = {"is_show": True}
+            if auto_plat:
+                clean_p = re.sub(r'[\s_\-]+', '.*', auto_plat.strip())
+                q_scope = {
+                    "$or": [
+                        {"bot_id": client.me.id},
+                        {"platform": {"$regex": f".*{clean_p}.*", "$options": "i"}},
+                        {"platform": {"$regex": re.escape(auto_plat), "$options": "i"}}
+                    ]
+                }
+                q_find = {"$and": [q_show, q_scope]}
+            else:
+                q_find = q_show
+
+            total_s = await db.db.premium_stories.count_documents(q_find)
+            if total_s == 0:
+                # Resilient fallback: Any show in database with is_show: True
+                q_find = {"is_show": True}
+                total_s = await db.db.premium_stories.count_documents(q_find)
+                if not auto_plat:
+                    first_show = await db.db.premium_stories.find_one({"is_show": True})
+                    if first_show and first_show.get("platform"):
+                        auto_plat = first_show.get("platform")
+
+            if not auto_plat:
+                auto_plat = "Shows"
+
+            await db.db.users.update_one(
+                {"id": user_id},
+                {"$set": {"_mkt_plat": auto_plat, "_mkt_page": 0, "_mkt_mode": "normal", "_mkt_is_ss": True}}
+            )
+
+            # If 0 shows found in database
+            if total_s == 0:
+                plat_title = to_mathbold(auto_plat)
+                msg_text = (
+                    f'<b>⟦ <emoji id="5937999673510858217">📽️</emoji> {plat_title} ⟧</b>\n\n'
+                    f"<i>{'No shows available in this store yet. Please check back later!' if lang == 'en' else 'इस स्टोर में अभी कोई शो उपलब्ध नहीं है। कृपया बाद में चेक करें!'}</i>"
+                )
+                kb = [[_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))]]
+                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                if not ok:
+                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                    await client.send_message(
+                        user_id,
+                        _clean_emoji_for_pyrogram(msg_text),
+                        reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                if query_message:
+                    try: await query_message.delete()
+                    except Exception: pass
+                return
+
+            PAGE_SIZE = 15
+            total_pg = max(1, (total_s + PAGE_SIZE - 1) // PAGE_SIZE)
+            shows_page = await db.db.premium_stories.find(
+                q_find,
+                {"story_name_en": 1, "story_name_hi": 1, "title": 1, "clean_title": 1, "price": 1, "platform": 1, "_id": 1}
+            ).sort("_id", -1).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
+
+            kb = []
+            MNL = 22
+            item_lbl = "शो" if lang == 'hi' else "Show"
+            for idx, s in enumerate(shows_page, start=1):
+                sn = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or s.get('clean_title') or item_lbl
+                if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+                btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                if idx <= 5:
+                    kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                else:
+                    kb.append([_kb_btn(btn_txt)])
+
+            if total_pg > 1:
+                nav_row = [_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭")]
+                kb.append(nav_row)
+
+            view_all_btn = "📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें")
+            search_text = "SEARCH" if lang == 'en' else "खोजें"
+            kb.append([_kb_btn(view_all_btn)])
+            kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+            kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+            kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+            plat_title = to_mathbold(auto_plat)
+            pg_info = f"<i>{_sc('Page') if lang == 'en' else 'पेज'} 1/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{'Total:' if lang == 'en' else 'कुल:'} <b>{total_s}</b></i>"
+            icon_tag = '<emoji id="5937999673510858217">📽️</emoji>'
+            tap_hint = (_sc("Tap any show below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी शो पर टैप करें:")
+            msg_text = (
+                f'<b>⟦ {icon_tag} {plat_title} ⟧</b>\n\n'
+                f"<blockquote expandable>{pg_info}\n"
+                f"{tap_hint}</blockquote>"
+            )
+
+            ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                await client.send_message(
+                    user_id,
+                    _clean_emoji_for_pyrogram(msg_text),
+                    reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                    parse_mode=enums.ParseMode.HTML
+                )
+            if query_message:
+                try: await query_message.delete()
+                except Exception: pass
+            return
+
+        else:
+            # ── Full Store Mode (Audio Stories) ──
+            show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
+            ss_plats = [b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")]
+
+            audio_cond = {
+                "is_show": {"$ne": True},
+                "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
+            }
+            if ss_plats:
+                audio_cond["platform"] = {"$nin": ss_plats, "$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
+
+            bot_filter = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+            platforms = await db.db.premium_stories.distinct('platform', {"$and": [audio_cond, bot_filter]})
+            platforms = [p for p in platforms if p and str(p).strip()]
+            if not platforms:
+                platforms = await db.db.premium_stories.distinct('platform', audio_cond)
+                platforms = [p for p in platforms if p and str(p).strip()]
+
+            # Exclude video shows/TV
+            platforms = [p for p in platforms if not any(x in p.lower() for x in ("story tv", "kuku tv", "storytv", "kukutv"))]
+
+            PRIORITY_PLATFORMS = ["Pocket FM", "Eight FM", "Kuku FM", "Pratilipi FM", "Headfone"]
+            sorted_plats = []
+            for pp in PRIORITY_PLATFORMS:
+                if pp in platforms:
+                    sorted_plats.append(pp)
+                    platforms.remove(pp)
+            sorted_plats.extend(sorted(platforms))
+            platforms = sorted_plats
+
+            await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": 0, "_mkt_is_ss": False}})
+
+            if len(platforms) == 1:
+                auto_plat = platforms[0]
+                await db.db.users.update_one(
+                    {"id": user_id},
+                    {"$set": {"_mkt_plat": auto_plat, "_mkt_page": 0, "_mkt_mode": "normal", "_mkt_is_ss": False}}
+                )
+                q_bot = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+                q_plat = {"platform": {"$regex": f"^{re.escape(auto_plat)}$", "$options": "i"}}
+                q_find = {"$and": [q_bot, q_plat, {"is_show": {"$ne": True}}]}
+
+                PAGE_SIZE = 15
+                total_s = await db.db.premium_stories.count_documents(q_find)
+                if total_s == 0:
+                    q_find = {"$and": [q_plat, {"is_show": {"$ne": True}}]}
+                    total_s = await db.db.premium_stories.count_documents(q_find)
+
+                total_pg = max(1, (total_s + PAGE_SIZE - 1) // PAGE_SIZE)
+                stories_page = await db.db.premium_stories.find(
+                    q_find, {"story_name_en": 1, "story_name_hi": 1, "price": 1, "platform": 1, "_id": 1}
+                ).sort("_id", -1).limit(PAGE_SIZE).to_list(length=PAGE_SIZE)
+
+                kb = []
+                MNL = 22
+                item_lbl = "कहानी" if lang == 'hi' else "Story"
+                for idx, s in enumerate(stories_page, start=1):
+                    sn = s.get(f'story_name_{lang}') or s.get('story_name_en') or item_lbl
+                    if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+                    btn_txt = f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"
+                    if idx <= 5:
+                        kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                    else:
+                        kb.append([_kb_btn(btn_txt)])
+
+                if total_pg > 1:
+                    nav_row = [_kb_btn((_sc("NEXT") if lang == 'en' else "अगला") + " ❭")]
+                    kb.append(nav_row)
+
+                view_all_btn = "📑 " + (_sc("VIEW ALL") if lang == 'en' else "सभी देखें")
+                search_text = "SEARCH" if lang == 'en' else "खोजें"
+                kb.append([_kb_btn(view_all_btn)])
+                kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+                plat_title = to_mathbold(auto_plat)
+                pg_info = f"<i>{_sc('Page') if lang == 'en' else 'पेज'} 1/{total_pg} (Total: {total_s})</i>" if total_pg > 1 else f"<i>{'Total:' if lang == 'en' else 'कुल:'} <b>{total_s}</b></i>"
+                icon_tag = '<emoji id="5764638872000533034">📑</emoji>'
+                tap_hint = (_sc("Tap any story below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
+                msg_text = (
+                    f'<b>⟦ {icon_tag} {plat_title} ⟧</b>\n\n'
+                    f"<blockquote expandable>{pg_info}\n"
+                    f"{tap_hint}</blockquote>"
+                )
+                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                if not ok:
+                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                    await client.send_message(
+                        user_id,
+                        _clean_emoji_for_pyrogram(msg_text),
+                        reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                if query_message:
+                    try: await query_message.delete()
+                    except Exception: pass
+                return
+
+            if not platforms:
+                msg_text = (
+                    f'<b>⟦ <emoji id="5764638872000533034">📑</emoji> MARKETPLACE ⟧</b>\n\n'
+                    f"<i>{'No stories available in this store yet. Please check back later!' if lang == 'en' else 'इस स्टोर में अभी कोई कहानी उपलब्ध नहीं है। कृपया बाद में चेक करें!'}</i>"
+                )
+                kb = [[_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))]]
+                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                if not ok:
+                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                    await client.send_message(
+                        user_id,
+                        _clean_emoji_for_pyrogram(msg_text),
+                        reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                if query_message:
+                    try: await query_message.delete()
+                    except Exception: pass
+                return
+
+            kb = []
+            for i in range(0, len(platforms), 2):
+                row = platforms[i:i+2]
+                kb.append(row)
+            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
+
+            p_title = "🎧 Platform Selection" if lang == 'en' else "🎧 प्लेटफॉर्म चयन"
+            p_desc = "Choose a platform from the keyboard below:" if lang == 'en' else "नीचे दिए गए कीबोर्ड से एक प्लेटफॉर्म चुनें:"
+            msg_text = f"<b>{p_title}</b>\n\n{p_desc}"
+
+            ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+            if not ok:
+                pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                await client.send_message(
+                    user_id,
+                    _clean_emoji_for_pyrogram(msg_text),
+                    reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                    parse_mode=enums.ParseMode.HTML
+                )
+            if query_message:
+                try: await query_message.delete()
+                except Exception: pass
+            return
+
+    except Exception as e:
+        logger.error(f"Error opening reply keyboard marketplace: {e}", exc_info=True)
+        try:
+            await client.send_message(
+                user_id,
+                "<i>Error loading store. Please try again from menu.</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception:
+            pass
 
 
 async def _show_marketplace_platforms(client, query, lang='en'):
@@ -6295,7 +6657,7 @@ async def _process_callback(client, query):
 
 
         if action == "marketplace":
-            return await _show_marketplace_platforms(client, query, lang)
+            return await _open_reply_keyboard_marketplace(client, query.from_user.id, lang, query_message=query.message)
 
 
 

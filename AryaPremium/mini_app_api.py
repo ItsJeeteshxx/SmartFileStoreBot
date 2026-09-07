@@ -1028,6 +1028,13 @@ async def r2_image_handler(key: str, w: int = 600, h: int = 600):
 # Helper: format a single MongoDB story doc → frontend Story shape
 # ————————————————————————————————————————————————————————————————————————————————————————————————————
 def _format_story(s: dict) -> dict | None:
+    # STRICT EXCLUSION: Story TV, Kuku TV, and OTT Video Shows must NEVER appear anywhere in the Arya Premium Mini App
+    if s.get("is_show") is True:
+        return None
+    p_name = str(s.get("platform") or "").strip().lower()
+    if any(p in p_name for p in ("kuku tv", "story tv", "kukutv", "storytv")):
+        return None
+
     # Filter out hidden stories in public endpoints
     vis = str(s.get("visibility") or "").strip().lower()
     stat = str(s.get("status") or "").strip().lower()
@@ -8977,7 +8984,11 @@ async def get_banners():
         # Auto: Newest story
         try:
             newest = await arya_db.db.premium_stories.find_one(
-                {}, sort=[("_id", -1)]
+                {
+                    "is_show": {"$ne": True},
+                    "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
+                },
+                sort=[("_id", -1)]
             )
             if newest:
                 fmt = _format_story(newest)
@@ -9073,7 +9084,11 @@ async def get_popular():
                 
         # If still empty for some reason, fallback to hardcoded top recent stories
         if not result:
-            cursor = arya_db.db.premium_stories.find({"status": "active"}).sort("_id", -1).limit(6)
+            cursor = arya_db.db.premium_stories.find({
+                "status": "active",
+                "is_show": {"$ne": True},
+                "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
+            }).sort("_id", -1).limit(6)
             async for s in cursor:
                 fmt = _format_story(s)
                 if fmt:

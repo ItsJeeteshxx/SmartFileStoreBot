@@ -76,7 +76,10 @@ class PremiumDatabase:
             await self.connect()
         if self.stories is None:
             raise Exception("Database connection failed. Check MONGO_URI.")
-        cursor = self.stories.find({})
+        cursor = self.stories.find({
+            "is_show": {"$ne": True},
+            "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
+        })
         return await cursor.to_list(length=None)
 
     async def get_story(self, story_id: str):
