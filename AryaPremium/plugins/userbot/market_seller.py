@@ -34,7 +34,8 @@ from pyrogram.types import (
 
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, FloodWait
+import time
 
 from database import db
 
@@ -10013,14 +10014,19 @@ async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, messag
     bot_id = getattr(getattr(client, "me", None), "id", 0)
     channel_key = (bot_id, int(from_chat_id))
 
+    e1 = None
+
     # 1. Try directly with current delivery bot client (skip if known to lack permissions)
     if channel_key not in _CANNOT_COPY_CHANNELS:
         try:
             return await client.copy_message(**kwargs)
-        except Exception as e1:
-            err1 = str(e1).upper()
+        except FloodWait:
+            raise
+        except Exception as err:
+            e1 = err
+            err1 = str(err).upper()
             if "MESSAGE_ID_INVALID" in err1 or "MESSAGE_EMPTY" in err1 or "MESSAGE NOT FOUND" in err1:
-                raise e1
+                raise err
             if any(k in err1 for k in ("CHAT_ADMIN_REQUIRED", "USER_NOT_PARTICIPANT", "CHANNEL_PRIVATE", "CHAT_WRITE_FORBIDDEN")):
                 _CANNOT_COPY_CHANNELS.add(channel_key)
 
@@ -10108,11 +10114,15 @@ async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, messag
                 )
             else:
                 return await fallback_cli.copy_message(**kwargs)
+        except FloodWait:
+            raise
         except Exception as fb_err:
             logger.debug(f"[MultiBotBridge] Fallback client {getattr(fallback_cli, 'name', 'bot')} failed for msg {message_id}: {fb_err}")
             continue
 
-    raise e1
+    if e1 is not None:
+        raise e1
+    raise RuntimeError(f"Failed to copy message {message_id} from {from_chat_id}")
 
 
 async def _send_demo_files(client, user_id, story, lang):
@@ -10339,54 +10349,86 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                     except Exception:
                         pass
         
+        last_progress_time = 0.0
+        # Delivery delay: 1.0s to strictly respect Telegram's 1 msg/sec rate limit for DM chats.
+        # This keeps the token bucket constantly replenished, preventing FloodWait freezes!
+        delivery_delay = 1.0
+        try:
+            cfg_delay = bt_cfg.get("delivery_delay")
+            if cfg_delay is not None and str(cfg_delay).strip():
+                delivery_delay = max(0.5, float(cfg_delay))
+        except Exception:
+            delivery_delay = 1.0
+
         for idx, msg_id in enumerate(msg_range, start=1):
             if user_id in dm_aborts:
                 aborted = True
                 break
             
-            # Progress update
-            if idx % 10 == 0 or idx == 1:
+            # Progress update (throttled to at most once per 4 seconds to avoid TG rate limits)
+            now = time.time()
+            if (idx == 1 or idx % 10 == 0 or idx == total_eps) and (now - last_progress_time >= 4.0):
                 try:
                     p_text = f"<b>⏳ Delivering Files... ({idx}/{total_eps})</b>\n\n<i>Processing your request, please stay tuned.</i>"
                     if fetch_msg.caption:
                         await fetch_msg.edit_caption(p_text, reply_markup=fetch_kb)
                     else:
                         await fetch_msg.edit_text(p_text, reply_markup=fetch_kb)
-                except Exception: pass
+                    last_progress_time = now
+                except FloodWait:
+                    pass
+                except Exception:
+                    pass
 
-            try:
-                kwargs = dict(
-                    chat_id=user_id,
-                    from_chat_id=int(src),
-                    message_id=msg_id,
-                    protect_content=bt_cfg.get("protect", False) or not story.get('forwarding_enabled', True),
-                )
-                if cap_tpl and not is_show_delivery:
-                    my_kwargs = dict(kwargs)
-                    if "{original_caption}" in cap_tpl or "{file_name}" in cap_tpl:
-                        orig_msg = orig_msg_map.get(msg_id)
-                        orig_cap = (orig_msg.caption or orig_msg.text or "") if orig_msg else ""
-                        doc = getattr(orig_msg, "document", None) or getattr(orig_msg, "video", None) or getattr(orig_msg, "audio", None)
-                        fname = getattr(doc, "file_name", "") or ""
-                        my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story).replace("{original_caption}", orig_cap).replace("{file_name}", fname)
+            kwargs = dict(
+                chat_id=user_id,
+                from_chat_id=int(src),
+                message_id=msg_id,
+                protect_content=bt_cfg.get("protect", False) or not story.get('forwarding_enabled', True),
+            )
+            if cap_tpl and not is_show_delivery:
+                my_kwargs = dict(kwargs)
+                if "{original_caption}" in cap_tpl or "{file_name}" in cap_tpl:
+                    orig_msg = orig_msg_map.get(msg_id)
+                    orig_cap = (orig_msg.caption or orig_msg.text or "") if orig_msg else ""
+                    doc = getattr(orig_msg, "document", None) or getattr(orig_msg, "video", None) or getattr(orig_msg, "audio", None)
+                    fname = getattr(doc, "file_name", "") or ""
+                    my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story).replace("{original_caption}", orig_cap).replace("{file_name}", fname)
+                else:
+                    my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story)
+                delivery_kwargs = my_kwargs
+            else:
+                delivery_kwargs = kwargs
+
+            # Resilient delivery loop: retries up to 3 times on FloodWait
+            max_retries = 3
+            msg_delivered = False
+            for attempt in range(max_retries):
+                try:
+                    sent = await _safe_copy_from_source(client, **delivery_kwargs)
+                    sent_ids.append(sent.id)
+                    sent_count += 1
+                    msg_delivered = True
+                    break
+                except FloodWait as fw:
+                    wait_sec = int(getattr(fw, "value", 0) or getattr(fw, "x", 0) or str(fw).split()[0] or 10)
+                    logger.warning(f"DM Delivery hit FloodWait of {wait_sec}s on msg {msg_id}. Sleeping before retry {attempt+1}/{max_retries}...")
+                    await asyncio.sleep(wait_sec + 1)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "message_id_invalid" in err_str or "message_empty" in err_str or "message not found" in err_str:
+                        logger.debug(f"DM Delivery skipped deleted/empty msg {msg_id}")
+                        deleted_ids.append(msg_id)
                     else:
-                        my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story)
-                    sent = await _safe_copy_from_source(client, **my_kwargs)
-                else:
-                    sent = await _safe_copy_from_source(client, **kwargs)
+                        logger.warning(f"DM Delivery failed msg {msg_id}: {e}")
+                        failed_count += 1
+                    break
 
-                sent_ids.append(sent.id)
-                sent_count += 1
-            except Exception as e:
-                err_str = str(e).lower()
-                if "message_id_invalid" in err_str or "message_empty" in err_str or "message not found" in err_str:
-                    logger.debug(f"DM Delivery skipped deleted/empty msg {msg_id}")
-                    deleted_ids.append(msg_id)
-                else:
-                    logger.warning(f"DM Delivery failed msg {msg_id}: {e}")
+            if not msg_delivered and msg_id not in deleted_ids and not aborted:
+                if attempt == max_retries - 1:
                     failed_count += 1
 
-            await asyncio.sleep(0.08)
+            await asyncio.sleep(delivery_delay)
 
         # Real-time background self-healing: remove discovered dead IDs from valid_file_ids in MongoDB
         if deleted_ids and story_id_str:
