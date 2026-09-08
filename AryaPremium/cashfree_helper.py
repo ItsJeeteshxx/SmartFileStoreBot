@@ -8,13 +8,14 @@ from config import Config
 logger = logging.getLogger("AryaCashfree")
 
 
-async def get_cashfree_config() -> dict:
-    """Fetches Cashfree credentials from MongoDB feature_toggles / config."""
+async def get_cashfree_config(bot_cfg: dict = None) -> dict:
+    """Fetches Cashfree credentials from bot_cfg or MongoDB feature_toggles / config."""
     try:
         from AryaPremium.database import db
     except ImportError:
         from database import db
 
+    bot_cfg = bot_cfg or {}
     try:
         cfg = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
     except Exception as ex:
@@ -24,21 +25,31 @@ async def get_cashfree_config() -> dict:
     cf_status = str(cfg.get("cashfree_status", "")).strip().lower()
     cf_enabled_flag = cfg.get("cashfree_enabled", None)
 
+    # Check bot-specific override
+    bot_cf_flag = None
+    if "pay_methods" in bot_cfg and isinstance(bot_cfg["pay_methods"], dict):
+        bot_cf_flag = bot_cfg["pay_methods"].get("cashfree", None)
+    if bot_cf_flag is None:
+        bot_cf_flag = bot_cfg.get("pay_cashfree_enabled", bot_cfg.get("cashfree_enabled", None))
+
     app_id = (
-        cfg.get("cashfree_app_id") 
+        bot_cfg.get("cashfree_app_id")
+        or cfg.get("cashfree_app_id") 
         or cfg.get("cashfree_api_id") 
         or getattr(Config, "CASHFREE_APP_ID", "") 
         or ""
     ).strip()
 
     secret_key = (
-        cfg.get("cashfree_secret_key") 
+        bot_cfg.get("cashfree_secret_key")
+        or cfg.get("cashfree_secret_key") 
         or getattr(Config, "CASHFREE_SECRET_KEY", "") 
         or ""
     ).strip()
 
     env = (
-        cfg.get("cashfree_env") 
+        bot_cfg.get("cashfree_env")
+        or cfg.get("cashfree_env") 
         or getattr(Config, "CASHFREE_ENV", "production") 
         or "production"
     ).strip().lower()
@@ -54,8 +65,14 @@ async def get_cashfree_config() -> dict:
     is_disabled = (cf_status in ("disabled", "hidden", "false", "0") or cf_enabled_flag is False)
     is_explicitly_enabled = (cf_status in ("active", "enabled", "visible", "true", "1") or cf_enabled_flag is True)
 
-    # Enabled if configured and either explicitly enabled or not explicitly hidden/disabled
+    # Global enabled status
     enabled = is_configured and (is_explicitly_enabled or (cf_status not in ("hidden", "disabled") and not is_disabled))
+
+    # Apply bot-level toggle override if explicitly specified
+    if bot_cf_flag is False:
+        enabled = False
+    elif bot_cf_flag is True and is_configured:
+        enabled = True
 
     logger.info(f"[CF] Config: enabled={enabled}, is_configured={is_configured}, is_sandbox={is_sandbox}, env={env}, base_url={base_url}")
     return {
@@ -71,12 +88,12 @@ async def get_cashfree_config() -> dict:
     }
 
 
-async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_username: str = "") -> dict:
+async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_username: str = "", bot_cfg: dict = None) -> dict:
     """
     Creates a Cashfree Payment Gateway order via Cashfree PG API (v2023-08-01).
     Returns dict with success: bool, payment_link: str, order_id: str, error: str.
     """
-    cf_cfg = await get_cashfree_config()
+    cf_cfg = await get_cashfree_config(bot_cfg=bot_cfg)
     price = float(story.get("price", 0))
     story_id = str(story["_id"])
     story_name = story.get("story_name_en", "Story")

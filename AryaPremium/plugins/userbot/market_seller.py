@@ -2940,184 +2940,439 @@ async def _send_checkout_screen(client, user_id: int, img_url: str, caption: str
         return False
 
 
-async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict = None):
+async def _get_bot_active_payment_methods(client, bot_cfg: dict = None, story: dict = None) -> list:
+    """
+    Returns the list of active/enabled payment methods for this store bot and story:
+    Subset of ['upi', 'cashfree', 'oxapay'].
+    Honors:
+    - Bot-specific toggles: bot_cfg['pay_methods'] {'upi': bool, 'cashfree': bool, 'oxapay': bool}
+    - Bot-specific flags: bot_cfg['upi_enabled'], bot_cfg['cashfree_enabled'], bot_cfg['oxapay_enabled']
+    - Cashfree availability via get_cashfree_config(bot_cfg)
+    - OxaPay API key configuration (Config.OXAPAY_KEY)
+    - Story-level payment_methods override if defined
+    """
+    if bot_cfg is None:
+        try:
+            bot_doc = await _get_cached_bot_doc(client.me.id) or {}
+            bot_cfg = bot_doc.get("config", {}) if isinstance(bot_doc, dict) else {}
+        except Exception:
+            bot_cfg = {}
 
-    # ── Checkout Mode Routing ──────────────────────────────────────────────────
-    # Admin can switch between V1 (Razorpay + Manual UPI) and V2 (Direct UPI + Crypto)
-    try:
-        _feat = await db.db.mini_app_config.find_one({"_key": "feature_toggles"}) or {}
-        chk_mode = _feat.get("checkout_mode", "v1")
-        logger.info(f"[CHECKOUT] Resolved checkout_mode: '{chk_mode}' for story {story.get('_id')}")
-        if chk_mode == "v2":
-            return await _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg=bot_cfg)
-    except Exception as ex:
-        logger.error(f"[CHECKOUT] Error checking checkout_mode: {ex}", exc_info=True)
-    # ──────────────────────────────────────────────────────────────────────────
+    pay_methods = bot_cfg.get("pay_methods")
+    if not isinstance(pay_methods, dict):
+        pay_methods = {
+            "upi": bot_cfg.get("upi_enabled", True),
+            "cashfree": bot_cfg.get("cashfree_enabled", True),
+            "oxapay": bot_cfg.get("oxapay_enabled", False),
+        }
 
-    from pyrogram.types import Message, CallbackQuery
+    story_methods = (story or {}).get("payment_methods")
+    if story_methods and not isinstance(story_methods, (list, tuple, set)):
+        story_methods = None
 
-    from pyrogram import enums
+    active = []
 
-    is_msg = isinstance(msg_or_query, Message)
+    # 1. Direct UPI Transfer (Manual UPI with IMAP UTR auto-verification)
+    upi_on = bool(pay_methods.get("upi", True)) and (bot_cfg.get("upi_enabled") is not False)
+    if story_methods is not None and "upi" not in story_methods:
+        upi_on = False
+    if upi_on:
+        active.append("upi")
 
-    user_id = msg_or_query.chat.id if is_msg else msg_or_query.from_user.id
+    # 2. Cashfree Payment Gateway (Cards, NetBanking, UPI)
+    cf_on = bool(pay_methods.get("cashfree", True)) and (bot_cfg.get("cashfree_enabled") is not False)
+    if story_methods is not None and "cashfree" not in story_methods and "razorpay" not in story_methods:
+        cf_on = False
+    if cf_on:
+        try:
+            from cashfree_helper import get_cashfree_config
+            cf_cfg = await get_cashfree_config(bot_cfg=bot_cfg)
+            if cf_cfg.get("enabled", False):
+                active.append("cashfree")
+        except Exception as e:
+            logger.warning(f"[PAY-ACTIVE] Cashfree config check failed: {e}")
 
-    
+    # 3. OxaPay Crypto Gateway
+    oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
+    oxapay_on = bool(pay_methods.get("oxapay", False)) and (bot_cfg.get("oxapay_enabled") is not False)
+    if story_methods is not None and "oxapay" not in story_methods and "crypto" not in story_methods:
+        oxapay_on = False
+    if oxapay_on and bool(oxapay_key):
+        active.append("oxapay")
 
-    bot_cfg = bot_cfg or {}
+    return active
 
 
-    name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
+async def _show_cashfree_payment_screen(
+    client,
+    user_id: int,
+    story: dict,
+    lang: str,
+    bot_cfg: dict = None,
+    is_direct: bool = False,
+    msg_or_query = None
+):
+    """
+    Renders Cashfree Payment Gateway order flow.
+    If is_direct=True, Back button routes to mb#view_{s_id} (story view).
+    If is_direct=False, Back button routes to mb#pay_back#{s_id} (payment selection menu).
+    """
+    from cashfree_helper import create_cashfree_order
+    from pyrogram.types import CallbackQuery, Message
 
-    price = int(story.get('price', 1))
+    s_id = str(story.get("_id", ""))
+    s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+    price = story.get('price', 0)
 
-    
+    user_name = "Buyer"
+    if msg_or_query:
+        if isinstance(msg_or_query, CallbackQuery) and msg_or_query.from_user:
+            user_name = msg_or_query.from_user.first_name or "Buyer"
+        elif isinstance(msg_or_query, Message) and msg_or_query.from_user:
+            user_name = msg_or_query.from_user.first_name or "Buyer"
 
-    if price > 0:
+    if isinstance(msg_or_query, CallbackQuery):
+        try:
+            await msg_or_query.answer()
+        except Exception:
+            pass
 
-        if price <= 50: mrp = 149
-
-        elif price <= 100: mrp = 299
-
-        elif price <= 200: mrp = 599
-
-        elif price <= 300: mrp = 899
-
-        else: mrp = int(price * 2.5)
-
-        calc_off = int(((mrp - price) / mrp) * 100)
-
-        p_str = f"<s>₹{mrp}</s>  <b>₹{price}</b> <i>({calc_off}% OFF)</i>"
-
-    else:
-
-        p_str = f"<b>₹{price}</b>"
-
-    
-
-    if lang == 'hi':
-        title = "⟦ सुरक्षित चेकआउट ⟧"
-        item_lbl = "आइटम"
-        price_lbl = "कुल कीमत"
-        rzp_title = '<emoji id="6273749318717412886">✅</emoji> ऑटोमैटिक पेमेंट (Razorpay)'
-        rzp_desc = "• <b>फायदे:</b> तत्काल एक्सेस (No waiting), 24/7 सुलभ।\n• <b>पेमेंट मोड:</b> UPI, डेबिट कार्ड, वॉलेट, नेट बैंकिंग।\n• <b>वेरिफिकेशन:</b> पेमेंट सफल होते ही अपने आप।"
-        upi_title = '<emoji id="5264895611517300926">🏦</emoji> मैनुअल पेमेंट (Manual UPI)'
-        upi_desc = "• <b>प्रोसेस:</b> पे करें -> स्क्रीनशॉट भेजें -> एडमिन चेक करेगा।\n• <b>पेमेंट मोड:</b> केवल UPI ऐप्स (PhonePe, GPay, etc.)।\n• <b>वेरिफिकेशन:</b> इसमें 5-10 मिनट का समय लग सकता है।"
-        pay_gateway_btn = "पेमेंट गेटवे से भुगतान (Razorpay)"
-        pay_upi_btn = "मैनुअल यूपीआई (Manual UPI)"
-        unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
-        back_btn = "❮ वापस"
-    else:
-        title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
-        item_lbl = "Item"
-        price_lbl = "Total Price"
-        rzp_title = '<emoji id="6273749318717412886">✅</emoji> 𝗔𝘂𝘁𝗼𝗺𝗮𝘁𝗶𝗰 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆)'
-        rzp_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> UPI, Debit Card, Wallets, Net Banking.\n• <b>Verification:</b> Automatically upon successful payment."
-        upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗠𝗮𝗻𝘂𝗮𝗹 𝗣𝗮𝘆𝗺𝗲𝗻𝘁 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
-        upi_desc = "• <b>Process:</b> Pay -> Send Screenshot -> Admin Verify.\n• <b>Modes:</b> Only UPI Apps (PhonePe, GPay, etc.).\n• <b>Verification:</b> Manual (Takes 5-10 minutes)."
-        pay_gateway_btn = _sc('PAY VIA RAZORPAY')
-        pay_upi_btn = _sc('PAY VIA MANUAL UPI')
-        unavailable_upi = "UPI Currently Unavailable"
-        back_btn = f"❮ {_sc('BACK')}"
-
-    # ── UPI availability check ───────────────────────────────────────────────
-    from .market_seller import _upi_availability
-    upi_status = _upi_availability(bot_cfg)
-    upi_ok = upi_status['available']
-
-    # Build UPI block text based on availability
-    if upi_ok:
-        upi_block = f"<blockquote expandable=\"true\">{upi_title}\n{upi_desc}</blockquote>"
-    else:
-        # Reason-specific unavailability message
-        if upi_status['reason'] == 'schedule':
-            until_note = upi_status.get('until', '6:00 AM IST')
-            if lang == 'hi':
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ मैनुअल UPI अभी उपलब्ध नहीं है।</b>\n\n"
-                    f"• रात्रि 9 बजे से सुबह 6 बजे के बीच सुरक्षा कारणों से मैनुअल UPI स्वचालित रूप से बंद रहता है।\n"
-                    f"• UPI फिर से उपलब्ध होगा: <b>{until_note}</b>\n\n"
-                    f"Razorpay से तत्काल पेमेंट करें — UPI, Debit Card, Net Banking सभी स्वीकार होते हैं।</blockquote>"
-                )
-            else:
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ Manual UPI is currently unavailable.</b>\n\n"
-                    f"• Manual UPI is automatically paused between 9 PM – 6 AM IST for security.\n"
-                    f"• UPI will be available again at: <b>{until_note}</b>\n\n"
-                    f"Use Razorpay for instant payment — accepts UPI, Debit Card &amp; Net Banking.</blockquote>"
-                )
-        else:  # manual off by admin
-            if lang == 'hi':
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ मैनुअल UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
-                    f"• एडमिन ने फिलहाल मैनुअल UPI बंद किया है।\n"
-                    f"• Razorpay से पेमेंट करें — UPI, Debit Card, Net Banking स्वीकार।</blockquote>"
-                )
-            else:
-                upi_block = (
-                    f"<blockquote expandable=\"true\"><b>⏸ Manual UPI is temporarily unavailable.</b>\n\n"
-                    f"• The admin has disabled Manual UPI for now.\n"
-                    f"• Please use Razorpay to complete your payment — accepts UPI, Debit Card &amp; Net Banking.</blockquote>"
-                )
-
-    txt = (
-        f"<b>{title}</b>\n\n"
-        f"<b>{item_lbl} :</b> <code>{name}</code>\n"
-        f"<b>{price_lbl} :</b> {p_str}\n\n"
-        f"<blockquote expandable=\"true\">{rzp_title}\n{rzp_desc}</blockquote>\n"
-        f"{upi_block}"
+    bot_username = getattr(getattr(client, "me", None), "username", "")
+    cf_res = await create_cashfree_order(
+        user_id=user_id,
+        user_name=user_name,
+        story=story,
+        bot_username=bot_username,
+        bot_cfg=bot_cfg
     )
 
-    # Determine which payment methods are enabled for this specific story
-    story_methods = story.get("payment_methods", ["upi", "razorpay"])
-    show_razorpay = "razorpay" in story_methods
-    show_upi = "upi" in story_methods
+    order_id = cf_res.get("order_id") or f"cf_{user_id}_{int(time.time())}"
+    pay_link = cf_res.get("payment_link")
+    back_cb = f"mb#view_{s_id}" if is_direct else f"mb#pay_back#{s_id}"
 
-    kb = []
-    # Razorpay row - only if enabled for this story
-    if show_razorpay:
-        kb.append([_ikb(pay_gateway_btn, callback_data=f"mb#pay#razorpay#{str(story['_id'])}", icon_custom_emoji_id="6030410254276106984")])
-    
-    # UPI row - only if enabled for this story
-    if show_upi:
-        if upi_ok:
-            kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay#upi#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
-
+    if not pay_link:
+        logger.error(f"[PAY-CF] pay_link is None/empty! cf_res={cf_res}")
+        err_msg = (
+            "❌ Payment link could not be generated. Please try again or contact support."
+            if lang == 'en' else
+            "❌ भुगतान लिंक जनरेट नहीं हो सका। कृपया पुनः प्रयास करें या सहायता से संपर्क करें।"
+        )
+        back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
+        markup = InlineKeyboardMarkup([[_ikb(back_lbl, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]])
+        if isinstance(msg_or_query, CallbackQuery) and msg_or_query.message:
+            return await _safe_edit(msg_or_query.message, text=err_msg, markup=markup)
         else:
+            return await client.send_message(user_id, err_msg, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
 
-            kb.append([InlineKeyboardButton(f"⏸ {unavailable_upi}", callback_data="mb#noop")])
+    desc_cf = (
+        f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> PAYMENT GATEWAY ⟧</b>\n\n'
+        f"<b>• Story:</b> {to_mathbold(s_name)}\n"
+        f"<b>• Amount:</b> ₹{price}\n"
+        f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
+        f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
+        f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
+    ) if lang == 'en' else (
+        f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> पेमेंट गेटवे ⟧</b>\n\n'
+        f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
+        f"<b>• राशि:</b> ₹{price}\n"
+        f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
+        f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
+        f"<i>भुगतान पूरा करने के बाद, तत्काल डिलीवरी के लिए <b>Check Status</b> पर टैप करें।</i>"
+    )
 
-    
+    pay_now_lbl = "Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "अभी भुगतान करें (Cards/UPI/NetBanking)"
+    check_lbl = "Check Payment Status" if lang == 'en' else "स्टेटस चेक करें"
+    back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
 
-    # If neither method is enabled (fallback), show message
-
-    if not show_razorpay and not show_upi:
-
-        kb.append([InlineKeyboardButton("⚠️ No payment method available", callback_data="mb#noop")])
-
-        
-
-    kb.append([_ikb(back_btn, callback_data="mb#return_main", icon_custom_emoji_id="5774077015388852135")])
-
+    kb = [
+        [_ikb(pay_now_lbl, url=pay_link, icon_custom_emoji_id="6030410254276106984")],
+        [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
+        [_ikb(back_lbl, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]
+    ]
     markup = InlineKeyboardMarkup(kb)
 
+    if isinstance(msg_or_query, CallbackQuery) and msg_or_query.message:
+        return await _safe_edit(msg_or_query.message, text=desc_cf, markup=markup)
+    elif isinstance(msg_or_query, Message):
+        return await _safe_edit(msg_or_query, text=desc_cf, markup=markup)
+    else:
+        return await client.send_message(user_id, desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
 
 
-    IMG_URL = "https://files.catbox.moe/4ud7fx.png"
-    return await _send_checkout_screen(
-        client=client,
-        user_id=user_id,
-        img_url=IMG_URL,
-        caption=txt,
-        reply_markup=markup,
-        msg_or_query=msg_or_query
-    )
+async def _show_upi_payment_screen(
+    client,
+    user_id: int,
+    story: dict,
+    lang: str,
+    bot_cfg: dict = None,
+    is_direct: bool = False,
+    msg_or_query = None
+):
+    """
+    Renders Direct UPI payment screen with QR code and automated UTR instructions.
+    If is_direct=True, Back button routes to mb#view_{s_id} (story view).
+    If is_direct=False, Back button routes to mb#pay_back#{s_id} (payment selection menu).
+    """
+    from bson.objectid import ObjectId
+    from pyrogram.types import CallbackQuery
 
+    s_id = str(story.get("_id", ""))
+    s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
+    s_price = str(story.get("price", 0))
+
+    if not bot_cfg:
+        bt = await _get_cached_bot_doc(client.me.id)
+        bot_cfg = (bt or {}).get("config", {}) if isinstance(bt, dict) else {}
+
+    upi_id, p_name = await _get_rotated_upi(bot_cfg)
+    p_name = p_name or (bot_cfg.get("upi_name") or "Merchant").strip()
+
+    try:
+        upi_uri = _build_upi_uri(
+            upi_id=upi_id,
+            payee_name=p_name,
+            amount=int(story.get("price", 0)),
+            note=f"Payment for {s_name[:20]}"
+        )
+        slice_api_url = (getattr(Config, "SLICEURL_API_URL", "") or "").strip()
+        slice_api_key = (getattr(Config, "SLICEURL_API_KEY", "") or "").strip()
+        slice_direct = ""
+        if slice_api_url and slice_api_key.startswith("slc_"):
+            slice_direct = await _sliceurl_api_shorten(upi_uri)
+        button_url = slice_direct
+    except Exception as ex:
+        logger.error(f"[PAY-UPI] Error building UPI URI / Shortener: {ex}", exc_info=True)
+        upi_uri = f"upi://pay?pa={upi_id}&pn={p_name}&am={s_price}&cu=INR"
+        button_url = ""
+
+    qr_card = None
+    try:
+        qr_card = _make_qr_png_bytes(upi_uri)
+    except Exception as e:
+        logger.error(f"[PAY-UPI] Simple QR code generation failed: {e}", exc_info=True)
+
+    try:
+        order_id = await _make_arya_bot_order_id(user_id, str(s_id))
+        username = ""
+        first_name = ""
+        if msg_or_query and hasattr(msg_or_query, "from_user") and msg_or_query.from_user:
+            username = msg_or_query.from_user.username or ""
+            first_name = msg_or_query.from_user.first_name or ""
+        await db.db.premium_checkout.update_one(
+            {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+            {"$set": {
+                "status": "pending_gateway",
+                "order_id": order_id,
+                "bot_username": getattr(client.me, "username", ""),
+                "username": username,
+                "first_name": first_name,
+                "method": "upi",
+                "amount": int(story.get("price", 0)),
+                "upi_uri": upi_uri,
+                "pay_link_copy": button_url,
+                "upi_id_shown": upi_id,
+                "upi_payee_name_shown": p_name,
+                "updated_at": datetime.utcnow(),
+            }, "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True
+        )
+        await db.db.users.update_one(
+            {"id": user_id},
+            {"$set": {"pending_utr_story_id": s_id, "pending_utr_opened_at": datetime.utcnow()}},
+            upsert=True
+        )
+    except Exception as ex:
+        logger.error(f"[PAY-UPI] Database update failed: {ex}", exc_info=True)
+
+    back_cb = f"mb#view_{s_id}" if is_direct else f"mb#pay_back#{s_id}"
+
+    if lang == 'hi':
+        txt = (
+            f"<b>⟦ ᴅɪʀᴇᴄᴛ ᴜᴘɪ ᴛʀᴀɴꜱꜰᴇʀ ⟧</b>\n\n"
+            f"<b>𝗦𝘁𝗲𝗽 𝟭: ₹{s_price} का भुगतान करें</b>\n\n"
+            f"<blockquote>• QR कोड स्कैन करें या नीचे दिए गए विवरण से भुगतान करें:</blockquote>\n"
+            f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
+            f"<b>नाम:</b> <code>{p_name}</code>\n"
+            f"<b>राशि:</b> <code>₹{s_price}</code></blockquote>\n\n"
+            f"<b>𝗦𝘁𝗲𝗽 𝟮: पेमेंट वेरिफाई</b>\n\n"
+            f"<blockquote>"
+            f'<emoji id="6030410254276106984">💳</emoji> भुगतान के बाद, अपनी Payment App (Paytm, PhonePe, GPay) के <b>Transaction Page</b> से <b>12 अंकों का UPI Reference Number / UTR Number</b> कॉपी करके यहाँ इस चैट में <b>भेजें</b>।\n\n'
+            f'<emoji id="6023761060786346622">⚡</emoji> UTR भेजते ही बोट तुरंत वेरिफाई करेगा — कोई बटन दबाने की जरूरत नहीं।'
+            f"</blockquote>\n"
+            f"────────────────────"
+        )
+        kb = [[InlineKeyboardButton("« वापस", callback_data=back_cb)]]
+    else:
+        txt = (
+            f"<b>⟦ ᴅɪʀᴇᴄᴛ ᴜᴘɪ ᴛʀᴀɴꜱꜰᴇʀ ⟧</b>\n\n"
+            f"<b>𝗦𝘁𝗲𝗽 𝟭: Pay ₹{s_price}</b>\n\n"
+            f"<blockquote>• Scan the QR code or pay using the details below:</blockquote>\n"
+            f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
+            f"<b>Name:</b> <code>{p_name}</code>\n"
+            f"<b>Amount:</b> <code>₹{s_price}</code></blockquote>\n\n"
+            f"<b>𝗦𝘁𝗲𝗽 𝟮: Verify Payment</b>\n\n"
+            f"<blockquote>"
+            f'<emoji id="6030410254276106984">💳</emoji> After payment, open your Payment App (Paytm, PhonePe, GPay) → go to <b>Transaction Page</b> → copy the <b>12-digit UPI Reference Number / UTR Number</b> and <b>send it here in this chat.</b>\n\n'
+            f'<emoji id="6023761060786346622">⚡</emoji> As soon as you send the UTR, the bot will <b>instantly verify</b> your payment — no button needed.'
+            f"</blockquote>\n"
+            f"────────────────────"
+        )
+        kb = [[InlineKeyboardButton("« Back", callback_data=back_cb)]]
+
+    # Clean up previous message before sending QR photo
+    try:
+        prev_msg = msg_or_query.message if hasattr(msg_or_query, 'message') else msg_or_query
+        if prev_msg and hasattr(prev_msg, 'delete'):
+            await prev_msg.delete()
+    except Exception:
+        pass
+
+    if isinstance(msg_or_query, CallbackQuery):
+        try:
+            await msg_or_query.answer()
+        except Exception:
+            pass
+
+    try:
+        if qr_card:
+            photo_obj = io.BytesIO(qr_card) if isinstance(qr_card, (bytes, bytearray)) else qr_card
+            photo_obj.name = "upi_qr.png"
+            photo_obj.seek(0)
+            return await client.send_photo(user_id, photo=photo_obj, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+        else:
+            import urllib.parse
+            qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=1&data={urllib.parse.quote(upi_uri)}"
+            return await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        logger.error(f"[PAY-UPI] Failed to send QR photo: {e}", exc_info=True)
+        return await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def _show_crypto_payment_screen(
+    client,
+    user_id: int,
+    story: dict,
+    lang: str,
+    bot_cfg: dict = None,
+    is_direct: bool = False,
+    msg_or_query = None
+):
+    """
+    Renders OxaPay Crypto invoice payment screen.
+    If is_direct=True, Back button routes to mb#view_{s_id} (story view).
+    If is_direct=False, Back button routes to mb#pay_back#{s_id} (payment selection menu).
+    """
+    from bson.objectid import ObjectId
+    from pyrogram.types import CallbackQuery, Message
+
+    s_id = str(story.get("_id", ""))
+    price = int(story.get("price", 0))
+    s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Premium Content'))
+    back_cb = f"mb#view_{s_id}" if is_direct else f"mb#pay_back#{s_id}"
+
+    if msg_or_query and hasattr(msg_or_query, "message") and msg_or_query.message:
+        try:
+            await msg_or_query.message.edit_text(
+                f"🔐 <b>{_sc('PREPARING YOUR SECURE CHECKOUT')}...</b>\n<i>{_sc('Please wait a moment while we connect to the gateway.')}</i>"
+            )
+        except Exception:
+            pass
+
+    url, track_id = await _create_oxapay_invoice_bot(price, s_name)
+    if not url:
+        err_msg = track_id or "Could not generate crypto payment link."
+        back_btn = f"❮ {_sc('BACK')}" if lang == 'en' else "❮ वापस"
+        markup = InlineKeyboardMarkup([[_ikb(back_btn, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]])
+        fail_text = f"❌ Could not generate payment gateway link for <b>Crypto</b>.\n\n<code>{err_msg}</code>\n\nPlease try another payment method."
+        if msg_or_query and hasattr(msg_or_query, "message") and msg_or_query.message:
+            return await _safe_edit(msg_or_query.message, text=fail_text, markup=markup)
+        else:
+            return await client.send_message(user_id, fail_text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+
+    try:
+        order_id = await _make_arya_bot_order_id(user_id, str(s_id))
+        username = ""
+        first_name = ""
+        if msg_or_query and hasattr(msg_or_query, "from_user") and msg_or_query.from_user:
+            username = msg_or_query.from_user.username or ""
+            first_name = msg_or_query.from_user.first_name or ""
+        await db.db.premium_checkout.update_one(
+            {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+            {"$set": {
+                "status": "pending_gateway",
+                "order_id": order_id,
+                "bot_username": getattr(client.me, "username", ""),
+                "username": username,
+                "first_name": first_name,
+                "method": "crypto",
+                "payment_id": track_id,
+                "amount": price,
+                "pay_link_copy": url,
+                "updated_at": datetime.utcnow(),
+            }, "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True
+        )
+    except Exception as ex:
+        logger.error(f"[PAY-CRYPTO] DB update failed: {ex}", exc_info=True)
+
+    usd_amount = round(price / 84.0, 2)
+    if usd_amount < 0.50:
+        usd_amount = 0.50
+
+    lbl_pay = "सुरक्षित क्रिप्टो भुगतान करें" if lang == 'hi' else "₿ Pay securely via Crypto"
+    lbl_ver = "क्रिप्टो भुगतान सत्यापित करें" if lang == 'hi' else "Verify Crypto Payment"
+    lbl_bck = "‹ वापस" if lang == 'hi' else "‹ Back"
+
+    kb = [
+        [InlineKeyboardButton(lbl_pay, url=url)],
+        [_ikb(lbl_ver, callback_data=f"mb#crypto2_check#{s_id}", icon_custom_emoji_id="5807492110059838726")],
+        [InlineKeyboardButton(lbl_bck, callback_data=back_cb)]
+    ]
+
+    if lang == "hi":
+        check_txt = (
+            f'<emoji id="5472030678633684592">💸</emoji> <b>सुरक्षित चेकआउट</b>\n\n'
+            f'<b><emoji id="6023962911364357003">📖</emoji> कहानी:</b> <code>{s_name}</code>\n'
+            f'<b><emoji id="5283232570660634549">💰</emoji> कुल कीमत:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
+            f"<blockquote expandable>"
+            f'<b><emoji id="6019328362479097179">🛡</emoji> क्रिप्टो से भुगतान कैसे करें?</b>\n\n'
+            f"1. नीचे दिए गए '{lbl_pay}' बटन पर क्लिक करें।\n"
+            f"2. आपको OxaPay के सुरक्षित गेटवे पर भेजा जाएगा।\n"
+            f"3. समर्थित कॉइन (USDT, BTC, LTC आदि) चुनें और भुगतान करें।\n"
+            f"4. भुगतान पूरा होने के बाद वापस आकर '{lbl_ver}' पर क्लिक करें।\n"
+            f"5. बॉट तुरंत सत्यापित करके आपकी फ़ाइल भेज देगा।"
+            f"</blockquote>\n\n"
+            f'<i><emoji id="6023761060786346622">⚡</emoji> 24/7 स्वचालित सत्यापन और तत्काल डिलीवरी।</i>'
+        )
+    else:
+        check_txt = (
+            f'<emoji id="5472030678633684592">💸</emoji> <b>SECURE CHECKOUT</b>\n\n'
+            f'<b><emoji id="6023962911364357003">📖</emoji> Story Name:</b> <code>{s_name}</code>\n'
+            f'<b><emoji id="5283232570660634549">💰</emoji> Total Price:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
+            f"<blockquote expandable>"
+            f'<b><emoji id="6019328362479097179">🛡</emoji> How to pay via Crypto (OxaPay):</b>\n\n'
+            f"1. Click the '{lbl_pay}' button below.\n"
+            f"2. Select your preferred coin (USDT, BTC, LTC, etc.) on OxaPay.\n"
+            f"3. Send the exact amount shown to the payment address.\n"
+            f"4. Once transaction is complete, return here and click '{lbl_ver}'.\n"
+            f"5. The bot will automatically verify and grant instant access."
+            f"</blockquote>\n\n"
+            f'<i><emoji id="6023761060786346622">⚡</emoji> 24/7 automated verification & instant delivery.</i>'
+        )
+
+    markup = InlineKeyboardMarkup(kb)
+    if msg_or_query and hasattr(msg_or_query, "message") and msg_or_query.message:
+        return await _safe_edit(msg_or_query.message, text=check_txt, markup=markup)
+    elif isinstance(msg_or_query, Message):
+        return await _safe_edit(msg_or_query, text=check_txt, markup=markup)
+    else:
+        return await client.send_message(user_id, check_txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
 
 
 async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dict = None):
     """
-    Shows V2 Checkout Page with Direct UPI, Cashfree (Cards/NetBanking/UPI), and Crypto (OxaPay).
+    Shows Checkout Page or directly skips to the payment screen if only 1 payment method is active.
+    Supports UPI (Direct UPI + UTR), Cashfree (Cards/NetBanking/UPI), and Crypto (OxaPay).
     """
     from pyrogram.types import Message, CallbackQuery
     is_msg = isinstance(msg_or_query, Message)
@@ -3138,94 +3393,126 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
 
     if not bot_cfg:
         try:
-            bot_cfg = await _get_cached_bot_doc(client.me.id) or {}
+            bot_doc = await _get_cached_bot_doc(client.me.id)
+            bot_cfg = (bot_doc or {}).get("config", {}) if isinstance(bot_doc, dict) else {}
         except Exception:
             bot_cfg = {}
 
-    from cashfree_helper import get_cashfree_config
-    cf_cfg = await get_cashfree_config()
-    show_cashfree = bool(cf_cfg.get("enabled", False))
+    active_methods = await _get_bot_active_payment_methods(client, bot_cfg=bot_cfg, story=story)
+    logger.info(f"[CHECKOUT-ROUTER] Active payment methods for bot {client.me.id}, story {story.get('_id')}: {active_methods}")
 
+    # ── CASE 1: Single Payment Method -> Direct Skip ──
+    if len(active_methods) == 1:
+        method = active_methods[0]
+        logger.info(f"[CHECKOUT-ROUTER] Direct Mode: Single active method '{method}'. Skipping selection screen.")
+        if method == "cashfree":
+            return await _show_cashfree_payment_screen(
+                client=client, user_id=user_id, story=story, lang=lang, bot_cfg=bot_cfg, is_direct=True, msg_or_query=msg_or_query
+            )
+        elif method == "upi":
+            return await _show_upi_payment_screen(
+                client=client, user_id=user_id, story=story, lang=lang, bot_cfg=bot_cfg, is_direct=True, msg_or_query=msg_or_query
+            )
+        elif method == "oxapay":
+            return await _show_crypto_payment_screen(
+                client=client, user_id=user_id, story=story, lang=lang, bot_cfg=bot_cfg, is_direct=True, msg_or_query=msg_or_query
+            )
+
+    # ── CASE 2: No active payment methods ──
+    if len(active_methods) == 0:
+        logger.warning(f"[CHECKOUT-ROUTER] No payment methods enabled for bot {client.me.id}, story {story.get('_id')}")
+        if lang == 'hi':
+            title = "⟦ सुरक्षित चेकआउट ⟧"
+            no_pay_txt = (
+                f"<b>{title}</b>\n\n"
+                f"<b>कहानी :</b> <code>{name}</code>\n"
+                f"<b>कुल राशि :</b> {p_str}\n\n"
+                f"<blockquote>⚠️ <b>भुगतान विकल्प अभी उपलब्ध नहीं हैं।</b>\n\n"
+                f"इस स्टोर बॉट पर वर्तमान में कोई भुगतान विधि सक्रिय नहीं है। कृपया कुछ समय बाद पुनः प्रयास करें या एडमिन से संपर्क करें।</blockquote>"
+            )
+            back_btn = "❮ वापस"
+        else:
+            title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
+            no_pay_txt = (
+                f"<b>{title}</b>\n\n"
+                f"<b>Item :</b> <code>{name}</code>\n"
+                f"<b>Total Price :</b> {p_str}\n\n"
+                f"<blockquote>⚠️ <b>Payment options currently unavailable.</b>\n\n"
+                f"No payment method is active for this store bot at this moment. Please check back later or contact admin.</blockquote>"
+            )
+            back_btn = f"❮ {_sc('BACK')}"
+
+        kb = [[_ikb(back_btn, callback_data=f"mb#view_{str(story['_id'])}", icon_custom_emoji_id="5774077015388852135")]]
+        markup = InlineKeyboardMarkup(kb)
+        IMG_URL = "https://files.catbox.moe/a6xw61.png"
+        return await _send_checkout_screen(
+            client=client,
+            user_id=user_id,
+            img_url=IMG_URL,
+            caption=no_pay_txt,
+            reply_markup=markup,
+            msg_or_query=msg_or_query
+        )
+
+    # ── CASE 3: Multiple Payment Methods -> Show Selection Screen ──
     if lang == 'hi':
         title = "⟦ सुरक्षित चेकआउट ⟧"
         item_lbl = "कहानी"
         price_lbl = "कुल राशि"
-        
+
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>प्रक्रिया:</b> किसी भी UPI ऐप से भुगतान करें → 12-अंकों का UTR दर्ज करें → ऑटो-वेरिफाई।\n• <b>माध्यम:</b> PhonePe, GPay, Paytm, BHIM आदि।\n• <b>सत्यापन:</b> स्वचालित सत्यापन (1-2 मिनट)।"
-        
+
         cf_title = '<emoji id="6030410254276106984">💳</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)'
         cf_desc = "• <b>लाभ:</b> तुरंत एक्सेस, 100% सुरक्षित पेमेंट गेटवे।\n• <b>माध्यम:</b> कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, UPI (GPay, PhonePe, Paytm), वॉलेट्स।\n• <b>सत्यापन:</b> तत्काल ऑटोमैटिक वेरिफिकेशन और डिलीवरी।"
-        
+
         crypto_title = '<emoji id="5904462880941545555">💰</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)'
         crypto_desc = "• <b>लाभ:</b> तुरंत एक्सेस (कोई प्रतीक्षा नहीं), 24/7 उपलब्ध।\n• <b>माध्यम:</b> BTC, USDT, ETH, LTC और 300+ अन्य कॉइन्स।\n• <b>सत्यापन:</b> भुगतान के तुरंत बाद स्वचालित।"
-        
+
         pay_upi_btn = "Pay Via UPI"
         pay_cf_btn = "Pay Via Cards , NetBanking"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
-        unavailable_upi = "यूपीआई भुगतान अभी बंद है।"
         back_btn = "❮ वापस"
     else:
         title = "⟦ 𝗦𝗘𝗖𝗨𝗥𝗘 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧 ⟧"
         item_lbl = "Item"
         price_lbl = "Total Price"
-        
+
         upi_title = '<emoji id="5264895611517300926">🏦</emoji> 𝗗𝗶𝗿𝗲𝗰𝘁 𝗨𝗣𝗜 𝗧𝗿𝗮𝗻𝘀𝗳𝗲𝗿 (𝗠𝗮𝗻𝘂𝗮𝗹 𝗨𝗣𝗜)'
         upi_desc = "• <b>Process:</b> Pay directly using any UPI App → Enter 12-digit UTR → Auto Verify.\n• <b>Modes:</b> PhonePe, GPay, Paytm, BHIM, etc.\n• <b>Verification:</b> Automatic verification (Takes 1-2 mins)."
-        
+
         cf_title = '<emoji id="6030410254276106984">💳</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗮𝘀𝗵𝗳𝗿𝗲𝗲 (𝗜𝗻𝘀𝘁𝗮𝗻𝘁)'
         cf_desc = "• <b>Benefits:</b> Instant Access, 100% Secure Payment Gateway.\n• <b>Modes:</b> Cards (Credit/Debit), NetBanking, UPI (GPay, PhonePe, Paytm), Wallets.\n• <b>Verification:</b> Instant automated verification & immediate delivery."
-        
+
         crypto_title = '<emoji id="5904462880941545555">💰</emoji> 𝗣𝗮𝘆 𝘄𝗶𝘁𝗵 𝗖𝗿𝘆𝗽𝘁𝗼 (𝗢𝘅𝗮𝗣𝗮𝘆)'
         crypto_desc = "• <b>Benefits:</b> Instant Access (No waiting), 24/7 available.\n• <b>Modes:</b> BTC, USDT, ETH, LTC, Doge & 300+ other coins.\n• <b>Verification:</b> Automatically verified upon payment."
-        
+
         pay_upi_btn = "Pay Via UPI"
         pay_cf_btn = "Pay Via Cards , NetBanking"
         pay_crypto_btn = "Pay Via Crypto [ Oxapay ]"
-        unavailable_upi = "UPI Currently Unavailable"
         back_btn = f"❮ {_sc('BACK')}"
 
-    # UPI availability in Checkout 2 (Automated IMAP UTR verification - Available 24/7 unless explicitly disabled by admin)
-    upi_enabled = bot_cfg.get('upi_enabled')
-    if upi_enabled is False:
-        upi_ok = False
-        upi_status = {'available': False, 'reason': 'manual', 'until': None}
-    else:
-        upi_ok = True
-        upi_status = {'available': True, 'reason': 'auto', 'until': None}
+    upi_block = f"<blockquote expandable=\"true\">{upi_title}\n{upi_desc}</blockquote>"
+    cf_block = f"<blockquote expandable=\"true\">{cf_title}\n{cf_desc}</blockquote>"
+    crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>"
 
-    if upi_ok:
-        upi_block = f"<blockquote expandable=\"true\">{upi_title}\n{upi_desc}</blockquote>"
-    else:
-        if lang == 'hi':
-            upi_block = (
-                f"<blockquote expandable=\"true\"><b>⏸ डायरेक्ट UPI अभी अस्थायी रूप से बंद है।</b>\n\n"
-                f"• एडमिन ने फिलहाल डायरेक्ट UPI बंद किया है।\n"
-                f"• कृपया अन्य उपलब्ध भुगतान विकल्प का उपयोग करें।</blockquote>"
-            )
-        else:
-            upi_block = (
-                f"<blockquote expandable=\"true\"><b>⏸ Direct UPI is temporarily unavailable.</b>\n\n"
-                f"• The admin has disabled Direct UPI for now.\n"
-                f"• Please use another available payment method.</blockquote>"
-            )
+    content_blocks = []
+    kb = []
 
-    story_methods = story.get("payment_methods")
-    if not story_methods:
-        story_methods = ["upi", "razorpay", "cashfree"]
-    show_upi = "upi" in story_methods
-    oxapay_key = (getattr(Config, "OXAPAY_KEY", "") or "").strip()
-    is_show_store_mode = bool(story.get("is_show") or (bot_cfg.get("bot_mode") == "show_store"))
-    show_crypto = bool(oxapay_key) and not is_show_store_mode
+    if "upi" in active_methods:
+        content_blocks.append(upi_block)
+        kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay2#upi#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
 
-    cf_block = f"<blockquote expandable=\"true\">{cf_title}\n{cf_desc}</blockquote>" if show_cashfree else ""
-    crypto_block = f"<blockquote expandable=\"true\">{crypto_title}\n{crypto_desc}</blockquote>" if show_crypto else ""
-
-    content_blocks = [upi_block]
-    if show_cashfree and cf_block:
+    if "cashfree" in active_methods:
         content_blocks.append(cf_block)
-    if show_crypto and crypto_block:
+        kb.append([_ikb(pay_cf_btn, callback_data=f"mb#pay2#cashfree#{str(story['_id'])}", icon_custom_emoji_id="6104751980641525812")])
+
+    if "oxapay" in active_methods:
         content_blocks.append(crypto_block)
+        kb.append([_ikb(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}", icon_custom_emoji_id="5904462880941545555")])
+
+    kb.append([_ikb(back_btn, callback_data=f"mb#view_{str(story['_id'])}", icon_custom_emoji_id="5774077015388852135")])
+    markup = InlineKeyboardMarkup(kb)
 
     txt = (
         f"<b>{title}</b>\n\n"
@@ -3233,22 +3520,6 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         f"<b>{price_lbl} :</b> {p_str}\n\n"
         + "\n".join(content_blocks)
     )
-
-    kb = []
-    if show_upi:
-        if upi_ok:
-            kb.append([_ikb(pay_upi_btn, callback_data=f"mb#pay2#upi#{str(story['_id'])}", icon_custom_emoji_id="5766975922620076409")])
-        else:
-            kb.append([InlineKeyboardButton(f"⏸ {unavailable_upi}", callback_data="mb#noop")])
-
-    if show_cashfree:
-        kb.append([_ikb(pay_cf_btn, callback_data=f"mb#pay2#cashfree#{str(story['_id'])}", icon_custom_emoji_id="6104751980641525812")])
-
-    if show_crypto:
-        kb.append([_ikb(pay_crypto_btn, callback_data=f"mb#pay2#crypto#{str(story['_id'])}", icon_custom_emoji_id="5904462880941545555")])
-
-    kb.append([_ikb(back_btn, callback_data=f"mb#view_{str(story['_id'])}", icon_custom_emoji_id="5774077015388852135")])
-    markup = InlineKeyboardMarkup(kb)
 
     IMG_URL = "https://files.catbox.moe/a6xw61.png"
     return await _send_checkout_screen(
@@ -3259,6 +3530,15 @@ async def _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg: dic
         reply_markup=markup,
         msg_or_query=msg_or_query
     )
+
+
+async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict = None):
+    """
+    Standard entry point for store bot checkouts.
+    Delegates to _show_story_details_v2 to handle per-bot payment configuration,
+    single-method direct skip, and multi-method selection menu.
+    """
+    return await _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg=bot_cfg)
 
 
 async def _process_start(client, message):
@@ -8259,6 +8539,7 @@ async def _process_callback(client, query):
     elif cmd == "pay_back":
         s_id = data[2]
         await query.answer()
+        asyncio.create_task(_clear_utr_state(user_id))
 
         try:
             await query.message.delete()
@@ -8270,6 +8551,9 @@ async def _process_callback(client, query):
         if story:
             _bt = await _get_cached_bot_doc(client.me.id)
             _bt_cfg = (_bt or {}).get("config", {})
+            active_methods = await _get_bot_active_payment_methods(client, bot_cfg=_bt_cfg, story=story)
+            if len(active_methods) <= 1:
+                return await _show_story_profile(client, user_id, story, lang)
             return await _show_story_details(client, query, story, lang, bot_cfg=_bt_cfg)
         else:
             return await _edit_main_menu_in_place(client, query, query.from_user, lang)
@@ -8417,314 +8701,41 @@ async def _process_callback(client, query):
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
         if not story: return await query.answer("Story not found!", show_alert=True)
 
+        _bt = await _get_cached_bot_doc(client.me.id)
+        _bt_cfg = (_bt or {}).get("config", {})
+
         if method == "cashfree":
-            # Cashfree Payment Gateway order flow
-            logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
-            try:
-                await query.answer()
-            except Exception:
-                pass
-
-            from cashfree_helper import create_cashfree_order
-            bot_username = getattr(getattr(client, "me", None), "username", "")
-            user_name = query.from_user.first_name or "Buyer"
-            
-            cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
-            
-            order_id = cf_res.get("order_id") or f"cf_{user_id}_{int(time.time())}"
-            pay_link = cf_res.get("payment_link")
-
-            s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
-            price = story.get('price', 0)
-
-            if not pay_link:
-                logger.error(f"[PAY2-CF] pay_link is None/empty! cf_res={cf_res}")
-                return await query.answer("❌ Payment link not generated. Please try again.", show_alert=True)
-
-            logger.info(f"[PAY2-CF] Showing payment screen to user {user_id}: order={order_id}, link={pay_link}")
-
-            desc_cf = (
-                f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> PAYMENT GATEWAY ⟧</b>\n\n'
-                f"<b>• Story:</b> {to_mathbold(s_name)}\n"
-                f"<b>• Amount:</b> ₹{price}\n"
-                f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
-                f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
-                f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
-            ) if lang == 'en' else (
-                f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> पेमेंट गेटवे ⟧</b>\n\n'
-                f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
-                f"<b>• राशि:</b> ₹{price}\n"
-                f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
-                f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
-                f"<i>भुगतान पूरा करने के बाद, तत्काल डिलीवरी के लिए <b>Check Status</b> पर टैप करें।</i>"
+            return await _show_cashfree_payment_screen(
+                client=client,
+                user_id=user_id,
+                story=story,
+                lang=lang,
+                bot_cfg=_bt_cfg,
+                is_direct=False,
+                msg_or_query=query
             )
-
-            pay_now_lbl = "Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "अभी भुगतान करें (Cards/UPI/NetBanking)"
-            check_lbl = "Check Payment Status" if lang == 'en' else "स्टेटस चेक करें"
-            back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
-
-            kb = [
-                [_ikb(pay_now_lbl, url=pay_link, icon_custom_emoji_id="6030410254276106984")],
-                [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
-                [_ikb(back_lbl, callback_data=f"mb#pay_back#{s_id}", icon_custom_emoji_id="5774077015388852135")]
-            ]
-
-            await _safe_edit(query.message, text=desc_cf, markup=InlineKeyboardMarkup(kb))
-            return
-
         elif method == "upi":
-            # Direct UPI Transfer Screen
-            logger.info(f"[PAY2] User {user_id} clicked Direct UPI option for story {s_id}")
-            try:
-                if getattr(db, "db", None) is None and hasattr(db, "connect"):
-                    await db.connect()
-                db_obj = getattr(db, "db", None)
-                bt = (await db_obj.premium_bots.find_one({"id": client.me.id})) if db_obj is not None else None
-                logger.info(f"[PAY2] Loaded bot config: {bool(bt)}")
-                bt_cfg = bt.get("config", {}) if bt else {}
-                upi_id, p_name = await _get_rotated_upi(bt_cfg)
-                logger.info(f"[PAY2] Rotated UPI resolved: upi_id={upi_id}, payee={p_name}")
-                
-                s_price = str(story["price"])
-                s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
-                logger.info(f"[PAY2] Story details: price={s_price}, name={s_name}")
-            except Exception as ex:
-                logger.error(f"[PAY2] Error setting up variables: {ex}", exc_info=True)
-                return await query.answer(f"Setup error: {ex}", show_alert=True)
-            
-            try:
-                upi_uri = _build_upi_uri(
-                    upi_id=upi_id,
-                    payee_name=p_name,
-                    amount=int(story["price"]),
-                    note=f"Payment for {s_name[:20]}"
-                )
-                logger.info(f"[PAY2] Built UPI URI: {upi_uri}")
-
-                slice_api_url = (getattr(Config, "SLICEURL_API_URL", "") or "").strip()
-                slice_api_key = (getattr(Config, "SLICEURL_API_KEY", "") or "").strip()
-                slice_direct = ""
-                if slice_api_url and slice_api_key.startswith("slc_"):
-                    slice_direct = await _sliceurl_api_shorten(upi_uri)
-                button_url = slice_direct
-                logger.info(f"[PAY2] Shortened URL: {button_url}")
-            except Exception as ex:
-                logger.error(f"[PAY2] Error building UPI URI / Shortener: {ex}", exc_info=True)
-                upi_uri = f"upi://pay?pa={upi_id}&pn={p_name}&am={s_price}&cu=INR"
-
-            # Generate Simple Clean UPI QR Code (no template card)
-            qr_card = None
-            try:
-                logger.info("[PAY2] Attempting to generate simple QR code image...")
-                qr_card = _make_qr_png_bytes(upi_uri)
-                logger.info(f"[PAY2] Simple QR code generation result: {'SUCCESS' if qr_card else 'FAILED'}")
-            except Exception as e:
-                logger.error(f"[PAY2] Simple QR code generation raised exception: {e}", exc_info=True)
-                qr_card = None
-
-            try:
-                logger.info("[PAY2] Updating checkout in DB...")
-                order_id = await _make_arya_bot_order_id(user_id, str(s_id))
-                await db.db.premium_checkout.update_one(
-                    {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
-                    {"$set": {
-                        "status": "pending_gateway",
-                        "order_id": order_id,
-                        "bot_username": client.me.username,
-                        "username": query.from_user.username or "",
-                        "first_name": query.from_user.first_name or "",
-                        "method": "upi",
-                        "amount": int(story["price"]),
-                        "upi_uri": upi_uri,
-                        "pay_link_copy": button_url,
-                        "upi_id_shown": upi_id,
-                        "upi_payee_name_shown": p_name,
-                        "updated_at": datetime.utcnow(),
-                    }, "$setOnInsert": {"created_at": datetime.utcnow()}},
-                    upsert=True
-                )
-                logger.info("[PAY2] Checkout updated.")
-            except Exception as ex:
-                logger.error(f"[PAY2] Database checkout update failed: {ex}", exc_info=True)
-
-            p_name = p_name or (bt_cfg.get("upi_name") or "Merchant").strip()
-
-            try:
-                logger.info("[PAY2] Setting pending_utr_story_id in user doc...")
-                await db.db.users.update_one(
-                    {"id": user_id},
-                    {"$set": {"pending_utr_story_id": s_id, "pending_utr_opened_at": datetime.utcnow()}},
-                    upsert=True
-                )
-                logger.info("[PAY2] User doc updated.")
-            except Exception as ex:
-                logger.error(f"[PAY2] Database user update failed: {ex}", exc_info=True)
-
-            if lang == 'hi':
-                txt = (
-                    f"<b>⟦ ᴅɪʀᴇᴄᴛ ᴜᴘɪ ᴛʀᴀɴꜱꜰᴇʀ ⟧</b>\n\n"
-                    f"<b>𝗦𝘁𝗲𝗽 𝟭: ₹{s_price} का भुगतान करें</b>\n\n"
-                    f"<blockquote>• QR कोड स्कैन करें या नीचे दिए गए विवरण से भुगतान करें:</blockquote>\n"
-                    f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
-                    f"<b>नाम:</b> <code>{p_name}</code>\n"
-                    f"<b>राशि:</b> <code>₹{s_price}</code></blockquote>\n\n"
-                    f"<b>𝗦𝘁𝗲𝗽 𝟮: पेमेंट वेरिफाई</b>\n\n"
-                    f"<blockquote>"
-                    f'<emoji id="6030410254276106984">💳</emoji> भुगतान के बाद, अपनी Payment App (Paytm, PhonePe, GPay) के <b>Transaction Page</b> से <b>12 अंकों का UPI Reference Number / UTR Number</b> कॉपी करके यहाँ इस चैट में <b>भेजें</b>।\n\n'
-                    f'<emoji id="6023761060786346622">⚡</emoji> UTR भेजते ही बोट तुरंत वेरिफाई करेगा — कोई बटन दबाने की जरूरत नहीं।'
-                    f"</blockquote>\n"
-                    f"────────────────────"
-                )
-                kb = [
-                    [InlineKeyboardButton("« वापस", callback_data=f"mb#pay_back#{s_id}")]
-                ]
-            else:
-                txt = (
-                    f"<b>⟦ ᴅɪʀᴇᴄᴛ ᴜᴘɪ ᴛʀᴀɴꜱꜰᴇʀ ⟧</b>\n\n"
-                    f"<b>𝗦𝘁𝗲𝗽 𝟭: Pay ₹{s_price}</b>\n\n"
-                    f"<blockquote>• Scan the QR code or pay using the details below:</blockquote>\n"
-                    f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
-                    f"<b>Name:</b> <code>{p_name}</code>\n"
-                    f"<b>Amount:</b> <code>₹{s_price}</code></blockquote>\n\n"
-                    f"<b>𝗦𝘁𝗲𝗽 𝟮: Verify Payment</b>\n\n"
-                    f"<blockquote>"
-                    f'<emoji id="6030410254276106984">💳</emoji> After payment, open your Payment App (Paytm, PhonePe, GPay) → go to <b>Transaction Page</b> → copy the <b>12-digit UPI Reference Number / UTR Number</b> and <b>send it here in this chat.</b>\n\n'
-                    f'<emoji id="6023761060786346622">⚡</emoji> As soon as you send the UTR, the bot will <b>instantly verify</b> your payment — no button needed.'
-                    f"</blockquote>\n"
-                    f"────────────────────"
-                )
-                kb = [
-                    [InlineKeyboardButton(f"« Back", callback_data=f"mb#pay_back#{s_id}")]
-                ]
-            
-            try:
-                logger.info("[PAY2] Deleting previous inline message...")
-                await query.message.delete()
-                logger.info("[PAY2] Previous message deleted.")
-            except Exception as ex:
-                logger.warning(f"[PAY2] Failed to delete previous message: {ex}")
-
-            try:
-                if qr_card:
-                    logger.info("[PAY2] Sending generated UPI QR Card photo...")
-                    if isinstance(qr_card, (bytes, bytearray)):
-                        photo_obj = io.BytesIO(qr_card)
-                        photo_obj.name = "upi_qr.png"
-                        photo_obj.seek(0)
-                    else:
-                        photo_obj = qr_card
-                        if hasattr(photo_obj, 'seek'):
-                            photo_obj.seek(0)
-                        if not getattr(photo_obj, 'name', None):
-                            photo_obj.name = "upi_qr.png"
-                    await client.send_photo(user_id, photo=photo_obj, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
-                    logger.info("[PAY2] Photo sent successfully.")
-                else:
-                    import urllib.parse
-                    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=1&data={urllib.parse.quote(upi_uri)}"
-                    logger.info(f"[PAY2] Sending fallback QR code URL: {qr_url}")
-                    await client.send_photo(user_id, photo=qr_url, caption=txt, reply_markup=InlineKeyboardMarkup(kb))
-                    logger.info("[PAY2] Fallback QR code photo sent successfully.")
-            except Exception as e:
-                logger.error(f"[PAY2] Failed to send photo (both custom and qrserver): {e}", exc_info=True)
-                kb2 = [[InlineKeyboardButton("« वापस" if lang=='hi' else "« Back", callback_data=f"mb#pay_back#{s_id}")]]
-                try:
-                    logger.info("[PAY2] Attempting to send text-only fallback message...")
-                    await client.send_message(user_id, txt, reply_markup=InlineKeyboardMarkup(kb2))
-                    logger.info("[PAY2] Text-only fallback message sent.")
-                except Exception as ex2:
-                    logger.critical(f"[PAY2] Text-only fallback message ALSO failed: {ex2}", exc_info=True)
-                    # Try a very basic text send
-                    try:
-                        await client.send_message(user_id, "❌ Error sending checkout screen. Please contact support.")
-                    except:
-                        pass
-            
-            # Answer the callback query to stop the loading spinner
-            try:
-                await query.answer()
-            except:
-                pass
-
-        elif method == "crypto":
-            # OxaPay Crypto Invoice generation
-            await query.message.edit_text(f"🔐 <b>{_sc('PREPARING YOUR SECURE CHECKOUT')}...</b>\n<i>{_sc('Please wait a moment while we connect to the gateway.')}</i>")
-            price = int(story["price"])
-            s_name = story.get('story_name_en', 'Premium Content')
-            
-            url, track_id = await _create_oxapay_invoice_bot(price, s_name)
-            if not url:
-                err_msg = track_id or "Could not generate crypto payment link."
-                return await query.message.edit_text(
-                    f"❌ Could not generate payment gateway link for <b>Crypto</b>.\n\n<code>{err_msg}</code>\n\nPlease try Direct UPI Transfer.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"❮ {_sc('BACK')}", callback_data=f"mb#pay_back#{s_id}")]])
-                )
-
-            # Record checkout in DB
-            order_id = await _make_arya_bot_order_id(user_id, str(s_id))
-            await db.db.premium_checkout.update_one(
-                {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
-                {"$set": {
-                    "status": "pending_gateway",
-                    "order_id": order_id,
-                    "bot_username": client.me.username,
-                    "username": query.from_user.username or "",
-                    "first_name": query.from_user.first_name or "",
-                    "method": "crypto",
-                    "payment_id": track_id,
-                    "amount": price,
-                    "pay_link_copy": url,
-                    "updated_at": datetime.utcnow(),
-                }, "$setOnInsert": {"created_at": datetime.utcnow()}},
-                upsert=True
+            return await _show_upi_payment_screen(
+                client=client,
+                user_id=user_id,
+                story=story,
+                lang=lang,
+                bot_cfg=_bt_cfg,
+                is_direct=False,
+                msg_or_query=query
             )
-
-            usd_amount = round(price / 84.0, 2)
-            if usd_amount < 0.50:
-                usd_amount = 0.50
-
-            lbl_pay = "सुरक्षित क्रिप्टो भुगतान करें" if lang == 'hi' else f"₿ Pay securely via Crypto"
-            lbl_ver = "क्रिप्टो भुगतान सत्यापित करें" if lang == 'hi' else "Verify Crypto Payment"
-            lbl_bck = "‹ वापस" if lang == 'hi' else "‹ Back"
-
-            kb = [
-                [InlineKeyboardButton(lbl_pay, url=url)],
-                [_ikb(lbl_ver, callback_data=f"mb#crypto2_check#{s_id}", icon_custom_emoji_id="5807492110059838726")],
-                [InlineKeyboardButton(lbl_bck, callback_data=f"mb#pay_back#{s_id}")]
-            ]
-
-            if lang == "hi":
-                check_txt = (
-                    f'<emoji id="5472030678633684592">💸</emoji> <b>सुरक्षित चेकआउट</b>\n\n'
-                    f'<b><emoji id="6023962911364357003">📖</emoji> कहानी:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
-                    f'<b><emoji id="5283232570660634549">💰</emoji> कुल कीमत:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
-                    f"<blockquote expandable>"
-                    f'<b><emoji id="6019328362479097179">🛡</emoji> क्रिप्टो से भुगतान कैसे करें?</b>\n\n'
-                    f"1. नीचे दिए गए '{lbl_pay}' बटन पर क्लिक करें।\n"
-                    f"2. आपको OxaPay के सुरक्षित गेटवे पर भेजा जाएगा।\n"
-                    f"3. समर्थित कॉइन (USDT, BTC, LTC आदि) चुनें और भुगतान करें।\n"
-                    f"4. भुगतान पूरा होने के बाद वापस आकर '{lbl_ver}' पर क्लिक करें।\n"
-                    f"5. बॉट तुरंत सत्यापित करके आपकी फ़ाइल भेज देगा।"
-                    f"</blockquote>\n\n"
-                    f'<i><emoji id="6023761060786346622">⚡</emoji> 24/7 स्वचालित सत्यापन और तत्काल डिलीवरी।</i>'
-                )
-            else:
-                check_txt = (
-                    f'<emoji id="5472030678633684592">💸</emoji> <b>SECURE CHECKOUT</b>\n\n'
-                    f'<b><emoji id="6023962911364357003">📖</emoji> Story Name:</b> <code>{story.get("story_name_en", "Premium Story")}</code>\n'
-                    f'<b><emoji id="5283232570660634549">💰</emoji> Total Price:</b> <code>₹{price} (~${usd_amount} USD)</code>\n\n'
-                    f"<blockquote expandable>"
-                    f'<b><emoji id="6019328362479097179">🛡</emoji> How to pay via Crypto (OxaPay):</b>\n\n'
-                    f"1. Click the '{lbl_pay}' button below.\n"
-                    f"2. Select your preferred coin (USDT, BTC, LTC, etc.) on OxaPay.\n"
-                    f"3. Send the exact amount shown to the payment address.\n"
-                    f"4. Once transaction is complete, return here and click '{lbl_ver}'.\n"
-                    f"5. The bot will automatically verify and grant instant access."
-                    f"</blockquote>\n\n"
-                    f'<i><emoji id="6023761060786346622">⚡</emoji> 24/7 automated verification & instant delivery.</i>'
-                )
-            
-            await query.message.edit_text(check_txt, reply_markup=InlineKeyboardMarkup(kb))
+        elif method == "crypto":
+            return await _show_crypto_payment_screen(
+                client=client,
+                user_id=user_id,
+                story=story,
+                lang=lang,
+                bot_cfg=_bt_cfg,
+                is_direct=False,
+                msg_or_query=query
+            )
+        else:
+            return await query.answer("Unknown payment method!", show_alert=True)
 
     elif cmd == "verify2_utr":
         try:
@@ -9044,6 +9055,9 @@ async def _process_callback(client, query):
                 if story:
                     _bt = await _get_cached_bot_doc(client.me.id)
                     _bt_cfg = (_bt or {}).get("config", {})
+                    active_methods = await _get_bot_active_payment_methods(client, bot_cfg=_bt_cfg, story=story)
+                    if len(active_methods) <= 1:
+                        return await _show_story_profile(client, user_id, story, lang)
                     await _show_story_details_v2(client, query, story, lang, bot_cfg=_bt_cfg)
                     return
             except Exception:

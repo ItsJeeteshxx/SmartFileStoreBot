@@ -1545,6 +1545,15 @@ async def market_callback(client, query):
             else:
                 upi_state = "Auto"
 
+            # Payment methods resolution for this bot
+            pay_methods_cfg = cfg.get("pay_methods") or {}
+            upi_on = pay_methods_cfg.get("upi", cfg.get("upi_enabled", True) is not False)
+            cf_on = pay_methods_cfg.get("cashfree", cfg.get("cashfree_enabled", True))
+            oxa_on = pay_methods_cfg.get("oxapay", cfg.get("oxapay_enabled", False))
+            upi_sym = "✅" if upi_on else "❌"
+            cf_sym = "✅" if cf_on else "❌"
+            oxa_sym = "✅" if oxa_on else "❌"
+
             try:
                 b_id_int = int(bt.get("id") or b_id)
             except Exception:
@@ -1634,13 +1643,16 @@ async def market_callback(client, query):
             if bot_mode != "show_store":
                 kb.append([_ikb("Fetching Media (GIF/Img)", callback_data=f"mk#pset_{b_id}_fetching_media")])
 
-            kb.extend([
-                [
-                    _ikb("Auto Delete", callback_data=f"mk#p_autodel_{b_id}", icon_custom_emoji_id=ad_emoji),
-                    _ikb("Protection", callback_data=f"mk#p_protect_{b_id}", icon_custom_emoji_id=prot_emoji)
-                ],
-                [_ikb("UPI Config", callback_data=f"mk#p_upi_menu_{b_id}", icon_custom_emoji_id="6021637109264160908")],
+            kb.append([
+                _ikb("Auto Delete", callback_data=f"mk#p_autodel_{b_id}", icon_custom_emoji_id=ad_emoji),
+                _ikb("Protection", callback_data=f"mk#p_protect_{b_id}", icon_custom_emoji_id=prot_emoji)
             ])
+
+            # Payment Settings for Store and Show Store bots
+            if bot_mode != "miniapp":
+                kb.append([_ikb("💳 Payment Settings", callback_data=f"mk#bot_pay_menu_{b_id}", icon_custom_emoji_id="6021637109264160908")])
+            else:
+                kb.append([_ikb("UPI Config", callback_data=f"mk#p_upi_menu_{b_id}", icon_custom_emoji_id="6021637109264160908")])
 
             # Mini App Deep Links toggle — only in full/normal mode, not in show_store
             if bot_mode != "show_store":
@@ -1659,20 +1671,14 @@ async def market_callback(client, query):
             else:
                 mode_emoji = f'<emoji id="5413424119007978384">🔴</emoji>'
 
-            # Header: new emoji style shown in show_store, classic for others
-            if bot_mode == "show_store":
-                header = (
-                    f'<emoji id="5296790785981718487">🔧</emoji> <b>Store Bot Profile & Stats</b>\n'
-                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
-                )
-            else:
-                header = (
-                    f'<emoji id="5296790785981718487">🔧</emoji> <b>Store Bot Profile & Stats</b>\n'
-                    f'━━━━━━━━━━━━━━━━━━━━━\n\n'
-                )
+            header = (
+                f'<emoji id="5296790785981718487">🔧</emoji> <b>Store Bot Profile & Stats</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+            )
 
             # Mini App Deep Links line — only show in non show_store mode
             ma_links_line = f'<emoji id="5312536423156654273">📱</emoji> <b>Mini App Deep Links:</b> <code>{ma_links_state}</code>\n' if bot_mode != "show_store" else ""
+            pay_methods_line = f'<emoji id="6021637109264160908">💳</emoji> <b>Payment Gateways:</b> UPI {upi_sym} | Cashfree {cf_sym} | OxaPay {oxa_sym}\n' if bot_mode != "miniapp" else ""
 
             view_text = (
                 header
@@ -1686,6 +1692,7 @@ async def market_callback(client, query):
                 + f'<emoji id="5809949600152296075">🟢</emoji> <b>Live Users ( 24H ) :-</b> <code>{live_bot_users_24h}</code>\n'
                 + f'<emoji id="6021690418398239007">👥</emoji> <b>Total Users:-</b> <code>{total_bot_users}</code>\n'
                 + ma_links_line
+                + pay_methods_line
                 + f'<emoji id="6021435576513730578">📋</emoji> <b>Event Log Channel:</b> <code>{log_ch_str}</code>'
             )
             await _edit_or_send_mgmt_view(client, query.message.chat.id, view_text, InlineKeyboardMarkup(kb), query=query)
@@ -2347,6 +2354,90 @@ async def market_callback(client, query):
             query.data = f"mk#bot_view_{b_id}"
             return await market_callback(client, query)
 
+        elif cmd.startswith("bot_pay_menu_"):
+            b_id = cmd.replace("bot_pay_menu_", "", 1)
+            bt = await _find_premium_bot(b_id)
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            cfg = bt.get("config", {}) or {}
+            pay_methods_cfg = cfg.get("pay_methods") or {}
+            upi_on = pay_methods_cfg.get("upi", cfg.get("upi_enabled", True) is not False)
+            cf_on = pay_methods_cfg.get("cashfree", cfg.get("cashfree_enabled", True))
+            oxa_on = pay_methods_cfg.get("oxapay", cfg.get("oxapay_enabled", False))
+
+            upi_status_txt = "✅ ON (Visible)" if upi_on else "❌ OFF (Hidden)"
+            cf_status_txt = "✅ ON (Visible)" if cf_on else "❌ OFF (Hidden)"
+            oxa_status_txt = "✅ ON (Visible)" if oxa_on else "❌ OFF (Hidden)"
+
+            active_cnt = sum([1 for x in [upi_on, cf_on, oxa_on] if x])
+            if active_cnt == 1:
+                active_name = "Direct UPI" if upi_on else ("Cashfree" if cf_on else "OxaPay (Crypto)")
+                routing_note = f"⚡ <b>Single-Method Direct Mode:</b> Only <b>{active_name}</b> is active. When customers tap Buy, the selection screen is skipped and they land directly on the {active_name} payment page!"
+            elif active_cnt > 1:
+                routing_note = f"📋 <b>Multiple Methods Active:</b> <code>{active_cnt}</code> gateways enabled. Customers will see the selection screen with only the active gateways."
+            else:
+                routing_note = "⚠️ <b>Warning:</b> No payment methods are active on this bot! Customers will see an unavailable notice."
+
+            kb = [
+                [InlineKeyboardButton(f"{'✅' if upi_on else '❌'} Direct UPI: {'ON' if upi_on else 'OFF'}", callback_data=f"mk#bot_tgl_pay_{b_id}_upi")],
+                [InlineKeyboardButton(f"{'✅' if cf_on else '❌'} Cashfree Gateway: {'ON' if cf_on else 'OFF'}", callback_data=f"mk#bot_tgl_pay_{b_id}_cashfree")],
+                [InlineKeyboardButton(f"{'✅' if oxa_on else '❌'} OxaPay (Crypto): {'ON' if oxa_on else 'OFF'}", callback_data=f"mk#bot_tgl_pay_{b_id}_oxapay")],
+                [_ikb("⚙️ UPI Details (Payee / Redirect / Logo)", callback_data=f"mk#p_upi_menu_{b_id}", icon_custom_emoji_id="6030400221232501136")],
+                [InlineKeyboardButton("« Back to Bot Profile", callback_data=f"mk#bot_view_{b_id}")],
+            ]
+
+            pay_txt = (
+                f'<emoji id="6021637109264160908">💳</emoji> <b>Bot Payment Settings</b>\n'
+                f'━━━━━━━━━━━━━━━━━━━━━\n\n'
+                f'<b>🤖 Bot:</b> @{bt.get("username")}\n\n'
+                f'<b>• 🏦 Direct UPI Transfer:</b> <code>{upi_status_txt}</code>\n'
+                f'<b>• 💳 Cashfree (Cards/NetBanking/UPI):</b> <code>{cf_status_txt}</code>\n'
+                f'<b>• 💰 OxaPay (Crypto Gateway):</b> <code>{oxa_status_txt}</code>\n\n'
+                f'{routing_note}\n\n'
+                f'<i>Tap any button below to toggle ON/OFF (Hide/Show) or configure details:</i>'
+            )
+            await _edit_or_send_mgmt_view(client, query.message.chat.id, pay_txt, InlineKeyboardMarkup(kb), query=query)
+
+        elif cmd.startswith("bot_tgl_pay_"):
+            parts = cmd.split("_")
+            b_id = parts[3]
+            method = parts[4]  # upi, cashfree, oxapay
+            bt = await _find_premium_bot(b_id)
+            if not bt: return await _safe_answer(query, "Bot not found!")
+            cfg = bt.get("config", {}) or {}
+            pay_methods_cfg = dict(cfg.get("pay_methods") or {})
+
+            if method == "upi":
+                curr = pay_methods_cfg.get("upi", cfg.get("upi_enabled", True) is not False)
+                new_val = not curr
+                pay_methods_cfg["upi"] = new_val
+                cfg["upi_enabled"] = new_val
+            elif method == "cashfree":
+                curr = pay_methods_cfg.get("cashfree", cfg.get("cashfree_enabled", True))
+                new_val = not curr
+                pay_methods_cfg["cashfree"] = new_val
+                cfg["cashfree_enabled"] = new_val
+            elif method == "oxapay":
+                curr = pay_methods_cfg.get("oxapay", cfg.get("oxapay_enabled", False))
+                new_val = not curr
+                pay_methods_cfg["oxapay"] = new_val
+                cfg["oxapay_enabled"] = new_val
+            else:
+                return await _safe_answer(query, "Unknown method!")
+
+            cfg["pay_methods"] = pay_methods_cfg
+            await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config": cfg}})
+
+            try:
+                from plugins.userbot.market_seller import _BOT_CONFIG_CACHE
+                _BOT_CONFIG_CACHE.pop(str(b_id), None)
+            except Exception:
+                pass
+
+            status_word = "ON ✅" if new_val else "OFF (Hidden) ❌"
+            await _safe_answer(query, f"{method.upper()} set to {status_word}", show_alert=True)
+            query.data = f"mk#bot_pay_menu_{b_id}"
+            return await market_callback(client, query)
+
         elif cmd.startswith("p_upi_menu_"):
             b_id = cmd.replace("p_upi_menu_", "", 1)
             bt = await _find_premium_bot(b_id)
@@ -2372,7 +2463,7 @@ async def market_callback(client, query):
                 [_ikb("UPI Payee Name", callback_data=f"mk#pset_{b_id}_upi_name", icon_custom_emoji_id="6030400221232501136"),
                  _ikb("Open-App Link", callback_data=f"mk#pset_{b_id}_upi_redirect", icon_custom_emoji_id="5312536423156654273")],
                 [_ikb("Bot Logo (UPI QR)", callback_data=f"mk#pset_{b_id}_logo", icon_custom_emoji_id="6026089641730382702")],
-                [InlineKeyboardButton("« Back", callback_data=f"mk#bot_view_{b_id}")],
+                [InlineKeyboardButton("« Back to Payment Settings", callback_data=f"mk#bot_pay_menu_{b_id}")],
             ]
 
             upi_txt = (
@@ -2406,7 +2497,17 @@ async def market_callback(client, query):
                 cfg["upi_enabled"] = None
                 new_label = "Auto (Schedule Active)"
 
+            pay_methods_cfg = dict(cfg.get("pay_methods") or {})
+            pay_methods_cfg["upi"] = (cfg.get("upi_enabled") is not False)
+            cfg["pay_methods"] = pay_methods_cfg
+
             await db.db.premium_bots.update_one({"id": int(b_id)}, {"$set": {"config": cfg}})
+            try:
+                from plugins.userbot.market_seller import _BOT_CONFIG_CACHE
+                _BOT_CONFIG_CACHE.pop(str(b_id), None)
+            except Exception:
+                pass
+
             await _safe_answer(query, f"UPI set to: {new_label}", show_alert=True)
             query.data = f"mk#p_upi_menu_{b_id}"
             return await market_callback(client, query)
