@@ -775,11 +775,19 @@ async def optimize_image(request: Request, url: str, w: int = 400, h: int = 400)
         logger.error(f"Image proxy error for {url}: {e}")
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=url)
-async def get_customer_bot_token(user_id: int) -> str:
-    """Resolves the user-facing customer bot token for a user, falling back to the main BOT_TOKEN."""
+async def get_customer_bot_details(user_id: int, order_bot_id: Optional[Union[int, str]] = None) -> tuple:
+    """
+    Resolves the customer-facing bot token and username for a user.
+    CRITICAL: Never routes to 'show_store' mode bots for receipts or support.
+    Priority:
+    1. order_bot_id if provided and NOT a show_store bot.
+    2. Dedicated 'miniapp' / 'mini_app' bot.
+    3. Active non-show_store bot from user's interaction history (user_doc['bot_ids']).
+    4. Any active non-show_store bot in the database.
+    5. Fallback to main BOT_TOKEN or MGMT_BOT_TOKEN.
+    """
     from AryaPremium.config import Config
     
-    # Try importing from the main config first
     main_bot_token = None
     try:
         from config import Config as MainConfig
@@ -790,32 +798,64 @@ async def get_customer_bot_token(user_id: int) -> str:
     if not main_bot_token:
         main_bot_token = getattr(Config, "BOT_TOKEN", None)
 
+    default_un = os.environ.get("BOT_USERNAME", "UseAryaBot")
     token = None
-    try:
-        arya_db = app.state.db
-        user_doc = await arya_db.db.users.find_one({"id": int(user_id)})
-        if user_doc and user_doc.get("bot_ids"):
-            for bid in user_doc["bot_ids"]:
-                bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
-                if bot_doc and bot_doc.get("token"):
-                    token = bot_doc["token"]
-                    break
-    except Exception as e:
-        logger.error(f"Failed to resolve seller bot token: {e}")
-        
-    if not token:
-        try:
-            # Fallback to the first available premium bot from the DB
-            arya_db = app.state.db
-            bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
-            if bot_doc:
-                token = bot_doc["token"]
-        except Exception:
-            pass
+    bot_username = default_un
 
-    if not token:
-        token = main_bot_token or getattr(Config, "MGMT_BOT_TOKEN", None)
-        
+    try:
+        arya_db = getattr(app.state, "db", None)
+        if arya_db and hasattr(arya_db, "db") and arya_db.db is not None:
+            # 1. Check order_bot_id first
+            if order_bot_id:
+                try:
+                    bid_int = int(order_bot_id)
+                    b_match = await arya_db.db.premium_bots.find_one({"$or": [{"id": bid_int}, {"bot_id": bid_int}]})
+                    if b_match and b_match.get("token"):
+                        b_mode = (b_match.get("config") or {}).get("bot_mode", "full")
+                        if b_mode != "show_store":
+                            return b_match["token"], b_match.get("username", bot_username)
+                except Exception:
+                    pass
+
+            # 2. Look for dedicated Mini App mode bot
+            mini_bot = await arya_db.db.premium_bots.find_one({
+                "config.bot_mode": {"$in": ["miniapp", "mini_app"]},
+                "token": {"$exists": True, "$ne": ""}
+            })
+            if mini_bot and mini_bot.get("token"):
+                return mini_bot["token"], mini_bot.get("username", bot_username)
+
+            # 3. Check user's interacted bots, filtering out show_store bots
+            user_doc = await arya_db.db.users.find_one({"id": int(user_id)})
+            if user_doc and user_doc.get("bot_ids"):
+                for bid in user_doc["bot_ids"]:
+                    try:
+                        b_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
+                        if b_doc and b_doc.get("token"):
+                            b_mode = (b_doc.get("config") or {}).get("bot_mode", "full")
+                            if b_mode != "show_store":
+                                return b_doc["token"], b_doc.get("username", bot_username)
+                    except Exception:
+                        continue
+
+            # 4. Fallback to any active non-show_store bot in the DB
+            any_store_bot = await arya_db.db.premium_bots.find_one({
+                "config.bot_mode": {"$nin": ["show_store"]},
+                "token": {"$exists": True, "$ne": ""}
+            })
+            if any_store_bot and any_store_bot.get("token"):
+                return any_store_bot["token"], any_store_bot.get("username", bot_username)
+
+    except Exception as e:
+        logger.error(f"Failed to resolve customer bot details: {e}")
+
+    final_token = token or main_bot_token or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "")
+    return final_token, bot_username
+
+
+async def get_customer_bot_token(user_id: int, order_bot_id: Optional[Union[int, str]] = None) -> str:
+    """Resolves the user-facing customer bot token for a user, guaranteeing non-show-store bot."""
+    token, _ = await get_customer_bot_details(user_id, order_bot_id=order_bot_id)
     return token
 
 
@@ -8802,40 +8842,13 @@ async def reply_support(data: SupportReply):
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
-        # Determine which bot token to use
-        token = None
+        # Determine which bot token to use (guarantees non-show-store bot)
+        raw_uid = ticket.get("user_id", 0)
         try:
-            raw_uid = ticket["user_id"]
-            try:
-                uid_int = int(raw_uid)
-            except (ValueError, TypeError):
-                uid_int = None
-            user_doc = await arya_db.db.users.find_one(
-                {"id": uid_int} if uid_int is not None else {"username": str(raw_uid)}
-            )
-            if user_doc and user_doc.get("bot_ids"):
-                for bid in user_doc["bot_ids"]:
-                    try:
-                        bot_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
-                    except Exception:
-                        bot_doc = None
-                    if bot_doc and bot_doc.get("token"):
-                        token = bot_doc["token"]
-                        break
-        except Exception as e:
-            logger.error(f"Failed to resolve seller bot token: {e}")
-            
-        if not token:
-            try:
-                bot_doc = await arya_db.db.premium_bots.find_one({"token": {"$exists": True, "$ne": ""}})
-                if bot_doc:
-                    token = bot_doc["token"]
-            except Exception:
-                pass
-
-        if not token:
-            # Last resort: use main delivery bot token, NEVER management bot as first choice
-            token = getattr(Config, "BOT_TOKEN", None) or getattr(Config, "MGMT_BOT_TOKEN", None)
+            uid_int = int(raw_uid)
+        except (ValueError, TypeError):
+            uid_int = 0
+        token = await get_customer_bot_token(uid_int)
 
         # Build message object
         msg_id = f"a-{int(time.time() * 1000)}"

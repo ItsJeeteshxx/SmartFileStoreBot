@@ -4,6 +4,7 @@ try:
     from AryaPremium.config import Config
 except ImportError:
     from config import Config
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -238,9 +239,27 @@ class PremiumDatabase:
                     "last_name": ln,
                     "username": un,
                 })
+
+        should_update_active = False
         if bot_id:
-            update_fields[f"bot_last_active.{bot_id}"] = now
-            update_fields["last_active"] = now
+            last_act = user.get("last_active") if user else None
+            if not last_act:
+                should_update_active = True
+            else:
+                try:
+                    if isinstance(last_act, datetime):
+                        if last_act.tzinfo is None:
+                            last_act = last_act.replace(tzinfo=timezone.utc)
+                        if (now - last_act).total_seconds() > 60:
+                            should_update_active = True
+                    else:
+                        should_update_active = True
+                except Exception:
+                    should_update_active = True
+
+            if should_update_active:
+                update_fields[f"bot_last_active.{bot_id}"] = now
+                update_fields["last_active"] = now
 
         if not user:
             user = {
@@ -262,7 +281,7 @@ class PremiumDatabase:
             if update_fields:
                 set_ops["$set"] = update_fields
             add_ops = {}
-            if bot_id:
+            if bot_id and bot_id not in user.get("used_bots", []):
                 add_ops["$addToSet"] = {"used_bots": int(bot_id)}
             
             update_doc = {}
@@ -270,9 +289,20 @@ class PremiumDatabase:
             if add_ops: update_doc.update(add_ops)
             
             if update_doc:
-                await self.users.update_one({"id": int(user_id)}, update_doc)
                 if "$set" in update_doc:
                     user.update(update_doc["$set"])
+                if "$addToSet" in update_doc and "used_bots" in update_doc["$addToSet"]:
+                    if "used_bots" not in user:
+                        user["used_bots"] = []
+                    if bot_id not in user["used_bots"]:
+                        user["used_bots"].append(int(bot_id))
+
+                async def _bg_update():
+                    try:
+                        await self.users.update_one({"id": int(user_id)}, update_doc)
+                    except Exception as e:
+                        logger.warning(f"Failed background user update for {user_id}: {e}")
+                asyncio.create_task(_bg_update())
         return user
 
     async def update_user(self, user_id: int, data: dict):

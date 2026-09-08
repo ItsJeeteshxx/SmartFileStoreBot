@@ -2492,6 +2492,14 @@ async def market_callback(client, query):
             fwd_icon = '✅' if fwd_enabled else '❌'
             fwd_label = 'ON' if fwd_enabled else 'OFF'
 
+            # Auto Delivery status (Default ON)
+            auto_deliv_val = story.get('auto_deliver', None)
+            if auto_deliv_val is None:
+                auto_deliv_val = story.get('auto_delivery', True)
+            auto_deliv_enabled = bool(auto_deliv_val)
+            auto_deliv_icon = '✅' if auto_deliv_enabled else '❌'
+            auto_deliv_label = 'ON' if auto_deliv_enabled else 'OFF'
+
             detail_txt = (
                 f"<b>⟦ {sname_en} ⟧</b>\n\n"
                 f"<blockquote>"
@@ -2502,6 +2510,7 @@ async def market_callback(client, query):
                 f"<b>⨉ Episodes    ⟶</b> {episodes}\n"
                 f"<b>⨉ Status      ⟶</b> {status}\n"
                 f"<b>⨉ Payments    ⟶</b> UPI {upi_icon}  Razorpay {rzp_icon}\n"
+                f"<b>⨉ Auto Deliver ⟶</b> {auto_deliv_icon} {auto_deliv_label}\n"
                 f"<b>⨉ Forwarding  ⟶</b> {fwd_icon} {fwd_label}\n"
                 f"<b>⨉ DB ID       ⟶</b> <code>{s_id}</code>"
                 f"</blockquote>\n\n"
@@ -2523,8 +2532,9 @@ async def market_callback(client, query):
                 # Payment method toggles
                 [InlineKeyboardButton(f"{upi_icon} Manual UPI", callback_data=f"mk#st_pay_methods_{s_id}_upi"),
                  InlineKeyboardButton(f"{rzp_icon} Razorpay", callback_data=f"mk#st_pay_methods_{s_id}_razorpay")],
-                # Forwarding toggle
-                [InlineKeyboardButton(f"{fwd_icon} Forwarding: {fwd_label}", callback_data=f"mk#st_fwd_toggle_{s_id}")],
+                # Auto Delivery and Forwarding toggles
+                [InlineKeyboardButton(f"{auto_deliv_icon} Auto Deliver: {auto_deliv_label}", callback_data=f"mk#st_autodel_toggle_{s_id}"),
+                 InlineKeyboardButton(f"{fwd_icon} Forwarding: {fwd_label}", callback_data=f"mk#st_fwd_toggle_{s_id}")],
                 [InlineKeyboardButton("🔗 Get Share Link", callback_data=f"mk#st_link_{s_id}"),
                  InlineKeyboardButton("Remove Story", callback_data=f"mk#st_confirm_rm_{s_id}")],
                 [InlineKeyboardButton("« Back", callback_data="mk#ms_list_0")],
@@ -2558,6 +2568,24 @@ async def market_callback(client, query):
             await db.db.premium_stories.delete_one({"_id": ObjectId(s_id)})
             await _safe_answer(query, "Story removed!", show_alert=True)
             query.data = "mk#ms_list_0"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("st_autodel_toggle_"):
+            s_id = cmd.split("_")[3]
+            from bson.objectid import ObjectId
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            if not story: return await _safe_answer(query, "Story not found!", show_alert=True)
+            curr_ad = story.get('auto_deliver', None)
+            if curr_ad is None:
+                curr_ad = story.get('auto_delivery', True)
+            new_ad = not bool(curr_ad)
+            await db.db.premium_stories.update_one(
+                {"_id": ObjectId(s_id)},
+                {"$set": {"auto_deliver": new_ad, "auto_delivery": new_ad}}
+            )
+            status_txt = "ON ✅" if new_ad else "OFF ❌"
+            await _safe_answer(query, f"Auto Delivery set to {status_txt}", show_alert=True)
+            query.data = f"mk#st_view_{s_id}"
             return await market_callback(client, query)
 
         elif cmd.startswith("st_fwd_toggle_"):
@@ -3930,6 +3958,8 @@ async def _add_story_flow(client, user_id):
                 # Default payment methods
                 sj.setdefault("payment_methods", ["upi", "razorpay", "cashfree"])
                 sj.setdefault("forwarding_enabled", True)
+                sj.setdefault("auto_deliver", True)
+                sj.setdefault("auto_delivery", True)
 
                 # Save Story to DB
                 result = await db.db.premium_stories.insert_one(sj)

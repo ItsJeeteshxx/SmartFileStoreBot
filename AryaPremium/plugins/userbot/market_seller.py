@@ -100,11 +100,8 @@ async def _make_arya_bot_order_id(user_id, story_id_str: str = None) -> str:
         if story_id_str:
             try:
                 from bson.objectid import ObjectId as _OID
-                all_ids = await db.db.premium_stories.distinct("_id")
-                all_ids_sorted = sorted(all_ids)  # ascending: oldest = #1
                 target_oid = _OID(str(story_id_str))
-                if target_oid in all_ids_sorted:
-                    story_num = all_ids_sorted.index(target_oid) + 1
+                story_num = await db.db.premium_stories.count_documents({"_id": {"$lte": target_oid}})
             except Exception:
                 story_num = 0
 
@@ -145,6 +142,24 @@ def to_mathbold(val): return f"<b>{val}</b>"
 
 _BOT_CONFIG_CACHE = {} # {bot_id: (timestamp, doc)}
 _FEATURE_TOGGLE_CACHE = {"ts": 0, "doc": {}}
+_PLATFORM_CACHE = {} # {cache_key: (result_list, timestamp)}
+_PLATFORM_CACHE_TTL = 60.0
+_IMAGE_BYTES_CACHE = {} # {url: bytes}
+_IMAGE_BYTES_MAX = 150
+_CANNOT_COPY_CHANNELS = set() # {(bot_id, channel_id)}
+
+async def _get_cached_platforms(cache_key: str, fetch_coro):
+    import time
+    now_ts = time.time()
+    cached = _PLATFORM_CACHE.get(cache_key)
+    if cached and (now_ts - cached[1]) < _PLATFORM_CACHE_TTL:
+        return list(cached[0])
+    res = await fetch_coro()
+    res_list = list(res) if res else []
+    if len(_PLATFORM_CACHE) > 200:
+        _PLATFORM_CACHE.clear()
+    _PLATFORM_CACHE[cache_key] = (res_list, now_ts)
+    return res_list
 
 def _clean_emoji_for_pyrogram(text: str) -> str:
     """Strips custom emoji tags (<emoji id="...">, <tg-emoji ...>) down to fallback unicode emoji."""
@@ -2214,7 +2229,11 @@ def to_mathitalic(text: str) -> str:
 
 
 async def _fetch_url_bytes(url: str) -> bytes | None:
-    """Download image bytes from HTTP URL with timeout and User-Agent."""
+    """Download image bytes from HTTP URL with timeout, User-Agent and in-memory cache."""
+    if not url:
+        return None
+    if url in _IMAGE_BYTES_CACHE:
+        return _IMAGE_BYTES_CACHE[url]
     try:
         import aiohttp
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -2223,6 +2242,9 @@ async def _fetch_url_bytes(url: str) -> bytes | None:
                 if resp.status == 200:
                     data = await resp.read()
                     if data and len(data) > 500:
+                        if len(_IMAGE_BYTES_CACHE) >= _IMAGE_BYTES_MAX:
+                            _IMAGE_BYTES_CACHE.pop(next(iter(_IMAGE_BYTES_CACHE)), None)
+                        _IMAGE_BYTES_CACHE[url] = data
                         return data
     except Exception:
         pass
@@ -2268,7 +2290,13 @@ async def _send_story_photo_bytes(client, user_id: int, img_bytes: bytes, captio
                             if photos and story and story.get("_id"):
                                 new_fid = photos[-1].get("file_id")
                                 if new_fid:
-                                    await db.db.premium_stories.update_one({"_id": story["_id"]}, {"$set": {"image": new_fid}})
+                                    bot_fid_key = f"bot_fid_{client.me.id}"
+                                    story[bot_fid_key] = new_fid
+                                    story["image"] = new_fid
+                                    await db.db.premium_stories.update_one(
+                                        {"_id": story["_id"]},
+                                        {"$set": {bot_fid_key: new_fid, "image": new_fid}}
+                                    )
                     except Exception:
                         pass
                     return True
@@ -2282,15 +2310,57 @@ async def _send_story_photo_bytes(client, user_id: int, img_bytes: bytes, captio
 async def _send_story_photo(client, user_id: int, story: dict, caption: str, reply_markup=None, fallback_photo: str = None):
     """
     Robustly sends a story banner image to user across bots:
-    1. Tests HTTP/CDN URLs (poster_url, banner_url, image_url, cover_url) via in-memory bytes upload.
-    2. Tests direct file_id (with cross-bot download recovery if file_id was created on an old bot).
+    1. Tests direct file_id first (prioritizes bot-specific cached file_id for instant delivery).
+    2. Falls back to HTTP/CDN URLs (Catbox, R2, Mini App) via in-memory bytes upload.
     3. Caches new valid file_id on story in MongoDB for this bot.
     4. Falls back gracefully to text message if no image could be delivered.
     """
     from pyrogram import enums
     import io
 
-    # ── 1. Check for Public HTTP / CDN URLs first (Catbox, R2, Mini App) ──
+    # ── 1. Check direct cached file_id candidates first (instant delivery, 0ms download/upload!) ──
+    fid_candidates = []
+    bot_fid_key = f"bot_fid_{getattr(getattr(client, 'me', None), 'id', 0)}"
+    for k in (bot_fid_key, "poster_file_id", "cached_file_id", "image", "cover", "poster", "banner", "thumbnail"):
+        val = story.get(k)
+        if val and isinstance(val, str) and not val.startswith("http") and not val.startswith("/"):
+            if not _is_checkout_instruction_img(val) and val not in fid_candidates:
+                fid_candidates.append(val)
+
+    has_custom_emoji = reply_markup and any(
+        hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
+        for row in reply_markup.inline_keyboard for btn in row
+    )
+
+    # Try sending file_id directly first
+    for photo_ref in fid_candidates:
+        if has_custom_emoji:
+            try:
+                ok = await _send_or_edit_seller_bot_api(
+                    client=client,
+                    chat_id=user_id,
+                    text=caption,
+                    markup=reply_markup,
+                    media_id=photo_ref,
+                    media_type="photo"
+                )
+                if ok:
+                    return True
+            except Exception:
+                pass
+
+        try:
+            return await client.send_photo(
+                chat_id=user_id,
+                photo=photo_ref,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except Exception as e:
+            logger.debug(f"Direct file_id send_photo failed: {e}")
+
+    # ── 2. Fallback to HTTP / CDN URLs (Catbox, R2, Mini App) via in-memory cached bytes ──
     http_candidates = []
     for k in ("poster_url", "banner_url", "image_url", "cover_url", "cover", "thumbnail"):
         val = story.get(k)
@@ -2325,47 +2395,6 @@ async def _send_story_photo(client, user_id: int, story: dict, caption: str, rep
                 )
             except Exception as e:
                 logger.debug(f"Pyrogram BytesIO send_photo failed: {e}")
-
-    # ── 2. Check direct file_id candidates (prioritize original poster over image) ──
-    fid_candidates = []
-    for k in ("poster_file_id", "cover", "poster", "banner", "thumbnail", "image"):
-        val = story.get(k)
-        if val and isinstance(val, str) and not val.startswith("http") and not val.startswith("/"):
-            if not _is_checkout_instruction_img(val) and val not in fid_candidates:
-                fid_candidates.append(val)
-
-    has_custom_emoji = reply_markup and any(
-        hasattr(btn, "icon_custom_emoji_id") and btn.icon_custom_emoji_id
-        for row in reply_markup.inline_keyboard for btn in row
-    )
-
-    # Try sending file_id directly
-    for photo_ref in fid_candidates:
-        if has_custom_emoji:
-            try:
-                ok = await _send_or_edit_seller_bot_api(
-                    client=client,
-                    chat_id=user_id,
-                    text=caption,
-                    markup=reply_markup,
-                    media_id=photo_ref,
-                    media_type="photo"
-                )
-                if ok:
-                    return True
-            except Exception:
-                pass
-
-        try:
-            return await client.send_photo(
-                chat_id=user_id,
-                photo=photo_ref,
-                caption=caption,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML
-            )
-        except Exception as e:
-            logger.debug(f"Direct file_id send_photo failed: {e}")
 
     # ── 3. Cross-Bot File ID Recovery (if file_id belongs to old delivery bot) ──
     for photo_ref in fid_candidates:
@@ -4316,8 +4345,7 @@ async def _process_text(client, message):
 
             asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, f"Searched for: {txt}"))
 
-        elif txt in ["Pocket FM", "Kuku FM", "Other"] or any(txt == p for p in await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})):
-
+        elif txt in ["Pocket FM", "Eight FM", "Kuku FM", "Pratilipi FM", "Headfone", "Other"]:
             asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, f"Selected Platform: {txt}"))
 
     except Exception: pass
@@ -4486,7 +4514,7 @@ async def _process_text(client, message):
             return await _send_main_menu(client, user_id, message.from_user, lang)
 
         # Check if user sent a menu button / platform / story name instead of typing feedback
-        all_plats_check = await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})
+        all_plats_check = await _get_cached_platforms(f"bot_plats_{client.me.id}", lambda: db.db.premium_stories.distinct('platform', {"bot_id": client.me.id}))
         is_menu_btn = (
             " [ ₹ " in txt or 
             txt in ["SEARCH", "खोजें", "VIEW ALL", "सभी देखें", "NEXT ❭", "❬ PREV", "अगला ❭", "❬ पिछला", "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂", "वापस मेनू", "CAN'T FIND? REQUEST NOW!", "कहानी नहीं मिल रही? अनुरोध करें!"] or
@@ -5249,7 +5277,7 @@ async def _process_text(client, message):
         "is_show": {"$ne": True},
         "platform": {"$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
     }
-    distinct_audio_plats = await db.db.premium_stories.distinct('platform', audio_scope)
+    distinct_audio_plats = await _get_cached_platforms("audio_scope_plats", lambda: db.db.premium_stories.distinct('platform', audio_scope))
     known_platforms = set(distinct_audio_plats) | {"Pocket FM", "Eight FM", "Kuku FM", "Pratilipi FM", "Headfone", "Other"}
 
     if txt in known_platforms:
@@ -5736,10 +5764,10 @@ async def _open_reply_keyboard_marketplace(client, user_id: int, lang: str = 'en
                 audio_cond["platform"] = {"$nin": ss_plats, "$not": {"$regex": r"(kuku\s*tv|story\s*tv)", "$options": "i"}}
 
             bot_filter = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
-            platforms = await db.db.premium_stories.distinct('platform', {"$and": [audio_cond, bot_filter]})
+            platforms = await _get_cached_platforms(f"audio_bot_plats_{client.me.id}", lambda: db.db.premium_stories.distinct('platform', {"$and": [audio_cond, bot_filter]}))
             platforms = [p for p in platforms if p and str(p).strip()]
             if not platforms:
-                platforms = await db.db.premium_stories.distinct('platform', audio_cond)
+                platforms = await _get_cached_platforms("audio_cond_plats", lambda: db.db.premium_stories.distinct('platform', audio_cond))
                 platforms = [p for p in platforms if p and str(p).strip()]
 
             # Exclude video shows/TV
@@ -5891,11 +5919,12 @@ async def _show_marketplace_platforms(client, query, lang='en'):
             auto_plat = p_doc.get("platform") if p_doc else "Kuku TV"
         return await _show_marketplace_stories(client, query, auto_plat, 0, lang)
 
-    platforms = await db.db.premium_stories.distinct('platform', {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]})
+    platforms = await _get_cached_platforms(f"mkt_plat_{client.me.id}", lambda: db.db.premium_stories.distinct('platform', {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}))
     # Exclude show store platforms from full store bot
-    show_store_bots = await db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100)
+    show_store_bots = await _get_cached_platforms("show_store_bots", lambda: db.db.premium_bots.find({"config.bot_mode": "show_store"}).to_list(length=100))
     show_store_plats = {b.get("config", {}).get("platform_name") for b in show_store_bots if b.get("config", {}).get("platform_name")}
-    for sp in await db.db.premium_stories.distinct("platform", {"is_show": True}):
+    sp_list = await _get_cached_platforms("show_plats", lambda: db.db.premium_stories.distinct("platform", {"is_show": True}))
+    for sp in sp_list:
         if sp: show_store_plats.add(sp)
     platforms = [p for p in platforms if p not in show_store_plats and p != "Other"]
 
@@ -9967,13 +9996,19 @@ async def _safe_copy_from_source(client, chat_id: int, from_chat_id: int, messag
     if caption:
         kwargs["caption"] = caption
 
-    # 1. Try directly with current delivery bot client
-    try:
-        return await client.copy_message(**kwargs)
-    except Exception as e1:
-        err1 = str(e1).upper()
-        if "MESSAGE_ID_INVALID" in err1 or "MESSAGE_EMPTY" in err1 or "MESSAGE NOT FOUND" in err1:
-            raise e1
+    bot_id = getattr(getattr(client, "me", None), "id", 0)
+    channel_key = (bot_id, int(from_chat_id))
+
+    # 1. Try directly with current delivery bot client (skip if known to lack permissions)
+    if channel_key not in _CANNOT_COPY_CHANNELS:
+        try:
+            return await client.copy_message(**kwargs)
+        except Exception as e1:
+            err1 = str(e1).upper()
+            if "MESSAGE_ID_INVALID" in err1 or "MESSAGE_EMPTY" in err1 or "MESSAGE NOT FOUND" in err1:
+                raise e1
+            if any(k in err1 for k in ("CHAT_ADMIN_REQUIRED", "USER_NOT_PARTICIPANT", "CHANNEL_PRIVATE", "CHAT_WRITE_FORBIDDEN")):
+                _CANNOT_COPY_CHANNELS.add(channel_key)
 
     # 2. Gather all fallback clients that might have channel access
     all_fallback_clients = []
@@ -10263,6 +10298,32 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
         
         aborted = False
         total_eps = len(msg_range)
+        is_show_delivery = bool(story.get("is_show") or bt_cfg.get("bot_mode") == "show_store")
+
+        # Pre-batch fetch messages if template requires original_caption or file_name (up to 100 in single call)
+        orig_msg_map = {}
+        if cap_tpl and not is_show_delivery and ("{original_caption}" in cap_tpl or "{file_name}" in cap_tpl):
+            for i in range(0, len(msg_range), 100):
+                chunk = msg_range[i:i+100]
+                try:
+                    fetched = await client.get_messages(int(src), chunk)
+                    if not isinstance(fetched, list):
+                        fetched = [fetched] if fetched else []
+                    for m in fetched:
+                        if m and not getattr(m, "empty", False):
+                            orig_msg_map[m.id] = m
+                except Exception:
+                    try:
+                        from plugins.mgmt.market_mgmt import client as mgmt_cli
+                        if mgmt_cli and getattr(mgmt_cli, "is_connected", False):
+                            fetched = await mgmt_cli.get_messages(int(src), chunk)
+                            if not isinstance(fetched, list):
+                                fetched = [fetched] if fetched else []
+                            for m in fetched:
+                                if m and not getattr(m, "empty", False):
+                                    orig_msg_map[m.id] = m
+                    except Exception:
+                        pass
         
         for idx, msg_id in enumerate(msg_range, start=1):
             if user_id in dm_aborts:
@@ -10286,24 +10347,14 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                     message_id=msg_id,
                     protect_content=bt_cfg.get("protect", False) or not story.get('forwarding_enabled', True),
                 )
-                is_show_delivery = bool(story.get("is_show") or bt_cfg.get("bot_mode") == "show_store")
                 if cap_tpl and not is_show_delivery:
                     my_kwargs = dict(kwargs)
                     if "{original_caption}" in cap_tpl or "{file_name}" in cap_tpl:
-                        try:
-                            orig_msg = None
-                            try:
-                                orig_msg = await client.get_messages(int(src), msg_id)
-                            except Exception:
-                                from plugins.mgmt.market_mgmt import client as mgmt_cli
-                                if mgmt_cli and getattr(mgmt_cli, "is_connected", False):
-                                    orig_msg = await mgmt_cli.get_messages(int(src), msg_id)
-                            orig_cap = (orig_msg.caption or orig_msg.text or "") if orig_msg else ""
-                            doc = getattr(orig_msg, "document", None) or getattr(orig_msg, "video", None) or getattr(orig_msg, "audio", None)
-                            fname = getattr(doc, "file_name", "") or ""
-                            my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story).replace("{original_caption}", orig_cap).replace("{file_name}", fname)
-                        except Exception:
-                            my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story).replace("{original_caption}", "").replace("{file_name}", "")
+                        orig_msg = orig_msg_map.get(msg_id)
+                        orig_cap = (orig_msg.caption or orig_msg.text or "") if orig_msg else ""
+                        doc = getattr(orig_msg, "document", None) or getattr(orig_msg, "video", None) or getattr(orig_msg, "audio", None)
+                        fname = getattr(doc, "file_name", "") or ""
+                        my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story).replace("{original_caption}", orig_cap).replace("{file_name}", fname)
                     else:
                         my_kwargs["caption"] = _fmt_delivery_text(cap_tpl, user_obj, story)
                     sent = await _safe_copy_from_source(client, **my_kwargs)

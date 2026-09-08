@@ -165,13 +165,19 @@ async def send_purchase_success_dm(
             except Exception as claim_err:
                 logger.warning(f"[Receipt DM] Claim check exception: {claim_err}")
 
-        # Resolve Bot Token first so we can fetch live Telegram user chat info if needed
+        # Resolve Bot Token & Bot Username (guarantees non-show-store bot, prioritizes miniapp bot)
+        order_b_id = order_doc.get("bot_id") if order_doc else None
         bot_token = ""
+        resolved_bot_un = None
         try:
-            from mini_app_api import get_customer_bot_token
-            bot_token = await get_customer_bot_token(tg_id_int)
+            from mini_app_api import get_customer_bot_details
+            bot_token, resolved_bot_un = await get_customer_bot_details(tg_id_int, order_bot_id=order_b_id)
         except Exception:
-            pass
+            try:
+                from mini_app_api import get_customer_bot_token
+                bot_token = await get_customer_bot_token(tg_id_int, order_bot_id=order_b_id)
+            except Exception:
+                pass
 
         if not bot_token:
             try:
@@ -184,7 +190,7 @@ async def send_purchase_success_dm(
             logger.warning(f"send_purchase_success_dm: No bot token found for user {tg_id_int}")
             return
 
-        bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+        bot_username = resolved_bot_un or (order_doc.get("bot_username") if order_doc else None) or os.environ.get("BOT_USERNAME", "UseAryaBot")
 
         # ── Fetch User Real Name (Order doc -> DB -> Live Telegram getChat API) ──
         resolved_name = user_name
@@ -364,9 +370,44 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                 await asyncio.sleep(5)
                 continue
 
-            # Pick an active store bot client that has channel permissions
+            # Pick an active store bot client that has channel permissions (never a show_store bot for miniapp orders)
             selected_client = None
-            if market_clients:
+            job_bid = str(job.get("bot_id") or "")
+            if job_bid and job_bid in market_clients:
+                cand = market_clients[job_bid]
+                if getattr(cand, "bot_mode", "") != "show_store":
+                    selected_client = cand
+
+            # Try bots user has interacted with
+            if not selected_client and db and hasattr(db, "db"):
+                try:
+                    u_doc = await db.db.users.find_one({"id": int(user_id)})
+                    if u_doc and u_doc.get("bot_ids"):
+                        for ubid in u_doc["bot_ids"]:
+                            ubid_str = str(ubid)
+                            if ubid_str in market_clients:
+                                cand = market_clients[ubid_str]
+                                if getattr(cand, "bot_mode", "") != "show_store":
+                                    selected_client = cand
+                                    break
+                except Exception:
+                    pass
+
+            # Try miniapp / full mode bot from market_clients
+            if not selected_client and market_clients:
+                for mc in market_clients.values():
+                    if getattr(mc, "bot_mode", "") in ("miniapp", "mini_app", "full"):
+                        selected_client = mc
+                        break
+
+            # Any non-show-store bot
+            if not selected_client and market_clients:
+                for mc in market_clients.values():
+                    if getattr(mc, "bot_mode", "") != "show_store":
+                        selected_client = mc
+                        break
+
+            if not selected_client and market_clients:
                 selected_client = next(iter(market_clients.values()), None)
             if not selected_client:
                 selected_client = mgmt_bot
@@ -426,6 +467,12 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                         s_doc = await db.db.premium_stories.find_one({"story_id": sid})
 
                     if s_doc:
+                        # Check story-level auto_deliver toggle (ON by default; only skip if explicitly False)
+                        story_ad = s_doc.get("auto_deliver") if s_doc.get("auto_deliver") is not None else s_doc.get("auto_delivery")
+                        if story_ad is False:
+                            logger.info(f"[AutoDeliveryQueue] Story {sid} has auto_deliver=False. Skipping auto-delivery.")
+                            continue
+
                         story_name = s_doc.get("story_name_en") or s_doc.get("story_name") or f"Story {i}"
 
                         # Robust part matching from story.parts
@@ -496,7 +543,7 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
 
                         # Wait between items so delivery is clearly sequential
                         if total_items > 1 and i < total_items:
-                            await asyncio.sleep(8)
+                            await asyncio.sleep(1.5)
 
                 except Exception as sid_err:
                     logger.error(f"[AutoDeliveryQueue] Delivery error for item {itm}: {sid_err}", exc_info=True)
@@ -536,9 +583,9 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
         if not tg_id_int:
             return
 
-        # Check auto_deliver flag (must be explicitly True, defaults to False if off/missing)
-        if not order_doc.get("auto_deliver"):
-            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver={order_doc.get('auto_deliver')}, skipping auto delivery.")
+        # Check auto_deliver flag (ON by default; only skip if explicitly False)
+        if order_doc.get("auto_deliver") is False or order_doc.get("auto_delivery") is False:
+            logger.info(f"[AutoDelivery] Order {order_doc.get('order_id')} has auto_deliver=False, skipping auto delivery.")
             return
 
         story_ids = order_doc.get("story_ids", [])
@@ -579,6 +626,8 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     "story_ids": story_ids,
                     "items": items,
                     "order_id": rec_oid,
+                    "bot_id": order_doc.get("bot_id"),
+                    "bot_username": order_doc.get("bot_username"),
                     "status": "pending",
                     "created_at": datetime.now(timezone.utc)
                 })

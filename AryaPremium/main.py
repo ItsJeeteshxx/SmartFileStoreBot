@@ -141,7 +141,10 @@ async def main():
         # Checks ALL ban sources across both databases:
         #   1. forward-bot.premium_bans  (AryaPremium ban system)
         #   2. arya.premium_bans         (Main bot admin panel ban)
-        #   3. arya.users.ban_status     (Main bot /ban command ban)
+        # In-memory ban status cache: {user_id: (is_blocked, timestamp)}
+        _BAN_CACHE = {}
+        _BAN_CACHE_TTL = 60.0  # Cache ban status for 60 seconds
+
         async def _premium_ban_interceptor(client, update):
             try:
                 user = getattr(update, 'from_user', None)
@@ -153,28 +156,39 @@ async def main():
                 if Config.OWNER_IDS and user_id in Config.OWNER_IDS:
                     return
 
-                is_blocked = False
+                import time
+                now_ts = time.time()
+                cached = _BAN_CACHE.get(user_id)
+                if cached and (now_ts - cached[1]) < _BAN_CACHE_TTL:
+                    is_blocked = cached[0]
+                else:
+                    is_blocked = False
 
-                # 1. Check forward-bot.premium_bans (AryaPremium's own ban system)
-                prem_ban = await db.db.premium_bans.find_one({"_id": user_id})
-                if prem_ban and prem_ban.get("status") in ("banned", "flagged"):
-                    is_blocked = True
+                    # 1. Check forward-bot.premium_bans (AryaPremium's own ban system)
+                    prem_ban = await db.db.premium_bans.find_one({"_id": user_id})
+                    if prem_ban and prem_ban.get("status") in ("banned", "flagged"):
+                        is_blocked = True
 
-                # 2 & 3. Check arya database (main bot bans) — uses same MongoDB cluster
-                if not is_blocked:
-                    try:
-                        arya_db_ref = db.client["arya"]
-                        # 2. arya.premium_bans (admin panel ban)
-                        arya_prem_ban = await arya_db_ref.premium_bans.find_one({"_id": user_id})
-                        if arya_prem_ban and arya_prem_ban.get("status") in ("banned", "flagged"):
-                            is_blocked = True
-                        # 3. arya.users.ban_status (main bot /ban command)
-                        if not is_blocked:
-                            arya_user = await arya_db_ref.users.find_one({"id": user_id})
-                            if arya_user and arya_user.get("ban_status", {}).get("is_banned"):
+                    # 2 & 3. Check arya database (main bot bans) — uses same MongoDB cluster
+                    if not is_blocked:
+                        try:
+                            arya_db_ref = db.client["arya"]
+                            # 2. arya.premium_bans (admin panel ban)
+                            arya_prem_ban = await arya_db_ref.premium_bans.find_one({"_id": user_id})
+                            if arya_prem_ban and arya_prem_ban.get("status") in ("banned", "flagged"):
                                 is_blocked = True
-                    except Exception:
-                        pass  # Cross-DB check failed — fall through (don't block on error)
+                            # 3. arya.users.ban_status (main bot /ban command)
+                            if not is_blocked:
+                                arya_user = await arya_db_ref.users.find_one({"id": user_id})
+                                if arya_user and arya_user.get("ban_status", {}).get("is_banned"):
+                                    is_blocked = True
+                        except Exception:
+                            pass  # Cross-DB check failed — fall through (don't block on error)
+
+                    # Update cache (evict old entries if cache grows too large)
+                    if len(_BAN_CACHE) > 10000:
+                        _BAN_CACHE.clear()
+                    _BAN_CACHE[user_id] = (is_blocked, now_ts)
 
                 if is_blocked:
                     # Silently drop — do NOT tell user they're banned

@@ -593,6 +593,8 @@ async def _commit_show_record(
             "is_show": True,
             "visibility": "available",
             "status": "Completed",
+            "auto_deliver": True,
+            "auto_delivery": True,
             "created_at": now_utc,
             "uploaded_at": now_utc
         }
