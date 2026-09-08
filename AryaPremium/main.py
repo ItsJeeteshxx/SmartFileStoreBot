@@ -249,6 +249,11 @@ async def main():
             except Exception as e:
                 logger.warning(f"Could not register handle_live_channel_show_arrival on bot {b.get('username')}: {e}")
 
+            b_mode = str((b.get('config') or {}).get('bot_mode') or b.get('bot_mode') or 'full').lower().strip()
+            cli.bot_mode = b_mode
+            cli.bot_id = b.get('id')
+            cli.bot_username = (b.get('username') or '').replace('@', '').strip()
+
             market_clients[str(b['id'])] = cli
             apps.append(cli)
     except Exception as e:

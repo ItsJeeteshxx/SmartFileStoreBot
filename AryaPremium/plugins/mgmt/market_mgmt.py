@@ -1869,6 +1869,14 @@ async def market_callback(client, query):
             # Set source bot to miniapp mode and target bot to full mode
             await db.db.premium_bots.update_one({"id": from_b_id}, {"$set": {"config.bot_mode": "miniapp"}})
             await db.db.premium_bots.update_one({"id": to_b_id}, {"$set": {"config.bot_mode": "full"}})
+            try:
+                from plugins.userbot.market_seller import market_clients
+                if str(from_b_id) in market_clients:
+                    market_clients[str(from_b_id)].bot_mode = "miniapp"
+                if str(to_b_id) in market_clients:
+                    market_clients[str(to_b_id)].bot_mode = "full"
+            except Exception:
+                pass
             
             from_un = from_bt.get("username", str(from_b_id)) if from_bt else str(from_b_id)
             to_un = to_bt.get("username", str(to_b_id)) if to_bt else str(to_b_id)
@@ -1888,6 +1896,12 @@ async def market_callback(client, query):
             if not bt: return await _safe_answer(query, "Bot not found!")
             
             await db.db.premium_bots.update_one({"id": b_id}, {"$set": {"config.bot_mode": target_mode}})
+            try:
+                from plugins.userbot.market_seller import market_clients
+                if str(b_id) in market_clients:
+                    market_clients[str(b_id)].bot_mode = target_mode
+            except Exception:
+                pass
             if target_mode == "show_store":
                 label = "🎬 Show Store Mode (Pay-Per-Show OTT)"
             elif target_mode == "miniapp":

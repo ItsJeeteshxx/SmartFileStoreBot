@@ -372,14 +372,45 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
 
             # Pick an active store bot client that has channel permissions (never a show_store bot for miniapp orders)
             selected_client = None
-            job_bid = str(job.get("bot_id") or "")
-            if job_bid and job_bid in market_clients:
-                cand = market_clients[job_bid]
-                if getattr(cand, "bot_mode", "") != "show_store":
-                    selected_client = cand
 
-            # Try bots user has interacted with
+            # Check if this order is specifically for an OTT Show
+            is_ott_show = False
+            if db and hasattr(db, "db"):
+                try:
+                    from bson.objectid import ObjectId
+                    for sid in story_ids:
+                        s_oid = ObjectId(sid) if isinstance(sid, str) and len(sid) == 24 else sid
+                        s_chk = await db.db.premium_stories.find_one({"_id": s_oid})
+                        if s_chk and (s_chk.get("is_show") or s_chk.get("platform") in ("Kuku TV", "Story TV", "kuku_tv", "story_tv")):
+                            is_ott_show = True
+                            break
+                except Exception:
+                    pass
+
+            if is_ott_show:
+                # Dedicated Show Store bot if it's an OTT Show
+                for mc in market_clients.values():
+                    if getattr(mc, "bot_mode", "") == "show_store":
+                        selected_client = mc
+                        break
+
+            if not selected_client:
+                # 1. First priority: Dedicated Mini App mode bot
+                for mc in market_clients.values():
+                    if getattr(mc, "bot_mode", "") in ("miniapp", "mini_app"):
+                        selected_client = mc
+                        break
+
+            if not selected_client:
+                # 2. Check job's assigned bot_id if not show_store
+                job_bid = str(job.get("bot_id") or "")
+                if job_bid and job_bid in market_clients:
+                    cand = market_clients[job_bid]
+                    if getattr(cand, "bot_mode", "") != "show_store":
+                        selected_client = cand
+
             if not selected_client and db and hasattr(db, "db"):
+                # 3. Check user's interacted bots (strictly non-show_store)
                 try:
                     u_doc = await db.db.users.find_one({"id": int(user_id)})
                     if u_doc and u_doc.get("bot_ids"):
@@ -393,27 +424,22 @@ async def start_auto_delivery_queue_worker(market_clients: dict, mgmt_bot=None, 
                 except Exception:
                     pass
 
-            # Try miniapp / full mode bot from market_clients
             if not selected_client and market_clients:
+                # 4. Full mode bot from market_clients
                 for mc in market_clients.values():
-                    if getattr(mc, "bot_mode", "") in ("miniapp", "mini_app", "full"):
+                    if getattr(mc, "bot_mode", "") == "full":
                         selected_client = mc
                         break
 
-            # Any non-show-store bot
             if not selected_client and market_clients:
+                # 5. Any non-show-store bot from market_clients
                 for mc in market_clients.values():
                     if getattr(mc, "bot_mode", "") != "show_store":
                         selected_client = mc
                         break
 
-            if not selected_client and market_clients:
-                selected_client = next(iter(market_clients.values()), None)
             if not selected_client:
-                selected_client = mgmt_bot
-
-            if not selected_client:
-                logger.warning(f"[AutoDeliveryQueue] No active Pyrogram store client found. Re-queueing job {job['_id']}...")
+                logger.error(f"[AutoDeliveryQueue] No active non-show-store client found for job {job['_id']}. Re-queueing...")
                 await db.db.pending_auto_deliveries.update_one({"_id": job["_id"]}, {"$set": {"status": "pending"}})
                 await asyncio.sleep(5)
                 continue
@@ -619,6 +645,23 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     logger.info(f"[AutoDelivery] Delivery already queued for claim_key={delivery_claim_key}, skipping.")
                     return
 
+                assigned_bot_id = order_doc.get("bot_id")
+                assigned_bot_un = order_doc.get("bot_username")
+                if not assigned_bot_id and db and hasattr(db, "db"):
+                    try:
+                        mini_b = await db.db.premium_bots.find_one({
+                            "$or": [
+                                {"config.bot_mode": {"$in": ["miniapp", "mini_app"]}},
+                                {"bot_mode": {"$in": ["miniapp", "mini_app"]}}
+                            ],
+                            "token": {"$exists": True, "$ne": ""}
+                        })
+                        if mini_b:
+                            assigned_bot_id = mini_b.get("id") or mini_b.get("bot_id")
+                            assigned_bot_un = (mini_b.get("username") or "").replace("@", "").strip()
+                    except Exception:
+                        pass
+
                 # Push task to MongoDB pending_auto_deliveries queue
                 await db.db.pending_auto_deliveries.insert_one({
                     "claim_key": delivery_claim_key,
@@ -626,12 +669,12 @@ async def trigger_auto_delivery_for_order(db, user_id: Union[int, str], order_do
                     "story_ids": story_ids,
                     "items": items,
                     "order_id": rec_oid,
-                    "bot_id": order_doc.get("bot_id"),
-                    "bot_username": order_doc.get("bot_username"),
+                    "bot_id": assigned_bot_id,
+                    "bot_username": assigned_bot_un,
                     "status": "pending",
                     "created_at": datetime.now(timezone.utc)
                 })
-                logger.info(f"[AutoDelivery] Queued auto delivery task for order {rec_oid} to user {tg_id_int}")
+                logger.info(f"[AutoDelivery] Queued auto delivery task for order {rec_oid} to user {tg_id_int} (bot={assigned_bot_un or assigned_bot_id or 'auto'})")
             except Exception as c_err:
                 logger.warning(f"[AutoDelivery] Claim/queue check exception: {c_err}")
 

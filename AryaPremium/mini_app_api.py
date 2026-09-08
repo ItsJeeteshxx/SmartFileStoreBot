@@ -778,13 +778,13 @@ async def optimize_image(request: Request, url: str, w: int = 400, h: int = 400)
 async def get_customer_bot_details(user_id: int, order_bot_id: Optional[Union[int, str]] = None) -> tuple:
     """
     Resolves the customer-facing bot token and username for a user.
-    CRITICAL: Never routes to 'show_store' mode bots for receipts or support.
+    CRITICAL: Never routes to 'show_store' mode bots or MGMT_BOT_TOKEN for customer receipts or support.
     Priority:
-    1. order_bot_id if provided and NOT a show_store bot.
-    2. Dedicated 'miniapp' / 'mini_app' bot.
+    1. Dedicated 'miniapp' / 'mini_app' bot.
+    2. order_bot_id if provided and NOT a show_store bot.
     3. Active non-show_store bot from user's interaction history (user_doc['bot_ids']).
     4. Any active non-show_store bot in the database.
-    5. Fallback to main BOT_TOKEN or MGMT_BOT_TOKEN.
+    5. Fallback to main BOT_TOKEN from environment.
     """
     from AryaPremium.config import Config
     
@@ -805,51 +805,58 @@ async def get_customer_bot_details(user_id: int, order_bot_id: Optional[Union[in
     try:
         arya_db = getattr(app.state, "db", None)
         if arya_db and hasattr(arya_db, "db") and arya_db.db is not None:
-            # 1. Check order_bot_id first
+            # 1. Look for dedicated Mini App mode bot FIRST
+            mini_bot = await arya_db.db.premium_bots.find_one({
+                "$or": [
+                    {"config.bot_mode": {"$in": ["miniapp", "mini_app"]}},
+                    {"bot_mode": {"$in": ["miniapp", "mini_app"]}}
+                ],
+                "token": {"$exists": True, "$ne": ""}
+            })
+            if mini_bot and mini_bot.get("token"):
+                return mini_bot["token"], (mini_bot.get("username") or default_un).replace("@", "").strip()
+
+            # 2. Check order_bot_id if provided and NOT a show_store bot
             if order_bot_id:
                 try:
                     bid_int = int(order_bot_id)
                     b_match = await arya_db.db.premium_bots.find_one({"$or": [{"id": bid_int}, {"bot_id": bid_int}]})
                     if b_match and b_match.get("token"):
-                        b_mode = (b_match.get("config") or {}).get("bot_mode", "full")
+                        b_mode = str((b_match.get("config") or {}).get("bot_mode") or b_match.get("bot_mode") or "full").lower().strip()
                         if b_mode != "show_store":
-                            return b_match["token"], b_match.get("username", bot_username)
+                            return b_match["token"], (b_match.get("username") or default_un).replace("@", "").strip()
                 except Exception:
                     pass
 
-            # 2. Look for dedicated Mini App mode bot
-            mini_bot = await arya_db.db.premium_bots.find_one({
-                "config.bot_mode": {"$in": ["miniapp", "mini_app"]},
-                "token": {"$exists": True, "$ne": ""}
-            })
-            if mini_bot and mini_bot.get("token"):
-                return mini_bot["token"], mini_bot.get("username", bot_username)
-
-            # 3. Check user's interacted bots, filtering out show_store bots
+            # 3. Check user's interacted bots, strictly filtering out show_store bots
             user_doc = await arya_db.db.users.find_one({"id": int(user_id)})
             if user_doc and user_doc.get("bot_ids"):
                 for bid in user_doc["bot_ids"]:
                     try:
                         b_doc = await arya_db.db.premium_bots.find_one({"$or": [{"id": int(bid)}, {"bot_id": int(bid)}]})
                         if b_doc and b_doc.get("token"):
-                            b_mode = (b_doc.get("config") or {}).get("bot_mode", "full")
+                            b_mode = str((b_doc.get("config") or {}).get("bot_mode") or b_doc.get("bot_mode") or "full").lower().strip()
                             if b_mode != "show_store":
-                                return b_doc["token"], b_doc.get("username", bot_username)
+                                return b_doc["token"], (b_doc.get("username") or default_un).replace("@", "").strip()
                     except Exception:
                         continue
 
             # 4. Fallback to any active non-show_store bot in the DB
             any_store_bot = await arya_db.db.premium_bots.find_one({
                 "config.bot_mode": {"$nin": ["show_store"]},
+                "bot_mode": {"$nin": ["show_store"]},
                 "token": {"$exists": True, "$ne": ""}
             })
             if any_store_bot and any_store_bot.get("token"):
-                return any_store_bot["token"], any_store_bot.get("username", bot_username)
+                b_mode = str((any_store_bot.get("config") or {}).get("bot_mode") or any_store_bot.get("bot_mode") or "full").lower().strip()
+                if b_mode != "show_store":
+                    return any_store_bot["token"], (any_store_bot.get("username") or default_un).replace("@", "").strip()
 
     except Exception as e:
         logger.error(f"Failed to resolve customer bot details: {e}")
 
-    final_token = token or main_bot_token or getattr(Config, "MGMT_BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", "")
+    # SAFE FALLBACK: Never return MGMT_BOT_TOKEN for customer receipt/DM
+    final_token = token or main_bot_token or os.environ.get("BOT_TOKEN", "")
     return final_token, bot_username
 
 
@@ -2197,7 +2204,8 @@ async def create_payment_link(payload: dict):
         raise HTTPException(status_code=400, detail="Invalid price")
 
     order_id = await _make_arya_order_id(arya_db, str(telegram_id), story_ids, source="miniapp")
-    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+    _, resolved_un = await get_customer_bot_details(int(telegram_id) if str(telegram_id).isdigit() else 0)
+    bot_username = resolved_un or os.environ.get("BOT_USERNAME", "UseAryaBot")
     
     try:
         if not RZP_KEY_ID or not RZP_KEY_SECRET:
@@ -2305,7 +2313,8 @@ async def check_payment_link(id: str, payload: dict):
                 asyncio.create_task(record_purchased_stories(updated_order))
                 asyncio.create_task(send_purchase_success_dm(arya_db, telegram_id, order_doc=updated_order, payment_method="Razorpay", verified_by="Auto Verified By System"))
             
-            bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+            _, resolved_un = await get_customer_bot_details(int(telegram_id) if str(telegram_id).isdigit() else 0)
+            bot_username = resolved_un or os.environ.get("BOT_USERNAME", "UseAryaBot")
             return {
                 "success": True,
                 "status": "paid",
@@ -2795,7 +2804,8 @@ async def razorpay_callback(
     asyncio.create_task(record_purchased_stories(order_doc))
     asyncio.create_task(send_purchase_success_dm(arya_db, tg_id, order_doc=order_doc, payment_method="Razorpay", verified_by="Auto Verified By System"))
 
-    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+    _, resolved_un = await get_customer_bot_details(tg_id_int if tg_id_int else (int(tg_id) if str(tg_id).isdigit() else 0))
+    bot_username = resolved_un or os.environ.get("BOT_USERNAME", "UseAryaBot")
     return RedirectResponse(url=f"https://t.me/{bot_username}/app", status_code=302)
 
 
@@ -4058,8 +4068,8 @@ async def paytm_callback(request: Request):
             
             async def _send_paytm_success_dm():
                 try:
-                    bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
-                    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+                    bot_token, bot_username = await get_customer_bot_details(int(user_id) if str(user_id).isdigit() else 0)
+                    bot_username = bot_username or os.environ.get("BOT_USERNAME", "UseAryaBot")
                     if not bot_token or not user_id:
                         return
                     story_names = order.get("story_names", [])
@@ -4391,8 +4401,8 @@ async def handle_payu_callback_data(form_dict: dict, request: Request):
             
             async def _send_payu_success_dm():
                 try:
-                    bot_token = getattr(Config, "BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
-                    bot_username = os.environ.get("BOT_USERNAME", "UseAryaBot")
+                    bot_token, bot_username = await get_customer_bot_details(int(user_id) if str(user_id).isdigit() else 0)
+                    bot_username = bot_username or os.environ.get("BOT_USERNAME", "UseAryaBot")
                     if not bot_token or not user_id:
                         return
                     story_names = order.get("story_names", [])
