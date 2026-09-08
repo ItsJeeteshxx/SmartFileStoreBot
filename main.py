@@ -361,10 +361,21 @@ if __name__ == "__main__":
     def _handle_asyncio_exception(loop, context):
         """Global handler for unhandled asyncio task exceptions.
         Prevents bare 'Task exception was never retrieved' from crashing the process."""
-        msg = context.get("exception", context["message"])
+        exc = context.get("exception")
+        msg = exc if exc is not None else context.get("message")
         task = context.get("task")
         task_name = getattr(task, "get_name", lambda: "unknown")() if task else "unknown"
-        logging.error(f"[AsyncIO] Unhandled task exception in '{task_name}': {msg}", exc_info=context.get("exception"))
+
+        # Suppress verbose FloodWait tracebacks in Pyrogram background update tasks (e.g. updates.GetChannelDifference)
+        try:
+            from pyrogram.errors import FloodWait
+            if isinstance(exc, FloodWait) or "FloodWait" in str(msg):
+                logging.warning(f"[AsyncIO] Background task hit FloodWait in '{task_name}': {msg}")
+                return
+        except Exception:
+            pass
+
+        logging.error(f"[AsyncIO] Unhandled task exception in '{task_name}': {msg}", exc_info=exc)
 
     try:
         loop = asyncio.new_event_loop()

@@ -490,12 +490,12 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                     is_channel_invalid = True
 
         if is_channel_invalid:
-            # Cache the invalid status for 30 seconds
+            # Cache the invalid status for 300 seconds (5 minutes) to avoid log spam
             _channel_health_cache[ch_id_int] = {
                 'status': 'invalid',
-                'expires': now + 30
+                'expires': now + 300
             }
-            logger.error(f"FSub check: Channel {ch_id_int} is unresolvable by all clients. Caching invalid status for 30 seconds.")
+            logger.warning(f"FSub check: Channel {ch_id_int} is unresolvable by all clients. Caching invalid status for 300 seconds.")
             ch_copy = dict(ch)
             ch_copy['never_joined'] = True
             return ch_copy
@@ -1050,9 +1050,10 @@ async def _process_start(client, message):
             custom_markup = InlineKeyboardMarkup([row])
 
     from pyrogram.errors import FloodWait
+    user_blocked = False
     for msg_id in msg_ids:
-        if dl_id not in active_downloads:
-            break  # cancel handler already edited the status
+        if dl_id not in active_downloads or user_blocked:
+            break  # cancel handler already edited the status or user blocked bot
         
         retry_count = 0
         while retry_count < 3:
@@ -1122,11 +1123,18 @@ async def _process_start(client, message):
                 retry_count += 1
                 
             except BaseException as copy_err:
+                err_str = str(copy_err).upper()
                 logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
                 fail_count += 1
+                if any(k in err_str for k in ("USER_IS_BLOCKED", "BLOCKED", "CHAT_WRITE_FORBIDDEN")):
+                    logger.info(f"User {user_id} unavailable or has blocked bot. Stopping delivery immediately.")
+                    user_blocked = True
+                    break
                 break  # Skip to next message on non-flood errors
                 
-        await asyncio.sleep(0.05)
+        if user_blocked:
+            break
+        await asyncio.sleep(0.8)
 
     try:
         active_downloads.discard(dl_id)
@@ -1403,20 +1411,24 @@ async def _send_welcome(client, message, bot_id: str = None):
                     await client.send_photo(user.id, photo=wid, caption=txt, reply_markup=markup)
                 return
             except Exception as _media_err:
-                logger.warning(f"[Welcome] Media send failed ({_media_err}), auto-clearing bad image and falling back to text")
-                try:
-                    if bot_id:
-                        about = await db.get_share_bot_about(bot_id) or {}
-                        img_ids = about.get('menu_image_ids', [])
-                        bad_fid = wid
-                        cleaned = [x for x in img_ids if (x.get('file_id') if isinstance(x, dict) else x) != bad_fid]
-                        await db.db.share_config.update_one(
-                            {'_id': f'bot_{bot_id}_about'},
-                            {'$set': {'menu_image_ids': cleaned}},
-                            upsert=True
-                        )
-                except Exception:
-                    pass
+                err_up = str(_media_err).upper()
+                is_flood = isinstance(_media_err, FloodWait) or "FLOOD_WAIT" in err_up
+                logger.warning(f"[Welcome] Media send failed: {_media_err}")
+                if not is_flood and any(k in err_up for k in ("FILE_REFERENCE", "MEDIA_EMPTY", "IMAGE_PROCESS_FAILED", "PHOTO_INVALID", "WRONG_FILE_IDENTIFIER")):
+                    logger.warning(f"[Welcome] Auto-clearing invalid image {wid} from database")
+                    try:
+                        if bot_id:
+                            about = await db.get_share_bot_about(bot_id) or {}
+                            img_ids = about.get('menu_image_ids', [])
+                            bad_fid = wid
+                            cleaned = [x for x in img_ids if (x.get('file_id') if isinstance(x, dict) else x) != bad_fid]
+                            await db.db.share_config.update_one(
+                                {'_id': f'bot_{bot_id}_about'},
+                                {'$set': {'menu_image_ids': cleaned}},
+                                upsert=True
+                            )
+                    except Exception:
+                        pass
 
         sent_ok = await send_or_edit_with_custom_icons(
             client=client,
@@ -3966,18 +3978,27 @@ async def send_or_edit_with_custom_icons(
             err_desc = str(data.get("description", ""))
             err_code = data.get("error_code")
 
+            # If message is already up-to-date, treat as success immediately
+            if "message is not modified" in err_desc.lower():
+                return True
+
             # Ignore expected user block errors quietly
             if err_code in (400, 403) and ("chat not found" in err_desc.lower() or "can't initiate conversation" in err_desc.lower() or "blocked" in err_desc.lower()):
                 logger.debug(f"[CustomEmojiAPI] Bot API {method} user unavailable: {err_desc}")
                 return False
 
+            if err_code == 429:
+                retry_after = data.get("parameters", {}).get("retry_after", 5)
+                logger.warning(f"[CustomEmojiAPI] Bot API 429 rate limit hit: retry after {retry_after}s")
+                return False
+
             # If button icons failed (not premium / not authorized bot), retry without button icons via Bot API so text <tg-emoji> works!
-            if "BUTTON_CUSTOM_EMOJI" in err_desc or "CUSTOM_EMOJI" in err_desc or err_code == 400:
+            if ("BUTTON_CUSTOM_EMOJI" in err_desc or "CUSTOM_EMOJI" in err_desc or err_code == 400) and "message is not modified" not in err_desc.lower():
                 stripped_kb = _strip_api_keyboard_icons(norm_kb)
                 method_r, payload_r = _build_payload(stripped_kb)
                 async with session.post(url + method_r, json=payload_r, timeout=aiohttp.ClientTimeout(total=5.0)) as resp_r:
                     data_r = await resp_r.json()
-                    if data_r.get("ok"):
+                    if data_r.get("ok") or "message is not modified" in str(data_r.get("description", "")).lower():
                         logger.info(f"[CustomEmojiAPI] ✅ {method_r} (retry stripped icons) succeeded via Bot API to {c_id}")
                         return True
                     logger.info(f"[CustomEmojiAPI] Bot API retry {method_r} returned: {data_r}")
@@ -5957,6 +5978,10 @@ async def _process_pass_callback(client, query):
 
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
+        is_hinglish = bool(user_lang == 'hinglish')
+
+        rl_cfg = await db.get_delivery_rate_limit_config()
+        uiver = rl_cfg.get('pass_ui_version', 'v1')
 
         # Show instant loading message with custom animated emoji 5220046725493828505
         load_text = (
@@ -5998,12 +6023,7 @@ async def _process_pass_callback(client, query):
         order_id = res["order_id"]
         checkout_pay_link = res["checkout_pay_link"]
         p_label = int(amount) if float(amount).is_integer() else amount
-        user_lang = await db.get_language(user_id)
-        is_hi = bool(user_lang == 'hi')
-        is_hinglish = bool(user_lang == 'hinglish')
 
-        rl_cfg = await db.get_delivery_rate_limit_config()
-        uiver = rl_cfg.get('pass_ui_version', 'v1')
         if uiver == 'v3':
             back_cb = f"pass#tier_{tier}"
         elif uiver == 'v2':

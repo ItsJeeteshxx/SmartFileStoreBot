@@ -1799,7 +1799,7 @@ async def _run_job(job_id: str, user_id: int):
                 is_conn_err = any(k in err_up for k in (
                     "TIMEOUT", "CONNECTION", "BROKEN PIPE", "ERRNO 32", "NOT BEEN STARTED", "NOT CONNECTED",
                     "DISCONNECTED", "RESET", "NETWORK", "SOCKET", "PING",
-                    "FLOOD_WAIT"
+                    "FLOOD_WAIT", "RPC_CALL_FAIL", "INTERNAL PROBLEMS", "500"
                 ))
                 if is_conn_err:
                     logger.warning(f"[Job {job_id}] Connection error in live fetch: {err_fetch}. Healing client...")

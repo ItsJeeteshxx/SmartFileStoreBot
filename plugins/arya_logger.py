@@ -171,6 +171,8 @@ async def _send(text: str, ch_key: str) -> None:
                     logger.info(f"[AryaLog] Retry succeeded for {ch_key} ({target_chat_id})")
                 except Exception as retry_err:
                     logger.error(f"[AryaLog] Retry also failed for {ch_key} ({target_chat_id}): {retry_err}")
+            elif "FLOOD_WAIT" in err_str:
+                logger.warning(f"[AryaLog] FloodWait sending to {ch_key} ({target_chat_id}): {send_err}")
             else:
                 logger.error(f"[AryaLog] Send failed for {ch_key} ({target_chat_id}): {send_err}")
 
@@ -618,6 +620,10 @@ async def log_rate_limit_reached(
                         except Exception:
                             pass
         except Exception as e:
+            err_up = str(e).upper()
+            if "FLOOD_WAIT" in err_up:
+                logger.warning(f"[AryaLog] Rate limit log channel {log_channel} hit FloodWait. Skipping to prevent cascading rate limits.")
+                return
             logger.warning(f"[AryaLog] Failed to send rate limit log to custom channel {log_channel}: {e}")
 
     # Fallback to general share bot log channel if configured
