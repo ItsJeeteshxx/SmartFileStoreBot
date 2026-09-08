@@ -10338,7 +10338,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                             orig_msg_map[m.id] = m
                 except Exception:
                     try:
-                        from plugins.mgmt.market_mgmt import client as mgmt_cli
+                        mgmt_cli = getattr(db, "mgmt_client", None)
                         if mgmt_cli and getattr(mgmt_cli, "is_connected", False):
                             fetched = await mgmt_cli.get_messages(int(src), chunk)
                             if not isinstance(fetched, list):

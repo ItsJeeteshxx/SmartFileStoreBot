@@ -167,9 +167,14 @@ Thank you.</blockquote>"""
                         text=dm_text,
                         parse_mode=ParseMode.HTML
                     )
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.8)
+                except FloodWait as fw:
+                    wait_sec = int(getattr(fw, "value", 0) or getattr(fw, "x", 0) or 5)
+                    logger.warning(f"[Premium Monitor] Hit FloodWait of {wait_sec}s sending DM to {uid}")
+                    await asyncio.sleep(wait_sec + 1)
                 except Exception as dm_err:
                     logger.warning(f"[Premium Monitor] Could not send ongoing update DM to user {uid}: {dm_err}")
+                    await asyncio.sleep(0.5)
     except Exception as e:
         logger.error(f"[Premium Monitor] Error dispatching ongoing update DMs: {e}")
 

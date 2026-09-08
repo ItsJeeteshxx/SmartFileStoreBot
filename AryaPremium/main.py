@@ -272,26 +272,107 @@ async def main():
         try:
             await app.start()
             started_apps.append(app)
-            
-            # Background task to warm up cache completely on any fresh restart/VPS migration
-            async def warm(client):
-                try:
-                    from pyrogram.errors import FloodWait
-                    async for _ in client.get_dialogs(limit=30):
-                        pass
-                    logger.info(f"[{client.name}] Successfully warmed up peer cache!")
-                except FloodWait as e:
-                    await asyncio.sleep(e.value)
-                except Exception as e:
-                    logger.debug(f"[{client.name}] Dialogs warmup interrupted: {e}")
-                    
-            asyncio.create_task(warm(app))
         except Exception as e:
             logger.error(f"Failed to start app {getattr(app, 'name', 'Unknown')}: {e}")
 
     if not started_apps:
         logger.error("No apps successfully started. Exiting.")
         return
+
+    # Staggered background task to warm up cache safely without overwhelming Telegram DC
+    async def _staggered_warmup(apps_to_warm):
+        await asyncio.sleep(5)  # Wait for startup to settle
+        for client in apps_to_warm:
+            try:
+                from pyrogram.errors import FloodWait
+                async for _ in client.get_dialogs(limit=10):
+                    pass
+                logger.info(f"[{getattr(client, 'name', 'Client')}] Peer cache warmed up.")
+            except FloodWait as e:
+                await asyncio.sleep(getattr(e, "value", 10))
+            except Exception as e:
+                logger.debug(f"[{getattr(client, 'name', 'Client')}] Warmup skipped: {e}")
+            await asyncio.sleep(1.5)  # Stagger between bots to avoid IP FloodWait
+    
+    asyncio.create_task(_staggered_warmup(list(started_apps)))
+
+    # ── Client Liveness & Watchdog Worker ──
+    async def _client_watchdog():
+        await asyncio.sleep(20)  # Let ecosystem settle after initial startup
+        while True:
+            try:
+                # 1. Verify Management Bot liveness
+                if 'mgmt_bot' in locals() and mgmt_bot:
+                    if not getattr(mgmt_bot, "is_connected", False):
+                        logger.warning("[Watchdog] ⚠️ Management Bot is DISCONNECTED! Reconnecting...")
+                        try:
+                            await mgmt_bot.start()
+                            logger.info("[Watchdog] ✅ Management Bot reconnected successfully!")
+                        except Exception as rec_err:
+                            logger.error(f"[Watchdog] Failed to reconnect Management Bot: {rec_err}")
+
+                # 2. Verify Store Bots liveness
+                for b_id, cli in list(market_clients.items()):
+                    if not getattr(cli, "is_connected", False):
+                        logger.warning(f"[Watchdog] ⚠️ Market client @{getattr(cli, 'bot_username', b_id)} is DISCONNECTED! Reconnecting...")
+                        try:
+                            await cli.start()
+                            logger.info(f"[Watchdog] ✅ Market client @{getattr(cli, 'bot_username', b_id)} reconnected successfully!")
+                        except Exception as rec_err:
+                            logger.error(f"[Watchdog] Failed to reconnect @{getattr(cli, 'bot_username', b_id)}: {rec_err}")
+
+                # 3. Dynamic Bot Auto-Discovery from MongoDB (hot-reload newly added bots without restart)
+                try:
+                    active_bots = await db.db.premium_bots.find({"status": {"$ne": "inactive"}}).to_list(length=None)
+                    existing_bids = set(market_clients.keys())
+                    for b in active_bots:
+                        bid_str = str(b.get("id"))
+                        tok = (b.get("token") or "").strip()
+                        if bid_str not in existing_bids and tok and tok not in seen_tokens:
+                            seen_tokens.add(tok)
+                            logger.info(f"[Watchdog] Discovered new bot @{b.get('username')} in DB! Initializing dynamically...")
+                            new_cli = Client(
+                                name=f"market_{b['id']}", 
+                                api_id=Config.API_ID, 
+                                api_hash=Config.API_HASH, 
+                                bot_token=tok, 
+                                in_memory=False
+                            )
+                            setup_ask_router(new_cli)
+                            new_cli.add_handler(MessageHandler(_premium_ban_interceptor, filters.private), group=-999)
+                            new_cli.add_handler(CallbackQueryHandler(_premium_ban_interceptor, filters.all), group=-999)
+                            new_cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private & filters.incoming & ~filters.me))
+                            new_cli.add_handler(MessageHandler(_process_my_stories, filters.command(["mystories", "stories"]) & filters.private & filters.incoming & ~filters.me))
+                            new_cli.add_handler(MessageHandler(_process_media, (filters.photo | filters.video | filters.animation | filters.document | filters.voice | filters.audio) & filters.private & filters.incoming & ~filters.me))
+                            new_cli.add_handler(MessageHandler(_process_text, filters.text & filters.private & filters.incoming & ~filters.me))
+                            new_cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
+                            new_cli.add_handler(ChatMemberUpdatedHandler(_process_chat_member))
+                            new_cli.add_handler(InlineQueryHandler(_process_inline_query))
+                            
+                            try:
+                                from plugins.mgmt.store_indexer import handle_live_channel_show_arrival
+                                new_cli.add_handler(MessageHandler(handle_live_channel_show_arrival, filters.channel))
+                            except Exception:
+                                pass
+
+                            b_mode = str((b.get('config') or {}).get('bot_mode') or b.get('bot_mode') or 'full').lower().strip()
+                            new_cli.bot_mode = b_mode
+                            new_cli.bot_id = b.get('id')
+                            new_cli.bot_username = (b.get('username') or '').replace('@', '').strip()
+
+                            await new_cli.start()
+                            market_clients[bid_str] = new_cli
+                            started_apps.append(new_cli)
+                            logger.info(f"[Watchdog] ✅ Dynamically added bot @{new_cli.bot_username} is now online!")
+                except Exception as dyn_err:
+                    logger.debug(f"[Watchdog] Dynamic bot discovery check: {dyn_err}")
+
+            except Exception as w_err:
+                logger.warning(f"[Watchdog] Error in watchdog loop: {w_err}")
+
+            await asyncio.sleep(30)
+
+    asyncio.create_task(_client_watchdog())
 
     # Start Premium Live Monitor on Mgmt Bot (which is Admin in source channels)
     if 'mgmt_bot' in locals():
@@ -375,16 +456,41 @@ async def main():
     # Keep bots running
     await idle()
 
-    # Graceful shutdown
+    # Graceful shutdown with per-app timeout to prevent systemd timeout kills
     for app in started_apps:
         try:
-            await app.stop()
+            await asyncio.wait_for(app.stop(), timeout=5.0)
         except Exception:
             pass
 
 
 if __name__ == "__main__":
+    def _handle_asyncio_exception(loop, context):
+        """Global handler for unhandled asyncio task exceptions.
+        Prevents bare 'Task exception was never retrieved' from crashing the process."""
+        exc = context.get("exception")
+        msg = exc if exc is not None else context.get("message")
+        task = context.get("task")
+        task_name = getattr(task, "get_name", lambda: "unknown")() if task else "unknown"
+
+        # Suppress verbose FloodWait tracebacks in Pyrogram background update tasks
+        try:
+            from pyrogram.errors import FloodWait
+            if isinstance(exc, FloodWait) or "FloodWait" in str(msg):
+                logger.warning(f"[AsyncIO] Background task hit FloodWait in '{task_name}': {msg}")
+                return
+        except Exception:
+            pass
+
+        logger.error(f"[AsyncIO] Unhandled task exception in '{task_name}': {msg}", exc_info=exc)
+
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(_handle_asyncio_exception)
+        loop.run_until_complete(main())
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Shutting down Ecosystem...")
+    except Exception as e:
+        logger.critical(f"Ecosystem crashed with exception: {e}", exc_info=True)
+        sys.exit(1)
