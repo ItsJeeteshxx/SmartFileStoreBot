@@ -1949,6 +1949,47 @@ async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_messag
     msg_txt = _menu_card_text(user, bt_cfg, bot_name, lang)
     markup = _get_premium_menu_markup(bt_cfg, lang)
 
+    async def _safe_send_menu_msg(text_to_send, kb_markup):
+        if not text_to_send or not str(text_to_send).strip():
+            text_to_send = f"<b>Welcome to {bot_name or 'Arya Premium'}!</b>\n\n<i>Browse stories, explore marketplace and enjoy instant delivery.</i>"
+        try:
+            return await client.send_message(
+                user_id,
+                text_to_send,
+                reply_markup=kb_markup,
+                parse_mode=enums.ParseMode.HTML,
+                reply_to_message_id=reply_to_message_id
+            )
+        except Exception as err1:
+            try:
+                return await client.send_message(
+                    user_id,
+                    text_to_send,
+                    reply_markup=kb_markup,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except Exception as err2:
+                logger.warning(f"_safe_send_menu_msg fallback to sanitized buttons: {err2}")
+                clean_kb = []
+                for row in getattr(kb_markup, 'inline_keyboard', []):
+                    clean_row = []
+                    for btn in row:
+                        t_lbl = (btn.text or "").strip() or "•"
+                        if getattr(btn, 'url', None):
+                            clean_row.append(InlineKeyboardButton(t_lbl, url=btn.url))
+                        elif getattr(btn, 'callback_data', None):
+                            clean_row.append(InlineKeyboardButton(t_lbl, callback_data=btn.callback_data))
+                        elif getattr(btn, 'switch_inline_query_current_chat', None) is not None:
+                            clean_row.append(InlineKeyboardButton(t_lbl, switch_inline_query_current_chat=btn.switch_inline_query_current_chat))
+                    if clean_row:
+                        clean_kb.append(clean_row)
+                return await client.send_message(
+                    user_id,
+                    text_to_send,
+                    reply_markup=InlineKeyboardMarkup(clean_kb) if clean_kb else None,
+                    parse_mode=enums.ParseMode.HTML
+                )
+
     # Menu media rotation: supports Photo / GIF / Video.
     items = [x for x in _cfg_list(bt_cfg, "menu_media") if isinstance(x, dict) and x.get("file_id")]
     if not items and (bt_cfg.get("menuimg") or "").strip():
@@ -2071,11 +2112,9 @@ async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_messag
 
                     pass
 
-                return await client.send_message(user_id, msg_txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML, reply_to_message_id=reply_to_message_id)
+                return await _safe_send_menu_msg(msg_txt, markup)
 
-
-
-    return await client.send_message(user_id, msg_txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML, reply_to_message_id=reply_to_message_id)
+    return await _safe_send_menu_msg(msg_txt, markup)
 
 
 
@@ -4044,24 +4083,7 @@ async def _process_start(client, message):
                 parse_mode=enums.ParseMode.HTML,
                 disable_web_page_preview=True
             )
-
-        # Additional notice message for transferred bot services
-        first_name = (getattr(message.from_user, 'first_name', '') or '').strip() or 'User'
-        notice_text = (
-            f"<b>Hey {first_name},</b>\n\n"
-            f"<blockquote>हमने अपनी बॉट स्टोर सेवाओं को नए बॉट पर स्थानांतरित कर दिया है। यदि आप टेलीग्राम बॉट के माध्यम से कहानियां खरीदना चाहते हैं, तो आप हमारे नए बॉट का उपयोग कर सकते हैं। यह बॉट अब केवल मिनी ऐप के लिए समर्पित रहेगा, लेकिन आप /mystories द्वारा अपनी पहले से खरीदी गई कहानियों की डिलीवरी यहां प्राप्त कर सकते हैं। बाकी सभी सेवाएं नए बॉट पर शिफ्ट हो चुकी हैं।</blockquote>\n\n"
-            f"<blockquote>We have transitioned our bot store services to our new bot. If you prefer purchasing stories directly via Telegram bot, please use our new bot. This current bot is now dedicated to the Mini App, though you can still access and receive your previously purchased stories here using /mystories. All other store operations have moved to our new bot.</blockquote>"
-        )
-        notice_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Open Storyfi", url="https://t.me/StoryfiBot")]
-        ])
-        return await client.send_message(
-            user_id,
-            notice_text,
-            reply_markup=notice_markup,
-            parse_mode=enums.ParseMode.HTML,
-            disable_web_page_preview=True
-        )
+        return
 
     if 'lang' not in user:
 
@@ -4095,11 +4117,20 @@ async def _process_start(client, message):
 
     if not is_show_store:
         INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
+        is_joined = True
         try:
             chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
             if chat_member.status in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
-                raise Exception("Not joined")
-        except Exception:
+                is_joined = False
+        except Exception as ch_err:
+            err_str = str(ch_err).lower()
+            if "not a participant" in err_str or "usernotparticipant" in err_str or "not joined" in err_str:
+                is_joined = False
+            else:
+                logger.warning(f"Force join bypassed due to bot permission/channel error: {ch_err}")
+                is_joined = True
+
+        if not is_joined:
             if lang == 'hi':
                 join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
                 join_txt = (
@@ -4119,7 +4150,7 @@ async def _process_start(client, message):
                     "</blockquote>"
                 )
                 join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-                joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
+                joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗘𝗗"
 
             join_kb = [
                 [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
@@ -4130,18 +4161,25 @@ async def _process_start(client, message):
 
 
     # Standard Main Menu
+    try:
+        wait_msg_txt = "WAIT A SECOND..." if lang == 'en' else "कृपया प्रतीक्षा करें..."
+        wait_msg = await message.reply_text(f'<b>› › <emoji id="5348471079482441278">⏳</emoji> {wait_msg_txt}</b>', parse_mode=enums.ParseMode.HTML)
+        await asyncio.sleep(0.4)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+    except Exception as w_err:
+        logger.debug(f"wait_msg error: {w_err}")
 
-    wait_msg_txt = "WAIT A SECOND..." if lang == 'en' else "कृपया प्रतीक्षा करें..."
-
-    wait_msg = await message.reply_text(f'<b>› › <emoji id="5348471079482441278">⏳</emoji> {wait_msg_txt}</b>', parse_mode=enums.ParseMode.HTML)
-
-    await asyncio.sleep(0.4)
-
-    await wait_msg.delete()
-
-
-
-    await _send_main_menu(client, user_id, message.from_user, lang, reply_to_message_id=message.id)
+    try:
+        await _send_main_menu(client, user_id, message.from_user, lang, reply_to_message_id=message.id)
+    except Exception as sm_err:
+        logger.error(f"_send_main_menu failed in _process_start: {sm_err}", exc_info=True)
+        try:
+            await client.send_message(user_id, "👋 Welcome to Arya Premium Store! Please tap /start or /marketplace to begin.")
+        except Exception:
+            pass
 
 
 
@@ -4854,30 +4892,35 @@ async def _process_text(client, message):
                     elapsed_sec = 9999
                 if elapsed_sec > 900:
                     await _clear_utr_state(user_id)
-                    return
+                    pending_s_id_utr = None
             except Exception:
                 pass
+        else:
+            await _clear_utr_state(user_id)
+            pending_s_id_utr = None
 
+    if pending_s_id_utr:
         raw_input = txt.strip()
 
         if raw_input.startswith("/") or raw_input.lower() in ("cancel", "back", "menu", "exit", "stop"):
             await _clear_utr_state(user_id)
-            return
+            pending_s_id_utr = None
+        else:
+            # Extract ONLY ASCII digits — handles copy-paste with \xa0, thin-spaces, etc.
+            utr_candidate = ''.join(c for c in raw_input if c in '0123456789')
 
-        # Extract ONLY ASCII digits — handles copy-paste with \xa0, thin-spaces, etc.
-        utr_candidate = ''.join(c for c in raw_input if c in '0123456789')
+            # Strictly require AT LEAST 12 digits — if non-numeric/short, user is typing/searching, so clear UTR state
+            if len(utr_candidate) < 12:
+                await _clear_utr_state(user_id)
+                pending_s_id_utr = None
 
-        # Strictly require AT LEAST 12 digits — ignore short numbers or non-numeric text completely!
-        if len(utr_candidate) < 12:
-            # Silent return — do NOT throw any "Invalid UTR" error!
-            return
-
+    if pending_s_id_utr:
         # Take 12 digits candidate
         utr_candidate = utr_candidate[:12]
 
-        if True:
-            logger.info(f"[UTR] User {user_id} sent UTR: {utr_candidate} for story {pending_s_id_utr}")
+        logger.info(f"[UTR] User {user_id} sent UTR: {utr_candidate} for story {pending_s_id_utr}")
 
+        if True:
             # Clear state immediately to prevent double-processing
             await db.db.users.update_one(
                 {"id": user_id},
@@ -5905,6 +5948,94 @@ async def _process_text(client, message):
             )
         return
 
+    # ── Automatic Story Search & Response Fallback for Full Store Bot ──
+    # If the user sends any text query (story name, keywords, greeting, question)
+    # the bot automatically searches the catalog and replies rather than ignoring the message!
+    if bot_mode != "miniapp":
+        q = txt.strip()
+        if len(q) >= 2:
+            bt_rec = await _get_cached_bot_doc(client.me.id)
+            is_ss = await _is_show_store_bot(client, bt_rec)
+            words = [re.escape(w) for w in q.split() if w]
+            reg_flexible = ".*".join(words) if words else re.escape(q)
+            q_text_match = {
+                "$or": [
+                    {"story_name_en": {"$regex": reg_flexible, "$options": "i"}},
+                    {"story_name_hi": {"$regex": reg_flexible, "$options": "i"}},
+                    {"title": {"$regex": reg_flexible, "$options": "i"}},
+                    {"clean_title": {"$regex": reg_flexible, "$options": "i"}},
+                    {"genre": {"$regex": reg_flexible, "$options": "i"}},
+                    {"author": {"$regex": reg_flexible, "$options": "i"}},
+                    {"platform": {"$regex": reg_flexible, "$options": "i"}}
+                ]
+            }
+            if is_ss:
+                q_find = {"$and": [{"is_show": True}, q_text_match]}
+            else:
+                mode_cond = {"is_show": {"$ne": True}}
+                bot_scope = {"$or": [{"bot_id": client.me.id}, {"bot_id": {"$exists": False}}, {"bot_id": None}]}
+                q_find = {"$and": [mode_cond, bot_scope, q_text_match]}
+
+            matches = await db.db.premium_stories.find(q_find).sort("_id", -1).limit(30).to_list(length=30)
+            if not matches and not is_ss:
+                matches = await db.db.premium_stories.find({"$and": [{"is_show": {"$ne": True}}, q_text_match]}).sort("_id", -1).limit(30).to_list(length=30)
+
+            if matches:
+                if len(matches) == 1:
+                    return await _show_story_profile(client, user_id, matches[0], lang)
+
+                kb = []
+                MNL = 22
+                for idx, s in enumerate(matches, start=1):
+                    s_name = s.get(f'story_name_{lang}') or s.get('story_name_en') or s.get('title') or ('Show' if is_ss else 'Story')
+                    if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
+                    btn_txt = f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"
+                    if idx <= 5:
+                        kb.append([_kb_btn(btn_txt, icon_custom_emoji_id="6271473763439612077")])
+                    else:
+                        kb.append([_kb_btn(btn_txt)])
+
+                search_text = "SEARCH" if lang == 'en' else "खोजें"
+                kb.append([_kb_btn(search_text, icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn(T[lang]["cant_find_btn"], icon_custom_emoji_id="6025893082552081088")])
+                kb.append([_kb_btn("« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू"))])
+
+                title_res = _sc("Search Results") if lang == 'en' else "खोज परिणाम"
+                tap_info = (_sc("Tap on any story below to view details and purchase:") if lang == 'en' else "विवरण देखने और खरीदने के लिए नीचे किसी भी कहानी पर टैप करें:")
+                msg_text = (
+                    f'<b><emoji id="5258274739041883702">🔍</emoji> {title_res} ({len(matches)})</b>\n\n'
+                    f"<blockquote expandable>{tap_info}</blockquote>"
+                )
+                ok = await _send_reply_keyboard_bot_api(client, user_id, msg_text, kb)
+                if not ok:
+                    pyro_kb = [[b["text"] if isinstance(b, dict) else b for b in r] for r in kb]
+                    await message.reply_text(
+                        _clean_emoji_for_pyrogram(msg_text),
+                        reply_markup=ReplyKeyboardMarkup(pyro_kb, resize_keyboard=True),
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                return
+
+        # Friendly fallback response for other text (greetings, questions, unmatched text)
+        not_found_title = "STORY SEARCH" if lang == 'en' else "कहानी खोज"
+        not_found_msg = (
+            f"<i>No stories matched '<b>{txt}</b>'.</i>\n\n"
+            f"Tap <b>Marketplace</b> to browse all categories or <b>Search</b> to try different keywords:"
+        ) if lang == 'en' else (
+            f"<i>'<b>{txt}</b>' से मिलती कोई कहानी नहीं मिली।</i>\n\n"
+            f"सभी कहानियाँ देखने के लिए <b>मार्केटप्लेस</b> या अन्य कीवर्ड के लिए <b>खोजें</b> पर टैप करें:"
+        )
+        actions_kb = [
+            [InlineKeyboardButton("🛍️ " + (_sc("MARKETPLACE") if lang == 'en' else "मार्केटप्लेस"), callback_data="mb#main_marketplace")],
+            [InlineKeyboardButton("🔍 " + (_sc("SEARCH") if lang == 'en' else "खोजें"), callback_data="mb#main_search")],
+            [InlineKeyboardButton("« " + (_sc("MAIN MENU") if lang == 'en' else "मुख्य मेनू"), callback_data="mb#main_back")]
+        ]
+        return await message.reply_text(
+            f"<b>⟦ {not_found_title} ⟧</b>\n\n{not_found_msg}",
+            reply_markup=InlineKeyboardMarkup(actions_kb),
+            parse_mode=enums.ParseMode.HTML
+        )
+
 
 
 
@@ -6798,13 +6929,18 @@ async def _process_callback(client, query):
 
         if not is_show_store:
             INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
-            is_joined = False
+            is_joined = True
             try:
                 chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
-                if chat_member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                if chat_member.status in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                    is_joined = False
+            except Exception as ch_err:
+                err_str = str(ch_err).lower()
+                if "not a participant" in err_str or "usernotparticipant" in err_str or "not joined" in err_str:
+                    is_joined = False
+                else:
+                    logger.warning(f"Force join bypassed in lang select due to bot permission/channel error: {ch_err}")
                     is_joined = True
-            except Exception:
-                pass
 
             if not is_joined:
                 arg_p = f"#{pending_arg}" if pending_arg else ""
@@ -6827,7 +6963,7 @@ async def _process_callback(client, query):
                         "</blockquote>"
                     )
                     join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
-                    joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
+                    joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗘𝗗"
 
                 join_kb = [
                     [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
@@ -6854,65 +6990,48 @@ async def _process_callback(client, query):
 
         return await _send_main_menu(client, user_id, query.from_user, chosen_lang)
 
-
-
     # ── Joined Check ──
-
     if cmd == "jchk" or cmd == "joined_check":
-
         try:
-
             from pyrogram import enums
+            has_joined = True
+            try:
+                chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
+                if chat_member.status in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                    has_joined = False
+            except Exception as ch_err:
+                err_str = str(ch_err).lower()
+                if "not a participant" in err_str or "usernotparticipant" in err_str:
+                    has_joined = False
+                else:
+                    logger.warning(f"jchk bypass due to channel permission error: {ch_err}")
+                    has_joined = True
 
-            chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
-
-            if chat_member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
-
+            if has_joined:
                 msg = "✓ Joined Success!" if lang == 'en' else "✓ आपने सफलतापूर्वक ज्वाइन कर लिया है!"
-
                 await query.answer(msg, show_alert=True)
-
                 try: await query.message.delete()
-
                 except: pass
 
-                
-
                 pending_arg = data[2] if len(data) > 2 else None
-
                 if pending_arg:
-
                     class MockMsg:
-
                         from_user = query.from_user
-
                         chat = query.message.chat
-
                         command = ["start", pending_arg]
-
                         id = query.message.id
-
                         async def reply_text(self, text, **kw):
-
                             return await client.send_message(user_id, text, **kw)
-
                     from plugins.userbot.market_seller import _process_start
-
                     return await _process_start(client, MockMsg())
 
-                
-
                 return await _send_main_menu(client, user_id, query.from_user, lang)
-
             else:
-
                 msg = "Aapne abhi tak join nahi kiya hai। Kripya join karein aur phir check karein।" if lang == 'hi' else "You haven't joined yet. Please join the channel first."
-
                 return await query.answer(msg, show_alert=True)
-
-        except Exception:
-
-            return await query.answer("Error checking status. Make sure you joined.", show_alert=True)
+        except Exception as e:
+            logger.error(f"jchk error: {e}")
+            return await _send_main_menu(client, user_id, query.from_user, lang)
 
 
 
