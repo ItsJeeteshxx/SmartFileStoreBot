@@ -536,6 +536,109 @@ async def track_client_telemetry(request: Request):
         logger.warning(f"Error in /track endpoint: {e}")
         return {"status": "error", "message": str(e)}
 
+@api_router.post("/onboarding/complete")
+async def handle_onboarding_complete(request: Request):
+    """
+    Records user onboarding preferences, sets default region to India,
+    marks Terms & Conditions as accepted in MongoDB, and dispatches a
+    comprehensive Core Log to the Telegram log channel.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    try:
+        tg_id_raw = payload.get("telegram_id") or payload.get("tg_id") or 0
+        user_id_int = int(tg_id_raw) if str(tg_id_raw).isdigit() else 0
+        username = str(payload.get("username") or "").strip().lstrip("@")
+        first_name = str(payload.get("first_name") or "").strip()
+        last_name = str(payload.get("last_name") or "").strip()
+
+        language = str(payload.get("language") or "en").strip().lower()
+        theme = str(payload.get("theme") or "dark").strip().lower()
+        currency = str(payload.get("currency") or "INR").strip().upper()
+        region = str(payload.get("region") or "india").strip().lower()
+        terms_accepted = bool(payload.get("terms_accepted", True))
+
+        arya_db = getattr(app.state, "db", None)
+
+        # 1. Update/Upsert user in db.users
+        if arya_db and hasattr(arya_db, "db") and arya_db.db is not None and user_id_int > 0:
+            try:
+                update_fields = {
+                    "language": language,
+                    "theme": theme,
+                    "currency": currency,
+                    "region": "india",
+                    "terms_accepted": terms_accepted,
+                    "terms_accepted_at": datetime.now(timezone.utc),
+                    "onboarding_completed": True,
+                    "last_active": datetime.now(timezone.utc),
+                }
+                if first_name:
+                    update_fields["first_name"] = first_name
+                if last_name:
+                    update_fields["last_name"] = last_name
+                if username:
+                    update_fields["username"] = username
+
+                await arya_db.db.users.update_one(
+                    {"id": user_id_int},
+                    {
+                        "$set": update_fields,
+                        "$setOnInsert": {
+                            "joined_date": datetime.now(timezone.utc),
+                            "purchases": [],
+                        }
+                    },
+                    upsert=True
+                )
+            except Exception as db_err:
+                logger.warning(f"Failed to update user {user_id_int} onboarding in db: {db_err}")
+
+        # 2. Dispatch detailed log to Telegram Log Channel
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_ist_str = datetime.now(ist).strftime('%d %b %Y, %I:%M:%S %p IST')
+
+        lang_label = "English (en)" if language == "en" else "हिंदी (hi)" if language == "hi" else f"{language}"
+        theme_label = "Midnight (Dark)" if theme in ("dark", "midnight") else "Mono (Swiss Minimal)" if theme == "mono" else "Cream" if theme == "cream" else theme.capitalize()
+        currency_label = f"{currency} (₹)" if currency == "INR" else f"{currency} ($)" if currency == "USD" else f"{currency} (€)" if currency == "EUR" else currency
+
+        details = (
+            f"📋 <b>Onboarding Completed &amp; Terms Accepted</b>\n\n"
+            f"• <b>Terms &amp; Conditions:</b> {'✅ Accepted' if terms_accepted else '❌ Denied'}\n"
+            f"• <b>Language Selected:</b> {lang_label}\n"
+            f"• <b>Theme Selected:</b> {theme_label}\n"
+            f"• <b>Currency Selected:</b> {currency_label}\n"
+            f"• <b>Region:</b> India (भारत) [Default Auto-selected]\n"
+            f"• <b>Accepted At:</b> {now_ist_str}\n"
+            f"• <b>Platform:</b> Telegram Mini App"
+        )
+
+        try:
+            from utils import log_arya_event
+            asyncio.create_task(log_arya_event(
+                event_type="ONBOARDING & T&C ACCEPTED",
+                user_id=user_id_int,
+                user_info={
+                    "username": username,
+                    "first_name": first_name,
+                    "last_name": last_name
+                },
+                details=details
+            ))
+        except Exception as log_err:
+            logger.warning(f"Failed to dispatch onboarding log: {log_err}")
+
+        return {
+            "success": True,
+            "message": "Onboarding completed and terms accepted successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error in /onboarding/complete: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
 # ─────────────────────────────────────────────────────────────
 # CRASHLYTICS & ERROR TRACKING SYSTEM
 # ─────────────────────────────────────────────────────────────
