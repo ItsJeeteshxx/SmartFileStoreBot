@@ -2,6 +2,16 @@ import asyncio
 import logging
 import os
 
+# --- DISABLE INTERACTIVE STDIN PROMPTS (HEADLESS DAEMON PROTECTION) ---
+try:
+    import pyrogram.client
+    async def _headless_ainput(prompt=""):
+        raise RuntimeError(f"Interactive console input is disabled in headless mode: {prompt}")
+    pyrogram.client.ainput = _headless_ainput
+except Exception:
+    pass
+# ----------------------------------------------------------------------
+
 # --- PATCH PYROGRAM SQLITE SCHEMA ISSUES ---
 try:
     import pyrogram.storage.sqlite_storage
@@ -165,21 +175,24 @@ async def main():
                     is_blocked = False
 
                     # 1. Check forward-bot.premium_bans (AryaPremium's own ban system)
-                    prem_ban = await db.db.premium_bans.find_one({"_id": user_id})
-                    if prem_ban and prem_ban.get("status") in ("banned", "flagged"):
-                        is_blocked = True
+                    try:
+                        prem_ban = await asyncio.wait_for(db.db.premium_bans.find_one({"_id": user_id}), timeout=1.5)
+                        if prem_ban and prem_ban.get("status") in ("banned", "flagged"):
+                            is_blocked = True
+                    except Exception:
+                        pass
 
                     # 2 & 3. Check arya database (main bot bans) — uses same MongoDB cluster
-                    if not is_blocked:
+                    if not is_blocked and getattr(db, "client", None):
                         try:
                             arya_db_ref = db.client["arya"]
                             # 2. arya.premium_bans (admin panel ban)
-                            arya_prem_ban = await arya_db_ref.premium_bans.find_one({"_id": user_id})
+                            arya_prem_ban = await asyncio.wait_for(arya_db_ref.premium_bans.find_one({"_id": user_id}), timeout=1.5)
                             if arya_prem_ban and arya_prem_ban.get("status") in ("banned", "flagged"):
                                 is_blocked = True
                             # 3. arya.users.ban_status (main bot /ban command)
                             if not is_blocked:
-                                arya_user = await arya_db_ref.users.find_one({"id": user_id})
+                                arya_user = await asyncio.wait_for(arya_db_ref.users.find_one({"id": user_id}), timeout=1.5)
                                 if arya_user and arya_user.get("ban_status", {}).get("is_banned"):
                                     is_blocked = True
                         except Exception:
@@ -284,42 +297,76 @@ async def main():
         await asyncio.sleep(5)  # Wait for startup to settle
         for client in apps_to_warm:
             try:
-                from pyrogram.errors import FloodWait
-                async for _ in client.get_dialogs(limit=10):
-                    pass
-                logger.info(f"[{getattr(client, 'name', 'Client')}] Peer cache warmed up.")
-            except FloodWait as e:
-                await asyncio.sleep(getattr(e, "value", 10))
+                if getattr(client, "is_connected", False):
+                    me = await asyncio.wait_for(client.get_me(), timeout=10.0)
+                    logger.info(f"[{getattr(client, 'name', 'Client')}] Peer cache warmed up (@{getattr(me, 'username', 'bot')}).")
             except Exception as e:
                 logger.debug(f"[{getattr(client, 'name', 'Client')}] Warmup skipped: {e}")
-            await asyncio.sleep(1.5)  # Stagger between bots to avoid IP FloodWait
+            await asyncio.sleep(1.0)
     
     asyncio.create_task(_staggered_warmup(list(started_apps)))
 
     # ── Client Liveness & Watchdog Worker ──
+    # Pyrogram handles normal MTProto reconnections automatically in its background session worker.
+    # The watchdog safely checks client liveness and ONLY restarts genuinely dead clients after
+    # properly stopping them first. It never calls start() on an initialized client and never blocks on stdin.
     async def _client_watchdog():
-        await asyncio.sleep(20)  # Let ecosystem settle after initial startup
+        await asyncio.sleep(30)  # Let ecosystem settle after initial startup
+        disconnect_cycles = {}
+        mgmt_failed_reported = False
+
         while True:
             try:
                 # 1. Verify Management Bot liveness
                 if 'mgmt_bot' in locals() and mgmt_bot:
-                    if not getattr(mgmt_bot, "is_connected", False):
-                        logger.warning("[Watchdog] ⚠️ Management Bot is DISCONNECTED! Reconnecting...")
-                        try:
-                            await mgmt_bot.start()
-                            logger.info("[Watchdog] ✅ Management Bot reconnected successfully!")
-                        except Exception as rec_err:
-                            logger.error(f"[Watchdog] Failed to reconnect Management Bot: {rec_err}")
+                    if mgmt_bot not in started_apps:
+                        if not mgmt_failed_reported:
+                            logger.warning("[Watchdog] Management Bot was not started (check MGMT_BOT_TOKEN).")
+                            mgmt_failed_reported = True
+                    else:
+                        is_conn = getattr(mgmt_bot, "is_connected", False)
+                        if not is_conn:
+                            disconnect_cycles["mgmt_bot"] = disconnect_cycles.get("mgmt_bot", 0) + 1
+                            logger.warning(f"[Watchdog] ⚠️ Management Bot disconnected (cycle {disconnect_cycles['mgmt_bot']}/6)...")
+                            if disconnect_cycles["mgmt_bot"] >= 6:
+                                logger.info("[Watchdog] Management Bot disconnected >3m. Performing safe restart...")
+                                try:
+                                    await asyncio.wait_for(mgmt_bot.stop(), timeout=5.0)
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(2)
+                                try:
+                                    await asyncio.wait_for(mgmt_bot.start(), timeout=15.0)
+                                    disconnect_cycles["mgmt_bot"] = 0
+                                    logger.info("[Watchdog] ✅ Management Bot safely reconnected!")
+                                except Exception as rec_err:
+                                    logger.error(f"[Watchdog] Failed to restart Management Bot: {rec_err}")
+                        else:
+                            disconnect_cycles["mgmt_bot"] = 0
 
                 # 2. Verify Store Bots liveness
                 for b_id, cli in list(market_clients.items()):
-                    if not getattr(cli, "is_connected", False):
-                        logger.warning(f"[Watchdog] ⚠️ Market client @{getattr(cli, 'bot_username', b_id)} is DISCONNECTED! Reconnecting...")
-                        try:
-                            await cli.start()
-                            logger.info(f"[Watchdog] ✅ Market client @{getattr(cli, 'bot_username', b_id)} reconnected successfully!")
-                        except Exception as rec_err:
-                            logger.error(f"[Watchdog] Failed to reconnect @{getattr(cli, 'bot_username', b_id)}: {rec_err}")
+                    b_key = str(b_id)
+                    is_conn = getattr(cli, "is_connected", False)
+                    if not is_conn:
+                        disconnect_cycles[b_key] = disconnect_cycles.get(b_key, 0) + 1
+                        u_name = getattr(cli, 'bot_username', b_id)
+                        logger.warning(f"[Watchdog] ⚠️ Market client @{u_name} disconnected (cycle {disconnect_cycles[b_key]}/6)...")
+                        if disconnect_cycles[b_key] >= 6:
+                            logger.info(f"[Watchdog] Market client @{u_name} disconnected >3m. Performing safe restart...")
+                            try:
+                                await asyncio.wait_for(cli.stop(), timeout=5.0)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2)
+                            try:
+                                await asyncio.wait_for(cli.start(), timeout=15.0)
+                                disconnect_cycles[b_key] = 0
+                                logger.info(f"[Watchdog] ✅ Market client @{u_name} safely reconnected!")
+                            except Exception as rec_err:
+                                logger.error(f"[Watchdog] Failed to restart @{u_name}: {rec_err}")
+                    else:
+                        disconnect_cycles[b_key] = 0
 
                 # 3. Dynamic Bot Auto-Discovery from MongoDB (hot-reload newly added bots without restart)
                 try:
@@ -360,10 +407,13 @@ async def main():
                             new_cli.bot_id = b.get('id')
                             new_cli.bot_username = (b.get('username') or '').replace('@', '').strip()
 
-                            await new_cli.start()
-                            market_clients[bid_str] = new_cli
-                            started_apps.append(new_cli)
-                            logger.info(f"[Watchdog] ✅ Dynamically added bot @{new_cli.bot_username} is now online!")
+                            try:
+                                await asyncio.wait_for(new_cli.start(), timeout=20.0)
+                                market_clients[bid_str] = new_cli
+                                started_apps.append(new_cli)
+                                logger.info(f"[Watchdog] ✅ Dynamically added bot @{new_cli.bot_username} is now online!")
+                            except Exception as start_err:
+                                logger.error(f"[Watchdog] Failed to start dynamically discovered bot @{b.get('username')}: {start_err}")
                 except Exception as dyn_err:
                     logger.debug(f"[Watchdog] Dynamic bot discovery check: {dyn_err}")
 
@@ -375,7 +425,7 @@ async def main():
     asyncio.create_task(_client_watchdog())
 
     # Start Premium Live Monitor on Mgmt Bot (which is Admin in source channels)
-    if 'mgmt_bot' in locals():
+    if 'mgmt_bot' in locals() and mgmt_bot in started_apps:
         try:
             from plugins.premium_live_monitor import start_premium_live_monitor
             asyncio.create_task(start_premium_live_monitor(mgmt_bot))
@@ -385,15 +435,15 @@ async def main():
     # Start Auto Instant Delivery Queue Worker (runs DM delivery via store bots)
     try:
         from purchase_dm_helper import start_auto_delivery_queue_worker
-        mb_inst = mgmt_bot if 'mgmt_bot' in locals() else None
+        mb_inst = mgmt_bot if ('mgmt_bot' in locals() and mgmt_bot in started_apps) else None
         asyncio.create_task(start_auto_delivery_queue_worker(market_clients, mb_inst, db))
         logger.info("✅ Auto Instant Delivery Queue Worker started in main.py")
     except Exception as e:
         logger.warning(f"Could not start Auto Delivery Queue Worker: {e}")
 
-    # Start Weekly Self-Healing Dead File & Index Cleaner Worker
+    # Start Weekly Self-Healing Dead File & Index Cleaner Worker (paced and safe)
     async def _weekly_dead_file_cleaner_task():
-        await asyncio.sleep(60) # Wait 1 min after boot
+        await asyncio.sleep(3600)  # Wait 1 hour after boot before doing background maintenance
         while True:
             try:
                 from utils import scan_and_index_story
@@ -418,25 +468,28 @@ async def main():
                     if isinstance(val_ids, list) and len(val_ids) > 0 and max(val_ids) >= en_id and min(val_ids) >= st_id and s.get("file_count") == len(val_ids):
                         continue
 
-                    # Find active bot to repair
+                    # Find active, connected bot to repair
                     target_cli = None
-                    for c in [mgmt_bot] + list(market_clients.values()):
+                    active_candidates = [c for c in started_apps if getattr(c, "is_connected", False)]
+                    for c in active_candidates:
                         try:
-                            await c.get_chat(src_id)
+                            await asyncio.wait_for(c.get_chat(src_id), timeout=5.0)
                             target_cli = c
                             break
                         except Exception:
                             continue
                     if target_cli:
-                        await scan_and_index_story(target_cli, s, save_to_db=True, db=db)
-                        await asyncio.sleep(0.5)
+                        try:
+                            await scan_and_index_story(target_cli, s, save_to_db=True, db=db)
+                        except Exception as sc_err:
+                            logger.debug(f"[AutoCleaner] Skip scan: {sc_err}")
+                        await asyncio.sleep(2.0)  # Safe pacing to prevent FloodWait
             except Exception as e:
                 logger.warning(f"[AutoCleaner] Error during auto-clean: {e}")
             # Run every 7 days (7 * 24 * 3600 seconds)
             await asyncio.sleep(7 * 24 * 3600)
 
-    if 'mgmt_bot' in locals():
-        asyncio.create_task(_weekly_dead_file_cleaner_task())
+    asyncio.create_task(_weekly_dead_file_cleaner_task())
 
     # Auto-Restore any story banners that were contaminated by checkout instructions
     try:

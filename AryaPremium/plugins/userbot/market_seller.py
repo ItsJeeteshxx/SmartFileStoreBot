@@ -9,18 +9,15 @@ Handles the customer UI for buying stories, T&C, and progressive delivery.
 """
 
 import logging
-
 import asyncio
-
+import functools
 import base64
-
 import io
-
 import re
-
 import html
-
 from datetime import datetime
+
+logger = logging.getLogger("market_seller")
 
 from pyrogram import Client, filters, enums
 
@@ -172,6 +169,62 @@ def _clean_emoji_for_pyrogram(text: str) -> str:
     text = re.sub(r'</?(?:emoji|tg-emoji)[^>]*>', '', text)
     return text
 
+def _get_bot_id(client) -> int:
+    """Safely retrieves the integer bot ID from client or client.me."""
+    if not client:
+        return 0
+    me = getattr(client, "me", None)
+    if me and getattr(me, "id", None):
+        return int(me.id)
+    token = getattr(client, "bot_token", None) or getattr(client, "token", None)
+    if token and ":" in str(token):
+        prefix = str(token).split(":")[0]
+        if prefix.isdigit():
+            return int(prefix)
+    return 0
+
+def _get_bot_username(client) -> str:
+    """Safely retrieves bot username."""
+    if not client:
+        return ""
+    me = getattr(client, "me", None)
+    if me and getattr(me, "username", None):
+        return str(me.username)
+    return ""
+
+def _safe_handler(name: str):
+    """
+    Decorator to wrap all bot event handlers with top-level error boundaries.
+    Catches any unhandled exception, logs it with full traceback, and prevents
+    handler crashes or Pyrogram event loop lockups.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(client, event, *args, **kwargs):
+            try:
+                return await func(client, event, *args, **kwargs)
+            except Exception as e:
+                logger.error(f"Critical error in {name} handler: {e}", exc_info=True)
+                try:
+                    # If it's a CallbackQuery
+                    if hasattr(event, "answer") and callable(getattr(event, "answer", None)):
+                        await event.answer("⚠️ An error occurred. Please try again.", show_alert=True)
+                    # If it's a Message
+                    elif hasattr(event, "reply_text") and callable(getattr(event, "reply_text", None)):
+                        from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                        fallback_kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🛍️ Open Store", callback_data="mb#main_marketplace")],
+                            [InlineKeyboardButton("« Main Menu", callback_data="mb#main_back")]
+                        ])
+                        await event.reply_text(
+                            "👋 <b>Arya Premium Store</b>\n\nSomething went wrong, but your session is active. Tap below:",
+                            reply_markup=fallback_kb
+                        )
+                except Exception:
+                    pass
+        return wrapper
+    return decorator
+
 async def _get_cached_bot_doc(bot_id):
     if not bot_id:
         return {}
@@ -197,7 +250,7 @@ async def _get_cached_bot_doc(bot_id):
 async def _is_show_store_bot(client, bot_doc=None) -> bool:
     """Returns True if the current bot operates in Show Store (OTT video shows) mode."""
     if not bot_doc:
-        b_id = getattr(getattr(client, "me", None), "id", None)
+        b_id = _get_bot_id(client)
         bot_doc = await _get_cached_bot_doc(b_id) if b_id else {}
     cfg = (bot_doc.get("config") or {}) if bot_doc else {}
     if cfg.get("bot_mode") == "show_store":
@@ -1177,8 +1230,9 @@ def _get_premium_menu_markup(bt_cfg: dict, lang: str):
 def _menu_card_text(user, bt_cfg: dict, bot_name: str, lang: str = 'en') -> str:
 
     from utils import translate_to_hindi
-
-    u_mention = f'<a href="tg://user?id={user.id}">{html.escape((user.first_name or "User").strip())}</a>'
+    u_id = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else 0)
+    u_fname = getattr(user, "first_name", None) or (user.get("first_name") if isinstance(user, dict) else "") or "User"
+    u_mention = f'<a href="tg://user?id={u_id}">{html.escape(str(u_fname).strip())}</a>'
 
     
 
@@ -1943,9 +1997,10 @@ async def _send_my_stories_menu(client, user_id: int, user: dict, lang: str, pag
 
 
 async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_message_id: int = None):
-    bt = await _get_cached_bot_doc(client.me.id)
+    b_id = _get_bot_id(client)
+    bt = await _get_cached_bot_doc(b_id) if b_id else {}
     bt_cfg = bt.get("config", {}) if bt else {}
-    bot_name = client.me.first_name
+    bot_name = getattr(getattr(client, "me", None), "first_name", "") or _get_bot_username(client) or "Arya Premium"
     msg_txt = _menu_card_text(user, bt_cfg, bot_name, lang)
     markup = _get_premium_menu_markup(bt_cfg, lang)
 
@@ -3581,24 +3636,26 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     return await _show_story_details_v2(client, msg_or_query, story, lang, bot_cfg=bot_cfg)
 
 
+@_safe_handler("start")
 async def _process_start(client, message):
+    if not message or not message.from_user:
+        return
     user_id = message.from_user.id
+    b_id = _get_bot_id(client)
+    b_uname = _get_bot_username(client)
     asyncio.create_task(_clear_utr_state(user_id))
     from pyrogram import enums
 
     # React to the /start command — fire-and-forget
-
     asyncio.create_task(react_bg(client, message.chat.id, message.id, pool=REACTIONS_WELCOME))
-
-    
 
     ui = {
         "first_name": getattr(message.from_user, "first_name", ""),
         "last_name": getattr(message.from_user, "last_name", ""),
         "username": getattr(message.from_user, "username", ""),
-        "bot_id": client.me.id
+        "bot_id": b_id
     }
-    bot_ref = f"@{client.me.username}" if client.me.username else client.me.first_name
+    bot_ref = f"@{b_uname}" if b_uname else getattr(getattr(client, "me", None), "first_name", "Arya Bot")
     is_new = await db.db.users.count_documents({"id": int(user_id)}) == 0
 
     from utils import log_arya_event
@@ -3612,7 +3669,7 @@ async def _process_start(client, message):
             user_id=user_id,
             user_info=ui,
             details=f"New user started the store bot <b>{bot_ref}</b> for the first time." + (f"\nPayload: <code>{arg_payload}</code>" if arg_payload else ""),
-            bot_id=client.me.id
+            bot_id=b_id
         ))
     else:
         asyncio.create_task(log_arya_event(
@@ -3620,13 +3677,14 @@ async def _process_start(client, message):
             user_id=user_id,
             user_info=ui,
             details=f"User started the store bot <b>{bot_ref}</b>." + (f"\nPayload: <code>{arg_payload}</code>" if arg_payload else ""),
-            bot_id=client.me.id
+            bot_id=b_id
         ))
 
-    user = await db.get_user(user_id, from_user=message.from_user, bot_id=client.me.id)
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=b_id)
 
     # Track which delivery bots this user has started
-    await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"bot_ids": client.me.id}}, upsert=True)
+    if b_id:
+        await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"bot_ids": b_id}}, upsert=True)
 
 
 
@@ -4371,15 +4429,17 @@ async def _submit_feedback(client, message, user_id: int, user: dict, lang: str,
 
 
 
+@_safe_handler("media")
 async def _process_media(client, message):
     """Handles photo/video/animation/document messages. Routes media feedback to _submit_feedback."""
     if not message or not message.from_user:
         return
-    if getattr(message, "outgoing", False) or getattr(message.from_user, "is_bot", False) or message.from_user.id == client.me.id:
+    b_id = _get_bot_id(client)
+    if getattr(message, "outgoing", False) or getattr(message.from_user, "is_bot", False) or (b_id and message.from_user.id == b_id):
         return
 
     user_id = message.from_user.id
-    user = await db.get_user(user_id, from_user=message.from_user)
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=b_id)
     lang = user.get('lang', 'en')
 
     # If user is in feedback_pending state, route to feedback system
@@ -4408,9 +4468,9 @@ async def _process_media(client, message):
         return
 
     # Only route photos to screenshot processor IF user actually has a pending checkout waiting for screenshot
-    if message.photo:
+    if message.photo and b_id:
         checkout = await db.db.premium_checkout.find_one(
-            {"user_id": user_id, "bot_id": client.me.id, "status": "waiting_screenshot"}
+            {"user_id": user_id, "bot_id": b_id, "status": "waiting_screenshot"}
         )
         if checkout:
             await _process_screenshot(client, message, checkout=checkout)
@@ -4420,14 +4480,14 @@ async def _process_media(client, message):
 
 
 
+@_safe_handler("my_stories")
 async def _process_my_stories(client, message):
-
+    if not message or not message.from_user:
+        return
     user_id = message.from_user.id
-
-    user = await db.get_user(user_id, from_user=message.from_user)
-
+    b_id = _get_bot_id(client)
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=b_id)
     lang = user.get('lang', 'en')
-
     from bson.objectid import ObjectId
 
 
@@ -4628,27 +4688,23 @@ async def _process_my_stories(client, message):
 
 
 
+@_safe_handler("text")
 async def _process_text(client, message):
-
+    if not message or not message.from_user:
+        return
     user_id = message.from_user.id
+    b_id = _get_bot_id(client)
 
     # React to any user message in the bot — fire-and-forget
-
     asyncio.create_task(react_bg(client, message.chat.id, message.id, pool=REACTIONS_GENERAL))
 
-    user = await db.get_user(user_id, from_user=message.from_user, bot_id=client.me.id)
-
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=b_id)
     lang = user.get('lang', 'en')
-
-    txt = message.text.strip()
-
-
+    txt = message.text.strip() if message.text else ""
 
     try:
-
         from utils import log_arya_event
-
-        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": client.me.id}
+        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", ""), "bot_id": b_id}
 
         if " [ ₹ " in txt:
 
@@ -6770,19 +6826,23 @@ async def _show_help_menu(client, query):
 
 # ─────────────────────────────────────────────────────────────────
 
+@_safe_handler("callback")
 async def _process_callback(client, query):
-
+    if not query or not query.from_user:
+        return
     user_id = query.from_user.id
+    b_id = _get_bot_id(client)
 
     # React to every button tap — fire-and-forget
+    if hasattr(query, "message") and query.message:
+        asyncio.create_task(react_bg(client, query.message.chat.id, query.message.id, pool=REACTIONS_GENERAL))
 
-    asyncio.create_task(react_bg(client, query.message.chat.id, query.message.id, pool=REACTIONS_GENERAL))
-
-    user = await db.get_user(user_id, from_user=query.from_user, bot_id=client.me.id)
-
+    user = await db.get_user(user_id, from_user=query.from_user, bot_id=b_id)
     lang = user.get('lang', 'en')
 
-    data = query.data.split('#')
+    data = (query.data or "").split('#')
+    if len(data) < 2:
+        return
     cmd = data[1]
 
     # Quick early answer for standard instant-transition callbacks to eliminate button loading spinner
@@ -6798,7 +6858,7 @@ async def _process_callback(client, query):
             await db.db.users.update_one({"id": user_id}, {"$unset": {"state": 1}})
 
     # Check if bot is configured in "miniapp" (Mini App Only / Store OFF) mode
-    bt = await _get_cached_bot_doc(client.me.id)
+    bt = await _get_cached_bot_doc(b_id) if b_id else {}
     bot_cfg = (bt.get("config") or {}) if bt else {}
     bot_mode = bot_cfg.get("bot_mode", "full")
 
@@ -9741,21 +9801,23 @@ async def _process_callback(client, query):
 
 # ─────────────────────────────────────────────────────────────────
 
+@_safe_handler("screenshot")
 async def _process_screenshot(client, message, checkout=None):
     if not message or not message.from_user:
         return
-    if getattr(message, "outgoing", False) or getattr(message.from_user, "is_bot", False) or message.from_user.id == client.me.id:
+    b_id = _get_bot_id(client)
+    if getattr(message, "outgoing", False) or getattr(message.from_user, "is_bot", False) or (b_id and message.from_user.id == b_id):
         return
     if not message.photo:
         return
 
     user_id = message.from_user.id
-    user = await db.get_user(user_id, from_user=message.from_user)
+    user = await db.get_user(user_id, from_user=message.from_user, bot_id=b_id)
     lang = user.get('lang', 'en')
 
-    if not checkout:
+    if not checkout and b_id:
         checkout = await db.db.premium_checkout.find_one(
-            {"user_id": user_id, "bot_id": client.me.id, "status": "waiting_screenshot"}
+            {"user_id": user_id, "bot_id": b_id, "status": "waiting_screenshot"}
         )
     if not checkout:
         return
@@ -11070,6 +11132,7 @@ def _schedule_auto_delete(msg, seconds: int):
 
 # ─────────────────────────────────────────────────────────────────
 
+@_safe_handler("chat_member")
 async def _process_chat_member(client, update):
     # 1. If a user joins the channel with an invite link -> Revoke it instantly to prevent reuse
     if getattr(update, "new_chat_member", None) and getattr(update, "invite_link", None):
@@ -11177,6 +11240,7 @@ def _resolve_story_thumb_url(s: dict) -> str | None:
     return None
 
 
+@_safe_handler("inline_query")
 async def _process_inline_query(client, inline_query):
     """
     Handles native Telegram Inline Query Search for stories.
@@ -11186,7 +11250,7 @@ async def _process_inline_query(client, inline_query):
     try:
         user_id = inline_query.from_user.id if inline_query.from_user else 0
         q = (inline_query.query or "").strip()
-        bot_id = getattr(getattr(client, "me", None), "id", None)
+        bot_id = _get_bot_id(client)
         
         user = await db.get_user(user_id, from_user=inline_query.from_user, bot_id=bot_id) if user_id else {}
         lang = user.get('lang', 'en') if user else 'en'
