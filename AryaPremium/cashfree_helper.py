@@ -91,6 +91,8 @@ async def get_cashfree_config(bot_cfg: dict = None) -> dict:
 async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_username: str = "", bot_cfg: dict = None) -> dict:
     """
     Creates a Cashfree Payment Gateway order via Cashfree PG API (v2023-08-01).
+    Primary strategy: Cashfree Payment Links API (POST /pg/links) -> generates direct official Cashfree hosted link.
+    Fallback strategy: Cashfree Orders API (POST /pg/orders).
     Returns dict with success: bool, payment_link: str, order_id: str, error: str.
     """
     cf_cfg = await get_cashfree_config(bot_cfg=bot_cfg)
@@ -129,7 +131,75 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     else:
         return_url = cf_cfg.get("return_url") or f"https://aryapremium.store/app?order_id={order_id}"
 
-    payload = {
+    # ── Strategy 1: Direct Cashfree Hosted Payment Link (POST /pg/links) ──
+    # Produces official https://payments.cashfree.com/links/... directly hosted by Cashfree.
+    # Opens natively across all mobile devices, in-app Telegram webview, and Chrome without external JS SDKs.
+    link_url = f"{cf_cfg['base_url']}/links"
+    link_payload = {
+        "link_id": order_id,
+        "link_amount": round(price, 2),
+        "link_currency": "INR",
+        "link_purpose": f"Story: {story_name[:25]}",
+        "customer_details": {
+            "customer_id": f"tg_{user_id}",
+            "customer_name": clean_user_name,
+            "customer_email": f"user_{user_id}@aryapremium.store",
+            "customer_phone": "9999999999"
+        },
+        "link_meta": {
+            "return_url": return_url,
+            "notify_url": "https://aryapremium.store/api/cashfree-webhook"
+        },
+        "link_auto_reminders": False,
+        "link_notify": {
+            "send_sms": False,
+            "send_email": False
+        }
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(link_url, json=link_payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+                link_data = await resp.json()
+                logger.info(f"[CF-LINK] Status={resp.status}, response={link_data}")
+                if resp.status in (200, 201) and link_data.get("link_url"):
+                    direct_pay_link = link_data["link_url"]
+                    logger.info(f"[CF-LINK] Generated official Cashfree hosted payment link: {direct_pay_link}")
+                    try:
+                        await db.db.orders.insert_one({
+                            "order_id": order_id,
+                            "link_id": order_id,
+                            "cf_link_id": link_data.get("cf_link_id"),
+                            "user_id": int(user_id),
+                            "story_ids": [story_id],
+                            "story_id": story_id,
+                            "story_name": story_name,
+                            "bot_username": bot_username,
+                            "amount": price,
+                            "currency": "INR",
+                            "status": "pending",
+                            "gateway": "cashfree",
+                            "is_link": True,
+                            "payment_link": direct_pay_link,
+                            "created_at": time.time()
+                        })
+                    except Exception as db_err:
+                        logger.error(f"[CF] DB insert error: {db_err}")
+
+                    return {
+                        "success": True,
+                        "order_id": order_id,
+                        "payment_link": direct_pay_link,
+                        "cf_link_id": link_data.get("cf_link_id"),
+                        "amount": price
+                    }
+                else:
+                    logger.warning(f"[CF-LINK] /links non-200 or missing link_url: {link_data}. Falling back to /orders")
+    except Exception as ex_link:
+        logger.warning(f"[CF-LINK] /links request exception: {ex_link}. Falling back to /orders")
+
+    # ── Strategy 2: Fallback to Cashfree Orders API (POST /pg/orders) ──
+    order_payload = {
         "order_id": order_id,
         "order_amount": round(price, 2),
         "order_currency": "INR",
@@ -146,24 +216,23 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
         "order_note": f"Purchase of {story_name[:30]}"
     }
 
-    url = f"{cf_cfg['base_url']}/orders"
-    logger.info(f"[CF] Creating order: order_id={order_id}, amount={price}, env={cf_cfg['env']}, url={url}")
+    order_url = f"{cf_cfg['base_url']}/orders"
+    logger.info(f"[CF-ORDER] Creating fallback order: order_id={order_id}, amount={price}, url={order_url}")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=12.0)) as resp:
+            async with session.post(order_url, json=order_payload, headers=headers, timeout=aiohttp.ClientTimeout(total=12.0)) as resp:
                 data = await resp.json()
-                logger.info(f"[CF] API Response: status={resp.status}, data={data}")
+                logger.info(f"[CF-ORDER] API Response: status={resp.status}, data={data}")
                 if resp.status in (200, 201) and (data.get("payment_session_id") or data.get("order_id")):
                     payment_session_id = data.get("payment_session_id", "")
                     is_sb = cf_cfg.get("is_sandbox", False)
-                    # Use Arya Premium Mini App animated wrapper for Cashfree JS SDK checkout
                     payment_link = (
-                        f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sb else 'false'}"
-                        if payment_session_id else
-                        (data.get("payment_link") or (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None) or miniapp_fallback_link)
+                        data.get("payment_link") or
+                        (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None) or
+                        (f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sb else 'false'}" if payment_session_id else miniapp_fallback_link)
                     )
                     
-                    logger.info(f"[CF] Order created successfully: order_id={order_id}, pay_link={payment_link}")
+                    logger.info(f"[CF-ORDER] Order created successfully: order_id={order_id}, pay_link={payment_link}")
 
                     # Store order in MongoDB
                     try:
@@ -195,8 +264,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                     }
                 else:
                     err_msg = data.get("message") or data.get("description") or str(data)
-                    logger.error(f"[CF] Create order FAILED: status={resp.status}, response={data}")
-                    # Return fallback link so user is never stranded
+                    logger.error(f"[CF-ORDER] Create order FAILED: status={resp.status}, response={data}")
                     return {
                         "success": True,
                         "order_id": order_id,
@@ -205,7 +273,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                         "warning": err_msg
                     }
     except Exception as e:
-        logger.error(f"[CF] Create order EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"[CF-ORDER] Create order EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
         return {
             "success": True,
             "order_id": order_id,
@@ -217,6 +285,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
 async def check_cashfree_order_status(order_id: str) -> dict:
     """
     Checks the status of a Cashfree order from MongoDB / Cashfree PG API.
+    Supports both Cashfree Payment Links (/pg/links/{id}) and Cashfree Orders (/pg/orders/{id}).
     Returns dict with status: 'PAID' | 'ACTIVE' | 'FAILED' | 'EXPIRED', is_paid: bool, raw: dict.
     """
     try:
@@ -224,13 +293,14 @@ async def check_cashfree_order_status(order_id: str) -> dict:
     except ImportError:
         from database import db
 
-    # Check MongoDB first (fast path if webhook already processed payment)
+    # 1. Check MongoDB first (fast path if webhook already processed payment)
     try:
         db_order = await db.db.orders.find_one({
             "$or": [
                 {"order_id": order_id},
                 {"cf_order_id": order_id},
-                {"payment_session_id": order_id}
+                {"payment_session_id": order_id},
+                {"link_id": order_id}
             ]
         })
         if db_order and db_order.get("status") in ("paid", "PAID", "SUCCESS"):
@@ -254,10 +324,37 @@ async def check_cashfree_order_status(order_id: str) -> dict:
         "Accept": "application/json"
     }
 
-    url = f"{cf_cfg['base_url']}/orders/{order_id}"
+    # 2. Check via /pg/links/{order_id} first (if created as payment link)
+    link_url = f"{cf_cfg['base_url']}/links/{order_id}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+            async with session.get(link_url, headers=headers, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
+                if resp.status == 200:
+                    link_data = await resp.json()
+                    link_status = str(link_data.get("link_status", "")).upper()
+                    is_paid = (link_status in ("PAID", "SUCCESS"))
+                    if is_paid:
+                        try:
+                            await db.db.orders.update_one(
+                                {"$or": [{"order_id": order_id}, {"link_id": order_id}]},
+                                {"$set": {"status": "paid", "paid_at": time.time(), "link_status": link_status}}
+                            )
+                        except Exception:
+                            pass
+                    return {
+                        "status": link_status,
+                        "is_paid": is_paid,
+                        "amount": link_data.get("link_amount"),
+                        "raw": link_data
+                    }
+    except Exception as ex_link:
+        logger.debug(f"[CF-STATUS] /links/{order_id} check exception: {ex_link}")
+
+    # 3. Check via /pg/orders/{order_id}
+    order_url = f"{cf_cfg['base_url']}/orders/{order_id}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(order_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
                 data = await resp.json()
                 if resp.status == 200:
                     order_status = (data.get("order_status") or "").upper()

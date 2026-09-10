@@ -3175,23 +3175,41 @@ async def _show_cashfree_payment_screen(
         f"<i>भुगतान पूरा करने के बाद, तत्काल डिलीवरी के लिए <b>Check Status</b> पर टैप करें।</i>"
     )
 
-    pay_now_lbl = "Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "अभी भुगतान करें (Cards/UPI/NetBanking)"
-    check_lbl = "Check Payment Status" if lang == 'en' else "स्टेटस चेक करें"
+    pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें (Cards/UPI/NetBanking)"
+    check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
     back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
 
     kb = [
-        [_ikb(pay_now_lbl, url=pay_link, icon_custom_emoji_id="6030410254276106984")],
-        [_ikb(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}", icon_custom_emoji_id="5807492110059838726")],
-        [_ikb(back_lbl, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]
+        [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
+        [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}")],
+        [InlineKeyboardButton(back_lbl, callback_data=back_cb)]
     ]
     markup = InlineKeyboardMarkup(kb)
 
-    if isinstance(msg_or_query, CallbackQuery) and msg_or_query.message:
-        return await _safe_edit(msg_or_query.message, text=desc_cf, markup=markup)
-    elif isinstance(msg_or_query, Message):
-        return await _safe_edit(msg_or_query, text=desc_cf, markup=markup)
-    else:
-        return await client.send_message(user_id, desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+    target_msg = msg_or_query.message if isinstance(msg_or_query, CallbackQuery) else (msg_or_query if isinstance(msg_or_query, Message) else None)
+    edit_success = False
+
+    if target_msg:
+        try:
+            res = await _safe_edit(target_msg, text=desc_cf, markup=markup)
+            if res:
+                edit_success = True
+        except Exception as ex_edit:
+            logger.debug(f"[CF-UI] _safe_edit failed: {ex_edit}")
+
+    if not edit_success:
+        # If safe edit could not edit (e.g. photo message or cannot modify), delete old message and send new
+        try:
+            if target_msg:
+                await target_msg.delete()
+        except Exception:
+            pass
+        try:
+            await client.send_message(user_id, desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        except Exception as ex_send:
+            logger.error(f"[CF-UI] send_message fallback failed: {ex_send}")
+            if isinstance(msg_or_query, CallbackQuery):
+                await msg_or_query.answer(f"✅ Order Created: {order_id}\n\nPay here: {pay_link}", show_alert=True)
 
 
 async def _show_upi_payment_screen(
@@ -8293,65 +8311,18 @@ async def _process_callback(client, query):
 
         if method == "cashfree":
             # Cashfree Payment Gateway order flow
-            logger.info(f"[PAY2] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
-            try:
-                await query.answer()
-            except Exception:
-                pass
-
-            from cashfree_helper import create_cashfree_order
-            bot_username = getattr(getattr(client, "me", None), "username", "")
-            user_name = query.from_user.first_name or "Buyer"
-            
-            cf_res = await create_cashfree_order(user_id=user_id, user_name=user_name, story=story, bot_username=bot_username)
-            
-            order_id = cf_res["order_id"]
-            pay_link = cf_res.get("payment_link")
-            s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
-            price = story.get('price', 0)
-
-            if not pay_link:
-                logger.error(f"[CF] pay_link is None/empty! cf_res={cf_res}")
-                return await query.answer("❌ Payment link not generated. Please try again.", show_alert=True)
-
-            logger.info(f"[CF] Showing payment screen to user {user_id}: order={order_id}, link={pay_link}")
-
-            desc_cf = (
-                f"<b>⟦ 💳 CASHFREE PAYMENT ⟧</b>\n\n"
-                f"<b>• Story:</b> {to_mathbold(s_name)}\n"
-                f"<b>• Amount:</b> ₹{price}\n"
-                f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
-                f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI.</i>\n\n"
-                f"<i>After payment, tap <b>Check Status</b> for instant delivery.</i>"
-            ) if lang == 'en' else (
-                f"<b>⟦ 💳 कैशफ्री भुगतान ⟧</b>\n\n"
-                f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
-                f"<b>• राशि:</b> ₹{price}\n"
-                f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
-                f"<i>Cards, NetBanking या UPI से भुगतान के लिए <b>Pay Now</b> दबाएं।</i>\n\n"
-                f"<i>भुगतान के बाद <b>Check Status</b> दबाएं।</i>"
+            logger.info(f"[PAY] User {user_id} clicked Cashfree / Cards / NetBanking option for story {s_id}")
+            _bt = await _get_cached_bot_doc(client.me.id)
+            _bt_cfg = (_bt or {}).get("config", {})
+            return await _show_cashfree_payment_screen(
+                client=client,
+                user_id=user_id,
+                story=story,
+                lang=lang,
+                bot_cfg=_bt_cfg,
+                is_direct=False,
+                msg_or_query=query
             )
-
-            pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें"
-            check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
-            back_lbl = "« Back" if lang == 'en' else "« वापस"
-
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
-                [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}")],
-                [InlineKeyboardButton(back_lbl, callback_data=f"mb#pay_back#{s_id}")]
-            ])
-
-            try:
-                await query.message.edit_text(desc_cf, reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-            except Exception as ex:
-                logger.error(f"[CF] edit_text failed: {ex} — trying send_message fallback")
-                try:
-                    await client.send_message(query.message.chat.id, desc_cf, reply_markup=kb, parse_mode=enums.ParseMode.HTML)
-                except Exception as ex2:
-                    logger.error(f"[CF] send_message also failed: {ex2}")
-                    await query.answer(f"✅ Order created! Order ID: {order_id}\n\nPay here: {pay_link}", show_alert=True)
-            return
 
         elif method == "upi":
 
