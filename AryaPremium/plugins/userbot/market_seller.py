@@ -3098,6 +3098,77 @@ async def _get_bot_active_payment_methods(client, bot_cfg: dict = None, story: d
     return active
 
 
+async def _poll_cashfree_payment(client, user_id: int, order_id: str, s_id: str, story: dict, message_id: int = None):
+    """
+    Background polling loop that automatically checks payment status every 3.5 seconds.
+    As soon as the user completes payment on Cashfree, it automatically verifies,
+    cleans up the payment screen, and delivers the purchased content.
+    No manual 'Check Payment Status' button click required!
+    """
+    from cashfree_helper import check_cashfree_order_status
+    from bson.objectid import ObjectId
+    import time
+    from utils import log_payment
+
+    logger.info(f"[CF-AUTO] Started background payment poller for order {order_id}, user {user_id}")
+    max_checks = 180  # ~10 minutes
+    for _ in range(max_checks):
+        await asyncio.sleep(3.5)
+        try:
+            ord_doc = await db.db.orders.find_one({"order_id": order_id})
+            if ord_doc and ord_doc.get("status") in ("paid", "PAID", "SUCCESS"):
+                logger.info(f"[CF-AUTO] Order {order_id} already marked paid in DB.")
+                return
+
+            status_res = await check_cashfree_order_status(order_id)
+            if status_res.get("is_paid"):
+                logger.info(f"[CF-AUTO] Payment confirmed for order {order_id}! Auto-delivering...")
+                await db.db.orders.update_one(
+                    {"order_id": order_id},
+                    {"$set": {"status": "paid", "paid_at": time.time()}}
+                )
+                if s_id:
+                    try:
+                        await db.db.users.update_one(
+                            {"id": int(user_id)},
+                            {"$addToSet": {"purchases": ObjectId(s_id)}}
+                        )
+                        await db.db.premium_purchases.update_one(
+                            {"user_id": int(user_id), "story_id": ObjectId(s_id)},
+                            {"$set": {
+                                "user_id": int(user_id),
+                                "story_id": ObjectId(s_id),
+                                "source": "cashfree",
+                                "amount": story.get("price", 0) if story else 0,
+                                "order_id": order_id,
+                                "created_at": time.time()
+                            }},
+                            upsert=True
+                        )
+                    except Exception as ex_p:
+                        logger.error(f"[CF-AUTO] Error updating purchase records: {ex_p}")
+
+                s_name = story.get('story_name_en', 'Story') if story else 'Story'
+                asyncio.create_task(log_payment(
+                    amount=story.get("price", 0) if story else 0,
+                    user_id=user_id,
+                    story_name=s_name,
+                    payment_method="Cashfree (Cards/NetBanking/UPI)",
+                    order_id=order_id
+                ))
+
+                if message_id:
+                    try:
+                        await client.delete_messages(chat_id=user_id, message_ids=message_id)
+                    except Exception:
+                        pass
+
+                await dispatch_delivery_choice(client, user_id, story)
+                return
+        except Exception as e:
+            logger.debug(f"[CF-AUTO] Poller iteration exception: {e}")
+
+
 async def _show_cashfree_payment_screen(
     client,
     user_id: int,
@@ -3109,11 +3180,13 @@ async def _show_cashfree_payment_screen(
 ):
     """
     Renders Cashfree Payment Gateway order flow.
-    If is_direct=True, Back button routes to mb#view_{s_id} (story view).
-    If is_direct=False, Back button routes to mb#pay_back#{s_id} (payment selection menu).
+    Uses structured Arya Bot Order ID (AB-...), custom emojis (no normal unicode emojis),
+    and starts automated background payment verification so no manual check button is required.
     """
+    import html
     from cashfree_helper import create_cashfree_order
-    from pyrogram.types import CallbackQuery, Message
+    from pyrogram.types import CallbackQuery, Message, InlineKeyboardMarkup
+    from pyrogram import enums
 
     s_id = str(story.get("_id", ""))
     s_name = story.get(f'story_name_{lang}', story.get('story_name_en', 'Story'))
@@ -3132,16 +3205,19 @@ async def _show_cashfree_payment_screen(
         except Exception:
             pass
 
+    # Generate official Arya Bot Order ID (AB-{user_id}-{date}-{story_num}{order_num})
+    order_id = await _make_arya_bot_order_id(user_id, str(s_id))
     bot_username = getattr(getattr(client, "me", None), "username", "")
+
     cf_res = await create_cashfree_order(
         user_id=user_id,
         user_name=user_name,
         story=story,
         bot_username=bot_username,
-        bot_cfg=bot_cfg
+        bot_cfg=bot_cfg,
+        order_id=order_id
     )
 
-    order_id = cf_res.get("order_id") or f"cf_{user_id}_{int(time.time())}"
     pay_link = cf_res.get("payment_link")
     back_cb = f"mb#view_{s_id}" if is_direct else f"mb#pay_back#{s_id}"
 
@@ -3153,7 +3229,7 @@ async def _show_cashfree_payment_screen(
             "❌ भुगतान लिंक जनरेट नहीं हो सका। कृपया पुनः प्रयास करें या सहायता से संपर्क करें।"
         )
         back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(back_lbl, callback_data=back_cb)]])
+        markup = InlineKeyboardMarkup([[_ikb(back_lbl, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]])
         if isinstance(msg_or_query, CallbackQuery) and msg_or_query.message:
             return await _safe_edit(msg_or_query.message, text=err_msg, markup=markup)
         else:
@@ -3181,55 +3257,53 @@ async def _show_cashfree_payment_screen(
     except Exception as ex_chk:
         logger.debug(f"[CF-UI] premium_checkout update error: {ex_chk}")
 
-    import html
     safe_story_name = html.escape(str(s_name))
-    desc_cf = (
-        f'<b>⟦ 💳 PAYMENT GATEWAY ⟧</b>\n\n'
-        f"<b>• Story:</b> <b>{safe_story_name}</b>\n"
-        f"<b>• Amount:</b> ₹{price}\n"
-        f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
-        f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
-        f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
-    ) if lang == 'en' else (
-        f'<b>⟦ 💳 पेमेंट गेटवे ⟧</b>\n\n'
-        f"<b>• कहानी:</b> <b>{safe_story_name}</b>\n"
-        f"<b>• राशि:</b> ₹{price}\n"
-        f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
-        f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
-        f"<i>भुगतान पूरा करने के बाद, तत्काल डिलीवरी के लिए <b>Check Status</b> पर टैप करें।</i>"
-    )
 
-    pay_now_lbl = "💳 Pay Now (Cards / NetBanking / UPI)" if lang == 'en' else "💳 अभी भुगतान करें (Cards/UPI/NetBanking)"
-    check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
-    back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
+    # Custom emojis only — NO standard unicode emojis!
+    if lang == 'hi':
+        desc_cf = (
+            f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> पेमेंट गेटवे ⟧</b>\n\n'
+            f'<b><emoji id="6023962911364357003">📖</emoji> कहानी:</b> <b>{safe_story_name}</b>\n'
+            f'<b><emoji id="5283232570660634549">💰</emoji> राशि:</b> <code>₹{price}</code>\n'
+            f'<b><emoji id="6019328362479097179">🛡</emoji> ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n'
+            f'<blockquote expandable>'
+            f'क्रेडिट/डेबिट कार्ड, नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से सुरक्षित भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।'
+            f'</blockquote>\n\n'
+            f'<i><emoji id="6023761060786346622">⚡</emoji> भुगतान पूरा होते ही बोट स्वचालित रूप से सत्यापित करके तुरंत डिलीवरी भेज देगा।</i>'
+        )
+        pay_now_lbl = "अभी भुगतान करें (Cards/UPI/NetBanking)"
+        back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
+    else:
+        desc_cf = (
+            f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> PAYMENT GATEWAY ⟧</b>\n\n'
+            f'<b><emoji id="6023962911364357003">📖</emoji> Story:</b> <b>{safe_story_name}</b>\n'
+            f'<b><emoji id="5283232570660634549">💰</emoji> Amount:</b> <code>₹{price}</code>\n'
+            f'<b><emoji id="6019328362479097179">🛡</emoji> Order ID:</b> <code>{order_id}</code>\n\n'
+            f'<blockquote expandable>'
+            f'Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).'
+            f'</blockquote>\n\n'
+            f'<i><emoji id="6023761060786346622">⚡</emoji> Payment will be automatically verified &amp; delivered instantly.</i>'
+        )
+        pay_now_lbl = "Pay Now (Cards / NetBanking / UPI)"
+        back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
 
-    # CRITICAL: callback_data must NEVER exceed 64 bytes!
-    # f"mb#cf_status#{order_id}" is ~42 bytes (well below 64 byte limit).
+    # Keyboard has ONLY Pay Now and Back buttons (Check status is 100% automated!)
     kb = [
-        [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
-        [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}")],
-        [InlineKeyboardButton(back_lbl, callback_data=back_cb)]
+        [_ikb(pay_now_lbl, url=pay_link, icon_custom_emoji_id="6104751980641525812")],
+        [_ikb(back_lbl, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]
     ]
     markup = InlineKeyboardMarkup(kb)
 
     target_msg = msg_or_query.message if isinstance(msg_or_query, CallbackQuery) else (msg_or_query if isinstance(msg_or_query, Message) else None)
-    edit_success = False
+    active_msg_id = getattr(target_msg, "id", None) if target_msg else None
 
-    # 1. First attempt in-place edit on existing message (photo caption or text)
+    # 1. First attempt in-place edit on existing message
+    res = None
     if target_msg:
-        try:
-            is_media = bool(getattr(target_msg, 'photo', None) or getattr(target_msg, 'video', None))
-            if is_media:
-                await target_msg.edit_caption(caption=desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-            else:
-                await target_msg.edit_text(text=desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
-            edit_success = True
-        except Exception as ex_edit:
-            logger.debug(f"[CF-UI] In-place edit failed: {ex_edit}")
-            edit_success = False
+        res = await _safe_edit(target_msg, text=desc_cf, markup=markup)
 
     # 2. Fallback: send clean new message, then clean up old message
-    if not edit_success:
+    if not res:
         try:
             sent_msg = await client.send_message(
                 chat_id=user_id,
@@ -3237,30 +3311,25 @@ async def _show_cashfree_payment_screen(
                 reply_markup=markup,
                 parse_mode=enums.ParseMode.HTML
             )
-            if sent_msg and target_msg:
-                try:
-                    await target_msg.delete()
-                except Exception:
-                    pass
-        except Exception as ex_send:
-            logger.error(f"[CF-UI] send_message fallback failed: {ex_send}", exc_info=True)
-            # 3. Ultimate plain text fallback
-            try:
-                plain_text = (
-                    f"💳 PAYMENT GATEWAY\n\n"
-                    f"• Story: {s_name}\n"
-                    f"• Amount: ₹{price}\n"
-                    f"• Order ID: {order_id}\n\n"
-                    f"Pay here: {pay_link}"
-                )
-                sent_plain = await client.send_message(user_id, plain_text, reply_markup=markup)
-                if sent_plain and target_msg:
+            if sent_msg:
+                active_msg_id = sent_msg.id
+                if target_msg:
                     try:
                         await target_msg.delete()
                     except Exception:
                         pass
-            except Exception as ex_plain:
-                logger.error(f"[CF-UI] Ultimate plain send failed: {ex_plain}")
+        except Exception as ex_send:
+            logger.error(f"[CF-UI] send_message fallback failed: {ex_send}", exc_info=True)
+
+    # 3. Start automated background payment poller!
+    asyncio.create_task(_poll_cashfree_payment(
+        client=client,
+        user_id=user_id,
+        order_id=order_id,
+        s_id=s_id,
+        story=story,
+        message_id=active_msg_id
+    ))
 
 
 async def _show_upi_payment_screen(
@@ -3773,27 +3842,48 @@ async def _process_start(client, message):
         m = await message.reply_text('<i><emoji id="5348471079482441278">⏳</emoji> Loading Store...</i>', parse_mode=enums.ParseMode.HTML)
         return await _open_reply_keyboard_marketplace(client, message.from_user.id, lang, query_message=m)
 
-    # ── Deep Link Handler: /start cf_<order_id> (Cashfree Payment Return) ──
-    if len(args) > 1 and args[1].startswith("cf_"):
-        order_id = args[1].strip()
+    # ── Deep Link Handler: /start order_<order_id> or cf_<order_id> (Cashfree Payment Return) ──
+    if len(args) > 1 and (args[1].startswith("order_") or args[1].startswith("cf_") or args[1].startswith("AB-")):
+        raw_payload = args[1].strip()
+        if raw_payload.startswith("order_"):
+            order_id = raw_payload[6:].strip()
+        else:
+            order_id = raw_payload
+
         from cashfree_helper import check_cashfree_order_status
         from bson.objectid import ObjectId
         import time
 
+        status_res = await check_cashfree_order_status(order_id)
         ord_doc = await db.db.orders.find_one({"order_id": order_id})
-        if ord_doc:
-            s_id = ord_doc.get("story_id") or (ord_doc.get("story_ids")[0] if ord_doc.get("story_ids") else None)
+        if not (status_res.get("is_paid") or (ord_doc and ord_doc.get("status") in ("paid", "PAID", "SUCCESS"))):
+            await asyncio.sleep(2.0)
+            status_res = await check_cashfree_order_status(order_id)
+            if not ord_doc:
+                ord_doc = await db.db.orders.find_one({"order_id": order_id})
+
+        is_paid = bool(status_res.get("is_paid") or (ord_doc and ord_doc.get("status") in ("paid", "PAID", "SUCCESS")))
+        if is_paid:
+            s_id = None
+            if ord_doc:
+                s_id = ord_doc.get("story_id") or (ord_doc.get("story_ids")[0] if ord_doc.get("story_ids") else None)
+            if not s_id:
+                s_id = status_res.get("story_id")
+
             story = None
             if s_id:
-                story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id) if ObjectId.is_valid(str(s_id)) else s_id})
-            status_res = await check_cashfree_order_status(order_id)
-            if (status_res.get("is_paid") or ord_doc.get("status") in ("paid", "PAID", "SUCCESS")) and story:
+                try:
+                    story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+                except Exception:
+                    story = await db.db.premium_stories.find_one({"_id": s_id})
+
+            if story:
                 await db.db.orders.update_one({"order_id": order_id}, {"$set": {"status": "paid", "paid_at": time.time()}})
                 
                 # Check if order was for a specific part
                 part_info = None
                 is_full = True
-                if ord_doc.get("items"):
+                if ord_doc and ord_doc.get("items"):
                     for itm in ord_doc["items"]:
                         if itm.get("part_id"):
                             part_info = itm
@@ -3803,16 +3893,19 @@ async def _process_start(client, message):
                             is_full = True
 
                 if is_full and not part_info:
-                    await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": ObjectId(s_id)}})
-                    await db.db.premium_purchases.update_one(
-                        {"user_id": int(user_id), "story_id": ObjectId(s_id)},
-                        {"$set": {"user_id": int(user_id), "story_id": ObjectId(s_id), "source": "cashfree", "amount": story.get("price", 0), "order_id": order_id, "created_at": time.time()}},
-                        upsert=True
-                    )
+                    try:
+                        await db.db.users.update_one({"id": int(user_id)}, {"$addToSet": {"purchases": ObjectId(s_id)}})
+                        await db.db.premium_purchases.update_one(
+                            {"user_id": int(user_id), "story_id": ObjectId(s_id)},
+                            {"$set": {"user_id": int(user_id), "story_id": ObjectId(s_id), "source": "cashfree", "amount": story.get("price", 0), "order_id": order_id, "created_at": time.time()}},
+                            upsert=True
+                        )
+                    except Exception as ex_u:
+                        logger.error(f"[CF-START] Error recording purchase: {ex_u}")
 
                 from utils import log_payment
                 asyncio.create_task(log_payment(
-                    amount=ord_doc.get("total", story.get("price", 0)),
+                    amount=ord_doc.get("total", story.get("price", 0)) if ord_doc else story.get("price", 0),
                     user_id=user_id,
                     story_name=story.get('story_name_en', 'Story'),
                     payment_method="Cashfree",

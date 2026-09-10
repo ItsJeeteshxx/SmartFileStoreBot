@@ -88,7 +88,7 @@ async def get_cashfree_config(bot_cfg: dict = None) -> dict:
     }
 
 
-async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_username: str = "", bot_cfg: dict = None) -> dict:
+async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_username: str = "", bot_cfg: dict = None, order_id: str = None) -> dict:
     """
     Creates a Cashfree Payment Gateway order via Cashfree PG API (v2023-08-01).
     Primary strategy: Cashfree Payment Links API (POST /pg/links) -> generates direct official Cashfree hosted link.
@@ -99,7 +99,8 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     price = float(story.get("price", 0))
     story_id = str(story["_id"])
     story_name = story.get("story_name_en", "Story")
-    order_id = f"cf_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+    if not order_id:
+        order_id = f"AB-{user_id}-{int(time.time())}"
 
     if price <= 0:
         return {"success": False, "error": "Invalid story price."}
@@ -127,7 +128,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
 
     # Ensure valid return_url (Cashfree API rejects null return_url)
     if bot_username:
-        return_url = f"https://t.me/{bot_username}?start=cf_{order_id}"
+        return_url = f"https://t.me/{bot_username}?start=order_{order_id}"
     else:
         return_url = cf_cfg.get("return_url") or f"https://aryapremium.store/app?order_id={order_id}"
 
