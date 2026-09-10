@@ -99,7 +99,7 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
     price = float(story.get("price", 0))
     story_id = str(story["_id"])
     story_name = story.get("story_name_en", "Story")
-    order_id = f"cf_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    order_id = f"cf_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
 
     if price <= 0:
         return {"success": False, "error": "Invalid story price."}
@@ -228,7 +228,6 @@ async def create_cashfree_order(user_id: int, user_name: str, story: dict, bot_u
                     is_sb = cf_cfg.get("is_sandbox", False)
                     payment_link = (
                         data.get("payment_link") or
-                        (data.get("payments", {}).get("url") if isinstance(data.get("payments"), dict) else None) or
                         (f"https://aryapremium.store/api/cashfree-pay?session_id={payment_session_id}&sandbox={'true' if is_sb else 'false'}" if payment_session_id else miniapp_fallback_link)
                     )
                     
@@ -304,11 +303,14 @@ async def check_cashfree_order_status(order_id: str) -> dict:
             ]
         })
         if db_order and db_order.get("status") in ("paid", "PAID", "SUCCESS"):
+            st_id = db_order.get("story_id") or (db_order.get("story_ids", [None])[0] if db_order.get("story_ids") else "")
             return {
                 "status": "PAID",
                 "is_paid": True,
                 "amount": db_order.get("amount", 0),
-                "order_id": order_id
+                "order_id": order_id,
+                "story_id": str(st_id) if st_id else "",
+                "db_order": db_order
             }
     except Exception as ex:
         logger.warning(f"[CF-STATUS] Error querying DB: {ex}")
@@ -333,18 +335,23 @@ async def check_cashfree_order_status(order_id: str) -> dict:
                     link_data = await resp.json()
                     link_status = str(link_data.get("link_status", "")).upper()
                     is_paid = (link_status in ("PAID", "SUCCESS"))
+                    st_id = ""
                     if is_paid:
                         try:
                             await db.db.orders.update_one(
                                 {"$or": [{"order_id": order_id}, {"link_id": order_id}]},
                                 {"$set": {"status": "paid", "paid_at": time.time(), "link_status": link_status}}
                             )
+                            db_o = await db.db.orders.find_one({"$or": [{"order_id": order_id}, {"link_id": order_id}]})
+                            if db_o:
+                                st_id = str(db_o.get("story_id") or (db_o.get("story_ids", [None])[0] if db_o.get("story_ids") else ""))
                         except Exception:
                             pass
                     return {
                         "status": link_status,
                         "is_paid": is_paid,
                         "amount": link_data.get("link_amount"),
+                        "story_id": st_id,
                         "raw": link_data
                     }
     except Exception as ex_link:
@@ -359,18 +366,23 @@ async def check_cashfree_order_status(order_id: str) -> dict:
                 if resp.status == 200:
                     order_status = (data.get("order_status") or "").upper()
                     is_paid = (order_status in ("PAID", "SUCCESS"))
+                    st_id = ""
                     if is_paid:
                         try:
                             await db.db.orders.update_one(
                                 {"$or": [{"order_id": order_id}, {"cf_order_id": order_id}]},
                                 {"$set": {"status": "paid", "paid_at": time.time(), "cf_order_id": data.get("cf_order_id")}}
                             )
+                            db_o = await db.db.orders.find_one({"$or": [{"order_id": order_id}, {"cf_order_id": order_id}]})
+                            if db_o:
+                                st_id = str(db_o.get("story_id") or (db_o.get("story_ids", [None])[0] if db_o.get("story_ids") else ""))
                         except Exception:
                             pass
                     return {
                         "status": order_status,
                         "is_paid": is_paid,
                         "amount": data.get("order_amount"),
+                        "story_id": st_id,
                         "raw": data
                     }
                 else:

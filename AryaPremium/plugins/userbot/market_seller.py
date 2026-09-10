@@ -3153,22 +3153,46 @@ async def _show_cashfree_payment_screen(
             "❌ भुगतान लिंक जनरेट नहीं हो सका। कृपया पुनः प्रयास करें या सहायता से संपर्क करें।"
         )
         back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
-        markup = InlineKeyboardMarkup([[_ikb(back_lbl, callback_data=back_cb, icon_custom_emoji_id="5774077015388852135")]])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(back_lbl, callback_data=back_cb)]])
         if isinstance(msg_or_query, CallbackQuery) and msg_or_query.message:
             return await _safe_edit(msg_or_query.message, text=err_msg, markup=markup)
         else:
             return await client.send_message(user_id, err_msg, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
 
+    # Save to premium_checkout for session tracking
+    try:
+        from bson.objectid import ObjectId
+        from datetime import datetime
+        await db.db.premium_checkout.update_one(
+            {"user_id": user_id, "bot_id": client.me.id, "story_id": ObjectId(s_id)},
+            {"$set": {
+                "status": "pending_gateway",
+                "order_id": order_id,
+                "bot_username": getattr(client.me, "username", ""),
+                "username": getattr(msg_or_query.from_user, "username", "") if hasattr(msg_or_query, "from_user") and msg_or_query.from_user else "",
+                "first_name": user_name,
+                "method": "cashfree",
+                "amount": price,
+                "pay_link_copy": pay_link,
+                "updated_at": datetime.utcnow(),
+            }, "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True
+        )
+    except Exception as ex_chk:
+        logger.debug(f"[CF-UI] premium_checkout update error: {ex_chk}")
+
+    import html
+    safe_story_name = html.escape(str(s_name))
     desc_cf = (
-        f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> PAYMENT GATEWAY ⟧</b>\n\n'
-        f"<b>• Story:</b> {to_mathbold(s_name)}\n"
+        f'<b>⟦ 💳 PAYMENT GATEWAY ⟧</b>\n\n'
+        f"<b>• Story:</b> <b>{safe_story_name}</b>\n"
         f"<b>• Amount:</b> ₹{price}\n"
         f"<b>• Order ID:</b> <code>{order_id}</code>\n\n"
         f"<i>Tap <b>Pay Now</b> below to pay securely via Credit/Debit Cards, NetBanking, or UPI (GPay, PhonePe, Paytm).</i>\n\n"
         f"<i>After completing payment, tap <b>Check Status</b> for instant automated delivery.</i>"
     ) if lang == 'en' else (
-        f'<b>⟦ <emoji id="6030410254276106984">💳</emoji> पेमेंट गेटवे ⟧</b>\n\n'
-        f"<b>• कहानी:</b> {to_mathbold(s_name)}\n"
+        f'<b>⟦ 💳 पेमेंट गेटवे ⟧</b>\n\n'
+        f"<b>• कहानी:</b> <b>{safe_story_name}</b>\n"
         f"<b>• राशि:</b> ₹{price}\n"
         f"<b>• ऑर्डर आईडी:</b> <code>{order_id}</code>\n\n"
         f"<i>कार्ड्स (क्रेडिट/डेबिट), नेटबैंकिंग, या UPI (GPay, PhonePe, Paytm) से भुगतान करने के लिए नीचे <b>Pay Now</b> पर टैप करें।</i>\n\n"
@@ -3179,9 +3203,11 @@ async def _show_cashfree_payment_screen(
     check_lbl = "🔄 Check Payment Status" if lang == 'en' else "🔄 स्टेटस चेक करें"
     back_lbl = "« ❮ " + (_sc("BACK") if lang == 'en' else "वापस")
 
+    # CRITICAL: callback_data must NEVER exceed 64 bytes!
+    # f"mb#cf_status#{order_id}" is ~42 bytes (well below 64 byte limit).
     kb = [
         [InlineKeyboardButton(pay_now_lbl, url=pay_link)],
-        [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}#{s_id}")],
+        [InlineKeyboardButton(check_lbl, callback_data=f"mb#cf_status#{order_id}")],
         [InlineKeyboardButton(back_lbl, callback_data=back_cb)]
     ]
     markup = InlineKeyboardMarkup(kb)
@@ -3189,27 +3215,52 @@ async def _show_cashfree_payment_screen(
     target_msg = msg_or_query.message if isinstance(msg_or_query, CallbackQuery) else (msg_or_query if isinstance(msg_or_query, Message) else None)
     edit_success = False
 
+    # 1. First attempt in-place edit on existing message (photo caption or text)
     if target_msg:
         try:
-            res = await _safe_edit(target_msg, text=desc_cf, markup=markup)
-            if res:
-                edit_success = True
+            is_media = bool(getattr(target_msg, 'photo', None) or getattr(target_msg, 'video', None))
+            if is_media:
+                await target_msg.edit_caption(caption=desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+            else:
+                await target_msg.edit_text(text=desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+            edit_success = True
         except Exception as ex_edit:
-            logger.debug(f"[CF-UI] _safe_edit failed: {ex_edit}")
+            logger.debug(f"[CF-UI] In-place edit failed: {ex_edit}")
+            edit_success = False
 
+    # 2. Fallback: send clean new message, then clean up old message
     if not edit_success:
-        # If safe edit could not edit (e.g. photo message or cannot modify), delete old message and send new
         try:
-            if target_msg:
-                await target_msg.delete()
-        except Exception:
-            pass
-        try:
-            await client.send_message(user_id, desc_cf, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+            sent_msg = await client.send_message(
+                chat_id=user_id,
+                text=desc_cf,
+                reply_markup=markup,
+                parse_mode=enums.ParseMode.HTML
+            )
+            if sent_msg and target_msg:
+                try:
+                    await target_msg.delete()
+                except Exception:
+                    pass
         except Exception as ex_send:
-            logger.error(f"[CF-UI] send_message fallback failed: {ex_send}")
-            if isinstance(msg_or_query, CallbackQuery):
-                await msg_or_query.answer(f"✅ Order Created: {order_id}\n\nPay here: {pay_link}", show_alert=True)
+            logger.error(f"[CF-UI] send_message fallback failed: {ex_send}", exc_info=True)
+            # 3. Ultimate plain text fallback
+            try:
+                plain_text = (
+                    f"💳 PAYMENT GATEWAY\n\n"
+                    f"• Story: {s_name}\n"
+                    f"• Amount: ₹{price}\n"
+                    f"• Order ID: {order_id}\n\n"
+                    f"Pay here: {pay_link}"
+                )
+                sent_plain = await client.send_message(user_id, plain_text, reply_markup=markup)
+                if sent_plain and target_msg:
+                    try:
+                        await target_msg.delete()
+                    except Exception:
+                        pass
+            except Exception as ex_plain:
+                logger.error(f"[CF-UI] Ultimate plain send failed: {ex_plain}")
 
 
 async def _show_upi_payment_screen(
@@ -8782,9 +8833,9 @@ async def _process_callback(client, query):
         return
 
     # ── CASHFREE PAYMENT STATUS VERIFIER ──
-    elif cmd == "cf_status":
+    elif cmd in ("cf_status", "cf_st"):
         order_id = data[2]
-        s_id = data[3]
+        s_id = data[3] if len(data) > 3 else ""
         from cashfree_helper import check_cashfree_order_status
         from bson.objectid import ObjectId
         import time
@@ -8792,9 +8843,21 @@ async def _process_callback(client, query):
         status_res = await check_cashfree_order_status(order_id)
         if status_res.get("is_paid"):
             await query.answer("✅ Payment Verified Successfully!", show_alert=False)
-            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
-            if not story:
-                story = await db.db.premium_stories.find_one({"_id": s_id})
+
+            # If s_id not provided in callback data, retrieve from status_res or orders DB
+            if not s_id:
+                s_id = status_res.get("story_id", "")
+            if not s_id:
+                ord_doc = await db.db.orders.find_one({"order_id": order_id})
+                if ord_doc:
+                    s_id = str(ord_doc.get("story_id") or (ord_doc.get("story_ids")[0] if ord_doc.get("story_ids") else ""))
+
+            story = None
+            if s_id:
+                try:
+                    story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+                except Exception:
+                    story = await db.db.premium_stories.find_one({"_id": s_id})
             
             # Update order in DB
             await db.db.orders.update_one(
@@ -8802,22 +8865,27 @@ async def _process_callback(client, query):
                 {"$set": {"status": "paid", "paid_at": time.time()}}
             )
             # Add purchase to user
-            await db.db.users.update_one(
-                {"id": int(user_id)},
-                {"$addToSet": {"purchases": ObjectId(s_id)}}
-            )
-            await db.db.premium_purchases.update_one(
-                {"user_id": int(user_id), "story_id": ObjectId(s_id)},
-                {"$set": {
-                    "user_id": int(user_id),
-                    "story_id": ObjectId(s_id),
-                    "source": "cashfree",
-                    "amount": story.get("price", 0) if story else 0,
-                    "order_id": order_id,
-                    "created_at": time.time()
-                }},
-                upsert=True
-            )
+            if s_id:
+                try:
+                    await db.db.users.update_one(
+                        {"id": int(user_id)},
+                        {"$addToSet": {"purchases": ObjectId(s_id)}}
+                    )
+                    await db.db.premium_purchases.update_one(
+                        {"user_id": int(user_id), "story_id": ObjectId(s_id)},
+                        {"$set": {
+                            "user_id": int(user_id),
+                            "story_id": ObjectId(s_id),
+                            "source": "cashfree",
+                            "amount": story.get("price", 0) if story else 0,
+                            "order_id": order_id,
+                            "created_at": time.time()
+                        }},
+                        upsert=True
+                    )
+                except Exception as ex_p:
+                    logger.error(f"[CF-STATUS] Error updating purchase records: {ex_p}")
+
             # Log payment
             from utils import log_payment
             s_name = story.get('story_name_en', 'Story') if story else 'Story'
