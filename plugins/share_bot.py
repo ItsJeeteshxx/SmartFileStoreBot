@@ -6430,6 +6430,7 @@ async def _process_pass_callback(client, query):
         tier = order_doc.get("tier", "basic")
         user_lang = await db.get_language(user_id)
         is_hi = bool(user_lang == 'hi')
+        is_hinglish = bool(user_lang == 'hinglish')
 
         # Check existing dynamic amount or generate new one
         dyn_amount = order_doc.get("dyn_amount")
