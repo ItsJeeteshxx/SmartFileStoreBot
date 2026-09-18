@@ -6595,79 +6595,20 @@ async def settings_query(bot, query):
 
 
 async def main_buttons(user_id=None):
-  # Get current mode
-  mode = 'forward'
-  menu_image_id = None
-  if user_id:
-      try:
-          data = await get_configs(user_id)
-          mode = data.get('bot_mode', 'forward')
-          menu_image_id = data.get('menu_image_id')
-      except Exception:
-          pass
-
-  is_admin = await is_any_owner(user_id)
-
-  if mode == 'merger':
-      #  MERGER MODE: Clean separate menu
-      buttons = [
-          [
-              InlineKeyboardButton('• Accounts •', callback_data='settings#accounts'),
-          ],
-          [
-              InlineKeyboardButton('• Audio Merge •', callback_data='mg#audio_list')
-          ]
-      ]
-      if is_admin:
-          buttons.append([
-              InlineKeyboardButton('• Dlvr Bot Setup •', callback_data='settings#sharebot'),
-              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
-          ])
-      else:
-          buttons.append([
-              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
-          ])
-      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')])
-
-  else:
-      #  FORWARD MODE: Full original menu
-      buttons = [
-          [
-              InlineKeyboardButton('• Accounts •', callback_data='settings#accounts'),
-          ],
-          [
-              InlineKeyboardButton('• Filters •', callback_data='settings#filters'),
-              InlineKeyboardButton('• Ex Settings •', callback_data='settings#nextfilters')
-          ]
-      ]
-      if is_admin:
-          buttons.append([
-              InlineKeyboardButton('• Dlvr Bot Setup •', callback_data='settings#sharebot'),
-              InlineKeyboardButton('• Let\'s Enhance •', callback_data='settings#enhancer')
-          ])
-      else:
-          buttons.append([
-              InlineKeyboardButton('• Let\'s Enhance •', callback_data='settings#enhancer')
-          ])
-      buttons.append([
-          InlineKeyboardButton('• Lang •', callback_data='settings#lang'),
-          InlineKeyboardButton('• Shorteners •', callback_data='settings#shorteners')
-      ])
-      if is_admin:
-          buttons.append([
-              InlineKeyboardButton('• Owner Panel •', callback_data='settings#owners'),
-              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
-          ])
-      else:
-          buttons.append([
-              InlineKeyboardButton('• Stats •', callback_data='settings#stats')
-          ])
-      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')])
-
-  return InlineKeyboardMarkup(buttons)
-
-
-
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✦ Aᴄᴄᴏᴜɴᴛs", callback_data="settings#accounts"),
+            InlineKeyboardButton("✦ Bᴀᴛᴄʜ Lɪɴᴋs", callback_data="sl#start"),
+        ],
+        [
+            InlineKeyboardButton("✦ Dᴇʟɪᴠᴇʀʏ Bᴏᴛ", callback_data="settings#sharebot"),
+            InlineKeyboardButton("✦ Lᴀɴɢᴜᴀɢᴇ", callback_data="settings#lang"),
+        ],
+        [
+            InlineKeyboardButton("✦ Oᴡɴᴇʀ Pᴀɴᴇʟ", callback_data="settings#owners"),
+            InlineKeyboardButton("✦ Sᴛᴀᴛs", callback_data="settings#stats"),
+        ],
+    ])
 
 def size_limit(limit):
    if str(limit) == "None":
