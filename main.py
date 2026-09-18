@@ -268,55 +268,6 @@ async def main():
     # Start self-ping task
     asyncio.create_task(ping_server())
 
-    # Start system resource monitor (auto-pause on RAM/CPU overload)
-    try:
-        start_monitor(bot)
-        logging.info("System resource monitor started.")
-    except Exception as e:
-        logging.warning(f"Could not start system monitor: {e}")
-
-
-
-    # ── Staggered job resumption (prevents FloodWait on restart) ────────────
-    async def _staggered_resume():
-        await asyncio.sleep(5)   # let bot fully connect first
-        try:
-            await resume_live_jobs(stagger_secs=2.0)
-        except Exception as e:
-            logging.warning(f"LiveJob resume error: {e}")
-        await asyncio.sleep(5)   # gap between job types
-        try:
-            await resume_multi_jobs(stagger_secs=3.0)
-        except Exception as e:
-            logging.warning(f"MultiJob resume error: {e}")
-        await asyncio.sleep(5)
-        # ── Cleaner job auto-resume ──────────────────────────────────────────
-        # Any cleaner jobs still marked 'running'/'queued' in DB when the bot
-        # died are orphaned (their asyncio Tasks are gone). Relaunch them now.
-        # Without this they appear 'Running' forever but process nothing.
-        try:
-            from plugins.cleaner import _cl_run_job, _cl_tasks, _cl_paused, _cl_bot_ref
-            from database import db as _db
-            orphaned = await _db.db.cleaner_jobs.find(
-                {"status": {"$in": ["running", "queued"]}}
-            ).to_list(length=None)
-            logging.info(f"[Startup] Resuming {len(orphaned)} orphaned cleaner job(s)...")
-            for _job in orphaned:
-                _jid = _job["job_id"]
-                if _jid in _cl_tasks and not _cl_tasks[_jid].done():
-                    continue  # already has a live task
-                _cl_paused[_jid] = asyncio.Event()
-                _cl_paused[_jid].set()
-                _cl_bot_ref[_jid] = bot
-                await _db.db.cleaner_jobs.update_one(
-                    {"job_id": _jid},
-                    {"$set": {"status": "queued", "error": "Resuming after restart..."}}
-                )
-                _cl_tasks[_jid] = asyncio.create_task(_cl_run_job(_jid, bot))
-                logging.info(f"[Startup] Resumed cleaner job {_jid}")
-                await asyncio.sleep(2)  # stagger restarts to avoid hammering Telegram
-        except Exception as e:
-            logging.warning(f"Cleaner resume error: {e}")
         # ── Live Batch job auto-resume ───────────────────────────────────────
         # live_batch jobs marked 'running' lose their asyncio Task on restart.
         # Without this they appear Running forever but process nothing, and users
