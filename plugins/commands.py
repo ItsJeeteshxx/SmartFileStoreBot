@@ -335,10 +335,10 @@ async def status(bot, query):
     ul_speed = humanbytes(new_net.bytes_sent - old_net.bytes_sent) + "/s"
     
     stats = await db.get_global_stats()
-    live_fwd = stats.get('live_forward', 0)
+    live_fwd = 0
     batch_fwd = stats.get('batch_forward', 0)
-    normal_fwd = stats.get('normal_forward', 0)
-    total_fwd = live_fwd + batch_fwd + normal_fwd
+    normal_fwd = 0
+    total_fwd = batch_fwd
     
     dl_files = stats.get('total_files_downloaded', 0)
     ul_files = stats.get('total_files_uploaded', 0)
@@ -405,7 +405,7 @@ async def owner_stats(bot, message):
     uptime  = f"{d}d {h}h {m}m {s}s"
 
     try:
-        from .jobs import _job_tasks
+
         in_memory_tasks = len([tk for tk in _job_tasks.values() if not tk.done()])
     except Exception:
         in_memory_tasks = "N/A"
