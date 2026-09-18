@@ -13,7 +13,7 @@ from pyrogram.errors import FloodWait, RPCError
 
 from config import Config
 from database import db
-from plugins.url_bypass import process_poster_image
+from plugins.store_utils import process_poster_image
 
 logger = logging.getLogger("StoreIndexer")
 PM = "html"

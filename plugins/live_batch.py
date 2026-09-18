@@ -22,7 +22,7 @@ from database import db
 from bot import BOT_INSTANCE
 from plugins.test import CLIENT
 from plugins.utils import extract_ep_label_robust, format_tg_error
-from plugins.jobs import _passes_filters
+
 _CLIENT = CLIENT()
 COLL = "live_batch_jobs"
 

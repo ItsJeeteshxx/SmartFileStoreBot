@@ -6193,7 +6193,6 @@ async def settings_query(bot, query):
      chat = await db.get_channel_details(user_id, chat_id)
      buttons = [[InlineKeyboardButton('Rᴇᴍᴏᴠᴇ', callback_data=f"settings#removechannel_{chat_id}")
                ],
-               [InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data="settings#channels")]]
      await query.message.edit_text(
         f"<b><u>»  CHANNEL DETAILS</b></u>\n\n<b>- TITLE:</b> <code>{chat['title']}</code>\n<b>- CHANNEL ID: </b> <code>{chat['chat_id']}</code>\n<b>- USERNAME:</b> {chat['username']}",
         reply_markup=InlineKeyboardMarkup(buttons))
@@ -6614,7 +6613,6 @@ async def main_buttons(user_id=None):
       buttons = [
           [
               InlineKeyboardButton('• Accounts •', callback_data='settings#accounts'),
-              InlineKeyboardButton('• Channels •', callback_data='settings#channels')
           ],
           [
               InlineKeyboardButton('• Audio Merge •', callback_data='mg#audio_list')
@@ -6636,7 +6634,6 @@ async def main_buttons(user_id=None):
       buttons = [
           [
               InlineKeyboardButton('• Accounts •', callback_data='settings#accounts'),
-              InlineKeyboardButton('• Channels •', callback_data='settings#channels')
           ],
           [
               InlineKeyboardButton('• Filters •', callback_data='settings#filters'),

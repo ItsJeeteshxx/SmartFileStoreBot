@@ -22,58 +22,51 @@ async def _safe_edit(bot, query, **kwargs):
 
 async def _main_buttons(user_id: int):
     lang = await db.get_language(user_id)
-    
-    btn_jobs_text = _tx(lang, 'btn_jobs')
-    mj_text = '• Multi Jobs •'
-    mg_text = '• Merger Job •'
-    lb_text = '• Batch Links •'
 
     return [
         [
-            InlineKeyboardButton(_tx(lang, 'btn_settings'), callback_data='settings#main'),
-            InlineKeyboardButton(btn_jobs_text,     callback_data='job#list'),
+            InlineKeyboardButton(
+                _tx(lang, 'btn_settings'),
+                callback_data='settings#main'
+            ),
+            InlineKeyboardButton(
+                '• Batch Links •',
+                callback_data='sl#start'
+            ),
         ],
         [
-            InlineKeyboardButton(mj_text,    callback_data='mj#list'),
-            InlineKeyboardButton(mg_text,   callback_data='mg#main'),
-        ],
-        [
-            InlineKeyboardButton('• Cleaner Job •', callback_data='cl#main'),
-            InlineKeyboardButton('• Clean Msg •',    callback_data='settings#cleanmsg'),
-        ],
-        [
-            InlineKeyboardButton(lb_text,  callback_data='sl#start'),
-            InlineKeyboardButton('• Status •',         callback_data='status'),
-        ],
-        [
-            InlineKeyboardButton('• Url Bypass •',   callback_data='ub#bypass'),
-            InlineKeyboardButton('• Requests •',     callback_data='req#main'),
-        ],
-        [
-            InlineKeyboardButton('• About •',          callback_data='about'),
+            InlineKeyboardButton(
+                '• Status •',
+                callback_data='status'
+            ),
+            InlineKeyboardButton(
+                '• About •',
+                callback_data='about'
+            ),
         ],
     ]
 
-#  static fallback used before user_id is available 
+# static fallback used before user_id is available
 _STATIC_BUTTONS = [
-    [InlineKeyboardButton('📢 Main Channel',   url='https://t.me/MeJeetX')],
     [
-        InlineKeyboardButton('💬 Support Group', url='https://t.me/+1p2hcQ4ZaupjNjI1'),
+        InlineKeyboardButton(
+            '• Settings •',
+            callback_data='settings#main'
+        ),
+        InlineKeyboardButton(
+            '• Batch Links •',
+            callback_data='sl#start'
+        ),
     ],
     [
-        InlineKeyboardButton('• Settings •', callback_data='settings#main'),
-        InlineKeyboardButton('• Live Jobs •', callback_data='job#list'),
-    ],
-    [
-        InlineKeyboardButton('• Multi Jobs •',   callback_data='mj#list'),
-        InlineKeyboardButton('• Batch Links •', callback_data='sl#start'),
-    ],
-    [
-        InlineKeyboardButton('• Cleaner Job •', callback_data='cl#main'),
-    ],
-    [
-        InlineKeyboardButton('• Status •',         callback_data='status'),
-        InlineKeyboardButton('• About •',           callback_data='about'),
+        InlineKeyboardButton(
+            '• Status •',
+            callback_data='status'
+        ),
+        InlineKeyboardButton(
+            '• About •',
+            callback_data='about'
+        ),
     ],
 ]
 

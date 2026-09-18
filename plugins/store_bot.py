@@ -13,7 +13,7 @@ from pyrogram.errors import FloodWait, RPCError
 from config import Config
 from database import db
 from plugins.cashfree_helper import get_cashfree_credentials
-from plugins.url_bypass import _clean_video_caption
+from plugins.store_utils import _clean_video_caption
 
 logger = logging.getLogger("StoreBot")
 PM = "html"

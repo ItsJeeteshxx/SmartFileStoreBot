@@ -270,7 +270,6 @@ async def main():
 
     # Start system resource monitor (auto-pause on RAM/CPU overload)
     try:
-        from plugins.sysmon import start_monitor
         start_monitor(bot)
         logging.info("System resource monitor started.")
     except Exception as e:
@@ -282,13 +281,11 @@ async def main():
     async def _staggered_resume():
         await asyncio.sleep(5)   # let bot fully connect first
         try:
-            from plugins.jobs import resume_live_jobs
             await resume_live_jobs(stagger_secs=2.0)
         except Exception as e:
             logging.warning(f"LiveJob resume error: {e}")
         await asyncio.sleep(5)   # gap between job types
         try:
-            from plugins.multijob import resume_multi_jobs
             await resume_multi_jobs(stagger_secs=3.0)
         except Exception as e:
             logging.warning(f"MultiJob resume error: {e}")
