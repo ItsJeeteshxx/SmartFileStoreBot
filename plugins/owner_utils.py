@@ -65,14 +65,8 @@ any_owner_filter = _AnyOwnerFilter()
 
 # Canonical feature names shown in the UI
 FEATURE_LABELS = {
-    "live_job":    "Lɪᴠᴇ Jᴏʙ",
-    "multi_job":   "Mᴜʟᴛɪ Jᴏʙ",
-    "merger":      "Mᴇʀɢᴇʀ",
-    "cleaner":     "Cʟᴇᴀɴᴇʀ",
     "batch_links": "Bᴀᴛᴄʜ Lɪɴᴋs",
-    "url_bypass":  "Uʀʟ Bʏᴘᴀss",
     "join_requests": "Jᴏɪɴ Rᴇǫᴜᴇsᴛs",
-    "normal_fwd":  "Nᴏʀᴍᴀʟ Fᴏʀᴡᴀʀᴅ",
 }
 
 _DISABLED_MSG = (
